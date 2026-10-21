@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <memory>
@@ -80,6 +81,16 @@ class MemoryReservation {
     }
     bytes_ += bytes;
     return okStatus();
+  }
+
+  /// Gives back `bytes` of what this reservation holds (at most all of it), e.g. a buffer's old storage once a
+  /// reallocation freed it.
+  void shrink(std::size_t bytes) noexcept {
+    bytes = std::min(bytes, bytes_);
+    bytes_ -= bytes;
+    if (budget_) {
+      budget_->release(bytes);
+    }
   }
 
  private:

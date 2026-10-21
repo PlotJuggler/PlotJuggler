@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,6 +30,18 @@ namespace PJ::scripting::native {
     if (!std::isfinite(value)) {
       return unexpected(std::string(field) + " must be finite");
     }
+  }
+  return okStatus();
+}
+
+/// The rejection of `field` when `value` is not finite or is too large for the float32 it is stored as (the cast would
+/// give infinity).
+[[nodiscard]] inline Status checkFloat32(std::string_view field, double value) {
+  if (Status finite = checkFinite(field, {value}); !finite) {
+    return finite;
+  }
+  if (std::abs(value) > std::numeric_limits<float>::max()) {
+    return unexpected(std::string(field) + " must fit a 32-bit float");
   }
   return okStatus();
 }

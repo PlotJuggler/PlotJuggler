@@ -22,9 +22,11 @@
 #include <vector>
 
 #include "native/image_annotations_ops.h"
+#include "native/point_cloud_builder.h"
 #include "native/point_cloud_ops.h"
 #include "native/record_walk.h"
 #include "native/scene_entities_ops.h"
+#include "native/voxel_grid_ops.h"
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/memory_budget.h"
@@ -976,6 +978,11 @@ TEST(PointCloudOpsBench, NanosecondsPerPoint) {
       EXPECT_TRUE(out);
       return out ? countPoints(*out) : 0u;
     });
+    measure("downsample", [&] {
+      const auto out = downsample(*cloud, 0.05, limits);  // 20^3 cubes over the unit cube: about 8000 centroids
+      EXPECT_TRUE(out);
+      return out ? out->value.width : 0u;
+    });
     const auto access = resolveXyz(*cloud);
     ASSERT_TRUE(access) << access.error();
     measure("nextFinitePoint", [&] {
@@ -1320,6 +1327,374 @@ TEST(ImageAnnotationsBuilder, AnnotationsBuilderChargesTheBudget) {
   }  // the builder is gone: the annotations alone hold the charge
   EXPECT_EQ(budget->used(), builder_bytes);
   annotations.reset();
+  EXPECT_EQ(budget->used(), 0u);
+}
+
+// ---- point-cloud builder and downsampling (D14, D16) ------------------------------
+
+/// The float32 `channel` of record `record`, read through the cloud's own field table.
+float channelAt(const PointCloud& cloud, size_t record, std::string_view channel) {
+  for (const PointField& field : cloud.fields) {
+    if (field.name == channel) {
+      return floatAt(cloud, record, field.offset);
+    }
+  }
+  ADD_FAILURE() << "no channel " << channel;
+  return kNaN;
+}
+
+TEST(PointCloudBuilder, PresetsLayOutFieldsLikePcl) {
+  struct Expected {
+    const char* name;
+    std::vector<std::pair<std::string, uint32_t>> fields;
+    PointField::Datatype last;
+    std::vector<double> point;
+  };
+  const std::vector<Expected> presets{
+      {"xyz", {{"x", 0}, {"y", 4}, {"z", 8}}, PointField::Datatype::kFloat32, {1, 2, 3}},
+      {"xyzi", {{"x", 0}, {"y", 4}, {"z", 8}, {"intensity", 12}}, PointField::Datatype::kFloat32, {1, 2, 3, 0.5}},
+      {"xyzrgb", {{"x", 0}, {"y", 4}, {"z", 8}, {"rgb", 12}}, PointField::Datatype::kUint32, {1, 2, 3, 10, 20, 30}},
+  };
+  for (const Expected& expected : presets) {
+    SCOPED_TRACE(expected.name);
+    const auto preset = parseCloudPreset(expected.name);
+    ASSERT_TRUE(preset);
+    auto builder = PointCloudBuilder::create(*preset, "map", nullptr);
+    ASSERT_TRUE(builder) << builder.error();
+    EXPECT_EQ(builder->arity(), expected.point.size());
+    ASSERT_TRUE(builder->add(expected.point));
+    ASSERT_TRUE(builder->add(expected.point));
+    const PointCloud cloud = std::move(*builder).finish().value;
+    EXPECT_EQ(cloud.point_step, 16u);
+    EXPECT_EQ(cloud.width, 2u);
+    EXPECT_EQ(cloud.height, 1u);
+    EXPECT_EQ(cloud.row_step, 32u);
+    EXPECT_TRUE(cloud.is_dense);
+    EXPECT_FALSE(cloud.is_bigendian);
+    EXPECT_EQ(cloud.frame_id, "map");
+    EXPECT_EQ(cloud.timestamp_ns, 0);
+    ASSERT_EQ(cloud.data.size(), 32u);
+    ASSERT_EQ(cloud.fields.size(), expected.fields.size());
+    for (size_t index = 0; index < cloud.fields.size(); ++index) {
+      EXPECT_EQ(cloud.fields[index].name, expected.fields[index].first);
+      EXPECT_EQ(cloud.fields[index].offset, expected.fields[index].second);
+      EXPECT_EQ(cloud.fields[index].count, 1u);
+      EXPECT_EQ(cloud.fields[index].datatype, index < 3 ? PointField::Datatype::kFloat32 : expected.last);
+    }
+    EXPECT_EQ(floatAt(cloud, 1, 0), 1.0f);
+    EXPECT_EQ(floatAt(cloud, 1, 4), 2.0f);
+    EXPECT_EQ(floatAt(cloud, 1, 8), 3.0f);
+    const auto access = resolveXyz(cloud);  // the ops read a built cloud
+    ASSERT_TRUE(access) << access.error();
+  }
+  // xyzi: intensity as float32; xyzrgb: R, G, B, 255 by address, PJ4's canonical packed colour.
+  auto xyzi = PointCloudBuilder::create(CloudPreset::kXyzi, "", nullptr);
+  ASSERT_TRUE(xyzi && xyzi->add(std::vector<double>{0, 0, 0, 0.25}));
+  EXPECT_EQ(channelAt(std::move(*xyzi).finish().value, 0, "intensity"), 0.25f);
+  auto xyzrgb = PointCloudBuilder::create(CloudPreset::kXyzrgb, "", nullptr);
+  ASSERT_TRUE(xyzrgb && xyzrgb->add(std::vector<double>{0, 0, 0, 10, 20, 255}));
+  const PointCloud colored = std::move(*xyzrgb).finish().value;
+  EXPECT_EQ(colored.data[12], 10);
+  EXPECT_EQ(colored.data[13], 20);
+  EXPECT_EQ(colored.data[14], 255);
+  EXPECT_EQ(colored.data[15], 255);
+  EXPECT_FALSE(parseCloudPreset("xyzrgba"));
+  EXPECT_FALSE(parseCloudPreset("XYZ"));
+}
+
+TEST(PointCloudBuilder, RejectsMalformedPoints) {
+  auto builder = PointCloudBuilder::create(CloudPreset::kXyzrgb, "map", nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  const auto rejects = [&](std::vector<double> point, const char* part) {
+    const Status added = builder->add(point);
+    ASSERT_FALSE(added) << part;
+    EXPECT_TRUE(contains(added.error(), part)) << added.error();
+  };
+  rejects({1, 2, 3}, "6 values");
+  rejects({1, 2, 3, 4, 5, 6, 7}, "6 values");
+  rejects({1, std::nan(""), 3, 0, 0, 0}, "finite");
+  rejects({1, 2, std::numeric_limits<double>::infinity(), 0, 0, 0}, "finite");
+  rejects({1, 2, 3, 256, 0, 0}, "0 to 255");
+  rejects({1, 2, 3, 0, -1, 0}, "0 to 255");
+  auto xyzi = PointCloudBuilder::create(CloudPreset::kXyzi, "map", nullptr);
+  ASSERT_TRUE(xyzi);
+  EXPECT_FALSE(xyzi->add(std::vector<double>{1, 2, 3, std::nan("")}));
+  EXPECT_EQ(std::move(*builder).finish().value.width, 0u);  // a rejected point is not kept
+}
+
+TEST(PointCloudBuilder, AddBeyondTheBudgetFails) {
+  auto budget = std::make_shared<MemoryBudget>(4096);
+  {
+    auto builder = PointCloudBuilder::create(CloudPreset::kXyz, "map", budget);
+    ASSERT_TRUE(builder) << builder.error();
+    Status added = okStatus();
+    int points = 0;
+    while (added && points < 100000) {
+      added = builder->add(std::vector<double>{1, 2, 3});
+      points += added ? 1 : 0;
+    }
+    ASSERT_FALSE(added);
+    EXPECT_TRUE(contains(added.error(), "native memory limit")) << added.error();
+    EXPECT_GT(points, 0);
+    EXPECT_LT(points, 4096 / 16);
+    EXPECT_LE(budget->used(), budget->limit());
+    // What the builder holds is charged: its buffer's capacity, at least every point kept.
+    EXPECT_GE(budget->used(), static_cast<size_t>(points) * 16);
+    // A reserve past the budget fails before it allocates, and leaves the builder usable.
+    const Status reserved = builder->reserve(std::size_t{1} << 27);
+    ASSERT_FALSE(reserved);
+    EXPECT_TRUE(contains(reserved.error(), "native memory limit")) << reserved.error();
+    // A cloud's byte size is a uint32: more points are refused before anything is charged.
+    const Status wide = builder->reserve(std::size_t{1} << 33);
+    ASSERT_FALSE(wide);
+    EXPECT_TRUE(contains(wide.error(), ("more than " + std::to_string(kMaxCloudPoints) + " points").c_str()))
+        << wide.error();
+  }
+  EXPECT_EQ(budget->used(), 0u);
+  // The frame name is charged on creation.
+  const auto named = PointCloudBuilder::create(CloudPreset::kXyz, std::string(8192, 'f'), budget);
+  ASSERT_FALSE(named);
+  EXPECT_TRUE(contains(named.error(), "native memory limit")) << named.error();
+}
+
+// A finite double past float32's range would be stored as infinity: the point is refused instead.
+TEST(PointCloudBuilder, RejectsValuesBeyondFloat32) {
+  auto builder = PointCloudBuilder::create(CloudPreset::kXyzi, "map", nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  const double huge = 1e300;
+  for (const std::vector<double>& point : std::vector<std::vector<double>>{
+           {huge, 0, 0, 0}, {0, -huge, 0, 0}, {0, 0, huge, 0}, {0, 0, 0, huge}, {0, 0, 0, -huge}}) {
+    const Status added = builder->add(point);
+    ASSERT_FALSE(added) << point[0] << "," << point[1] << "," << point[2] << "," << point[3];
+    EXPECT_TRUE(contains(added.error(), "32-bit float")) << added.error();
+  }
+  const double largest = std::numeric_limits<float>::max();
+  ASSERT_TRUE(builder->add(std::vector<double>{largest, -largest, 0, largest}));
+  EXPECT_EQ(std::move(*builder).finish().value.width, 1u);  // only the last point was kept
+}
+
+// Growing reallocates: the old buffer and the new one are alive together, and both are charged until the old one goes.
+TEST(PointCloudBuilder, GrowthChargesTheOldAndTheNewBufferTogether) {
+  const auto probe = std::make_shared<MemoryBudget>(std::numeric_limits<std::size_t>::max());
+  const auto probed = PointCloudBuilder::create(CloudPreset::kXyz, "map", probe);
+  ASSERT_TRUE(probed) << probed.error();
+  const std::size_t header = probe->used();               // what an empty builder holds
+  constexpr std::size_t kFirst = 64 * kCloudRecordBytes;  // the first buffer holds 64 points
+  const auto fillFirstBuffer = [](PointCloudBuilder& builder) {
+    for (int point = 0; point < 64; ++point) {
+      ASSERT_TRUE(builder.add(std::vector<double>{1, 2, 3}));
+    }
+  };
+  {
+    // Room for the doubled buffer alone, not for it beside the first one.
+    auto budget = std::make_shared<MemoryBudget>(header + 2 * kFirst + kFirst / 2);
+    auto builder = PointCloudBuilder::create(CloudPreset::kXyz, "map", budget);
+    ASSERT_TRUE(builder) << builder.error();
+    fillFirstBuffer(*builder);
+    const Status grown = builder->add(std::vector<double>{1, 2, 3});
+    ASSERT_FALSE(grown);
+    EXPECT_TRUE(contains(grown.error(), "native memory limit")) << grown.error();
+    EXPECT_EQ(budget->used(), header + kFirst);  // the failed growth charged nothing
+  }
+  {
+    auto budget = std::make_shared<MemoryBudget>(header + 3 * kFirst);
+    auto builder = PointCloudBuilder::create(CloudPreset::kXyz, "map", budget);
+    ASSERT_TRUE(builder) << builder.error();
+    fillFirstBuffer(*builder);
+    ASSERT_TRUE(builder->add(std::vector<double>{1, 2, 3}));
+    EXPECT_EQ(budget->used(), header + 2 * kFirst);  // the old buffer's charge is released once it is freed
+  }
+}
+
+// A cloud's byte size (`row_step`) is a uint32, and on a 32-bit target so is the size_t the buffer is measured in.
+TEST(PointCloudBuilder, TheCapKeepsTheByteSizeInAUint32) {
+  EXPECT_LE(kMaxCloudPoints * kCloudRecordBytes, std::size_t{UINT32_MAX});
+  auto budget = std::make_shared<MemoryBudget>(std::size_t{1} << 20);
+  auto builder = PointCloudBuilder::create(CloudPreset::kXyz, "map", budget);
+  ASSERT_TRUE(builder) << builder.error();
+  const Status over = builder->reserve(kMaxCloudPoints + 1);
+  ASSERT_FALSE(over);
+  EXPECT_TRUE(contains(over.error(), ("more than " + std::to_string(kMaxCloudPoints) + " points").c_str()))
+      << over.error();
+  const Status at_cap = builder->reserve(kMaxCloudPoints);  // allowed by the cap, stopped by the budget
+  ASSERT_FALSE(at_cap);
+  EXPECT_TRUE(contains(at_cap.error(), "native memory limit")) << at_cap.error();
+}
+
+TEST(PointCloudBuilder, FinishSpendsTheBuilder) {
+  auto budget = std::make_shared<MemoryBudget>(std::size_t{1} << 20);
+  std::optional<Charged<PointCloud>> cloud;
+  std::size_t builder_bytes = 0;
+  {
+    auto builder = PointCloudBuilder::create(CloudPreset::kXyzi, "map", budget);
+    ASSERT_TRUE(builder) << builder.error();
+    ASSERT_TRUE(builder->reserve(3));
+    for (int point = 0; point < 3; ++point) {
+      ASSERT_TRUE(builder->add(std::vector<double>{static_cast<double>(point), 0, 0, 1}));
+    }
+    builder_bytes = budget->used();
+    cloud.emplace(std::move(*builder).finish());
+  }  // the builder is gone: the cloud alone holds the charge
+  EXPECT_EQ(budget->used(), builder_bytes);
+  ASSERT_EQ(cloud->value.width, 3u);
+  EXPECT_EQ(floatAt(cloud->value, 2, 0), 2.0f);
+  const PointCloud copy = cloud->value;  // the bytes live as long as a copy of the cloud does
+  cloud.reset();
+  EXPECT_EQ(budget->used(), 0u);
+  EXPECT_EQ(floatAt(copy, 1, 0), 1.0f);
+}
+
+TEST(PointCloudOps, DownsampleByVoxelKeepsCentroids) {
+  // Two occupied unit cubes (from the minimum corner (0, 0, 0)): three points in the first, one in the second, and a
+  // NaN record that is skipped.
+  PointCloud cloud = makeXyziCloud(
+      {{0.1f, 0.2f, 0.3f, 1}, {0.5f, 0.4f, 0.6f, 2}, {2.5f, 0.5f, 0.5f, 3}, {kNaN, 0, 0, 4}, {0.0f, 0.0f, 0.0f, 5}});
+  auto budget = std::make_shared<MemoryBudget>(std::size_t{1} << 20);
+  NativeLimits limits;
+  limits.budget = budget;
+  {
+    auto out = downsample(cloud, 1.0, limits);
+    ASSERT_TRUE(out) << out.error();
+    const PointCloud& centroids = out->value;
+    EXPECT_EQ(centroids.frame_id, "base_link");
+    EXPECT_EQ(centroids.timestamp_ns, 1'000'000'000);
+    ASSERT_EQ(centroids.fields.size(), 3u);  // the xyz preset
+    EXPECT_EQ(centroids.point_step, 16u);
+    ASSERT_EQ(centroids.width, 2u);
+    EXPECT_NEAR(floatAt(centroids, 0, 0), 0.2f, 1e-6);
+    EXPECT_NEAR(floatAt(centroids, 0, 4), 0.2f, 1e-6);
+    EXPECT_NEAR(floatAt(centroids, 0, 8), 0.3f, 1e-6);
+    EXPECT_NEAR(floatAt(centroids, 1, 0), 2.5f, 1e-6);
+    EXPECT_NEAR(floatAt(centroids, 1, 4), 0.5f, 1e-6);
+    EXPECT_NEAR(floatAt(centroids, 1, 8), 0.5f, 1e-6);
+    EXPECT_GT(budget->used(), 0u);  // the output is charged, and the scratch keys are released
+  }
+  EXPECT_EQ(budget->used(), 0u);
+
+  // An organized cloud's row padding is skipped; a cube larger than the cloud keeps one centroid.
+  auto whole = downsample(makeOrganizedCloud(), 100.0, {});
+  ASSERT_TRUE(whole) << whole.error();
+  ASSERT_EQ(whole->value.width, 1u);
+  EXPECT_NEAR(floatAt(whole->value, 0, 0), 1.5f, 1e-6);
+  // An empty cloud downsamples to an empty one; a bad size or a hostile extent is an error.
+  auto empty = downsample(makeXyziCloud({}), 1.0, {});
+  ASSERT_TRUE(empty) << empty.error();
+  EXPECT_EQ(empty->value.width, 0u);
+  for (const double bad : {0.0, -1.0, std::nan(""), std::numeric_limits<double>::infinity()}) {
+    EXPECT_FALSE(downsample(cloud, bad, {})) << bad;
+  }
+  const auto wide = downsample(makeXyziCloud({{0, 0, 0, 0}, {1e7f, 0, 0, 0}}), 1.0, {});
+  ASSERT_FALSE(wide);
+  EXPECT_TRUE(contains(wide.error(), "2^21")) << wide.error();
+  // The scratch is charged before it is allocated (one cube: the output alone would fit), and a cancelled run stops.
+  ASSERT_TRUE(downsample(makeLineCloud(100), 1e6, limitedTo(10000)));
+  const auto starved = downsample(makeLineCloud(10000), 1e6, limitedTo(10000));
+  ASSERT_FALSE(starved);
+  EXPECT_TRUE(contains(starved.error(), "native memory limit")) << starved.error();
+  NativeLimits cancelled;
+  cancelled.cancelled = [] { return true; };
+  const auto stopped = downsample(makeLineCloud(10), 1.0, cancelled);
+  ASSERT_FALSE(stopped);
+  EXPECT_EQ(stopped.error(), kCancelledError);
+}
+
+// ---- voxel-grid builder (D16) -------------------------------------------------
+
+float cellAt(const sdk::VoxelGrid& grid, uint32_t i, uint32_t j, uint32_t k) {
+  float value = 0;
+  std::memcpy(
+      &value, grid.data.data() + k * grid.slice_stride + j * grid.row_stride + i * grid.cell_stride, sizeof(value));
+  return value;
+}
+
+TEST(VoxelGridOps, SetOutOfRangeIsAnError) {
+  auto builder = VoxelGridBuilder::create("map", Vector3{1, 2, 3}, 0.5, {2, 3, 4}, nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  ASSERT_TRUE(builder->set(1, 2, 3, 7.5));
+  ASSERT_TRUE(builder->set(0, 1, 0, -1));
+  for (const auto& [i, j, k] : std::vector<std::array<int64_t, 3>>{
+           {2, 0, 0}, {0, 3, 0}, {0, 0, 4}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}, {INT64_MAX, 0, 0}}) {
+    const Status set = builder->set(i, j, k, 1);
+    ASSERT_FALSE(set) << i << "," << j << "," << k;
+    EXPECT_TRUE(contains(set.error(), "outside the grid")) << set.error();
+  }
+  EXPECT_FALSE(builder->set(0, 0, 0, std::nan("")));
+  const sdk::VoxelGrid grid = std::move(*builder).finish().value;
+  EXPECT_EQ(grid.frame_id, "map");
+  EXPECT_EQ(grid.timestamp_ns, 0);
+  EXPECT_EQ(grid.origin.position, (Vector3{1, 2, 3}));
+  EXPECT_EQ(grid.origin.orientation.w, 1.0);
+  EXPECT_EQ(grid.cell_size, (Vector3{0.5, 0.5, 0.5}));
+  EXPECT_EQ(grid.column_count, 2u);
+  EXPECT_EQ(grid.row_count, 3u);
+  EXPECT_EQ(grid.slice_count, 4u);
+  EXPECT_EQ(grid.cell_stride, 4u);
+  EXPECT_EQ(grid.row_stride, 8u);
+  EXPECT_EQ(grid.slice_stride, 24u);
+  ASSERT_EQ(grid.data.size(), 96u);
+  ASSERT_EQ(grid.fields.size(), 1u);
+  EXPECT_EQ(grid.fields[0].name, "value");
+  EXPECT_EQ(grid.fields[0].datatype, PointField::Datatype::kFloat32);
+  EXPECT_EQ(cellAt(grid, 1, 2, 3), 7.5f);
+  EXPECT_EQ(cellAt(grid, 0, 1, 0), -1.0f);
+  EXPECT_EQ(cellAt(grid, 0, 0, 0), 0.0f);
+}
+
+// A cell is stored as float32: a finite double past its range would become infinity.
+TEST(VoxelGridOps, ValuesBeyondFloat32AreRejected) {
+  auto builder = VoxelGridBuilder::create("map", Vector3{}, 1.0, {1, 1, 1}, nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  for (const double value : {1e300, -1e300}) {
+    const Status set = builder->set(0, 0, 0, value);
+    ASSERT_FALSE(set) << value;
+    EXPECT_TRUE(contains(set.error(), "32-bit float")) << set.error();
+  }
+  const double largest = std::numeric_limits<float>::max();
+  ASSERT_TRUE(builder->set(0, 0, 0, -largest));
+  EXPECT_EQ(cellAt(std::move(*builder).finish().value, 0, 0, 0), -std::numeric_limits<float>::max());
+}
+
+TEST(VoxelGridOps, DimensionsAreCappedBeforeAllocation) {
+  // No budget at all: the cap alone stops a grid whose cells would overflow or exhaust memory.
+  for (const std::array<int64_t, 3>& dims : std::vector<std::array<int64_t, 3>>{
+           {int64_t{1} << 20, int64_t{1} << 20, int64_t{1} << 20},
+           {UINT32_MAX, UINT32_MAX, UINT32_MAX},
+           {int64_t{1} << 62, 4, 1},
+           {4097, 4096, 1}}) {
+    const auto huge = VoxelGridBuilder::create("map", Vector3{}, 1.0, dims, nullptr);
+    ASSERT_FALSE(huge) << dims[0];
+    EXPECT_TRUE(contains(huge.error(), "16777216 cells")) << huge.error();
+  }
+  ASSERT_TRUE(VoxelGridBuilder::create("map", Vector3{}, 1.0, {4096, 4096, 1}, nullptr));  // exactly the cap
+  for (const std::array<int64_t, 3>& dims :
+       std::vector<std::array<int64_t, 3>>{{0, 1, 1}, {1, -1, 1}, {1, 1, 0}, {-4, -4, 1}}) {
+    const auto empty = VoxelGridBuilder::create("map", Vector3{}, 1.0, dims, nullptr);
+    ASSERT_FALSE(empty);
+    EXPECT_TRUE(contains(empty.error(), "'dims'")) << empty.error();
+  }
+  EXPECT_FALSE(VoxelGridBuilder::create("map", Vector3{}, 0.0, {1, 1, 1}, nullptr));
+  for (const double cell_size :
+       {-1.0, std::nan(""), std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()}) {
+    const auto bad = VoxelGridBuilder::create("map", Vector3{}, cell_size, {1, 1, 1}, nullptr);
+    ASSERT_FALSE(bad) << cell_size;
+    EXPECT_TRUE(contains(bad.error(), "'cell_size'")) << bad.error();
+  }
+  EXPECT_FALSE(VoxelGridBuilder::create("map", Vector3{std::nan(""), 0, 0}, 1.0, {1, 1, 1}, nullptr));
+  // Within the cap, the budget is charged for every cell before they are allocated.
+  auto budget = std::make_shared<MemoryBudget>(std::size_t{1} << 20);
+  const auto over = VoxelGridBuilder::create("map", Vector3{}, 1.0, {512, 512, 1}, budget);  // 1 MiB of cells
+  ASSERT_FALSE(over);
+  EXPECT_TRUE(contains(over.error(), "native memory limit")) << over.error();
+  EXPECT_EQ(budget->used(), 0u);
+  std::optional<Charged<sdk::VoxelGrid>> grid;
+  {
+    auto fits = VoxelGridBuilder::create("map", Vector3{}, 1.0, {256, 256, 1}, budget);
+    ASSERT_TRUE(fits) << fits.error();
+    EXPECT_GE(budget->used(), std::size_t{256} * 256 * 4);
+    grid.emplace(std::move(*fits).finish());
+  }  // the builder is gone: the grid alone holds the charge
+  EXPECT_GE(budget->used(), std::size_t{256} * 256 * 4);
+  grid.reset();
   EXPECT_EQ(budget->used(), 0u);
 }
 

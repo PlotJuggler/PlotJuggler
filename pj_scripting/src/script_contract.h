@@ -65,7 +65,8 @@ inline constexpr std::size_t kMaxReasonBytes = 1024;
 [[nodiscard]] bool isOverBudget(std::string_view message);
 
 /// Object types an output can declare: those with a field table, except the ones whose publication no slice has
-/// designed yet (a video frame; frame transforms, which the TF ingest tap would read).
+/// designed yet (a video frame; frame transforms, which the TF ingest tap would read), and a voxel grid, which a script
+/// builds (`pj.voxels`) but cannot read, since the SDK has no field table for it yet.
 [[nodiscard]] bool producible(sdk::BuiltinObjectType type);
 
 /// `params_json` (empty means `{}`) as a JSON object at most `kMaxParamsDepth` levels deep, or why the run is refused.

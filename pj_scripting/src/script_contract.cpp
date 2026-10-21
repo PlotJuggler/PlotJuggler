@@ -64,6 +64,8 @@ std::string positionalName(const ScriptValue& value) {
         return "annotations";
       case sdk::BuiltinObjectType::kImage:
         return "image";
+      case sdk::BuiltinObjectType::kVoxelGrid:
+        return "voxels";
       default:
         return "object";
     }
@@ -267,8 +269,9 @@ bool isOverBudget(std::string_view message) {
 }
 
 bool producible(sdk::BuiltinObjectType type) {
-  return sdk::describe(type) != nullptr && type != sdk::BuiltinObjectType::kVideoFrame &&
-         type != sdk::BuiltinObjectType::kFrameTransforms;
+  return type == sdk::BuiltinObjectType::kVoxelGrid ||
+         (sdk::describe(type) != nullptr && type != sdk::BuiltinObjectType::kVideoFrame &&
+          type != sdk::BuiltinObjectType::kFrameTransforms);
 }
 
 Expected<nlohmann::json> parseParams(std::string_view params_json) {

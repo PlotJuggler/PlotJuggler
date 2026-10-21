@@ -340,7 +340,8 @@ TEST(ResultHistoryTest, AnUnavailableOutputOfAnyProducibleTypeWritesAStampedTomb
               {"annotations", OutputType::kObject, sdk::BuiltinObjectType::kImageAnnotations},
               {"image", OutputType::kObject, sdk::BuiltinObjectType::kImage},
               {"depth", OutputType::kObject, sdk::BuiltinObjectType::kDepthImage},
-              {"camera", OutputType::kObject, sdk::BuiltinObjectType::kCameraInfo}});
+              {"camera", OutputType::kObject, sdk::BuiltinObjectType::kCameraInfo},
+              {"voxels", OutputType::kObject, sdk::BuiltinObjectType::kVoxelGrid}});
   const auto& node = fx.install(recipe);
   fx.history.noteRequest(node.recipe.key(), 20 * kSec);
   const Status published =
@@ -359,6 +360,9 @@ TEST(ResultHistoryTest, AnUnavailableOutputOfAnyProducibleTypeWritesAStampedTomb
   EXPECT_EQ(depth.width, 0u);
   EXPECT_EQ(depth.timestamp_ns, t);
   EXPECT_EQ(decodeAt<sdk::CameraInfo>(fx.store, fx.topic("owner/all/camera"), t).timestamp_ns, t);
+  const auto voxels = decodeAt<sdk::VoxelGrid>(fx.store, fx.topic("owner/all/voxels"), t);
+  EXPECT_EQ(voxels.column_count, 0u);
+  EXPECT_EQ(voxels.timestamp_ns, t);
 }
 
 // ---- PUB: derived topics --------------------------------------------------------------------------

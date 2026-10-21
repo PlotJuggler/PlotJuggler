@@ -447,6 +447,8 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
       setItem(pj_members, interned("unavailable"), pj.unavailable);
       setItem(pj_members, interned("scene"), py::reinterpret_borrow<py::object>(namespaces.scene));
       setItem(pj_members, interned("annotations"), py::reinterpret_borrow<py::object>(namespaces.annotations));
+      setItem(pj_members, interned("cloud"), py::reinterpret_borrow<py::object>(namespaces.cloud));
+      setItem(pj_members, interned("voxels"), py::reinterpret_borrow<py::object>(namespaces.voxels));
       setItem(pj_members, interned("tf"), py::reinterpret_borrow<py::object>(namespaces.tf));
       const py::object no_arguments = detail::checked(PyTuple_New(0));
       setItem(

@@ -20,7 +20,9 @@
 #include "native/depth_ops.h"
 #include "native/image_annotations_ops.h"
 #include "native/image_ops.h"
+#include "native/point_cloud_builder.h"
 #include "native/scene_entities_ops.h"
+#include "native/voxel_grid_ops.h"
 #include "pj_base/builtin/field_table_registry.hpp"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/object_script.h"
@@ -39,6 +41,8 @@ enum Tag : int {
   kSceneBuilderTag,
   kAnnotationsBuilderTag,
   kDecodedTag,
+  kCloudBuilderTag,
+  kVoxelsBuilderTag,
 };
 
 constexpr const char* kUnavailableMetatable = "pj.unavailable";
@@ -262,6 +266,9 @@ int lObjectIndex(lua_State* L) {
     if (!lua_isnil(L, -1)) {
       return 1;
     }
+  }
+  if (box.table == nullptr) {
+    raise(L, "a " + std::string(sdk::name(box.anchor.object.type())) + " has no readable fields");
   }
   return pushNamedField(L, *box.table, box.data, box.anchor, 2);
 }
@@ -502,6 +509,8 @@ int lCloudXyzPoints(lua_State* L) {
 
 using SceneSlot = std::optional<native::SceneEntityBuilder>;
 using AnnotationsSlot = std::optional<native::ImageAnnotationsBuilder>;
+using CloudSlot = std::optional<native::PointCloudBuilder>;
+using VoxelsSlot = std::optional<native::VoxelGridBuilder>;
 
 constexpr sdk::ColorRGBA kWhite{255, 255, 255, 255};
 constexpr sdk::ColorRGBA kTransparent{0, 0, 0, 0};
@@ -590,6 +599,14 @@ AnnotationsSlot& annotationsSlot(lua_State* L) {
   return checkBox<AnnotationsSlot>(L, 1, kAnnotationsBuilderTag, "annotations builder");
 }
 
+CloudSlot& cloudSlot(lua_State* L) {
+  return checkBox<CloudSlot>(L, 1, kCloudBuilderTag, "cloud builder");
+}
+
+VoxelsSlot& voxelsSlot(lua_State* L) {
+  return checkBox<VoxelsSlot>(L, 1, kVoxelsBuilderTag, "voxels builder");
+}
+
 /// The builder in `slot`, or an error when `finish()` already consumed it.
 template <class Builder>
 Builder& live(lua_State* L, std::optional<Builder>& slot) {
@@ -626,11 +643,15 @@ int pushCharged(lua_State* L, native::Charged<Object> done) {
   return 1;
 }
 
-/// `:finish()`: pushes the finished object, which carries the builder's charge, and spends the builder.
+/// `:finish()`: pushes the finished object, which carries the builder's charge, and spends the builder. An object with
+/// a stamp of its own is stamped with the result's (`ScriptMedia::stampUnset`; upvalue 1 of its `finish`).
 template <class Builder>
 int finishBuilder(lua_State* L, std::optional<Builder>& slot) {
   auto done = std::move(live(L, slot)).finish();
   slot.reset();
+  if constexpr (requires { done.value.timestamp_ns; }) {
+    upvalueAs<ScriptMedia>(L).stampUnset(done.value.timestamp_ns);
+  }
   return pushCharged(L, std::move(done));
 }
 
@@ -754,6 +775,133 @@ int lAnnotationsCount(lua_State* L) {
   }
   lua_pushnumber(L, static_cast<double>(native::countAnnotationPoints(*annotations)));
   return 1;
+}
+
+// ---- builders: pj.cloud and pj.voxels; cloud:downsample ----------------------------
+
+/// One past the widest preset's values, so an extra value still reaches the builder's arity check.
+constexpr int kMaxPointValues = 7;
+
+/// `value` as an integer when it is a whole number, clamped to +-2^62 (outside any grid, and safe to shift by one).
+std::optional<int64_t> wholeNumber(double value) {
+  if (std::floor(value) != value) {  // a fraction or NaN
+    return std::nullopt;
+  }
+  constexpr double kLimit = 4.6e18;
+  return static_cast<int64_t>(std::clamp(value, -kLimit, kLimit));
+}
+
+/// `pj.cloud.new{preset=, frame_id=}`.
+int lCloudNew(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  const std::optional<native::CloudPreset> preset = native::parseCloudPreset(readString(L, 1, "preset"));
+  if (!preset) {
+    raise(L, "'preset' must be \"xyz\", \"xyzi\" or \"xyzrgb\"");
+  }
+  std::string frame_id = readString(L, 1, "frame_id");
+  auto builder =
+      native::PointCloudBuilder::create(*preset, std::move(frame_id), upvalueAs<native::NativeLimits>(L).budget);
+  newBox(L, kCloudBuilderTag, CloudSlot(nativeResult(L, std::move(builder))));
+  return 1;
+}
+
+/// `:add(x, y, z[, intensity | r, g, b])`.
+int lCloudAdd(lua_State* L) {
+  native::PointCloudBuilder& builder = live(L, cloudSlot(L));
+  const int count = std::min(lua_gettop(L) - 1, kMaxPointValues);
+  std::array<double, kMaxPointValues> values{};
+  for (int position = 0; position < count; ++position) {
+    values[static_cast<std::size_t>(position)] = luaL_checknumber(L, position + 2);
+  }
+  return chain(L, builder.add(std::span<const double>(values.data(), static_cast<std::size_t>(count))));
+}
+
+/// `:add_points{{x, y, z, ...}, ...}`: the whole list is charged before it is copied, and its entries are read raw.
+int lCloudAddPoints(lua_State* L) {
+  native::PointCloudBuilder& builder = live(L, cloudSlot(L));
+  if (!lua_istable(L, 2)) {
+    raise(L, "'points' must be an array of points");
+  }
+  const int count = lua_objlen(L, 2);
+  if (Status reserved = builder.reserve(static_cast<std::size_t>(count)); !reserved) {
+    raise(L, reserved.error());
+  }
+  std::array<double, kMaxPointValues> values{};
+  for (int position = 1; position <= count; ++position) {
+    lua_rawgeti(L, 2, position);
+    const int entry = lua_gettop(L);
+    if (!lua_istable(L, entry)) {
+      raise(L, "'points' entries must be arrays of numbers");
+    }
+    const int size = std::min(lua_objlen(L, entry), kMaxPointValues);
+    for (int value = 0; value < size; ++value) {
+      lua_rawgeti(L, entry, value + 1);
+      if (lua_type(L, -1) != LUA_TNUMBER) {
+        raise(L, "'points' entries must be arrays of numbers");
+      }
+      values[static_cast<std::size_t>(value)] = lua_tonumber(L, -1);
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    if (Status added = builder.add(std::span<const double>(values.data(), static_cast<std::size_t>(size))); !added) {
+      raise(L, added.error());
+    }
+  }
+  lua_pushvalue(L, 1);
+  return 1;
+}
+
+int lCloudFinish(lua_State* L) {
+  return finishBuilder(L, cloudSlot(L));
+}
+
+/// `pj.voxels.new{frame_id=, origin={x, y, z}, cell_size=, dims={nx, ny, nz}}`.
+int lVoxelsNew(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  std::string frame_id = readString(L, 1, "frame_id");
+  const auto origin = readPoint<sdk::Vector3, 3>(L, 1, "origin");
+  const double cell_size = readNumber(L, 1, "cell_size");
+  const auto counts = readArray<3>(L, 1, "dims");
+  std::array<int64_t, 3> dims{};
+  for (std::size_t axis = 0; axis < dims.size(); ++axis) {
+    const std::optional<int64_t> count = wholeNumber(counts[axis]);
+    if (!count) {
+      raise(L, "'dims' must be 3 integers greater than 0");
+    }
+    dims[axis] = *count;
+  }
+  auto builder = native::VoxelGridBuilder::create(
+      std::move(frame_id), origin, cell_size, dims, upvalueAs<native::NativeLimits>(L).budget);
+  newBox(L, kVoxelsBuilderTag, VoxelsSlot(nativeResult(L, std::move(builder))));
+  return 1;
+}
+
+/// `:set(i, j, k, value)`, the indices 1-based.
+int lVoxelsSet(lua_State* L) {
+  native::VoxelGridBuilder& builder = live(L, voxelsSlot(L));
+  std::array<int64_t, 3> cell{};
+  for (std::size_t axis = 0; axis < cell.size(); ++axis) {
+    const std::optional<int64_t> index = wholeNumber(luaL_checknumber(L, static_cast<int>(axis) + 2));
+    if (!index) {
+      raise(L, "set: i, j and k must be integers");
+    }
+    cell[axis] = *index - 1;
+  }
+  const double value = luaL_checknumber(L, 5);
+  return chain(L, builder.set(cell[0], cell[1], cell[2], value));
+}
+
+int lVoxelsFinish(lua_State* L) {
+  return finishBuilder(L, voxelsSlot(L));
+}
+
+/// `cloud:downsample(voxel_size)`.
+int lCloudDownsample(lua_State* L) {
+  const sdk::PointCloud& cloud = checkCloud(L);
+  const double voxel_size = luaL_checknumber(L, 2);
+  return pushCharged(L, nativeResult(L, retryAfterCollect(L, [&] {
+                                       return native::downsample(cloud, voxel_size, upvalueAs<native::NativeLimits>(L));
+                                     })));
 }
 
 // ---- images: decode, decoded pixels, depth unprojection (upvalue 1: the run's ScriptMedia) ----------------
@@ -1018,13 +1166,16 @@ void registerBinder(lua_State* L, ScriptMedia& media) {
   lua_setuserdatadtor(L, kSceneBuilderTag, &destroy<SceneSlot>);
   lua_setuserdatadtor(L, kAnnotationsBuilderTag, &destroy<AnnotationsSlot>);
   lua_setuserdatadtor(L, kDecodedTag, &destroy<DecodedPixels>);
+  lua_setuserdatadtor(L, kCloudBuilderTag, &destroy<CloudSlot>);
+  lua_setuserdatadtor(L, kVoxelsBuilderTag, &destroy<VoxelsSlot>);
 
   newTagMetatable(L, "pj.object", kObjectTag);
   lua_createtable(L, 0, 1);  // methods by type
-  lua_createtable(L, 0, 7);
+  lua_createtable(L, 0, 8);
   setFunctions(
       L,
       {{"count", lCloudCount},
+       {"downsample", lCloudDownsample},
        {"bounds", lCloudBounds},
        {"extreme_point", lCloudExtremePoint},
        {"crop_box", lCloudCropBox},
@@ -1088,6 +1239,18 @@ void registerBinder(lua_State* L, ScriptMedia& media) {
   lua_setfield(L, -2, "__index");
   lua_pop(L, 1);
 
+  newTagMetatable(L, "pj.cloud_builder", kCloudBuilderTag);
+  lua_createtable(L, 0, 3);
+  setFunctions(L, {{"add", lCloudAdd}, {"add_points", lCloudAddPoints}, {"finish", lCloudFinish}}, &media);
+  lua_setfield(L, -2, "__index");
+  lua_pop(L, 1);
+
+  newTagMetatable(L, "pj.voxels_builder", kVoxelsBuilderTag);
+  lua_createtable(L, 0, 2);
+  setFunctions(L, {{"set", lVoxelsSet}, {"finish", lVoxelsFinish}}, &media);
+  lua_setfield(L, -2, "__index");
+  lua_pop(L, 1);
+
   newTagMetatable(L, "pj.decoded_image", kDecodedTag);
   lua_createtable(L, 0, 5);
   setFunctions(
@@ -1114,6 +1277,12 @@ void installBuilders(lua_State* L, const native::NativeLimits& limits) {
   lua_createtable(L, 0, 1);
   setFunctions(L, {{"new", lAnnotationsNew}}, &limits);
   lua_setfield(L, -2, "annotations");
+  lua_createtable(L, 0, 1);
+  setFunctions(L, {{"new", lCloudNew}}, &limits);
+  lua_setfield(L, -2, "cloud");
+  lua_createtable(L, 0, 1);
+  setFunctions(L, {{"new", lVoxelsNew}}, &limits);
+  lua_setfield(L, -2, "voxels");
 }
 
 void pushObject(lua_State* L, sdk::BuiltinObject object, std::shared_ptr<const native::MemoryReservation> charge) {
@@ -1125,6 +1294,11 @@ void pushObject(lua_State* L, sdk::BuiltinObject object, std::shared_ptr<const n
 const sdk::BuiltinObject* toObject(lua_State* L, int idx) {
   const auto* box = static_cast<const ObjectBox*>(lua_touserdatatagged(L, idx, kObjectTag));
   return box != nullptr ? &box->anchor.object : nullptr;
+}
+
+std::shared_ptr<const void> toCharge(lua_State* L, int idx) {
+  const auto* box = static_cast<const ObjectBox*>(lua_touserdatatagged(L, idx, kObjectTag));
+  return box != nullptr ? box->anchor.charge : nullptr;
 }
 
 void pushStructView(lua_State* L, const sdk::FieldTableView& table, const void* owner, sdk::BuiltinObject keep) {
@@ -1218,6 +1392,9 @@ std::size_t describedBytes(const sdk::FieldTableView& table, const void* owner) 
 
 std::size_t estimateBytes(const ScriptValue& value) {
   if (const auto* object = std::get_if<sdk::BuiltinObject>(&value)) {
+    if (const auto* grid = object->get<sdk::VoxelGrid>()) {  // producible, but without a field table yet
+      return sizeof(sdk::BuiltinObject) + grid->frame_id.size() + grid->data.size();
+    }
     const sdk::FieldTableView* table = sdk::describe(object->type());
     const void* data = detail::structPointer(*object);
     return sizeof(sdk::BuiltinObject) + (table != nullptr && data != nullptr ? describedBytes(*table, data) : 0);

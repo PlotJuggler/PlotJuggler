@@ -31,6 +31,7 @@
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_annotations.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
+#include "pj_base/builtin/voxel_grid.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
@@ -890,6 +891,123 @@ def evaluate(inputs, params):
       "finished");
 }
 
+// D14, the twin of ObjectScript.CloudBuilderBuildsPresetsAndDownsamples: `pj.cloud` builds a preset cloud, `add` takes
+// the point's values, `add_points` a sequence of them, and `downsample` keeps one centroid per cube.
+TEST(PythonObjectScript, CloudBuilderBuildsPresetsAndDownsamples) {
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    b = pj.cloud.new(preset="xyzrgb", frame_id="map")
+    b.add(1, 2, 3, 255, 0, 0).add_points([(4, 5, 6, 0, 255, 0), [4.5, 5, 6, 0, 0, 255]])
+    cloud = b.finish()
+    return {"cloud": cloud, "count": cloud.count(), "centroids": cloud.downsample(voxel_size=1)}
+)PY",
+      {}, specs({"cloud:kPointCloud", "count:number", "centroids:kPointCloud"}));
+  EXPECT_DOUBLE_EQ(numberOf(result, "count"), 3.0);
+  const auto* cloud = objectOf<sdk::PointCloud>(result, "cloud");
+  ASSERT_NE(cloud, nullptr);
+  EXPECT_EQ(cloud->frame_id, "map");
+  ASSERT_EQ(cloud->data.size(), 48u);
+  EXPECT_EQ(cloud->data[12], 255);
+  EXPECT_EQ(cloud->data[16 + 13], 255);
+  EXPECT_EQ(cloud->data[32 + 14], 255);
+  const auto* centroids = objectOf<sdk::PointCloud>(result, "centroids");
+  ASSERT_NE(centroids, nullptr);
+  EXPECT_EQ(centroids->width, 2u);
+
+  const auto fails = [](const std::string& body, std::string_view expected, const RunOptions& options = {}) {
+    const std::string error = errorOf(runSource(
+        "def evaluate(inputs, params):\n    b = pj.cloud.new(preset='xyzi', frame_id='map')\n    " + body +
+            "\n    return 1\n",
+        {}, {}, "{}", options));
+    EXPECT_NE(error.find(expected), std::string::npos) << body << " -> " << error;
+  };
+  fails("b.add(1, 2, 3)", "4 values");
+  fails("b.add(1, 2, 3, 'x')", "number");
+  fails("b.add_points([(1, 2, 3, 4), (1, 2, 3)])", "4 values");
+  fails("b.add_points(3)", "'points' must be a sequence");
+  fails("b.add(float('nan'), 2, 3, 4)", "finite");
+  fails("b.add(1e300, 2, 3, 4)", "32-bit float");
+  fails("b.add_points([(1, 2, 3, -1e300)])", "32-bit float");
+  fails("b.finish()\n    b.add(1, 2, 3, 4)", "finished");
+  fails("b.finish()\n    b.finish()", "finished");
+  fails("pj.cloud.new(preset='xyzrgba', frame_id='map')", "'preset'");
+  fails("b.finish().downsample(voxel_size=0)", "voxel_size");
+  fails("for i in range(1000000):\n        b.add(i, 0, 0, 0)", "native memory limit", withNativeBudget(1 << 20));
+  fails("b.add_points([(1, 2, 3, 4)] * 200000 + ['bad'])", "native memory limit", withNativeBudget(1 << 20));
+  // Script code an entry's conversion runs cannot finish the builder the call then uses.
+  fails(
+      "class Trap:\n        def __float__(self):\n            b.finish()\n            return 0.0\n"
+      "    b.add_points([(Trap(), 0, 0, 0)])",
+      "finished");
+}
+
+// D16, the twin of ObjectScript.VoxelGridOutputIsProducible; indices are 0-based, as every Python index is.
+TEST(PythonObjectScript, VoxelGridOutputIsProducible) {
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    grid = pj.voxels.new(frame_id="map", origin=(1, 2, 3), cell_size=0.5, dims=(2, 3, 4))
+    grid.set(1, 2, 3, 7.5)
+    return grid.set(0, 0, 0, 1).finish()
+)PY",
+      {}, specs({"occupied:kVoxelGrid"}));
+  const auto* grid = objectOf<sdk::VoxelGrid>(result, "occupied");
+  ASSERT_NE(grid, nullptr);
+  EXPECT_EQ(grid->origin.position, (sdk::Vector3{1, 2, 3}));
+  ASSERT_EQ(grid->data.size(), 96u);
+  float last = 0;
+  std::memcpy(&last, grid->data.data() + 92, sizeof(last));
+  EXPECT_EQ(last, 7.5f);
+
+  const auto fails = [](const std::string& body, std::string_view expected) {
+    const std::string error = errorOf(runSource(
+        "def evaluate(inputs, params):\n    g = pj.voxels.new(frame_id='m', origin=(0, 0, 0), cell_size=1, "
+        "dims=(2, 2, 2))\n    " +
+        body + "\n    return 1\n"));
+    EXPECT_NE(error.find(expected), std::string::npos) << body << " -> " << error;
+  };
+  fails("g.set(2, 0, 0, 1)", "outside the grid");
+  fails("g.set(-1, 0, 0, 1)", "outside the grid");
+  fails("g.set(1.5, 0, 0, 1)", "integer");
+  fails("g.finish()\n    g.set(0, 0, 0, 1)", "finished");
+  fails("g.finish().frame_id", "no readable fields");
+  fails("pj.voxels.new(frame_id='m', origin=(0, 0, 0), cell_size=1, dims=(65536, 65536, 65536))", "cells");
+  fails("pj.voxels.new(frame_id='m', origin=(0, 0, 0), cell_size=1, dims=(2, 2))", "'dims'");
+  for (const char* cell_size : {"-1", "float('nan')", "float('inf')"}) {
+    fails(
+        std::string("pj.voxels.new(frame_id='m', origin=(0, 0, 0), dims=(2, 2, 2), cell_size=") + cell_size + ")",
+        "'cell_size'");
+  }
+  fails("g.set(1, 1, 1, 1e300)", "32-bit float");
+  const auto inferred = runSource(
+      "def evaluate(inputs, params):\n    return [pj.voxels.new(frame_id='m', origin=(0, 0, 0), cell_size=1, "
+      "dims=(1, 1, 1)).finish()]\n");
+  EXPECT_NE(objectOf<sdk::VoxelGrid>(inferred, "voxels"), nullptr);
+}
+
+// The twin of ObjectScript.BuiltCloudsAndGridsTakeTheResultStamp.
+TEST(PythonObjectScript, BuiltCloudsAndGridsTakeTheResultStamp) {
+  RunOptions options;
+  options.result_stamp = 7;
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    cloud = pj.cloud.new(preset="xyz", frame_id="map").add(1, 2, 3).finish()
+    grid = pj.voxels.new(frame_id="map", origin=(0, 0, 0), cell_size=1, dims=(1, 1, 1)).finish()
+    return {"cloud": cloud, "grid": grid, "centroids": cloud.downsample(voxel_size=1),
+            "kept": inputs["scan"].downsample(voxel_size=1)}
+)PY",
+      {objectInput("scan", makeLineCloud(2))},
+      specs({"cloud:kPointCloud", "grid:kVoxelGrid", "centroids:kPointCloud", "kept:kPointCloud"}), "{}", options);
+  ASSERT_NE(objectOf<sdk::PointCloud>(result, "cloud"), nullptr);
+  EXPECT_EQ(objectOf<sdk::PointCloud>(result, "cloud")->timestamp_ns, 7);
+  ASSERT_NE(objectOf<sdk::VoxelGrid>(result, "grid"), nullptr);
+  EXPECT_EQ(objectOf<sdk::VoxelGrid>(result, "grid")->timestamp_ns, 7);
+  EXPECT_EQ(objectOf<sdk::PointCloud>(result, "centroids")->timestamp_ns, 7);   // its input, the built cloud, carries 7
+  EXPECT_EQ(objectOf<sdk::PointCloud>(result, "kept")->timestamp_ns, kSecond);  // the input's, not the result's
+}
+
 TEST(PythonObjectScript, RetainedBuilderOutputsAndTheirViewsKeepCounting) {
   const std::string error = errorOf(runSource(
       "def evaluate(inputs, params):\n    kept = []\n    for i in range(200):\n"
@@ -1435,16 +1553,21 @@ def evaluate(inputs, params):
             "points": closed(cloud.xyz_points()), "decoded": closed(inputs["image"].decode()[0]),
             "scene": closed(pj.scene.new(frame_id="m", id="e")),
             "annotations": closed(pj.annotations.new(image_topic="/cam")), "scene_new": closed(pj.scene),
-            "annotations_new": closed(pj.annotations), "tf": closed(pj.tf)}
+            "annotations_new": closed(pj.annotations), "tf": closed(pj.tf),
+            "cloud": closed(pj.cloud.new(preset="xyz", frame_id="m")), "cloud_new": closed(pj.cloud),
+            "voxels": closed(pj.voxels.new(frame_id="m", origin=(0, 0, 0), cell_size=1, dims=(1, 1, 1))),
+            "voxels_new": closed(pj.voxels)}
 )PY",
       {objectInput("cloud", makeCloud({{0, 0, 0, 0}})), imageInput("image", "/cam", 0)},
       specs(
           {"object:string", "struct:string", "list:string", "points:string", "decoded:string", "scene:string",
-           "annotations:string", "scene_new:string", "annotations_new:string", "tf:string"}),
+           "annotations:string", "scene_new:string", "annotations_new:string", "tf:string", "cloud:string",
+           "cloud_new:string", "voxels:string", "voxels_new:string"}),
       "{}", withGradient());
   EXPECT_EQ(
       textOf(result, "object"),
-      "bounds,count,crop_box,decode,extreme_point,filter,frame_at,representation,to_point_cloud,transform,xyz_points");
+      "bounds,count,crop_box,decode,downsample,extreme_point,filter,frame_at,representation,to_point_cloud,transform,"
+      "xyz_points");
   EXPECT_EQ(textOf(result, "struct"), "");
   EXPECT_EQ(textOf(result, "list"), "");
   EXPECT_EQ(textOf(result, "points"), "");
@@ -1454,6 +1577,10 @@ def evaluate(inputs, params):
   EXPECT_EQ(textOf(result, "scene_new"), "new");
   EXPECT_EQ(textOf(result, "annotations_new"), "new");
   EXPECT_EQ(textOf(result, "tf"), "frames,lookup,now");
+  EXPECT_EQ(textOf(result, "cloud"), "add,add_points,finish");
+  EXPECT_EQ(textOf(result, "cloud_new"), "new");
+  EXPECT_EQ(textOf(result, "voxels"), "finish,set");
+  EXPECT_EQ(textOf(result, "voxels_new"), "new");
   EXPECT_FALSE(compile("def evaluate(inputs, params):\n    return inputs['cloud'].xyz_points().__class__\n"));
 }
 

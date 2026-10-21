@@ -13,7 +13,9 @@
 #include <utility>
 #include <vector>
 
+#include "field_checks.h"
 #include "pj_base/builtin/point_cloud_fields.hpp"
+#include "point_cloud_builder.h"
 #include "record_walk.h"
 
 namespace PJ::scripting::native {
@@ -449,6 +451,91 @@ Expected<PointCloud> transformXyz(const PointCloud& cloud, const sdk::FrameTrans
     result.frame_id = tf.parent_frame_id;
   }
   return result;
+}
+
+Expected<Charged<PointCloud>> downsample(const PointCloud& cloud, double voxel_size, const NativeLimits& limits) {
+  if (Status valid = checkPositive("downsample: 'voxel_size'", voxel_size); !valid) {
+    return unexpected(valid.error());
+  }
+  Expected<XyzAccess> access = resolveXyz(cloud);
+  if (!access) {
+    return unexpected(access.error());
+  }
+  const Expected<Bounds> box = bounds(cloud);
+  if (!box) {
+    return unexpected(box.error());
+  }
+  // A cube index takes 21 bits per axis, so (z, y, x) pack into one sortable key.
+  constexpr int kAxisBits = 21;
+  constexpr double kAxisCubes = double{1 << kAxisBits};
+  for (const double extent : {box->max.x - box->min.x, box->max.y - box->min.y, box->max.z - box->min.z}) {
+    if (box->count > 0 && !(std::floor(extent / voxel_size) < kAxisCubes)) {
+      return unexpected("downsample: the cloud spans more than 2^21 cubes of 'voxel_size' along an axis");
+    }
+  }
+  /// A finite point and its cube, sorted by cube so each run of equal keys is one centroid.
+  struct Keyed {
+    uint64_t key;
+    float x;
+    float y;
+    float z;
+  };
+  MemoryReservation scratch_charge(limits.budget);
+  if (Status reserved = scratch_charge.grow(box->count * sizeof(Keyed)); !reserved) {
+    return unexpected(reserved.error());
+  }
+  std::vector<Keyed> keyed;
+  keyed.reserve(box->count);
+  const auto cube = [&](double value, double min) { return static_cast<uint64_t>((value - min) / voxel_size); };
+  const bool finished = dispatchXyz(*access, [&]<class T>(std::type_identity<T>) {
+    return forEachRecord(cloud, cloud.data.data(), access->records, limits, [&](const uint8_t* record, std::size_t) {
+      const Vector3 position = readXyz<T>(record, *access);
+      if (isFinite(position)) {
+        const uint64_t key = cube(position.z, box->min.z) << (2 * kAxisBits) |
+                             cube(position.y, box->min.y) << kAxisBits | cube(position.x, box->min.x);
+        keyed.push_back(
+            {key, static_cast<float>(position.x), static_cast<float>(position.y), static_cast<float>(position.z)});
+      }
+    });
+  });
+  if (!finished) {
+    return unexpected(std::string(kCancelledError));
+  }
+  // ponytail: a comparison sort, about 60% of the 61 ns per point (ARCHITECTURE §19); a radix sort over the key bits
+  // the cloud's extent uses is the upgrade if downsampling shows up in a profile.
+  std::sort(keyed.begin(), keyed.end(), [](const Keyed& a, const Keyed& b) { return a.key < b.key; });
+  std::size_t cubes = 0;
+  for (std::size_t index = 0; index < keyed.size(); ++index) {
+    cubes += static_cast<std::size_t>(index == 0 || keyed[index].key != keyed[index - 1].key);
+  }
+  Expected<PointCloudBuilder> builder = PointCloudBuilder::create(CloudPreset::kXyz, cloud.frame_id, limits.budget);
+  if (!builder) {
+    return unexpected(builder.error());
+  }
+  if (Status reserved = builder->reserve(cubes); !reserved) {
+    return unexpected(reserved.error());
+  }
+  for (std::size_t first = 0, cube_index = 0; first < keyed.size(); ++cube_index) {
+    if (cancelledAt(limits, cube_index)) {
+      return unexpected(std::string(kCancelledError));
+    }
+    double sum[3] = {0, 0, 0};
+    std::size_t last = first;
+    for (; last < keyed.size() && keyed[last].key == keyed[first].key; ++last) {
+      sum[0] += keyed[last].x;
+      sum[1] += keyed[last].y;
+      sum[2] += keyed[last].z;
+    }
+    const auto count = static_cast<double>(last - first);
+    const double centroid[3] = {sum[0] / count, sum[1] / count, sum[2] / count};
+    if (Status added = builder->add(centroid); !added) {
+      return unexpected(added.error());
+    }
+    first = last;
+  }
+  Charged<PointCloud> out = std::move(*builder).finish();
+  out.value.timestamp_ns = cloud.timestamp_ns;
+  return out;
 }
 
 }  // namespace PJ::scripting::native

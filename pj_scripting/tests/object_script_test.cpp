@@ -18,6 +18,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,7 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/builtin/video_frame.hpp"
+#include "pj_base/builtin/voxel_grid.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
@@ -212,8 +214,7 @@ TEST(ObjectScript, UnproducibleOutputTypeIsRejected) {
        {"a:kPointCloud", "a:kSceneEntities", "a:kImageAnnotations", "a:kImage", "a:kDepthImage", "a:kCameraInfo"}) {
     EXPECT_TRUE(parseOutputSpec(producible).has_value()) << producible;
   }
-  for (const char* unproducible :
-       {"grid:kOccupancyGrid", "voxels:kVoxelGrid", "mesh:kMesh3D", "z:kCompressedPointCloud"}) {
+  for (const char* unproducible : {"grid:kOccupancyGrid", "mesh:kMesh3D", "z:kCompressedPointCloud"}) {
     auto spec = parseOutputSpec(unproducible);
     ASSERT_FALSE(spec.has_value()) << unproducible;
     EXPECT_TRUE(contains(spec.error(), "cannot produce")) << spec.error();
@@ -852,6 +853,168 @@ TEST(ObjectScript, BuilderOutputsAreInferredByType) {
       run("return { pj.scene.new{frame_id='map', id='e'}:finish(), pj.annotations.new{image_topic='/c'}:finish() }");
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(describe(*result), "scene:kSceneEntities,annotations:kImageAnnotations");
+}
+
+// D16: a script builds a dense VoxelGrid and returns it, declared or inferred; its indices are 1-based, as every Luau
+// index is.
+TEST(ObjectScript, VoxelGridOutputIsProducible) {
+  auto spec = parseOutputSpec("occupied:kVoxelGrid");
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  constexpr const char* kScript = R"LUAU(
+    local grid = pj.voxels.new{frame_id="map", origin={1, 2, 3}, cell_size=0.5, dims={2, 3, 4}}
+    grid:set(2, 3, 4, 7.5)
+    return grid:set(1, 1, 1, 1):finish()
+  )LUAU";
+  auto result = run(kScript, {}, specs({"occupied:kVoxelGrid"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const auto* grid = objectOf<sdk::VoxelGrid>(*result, "occupied");
+  ASSERT_NE(grid, nullptr);
+  EXPECT_EQ(grid->frame_id, "map");
+  EXPECT_EQ(grid->origin.position, (sdk::Vector3{1, 2, 3}));
+  EXPECT_EQ(grid->column_count, 2u);
+  EXPECT_EQ(grid->slice_count, 4u);
+  ASSERT_EQ(grid->data.size(), 96u);
+  float last = 0;
+  std::memcpy(&last, grid->data.data() + 92, sizeof(last));
+  EXPECT_EQ(last, 7.5f);
+  float first = 0;
+  std::memcpy(&first, grid->data.data(), sizeof(first));
+  EXPECT_EQ(first, 1.0f);
+  // Its cells count where a result's size is estimated (the compute cache's budget), without a field table.
+  EXPECT_GE(estimateBytes(*find(*result, "occupied")), 96u);
+
+  auto inferred = run("return { pj.voxels.new{frame_id='m', origin={0,0,0}, cell_size=1, dims={1,1,1}}:finish() }");
+  ASSERT_TRUE(inferred.has_value()) << inferred.error();
+  EXPECT_EQ(describe(*inferred), "voxels:kVoxelGrid");
+
+  const std::string head = "local g = pj.voxels.new{frame_id='m', origin={0,0,0}, cell_size=1, dims={2,2,2}}\n";
+  expectScriptErrorNaming(head + "g:set(3, 1, 1, 1)", "outside the grid");
+  expectScriptErrorNaming(head + "g:set(0, 1, 1, 1)", "outside the grid");
+  expectScriptErrorNaming(head + "g:set(1.5, 1, 1, 1)", "integer");
+  expectScriptErrorNaming(head + "g:finish()\ng:set(1, 1, 1, 1)", "finished");
+  expectScriptErrorNaming(head + "g:finish()\ng:finish()", "finished");
+  expectScriptErrorNaming(head + "return g:finish().frame_id", "no readable fields");
+  expectScriptErrorNaming(
+      "pj.voxels.new{frame_id='m', origin={0,0,0}, cell_size=1, dims={65536,65536,65536}}", "cells");
+  expectScriptErrorNaming("pj.voxels.new{frame_id='m', origin={0,0,0}, cell_size=1, dims={2,2}}", "'dims'");
+  expectScriptErrorNaming("pj.voxels.new{frame_id='m', origin={0,0,0}, dims={2,2,2}}", "'cell_size'");
+  for (const char* cell_size : {"-1", "0/0", "math.huge"}) {
+    expectScriptErrorNaming(
+        std::string("pj.voxels.new{frame_id='m', origin={0,0,0}, dims={2,2,2}, cell_size=") + cell_size + "}",
+        "'cell_size'");
+  }
+  expectScriptErrorNaming(head + "g:set(1, 1, 1, 1e300)", "32-bit float");
+  expectScriptErrorNaming("pj.voxels.new{frame_id='m', cell_size=1, dims={2,2,2}}", "'origin'");
+}
+
+// D14: a script builds a cloud from scratch with a PCL-like preset, and downsamples one into voxel centroids.
+TEST(ObjectScript, CloudBuilderBuildsPresetsAndDownsamples) {
+  constexpr const char* kScript = R"LUAU(
+    local b = pj.cloud.new{preset="xyzrgb", frame_id="map"}
+    b:add(1, 2, 3, 255, 0, 0):add_points{{4, 5, 6, 0, 255, 0}, {4.5, 5, 6, 0, 0, 255}}
+    local cloud = b:finish()
+    return {cloud = cloud, count = cloud:count(), centroids = cloud:downsample(1)}
+  )LUAU";
+  auto result = run(kScript, {}, specs({"cloud:kPointCloud", "count:number", "centroids:kPointCloud"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_DOUBLE_EQ(number(*result, "count"), 3.0);
+  const auto* cloud = objectOf<PointCloud>(*result, "cloud");
+  ASSERT_NE(cloud, nullptr);
+  EXPECT_EQ(cloud->frame_id, "map");
+  ASSERT_EQ(cloud->fields.size(), 4u);
+  EXPECT_EQ(cloud->fields[3].name, "rgb");
+  ASSERT_EQ(cloud->data.size(), 48u);
+  EXPECT_EQ(cloud->data[12], 255);  // R, G, B, 255 by address
+  EXPECT_EQ(cloud->data[13], 0);
+  EXPECT_EQ(cloud->data[16 + 13], 255);
+  EXPECT_EQ(cloud->data[32 + 14], 255);
+  const auto* centroids = objectOf<PointCloud>(*result, "centroids");
+  ASSERT_NE(centroids, nullptr);
+  EXPECT_EQ(centroids->width, 2u);  // (1, 2, 3) alone, then the two points 0.5 apart
+  EXPECT_EQ(centroids->fields.size(), 3u);
+
+  const std::string head = "local b = pj.cloud.new{preset='xyzi', frame_id='map'}\n";
+  expectScriptErrorNaming(head + "b:add(1, 2, 3)", "4 values");
+  expectScriptErrorNaming(head + "b:add(1, 2, 3, 'x')", "number");
+  expectScriptErrorNaming(head + "b:add_points{{1, 2, 3, 4}, {1, 2, 3}}", "4 values");
+  expectScriptErrorNaming(head + "b:add_points(3)", "'points'");
+  expectScriptErrorNaming(head + "b:add(0/0, 2, 3, 4)", "finite");
+  expectScriptErrorNaming(head + "b:add(1e300, 2, 3, 4)", "32-bit float");
+  expectScriptErrorNaming(head + "b:add_points{{1, 2, 3, -1e300}}", "32-bit float");
+  expectScriptErrorNaming(head + "b:finish()\nb:add(1, 2, 3, 4)", "finished");
+  expectScriptErrorNaming(head + "b:finish()\nb:finish()", "finished");
+  expectScriptErrorNaming("pj.cloud.new{preset='xyzrgba', frame_id='map'}", "'preset'");
+  expectScriptErrorNaming("pj.cloud.new{preset='xyz'}", "'frame_id'");
+  expectScriptErrorNaming(head + "return b:finish():downsample(0)", "voxel_size");
+  // A builder grown in a loop stops at the native budget; a list is charged before it is allocated.
+  for (const char* source :
+       {"local b = pj.cloud.new{preset='xyz', frame_id='m'}\nfor i = 1, 1000000 do b:add(i, 0, 0) end",
+        "local points = table.create(200000, {1, 2, 3})\npj.cloud.new{preset='xyz', "
+        "frame_id='m'}:add_points(points)"}) {
+    auto starved = run(std::string(source) + "\nreturn 1", {}, {}, "{}", withNativeBudget(std::size_t{1} << 20));
+    ASSERT_FALSE(starved.has_value()) << source;
+    EXPECT_TRUE(contains(starved.error(), "native memory limit")) << source << " -> " << starved.error();
+  }
+}
+
+// What a builder makes is stamped with the result's stamp, like the annotations it pairs; a downsample keeps its
+// input's.
+TEST(ObjectScript, BuiltCloudsAndGridsTakeTheResultStamp) {
+  constexpr const char* kScript = R"LUAU(
+    local inputs = ...
+    local cloud = pj.cloud.new{preset="xyz", frame_id="map"}:add(1, 2, 3):finish()
+    local grid = pj.voxels.new{frame_id="map", origin={0, 0, 0}, cell_size=1, dims={1, 1, 1}}:finish()
+    return {cloud = cloud, grid = grid, centroids = cloud:downsample(1), kept = inputs.scan:downsample(1)}
+  )LUAU";
+  RunOptions options;
+  options.result_stamp = 7;
+  auto result =
+      run(kScript, {object("scan", makeLineCloud(2))},
+          specs({"cloud:kPointCloud", "grid:kVoxelGrid", "centroids:kPointCloud", "kept:kPointCloud"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  ASSERT_NE(objectOf<PointCloud>(*result, "cloud"), nullptr);
+  EXPECT_EQ(objectOf<PointCloud>(*result, "cloud")->timestamp_ns, 7);
+  ASSERT_NE(objectOf<sdk::VoxelGrid>(*result, "grid"), nullptr);
+  EXPECT_EQ(objectOf<sdk::VoxelGrid>(*result, "grid")->timestamp_ns, 7);
+  EXPECT_EQ(objectOf<PointCloud>(*result, "centroids")->timestamp_ns, 7);   // its input, the built cloud, carries 7
+  EXPECT_EQ(objectOf<PointCloud>(*result, "kept")->timestamp_ns, kSecond);  // the input's stamp, not the result's
+}
+
+// A builder's output keeps its native charge in the result: results the caller keeps, of runs sharing one ledger,
+// count against it until they are dropped.
+TEST(ObjectScript, RetainedResultsKeepTheirNativeCharge) {
+  RunOptions options;
+  options.native_budget = makeNativeBudget(std::size_t{1} << 20);
+  std::vector<ScriptBundle> kept;
+  std::string error;
+  for (int call = 0; call < 8 && error.empty(); ++call) {
+    auto result = run(
+        "return pj.voxels.new{frame_id='m', origin={0, 0, 0}, cell_size=1, dims={64, 64, 16}}:finish()", {}, {}, "{}",
+        options);  // 256 KiB of cells
+    if (result) {
+      kept.push_back(std::move(*result));
+    } else {
+      error = result.error().message;
+    }
+  }
+  EXPECT_EQ(kept.size(), 3u);
+  EXPECT_TRUE(contains(error, "native memory limit")) << error;
+  kept.clear();
+  EXPECT_EQ(options.native_budget->used(), 0u);
+}
+
+// The same for an operation's output: a downsampled cloud is charged until the result is dropped.
+TEST(ObjectScript, ADownsampledResultKeepsItsNativeCharge) {
+  RunOptions options;
+  options.native_budget = makeNativeBudget(std::size_t{1} << 20);
+  auto result =
+      run("local inputs = ...\nreturn inputs.cloud:downsample(1)", {object("cloud", makeLineCloud(8))},
+          specs({"centroids:kPointCloud"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  std::optional<ScriptBundle> kept(std::move(*result));
+  EXPECT_GT(options.native_budget->used(), 0u);
+  kept.reset();
+  EXPECT_EQ(options.native_budget->used(), 0u);
 }
 
 // ---- builders: hostile scripts and budgets -----------------------------------------------------------

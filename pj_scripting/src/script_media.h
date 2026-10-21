@@ -59,6 +59,13 @@ class ScriptMedia {
   /// all agree, else its own.
   [[nodiscard]] std::pair<std::string, Timestamp> pairing(std::string_view image_topic) const;
 
+  /// Gives `stamp`, when 0, the result's stamp: a builder's output is born unstamped.
+  void stampUnset(Timestamp& stamp) const noexcept {
+    if (stamp == 0) {
+      stamp = result_stamp_;
+    }
+  }
+
   [[nodiscard]] const native::NativeLimits& limits() const noexcept {
     return limits_;
   }

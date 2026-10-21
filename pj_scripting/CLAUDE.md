@@ -98,25 +98,33 @@ Licensed MPL-2.0.
   the injected decoder and video source, the image and video inputs the run read (held for the run, so an address
   names one input even after the script drops it), one decode per input and run, the
   frames `frame_at` made, and what a finished annotations builder pairs with (the image input it names, a video's
-  frames when they agree, else the result's stamp).
+  frames when they agree, else the result's stamp), and the result's stamp a builder's cloud or grid takes
+  (`stampUnset`).
 - `object_summary.h` — `summarizeObject` (a small JSON description of an object output: counts, bounds, frame ids) and
   `isEmptyObject` (the report's "empty" status), what an evaluation report carries instead of the object's bytes.
 - `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
   lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker, the point-cloud methods over `src/native/`, and
   the image methods (`representation`, `decode`, `to_point_cloud`) with the decoded-pixel box, and a video's `frame_at`.
-  Also the `pj.scene` / `pj.annotations` builders: chainable boxed builders over the native ones, `finish()` spends a
-  builder, a finished object's box and views share its native charge, and a method reads its options table raw (no
-  script code runs inside a builder call); scripts cannot reach their metatables.
+  Also the `pj.scene` / `pj.annotations` / `pj.cloud` / `pj.voxels` builders: chainable boxed builders over the
+  native ones, `finish()` spends a builder, a finished object's box and views share its native charge, and a method
+  reads its options table raw (no script code runs inside a builder call); scripts cannot reach their metatables.
 - `src/native/` (private; consumed by the object-script binder) — the heavy
   half of an object script, Luau-free so Luau and Python share it:
   - `point_cloud_ops.h`: count, bounds, extreme point, `cropBox`, `filterByField`, `transformXyz`,
-    `nextFinitePoint`. Little-endian only, x/y/z float32/float64, `row_step` honoured (rows may not
-    overlap), the declared extent checked against `data` without overflow (the SDK field table's check),
-    whole records copied (D15), non-finite points skipped; every output keeps the input's stamp.
+    `nextFinitePoint`, and `downsample` (one centroid per occupied cube, built with the xyz preset). Little-endian
+    only, x/y/z float32/float64, `row_step` honoured (rows may not overlap), the declared extent checked against
+    `data` without overflow (the SDK field table's check), whole records copied (D15), non-finite points skipped;
+    every output keeps the input's stamp.
   - `record_walk.h`: the row walk (`forEachRecord`) and `compactWhere`, which every cloud operation shares;
     a header so the tests drive them directly.
   - `scene_entities_ops.h`: `SceneEntityBuilder`, the snapshot idiom (one `kAll` deletion, then the
     entity) with errors that name the bad field (D27). `finish()` consumes the builder.
+  - `point_cloud_builder.h`: `PointCloudBuilder`, PCL's familiar xyz / xyzi / xyzrgb point types in 16-byte records
+    (D14); its buffer's capacity is charged before it grows (the old buffer beside the new until freed), every value
+    must fit a float32, and a cloud is capped so its byte size fits a uint32.
+  - `voxel_grid_ops.h`: `VoxelGridBuilder`, a dense float32 VoxelGrid (D16), its dimensions capped at 2^24 cells
+    before anything is charged or allocated. A VoxelGrid is producible but has no SDK field table yet, so a script
+    cannot read its fields.
   - `image_annotations_ops.h`: `ImageAnnotationsBuilder`, the same shape for pixel-space annotations
     (`image_topic` required, no text background; the binder pairs a finished set through `ScriptMedia`).
     `field_checks.h`: the argument checks both builders share.

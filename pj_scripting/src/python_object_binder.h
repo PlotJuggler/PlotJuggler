@@ -14,7 +14,8 @@
 // The object half of the Python on-demand binding (docs/derived_objects/ARCHITECTURE.md §6, §14), the twin of
 // object_binder.h over the same native operations: objects as read-only views over their SDK field tables (a list is a
 // lazy sequence read through `list_at`, an int64 field a Python int), the point-cloud, image and decoded-pixel methods,
-// the `pj.scene` / `pj.annotations` builders and `pj.tf`. The surface is python_object_script.h's.
+// the `pj.scene` / `pj.annotations` / `pj.cloud` / `pj.voxels` builders and `pj.tf`. The surface is
+// python_object_script.h's.
 //
 // Every operation that walks the data runs without the GIL: it reads only C++ state the call's arguments keep alive.
 // The types are plain CPython types, registered once per process: they have no constructor, take no attribute and
@@ -60,11 +61,13 @@ struct PythonRun {
   PythonRun* previous_;
 };
 
-/// `pj.scene`, `pj.annotations` and `pj.tf`, shared by every run (they hold nothing, and take no attribute); strong
-/// references, never released.
+/// `pj.scene`, `pj.annotations`, `pj.cloud`, `pj.voxels` and `pj.tf`, shared by every run (they hold nothing, and
+/// take no attribute); strong references, never released.
 struct PjNamespaces {
   PyObject* scene = nullptr;
   PyObject* annotations = nullptr;
+  PyObject* cloud = nullptr;
+  PyObject* voxels = nullptr;
   PyObject* tf = nullptr;
 };
 
@@ -73,7 +76,8 @@ struct PjNamespaces {
 [[nodiscard]] const PjNamespaces& pjNamespaces();
 
 /// `object` as a read-only script object (it shares the value) holding `keepalive` (`NamedValue::keepalive`) for as
-/// long as it or a view read from it lives; `canEnterScript(object)` must hold. GIL held.
+/// long as it or a view read from it lives; `canEnterScript(object)` must hold (a builder's voxel grid, which has no
+/// readable fields, is wrapped internally). GIL held.
 [[nodiscard]] py::object newObject(sdk::BuiltinObject object, std::shared_ptr<const void> keepalive = {});
 
 /// The object `value` wraps, matched by exact type so no script code runs, or null.

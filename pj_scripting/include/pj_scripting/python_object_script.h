@@ -58,9 +58,11 @@ inline constexpr std::string_view kPythonBusyError =
 /// Script surface: `object_script.h`'s, in Python's idiom (python_object_binder.h binds it over the same native
 /// operations). Objects are read-only: a field is an attribute (an int64 is a Python int,
 /// a raw buffer is refused), a list a lazy sequence. Methods take keyword arguments named as Luau's option keys; a
-/// vector is a tuple (`bounds()["min"]`), every index 0-based, not-equal `!=`. `pj.scene.new(frame_id=, id=)` and
-/// `pj.annotations.new(image_topic=)` build and chain; `pj.tf.now` is an int, `pj.tf.lookup(target, source, when=None)`
-/// returns `(transform, None)` or `(None, reason)`, the transform a dict of `translation`, `rotation` and
+/// vector is a tuple (`bounds()["min"]`), every index 0-based, not-equal `!=`. `pj.scene.new(frame_id=, id=)`,
+/// `pj.annotations.new(image_topic=)`, `pj.cloud.new(preset=, frame_id=)` (`add(x, y, z, ...)` takes the values
+/// positionally, `add_points(points)` a sequence of them) and `pj.voxels.new(frame_id=, origin=, cell_size=, dims=)`
+/// (`set(i, j, k, value)`, int indices) build and chain; `pj.tf.now` is an int, `pj.tf.lookup(target, source,
+/// when=None)` returns `(transform, None)` or `(None, reason)`, the transform a dict of `translation`, `rotation` and
 /// `target_frame`, and `when` an int or float time, or an object (its own stamp, on the header clock). An image's
 /// `decode()` returns `(pixels, None)` or `(None, reason)`, the shape of every fallible call, and a video's
 /// `frame_at(t)` (an int, on the dataset clock) `(frame, None)`, the frame a dict of `image` and `presentation_ns`;

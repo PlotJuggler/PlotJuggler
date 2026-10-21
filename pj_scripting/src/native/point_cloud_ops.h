@@ -131,4 +131,11 @@ decltype(auto) dispatchCompare(CompareOp op, Visit&& visit) {
 [[nodiscard]] Expected<sdk::PointCloud> transformXyz(
     const sdk::PointCloud& cloud, const sdk::FrameTransform& tf, const NativeLimits& limits);
 
+/// One centroid per occupied cube of side `voxel_size` (finite, > 0): the mean of the finite points inside it, as an
+/// xyz-preset cloud (point_cloud_builder.h) in the input's frame at its stamp, ordered by cube (z, then y, then x). The
+/// cubes are counted from the finite points' minimum corner; a cloud spanning more than 2^21 cubes along an axis is an
+/// error. Charged while it runs: 24 bytes per finite point; the output as its builder charges it.
+[[nodiscard]] Expected<Charged<sdk::PointCloud>> downsample(
+    const sdk::PointCloud& cloud, double voxel_size, const NativeLimits& limits);
+
 }  // namespace PJ::scripting::native

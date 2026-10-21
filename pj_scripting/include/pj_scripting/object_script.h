@@ -165,7 +165,8 @@ struct RunOptions {
   std::shared_ptr<const IImageDecoder> image_decoder;
   /// What `video:frame_at` decodes through, on the run's thread; null: it reports "no video frame source".
   std::shared_ptr<IVideoFrameSource> video_source;
-  /// The result's stamp, the newest resolved input's: what annotations built for no image input are stamped with.
+  /// The result's stamp, the newest resolved input's: what annotations built for no image input, and a built cloud or
+  /// voxel grid, are stamped with.
   Timestamp result_stamp = 0;
 };
 
@@ -175,8 +176,9 @@ struct RunOptions {
 ///
 /// Script surface: objects are read-only views over their SDK field tables (lists are read element by
 /// element; an int64 field is a `pj.int64`, exact past 2^53; a raw buffer is never exposed); a point
-/// cloud also has `count`, `bounds`, `extreme_point`, `crop_box`, `filter`, `transform` and
-/// `xyz_points`, and image annotations `count` (the points of every points annotation). An image or depth image has:
+/// cloud also has `count`, `bounds`, `extreme_point`, `crop_box`, `filter`, `transform`, `xyz_points` and
+/// `downsample(voxel_size)` (one centroid per occupied cube, an xyz-preset cloud), and image annotations `count` (the
+/// points of every points annotation). An image or depth image has:
 ///   - `representation()`: how it is stored ("jpeg", "png", "raw:<encoding>", "compressed:<encoding>",
 ///     "depth:<encoding>").
 ///   - `decode()` -> decoded pixels, or `nil, reason`: its original samples (no display normalization), decoded
@@ -219,11 +221,17 @@ struct RunOptions {
 ///     `image_topic` at `RunOptions::result_stamp`. A point is `{x, y}`; thickness,
 ///     font size and colours the script leaves out take the SDK's defaults. The SDK has no text background, so
 ///     an opaque `background_color` is an error.
+///   - `pj.cloud.new{preset, frame_id}` -> `:add(x, y, z[, intensity | r, g, b])`, `:add_points{{...}, ...}`: a
+///     PointCloud of PCL's familiar point types (`preset` "xyz", "xyzi" or "xyzrgb"; D14), every value finite and
+///     within float32's range, r/g/b 0-255, packed into 16-byte records (native/point_cloud_builder.h).
+///   - `pj.voxels.new{frame_id, origin, cell_size, dims}` -> `:set(i, j, k, value)` (1-based indices): a dense
+///     VoxelGrid of one float32 `value` channel, every cell 0 until set (a finite value within float32's range), at
+///     most 2^24 cells (D16). It has no readable fields until the SDK describes the type.
 /// `math.random` is seeded the same way on every run, and there is no `os` and no clock (D2).
 ///
 /// Binding the returned value: with no declared `outputs`, a non-table is one output `value`, a keyed
 /// table is one output per key (sorted by name), and an array is named by type (`value`, `value_2`,
-/// `text`, `cloud`, `scene`, `annotations`, `image`, `object`); an array may not hold `pj.unavailable`
+/// `text`, `cloud`, `scene`, `annotations`, `image`, `voxels`, `object`); an array may not hold `pj.unavailable`
 /// (name the output instead), and booleans, functions, other values and objects of a type no output can
 /// declare are errors. With declared outputs, a non-table binds to the single declared output, an array
 /// binds by position and a keyed table by name; an undeclared key and a missing output are errors, and

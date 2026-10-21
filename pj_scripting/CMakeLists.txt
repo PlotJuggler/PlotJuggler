@@ -184,6 +184,8 @@ set(PJ_SCRIPTING_SOURCES
   src/filter_catalogue.cpp
   # Native object operations (point clouds, scene entities, image annotations) for the object-script binders; pj_base only.
   src/native/point_cloud_ops.cpp
+  src/native/point_cloud_builder.cpp
+  src/native/voxel_grid_ops.cpp
   src/native/scene_entities_ops.cpp
   src/native/image_annotations_ops.cpp
   src/native/image_ops.cpp

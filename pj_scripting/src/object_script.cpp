@@ -132,7 +132,7 @@ int lUnavailable(lua_State* L) {
 }
 
 void installPj(lua_State* L, Run& run, const native::NativeLimits& limits) {
-  lua_createtable(L, 0, 4);
+  lua_createtable(L, 0, 6);
   detail::setFunctions(L, {{"unavailable", lUnavailable}});
   detail::installBuilders(L, limits);
   lua_createtable(L, 0, 2);
@@ -215,6 +215,7 @@ Status readValue(lua_State* L, int index, native::MemoryReservation& charge, det
     item.value = std::string(text, length);
   } else if (const sdk::BuiltinObject* object = detail::toObject(L, index)) {
     item.value = *object;
+    item.keepalive = detail::toCharge(L, index);
   }
   return okStatus();
 }

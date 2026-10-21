@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "python_object_binder.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,7 +25,9 @@
 #include "native/depth_ops.h"
 #include "native/image_annotations_ops.h"
 #include "native/image_ops.h"
+#include "native/point_cloud_builder.h"
 #include "native/scene_entities_ops.h"
+#include "native/voxel_grid_ops.h"
 #include "pj_base/builtin/field_table_registry.hpp"
 #include "pj_base/builtin/video_frame.hpp"
 #include "pj_scripting/memory_budget.h"
@@ -87,6 +91,8 @@ struct BuilderSlot {
 };
 using Scene = native::SceneEntityBuilder;
 using Annotations = native::ImageAnnotationsBuilder;
+using Cloud = native::PointCloudBuilder;
+using Voxels = native::VoxelGridBuilder;
 
 /// The value of `pj.scene`, `pj.annotations` and `pj.tf`, which hold nothing.
 struct Unit {};
@@ -99,6 +105,8 @@ PyTypeObject* g_list_type = nullptr;
 PyTypeObject* g_points_type = nullptr;
 PyTypeObject* g_scene_type = nullptr;
 PyTypeObject* g_annotations_type = nullptr;
+PyTypeObject* g_cloud_type = nullptr;
+PyTypeObject* g_voxels_type = nullptr;
 PyTypeObject* g_decoded_type = nullptr;
 
 /// A C++ value inside a Python object of a plain type.
@@ -407,6 +415,14 @@ template <bool kMethods>
 PyObject* attribute(PyObject* self, PyObject* name) {
   return slotCall([&]() -> PyObject* {
     const StructView& view = unboxed<StructView>(self);
+    if (view.table == nullptr) {  // a builder's voxel grid: its methods, no readable fields
+      PyObject* method = PyObject_GenericGetAttr(self, name);
+      if (method == nullptr && PyErr_ExceptionMatches(PyExc_AttributeError) != 0) {
+        PyErr_Clear();
+        throw py::attribute_error("a " + std::string(sdk::name(view.keep->object.type())) + " has no readable fields");
+      }
+      return method;
+    }
     py::object field = namedField(*view.table, view.owner, view.keep, name);
     if (field) {
       return field.release().ptr();
@@ -792,6 +808,8 @@ py::object finish(PyObject* self) {
   if constexpr (std::is_same_v<Builder, Annotations>) {
     // Paired with the image input `image_topic` names (`ScriptMedia::pairing`).
     std::tie(done.value.image_topic, done.value.timestamp) = currentRun().media.pairing(done.value.image_topic);
+  } else if constexpr (requires { done.value.timestamp_ns; }) {
+    currentRun().media.stampUnset(done.value.timestamp_ns);
   }
   return newCharged(std::move(done));
 }
@@ -963,6 +981,149 @@ py::object frameAt(PyObject* self, PyObject* args, PyObject* kwargs) {
       py::none());
 }
 
+// ---- pj.cloud, pj.voxels and cloud.downsample ---------------------------------------
+
+/// One past the widest preset's values, so an extra value still reaches the builder's arity check.
+constexpr std::size_t kMaxPointValues = 7;
+using PointValues = std::array<double, kMaxPointValues>;
+
+/// The numbers of the tuple `items`, at most `kMaxPointValues`, into `values`; their count. `subject` names them in the
+/// error.
+std::size_t readValues(PyObject* items, PointValues& values, const char* subject) {
+  const auto count = std::min(static_cast<std::size_t>(PyTuple_GET_SIZE(items)), kMaxPointValues);
+  for (std::size_t index = 0; index < count; ++index) {
+    values[index] = PyFloat_AsDouble(PyTuple_GET_ITEM(items, static_cast<Py_ssize_t>(index)));
+    if (values[index] == -1.0 && PyErr_Occurred() != nullptr) {
+      PyErr_Clear();
+      throw py::value_error(std::string(subject) + " must be numbers");
+    }
+  }
+  return count;
+}
+
+/// An int argument, clamped to +-2^62 (outside any grid); anything else raises `error`. Reads no script code.
+int64_t integerOf(PyObject* value, const char* error) {
+  if (PyLong_Check(value) == 0) {
+    throw py::type_error(error);
+  }
+  constexpr long long kLimit = 1LL << 62;
+  int overflow = 0;
+  const long long number = PyLong_AsLongLongAndOverflow(value, &overflow);
+  if (overflow != 0) {
+    return overflow > 0 ? kLimit : -kLimit;
+  }
+  return std::clamp(number, -kLimit, kLimit);
+}
+
+py::object cloudNew(PyObject* /*self*/, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"preset", "frame_id", nullptr};
+  const char* preset = nullptr;
+  const char* frame_id = nullptr;
+  parse(args, kwargs, "ss:new", kNames, &preset, &frame_id);
+  const std::optional<native::CloudPreset> parsed = native::parseCloudPreset(preset);
+  if (!parsed) {
+    throw py::value_error("'preset' must be \"xyz\", \"xyzi\" or \"xyzrgb\"");
+  }
+  return newBoxed(
+      g_cloud_type,
+      BuilderSlot<Cloud>{currentRun().generation, valueOf(Cloud::create(*parsed, frame_id, limits().budget))});
+}
+
+/// `add(x, y, z[, intensity | r, g, b])`: one point, O(1), with the GIL.
+py::object cloudAdd(PyObject* self, PyObject* args, PyObject* kwargs) {
+  if (kwargs != nullptr && PyDict_GET_SIZE(kwargs) != 0) {
+    throw py::type_error("add: the point's values are positional");
+  }
+  PointValues values{};
+  const std::size_t count = readValues(args, values, "add: the point's values");
+  valueOf(live(unboxed<BuilderSlot<Cloud>>(self)).add(std::span<const double>(values.data(), count)));
+  return py::reinterpret_borrow<py::object>(self);
+}
+
+/// `add_points(points)`: every entry converts first, into a copy charged before it is allocated, then the builder takes
+/// them all without the GIL.
+py::object cloudAddPoints(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"points", nullptr};
+  PyObject* points = nullptr;
+  parse(args, kwargs, "O:add_points", kNames, &points);
+  auto& slot = unboxed<BuilderSlot<Cloud>>(self);
+  const py::object items = sequenceOf(points, "'points'");
+  const auto count = static_cast<std::size_t>(PyTuple_GET_SIZE(items.ptr()));
+  const std::size_t arity = live(slot).arity();
+  native::MemoryReservation charge(limits().budget);
+  valueOf(charge.grow(count * arity * sizeof(double)));
+  std::vector<double> values;
+  values.reserve(count * arity);
+  PointValues point{};
+  for (std::size_t index = 0; index < count; ++index) {
+    const py::object entry =
+        sequenceOf(PyTuple_GET_ITEM(items.ptr(), static_cast<Py_ssize_t>(index)), "'points' entry");
+    const std::size_t size = readValues(entry.ptr(), point, "'points' entries");
+    valueOf(live(slot).acceptsArity(size));
+    values.insert(values.end(), point.begin(), point.begin() + static_cast<std::ptrdiff_t>(size));
+  }
+  Cloud& builder = live(slot);
+  valueOf(withoutGil([&]() -> Status {
+    if (Status reserved = builder.reserve(count); !reserved) {
+      return reserved;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+      if (Status added = builder.add(std::span<const double>(values.data() + index * arity, arity)); !added) {
+        return added;
+      }
+    }
+    return okStatus();
+  }));
+  return py::reinterpret_borrow<py::object>(self);
+}
+
+py::object voxelsNew(PyObject* /*self*/, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"frame_id", "origin", "cell_size", "dims", nullptr};
+  constexpr const char* kBadDims = "'dims' must be 3 integers greater than 0";
+  const char* frame_id = nullptr;
+  PyObject* origin = nullptr;
+  double cell_size = 0.0;
+  PyObject* dims = nullptr;
+  parse(args, kwargs, "sOdO:new", kNames, &frame_id, &origin, &cell_size, &dims);
+  const auto corner = readPoint<sdk::Vector3, 3>(origin, "'origin'");
+  const py::object counts = sequenceOf(dims, "'dims'");
+  if (PyTuple_GET_SIZE(counts.ptr()) != 3) {
+    throw py::value_error(kBadDims);
+  }
+  std::array<int64_t, 3> cells{};
+  for (std::size_t axis = 0; axis < cells.size(); ++axis) {
+    cells[axis] = integerOf(PyTuple_GET_ITEM(counts.ptr(), static_cast<Py_ssize_t>(axis)), kBadDims);
+  }
+  return newBoxed(
+      g_voxels_type,
+      BuilderSlot<Voxels>{
+          currentRun().generation, valueOf(Voxels::create(frame_id, corner, cell_size, cells, limits().budget))});
+}
+
+/// `set(i, j, k, value)`, the indices 0-based.
+py::object voxelsSet(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"i", "j", "k", "value", nullptr};
+  constexpr const char* kNotIntegers = "set: i, j and k must be integers";
+  PyObject* i = nullptr;
+  PyObject* j = nullptr;
+  PyObject* k = nullptr;
+  double value = 0.0;
+  parse(args, kwargs, "OOOd:set", kNames, &i, &j, &k, &value);
+  const int64_t column = integerOf(i, kNotIntegers);
+  const int64_t row = integerOf(j, kNotIntegers);
+  const int64_t slice = integerOf(k, kNotIntegers);
+  valueOf(live(unboxed<BuilderSlot<Voxels>>(self)).set(column, row, slice, value));
+  return py::reinterpret_borrow<py::object>(self);
+}
+
+py::object cloudDownsample(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"voxel_size", nullptr};
+  double voxel_size = 0.0;
+  parse(args, kwargs, "d:downsample", kNames, &voxel_size);
+  const sdk::PointCloud& cloud = cloudOf(self);
+  return newCharged(valueOf(released([&] { return native::downsample(cloud, voxel_size, limits()); })));
+}
+
 // ---- pj.tf --------------------------------------------------------------------
 
 /// `pj.tf.lookup(target, source, when=None)` -> `(transform, None)` or `(None, reason)`; see python_object_script.h.
@@ -1061,6 +1222,7 @@ PjNamespaces* registerTypes() {
       {"bounds", cfunction(&withoutArguments<&bounds>), METH_NOARGS, nullptr},
       {"extreme_point", cfunction(&withArguments<&extremePoint>), kKeywords, nullptr},
       {"crop_box", cfunction(&withArguments<&cropBox>), kKeywords, nullptr},
+      {"downsample", cfunction(&withArguments<&cloudDownsample>), kKeywords, nullptr},
       {"filter", cfunction(&withArguments<&filter>), kKeywords, nullptr},
       {"transform", cfunction(&withArguments<&transform>), kKeywords, nullptr},
       {"xyz_points", cfunction(&withoutArguments<&xyzPoints>), METH_NOARGS, nullptr},
@@ -1094,6 +1256,19 @@ PjNamespaces* registerTypes() {
       {"text", cfunction(&withArguments<&annotationsText>), kKeywords, nullptr},
       {"finish", cfunction(&withoutArguments<&finish<Annotations>>), METH_NOARGS, nullptr},
       {nullptr, nullptr, 0, nullptr}};
+  static PyMethodDef cloud_methods[] = {
+      {"add", cfunction(&withArguments<&cloudAdd>), kKeywords, nullptr},
+      {"add_points", cfunction(&withArguments<&cloudAddPoints>), kKeywords, nullptr},
+      {"finish", cfunction(&withoutArguments<&finish<Cloud>>), METH_NOARGS, nullptr},
+      {nullptr, nullptr, 0, nullptr}};
+  static PyMethodDef voxels_methods[] = {
+      {"set", cfunction(&withArguments<&voxelsSet>), kKeywords, nullptr},
+      {"finish", cfunction(&withoutArguments<&finish<Voxels>>), METH_NOARGS, nullptr},
+      {nullptr, nullptr, 0, nullptr}};
+  static PyMethodDef cloud_new[] = {
+      {"new", cfunction(&withArguments<&cloudNew>), kKeywords, nullptr}, {nullptr, nullptr, 0, nullptr}};
+  static PyMethodDef voxels_new[] = {
+      {"new", cfunction(&withArguments<&voxelsNew>), kKeywords, nullptr}, {nullptr, nullptr, 0, nullptr}};
   static PyMethodDef scene_new[] = {
       {"new", cfunction(&withArguments<&sceneNew>), kKeywords, nullptr}, {nullptr, nullptr, 0, nullptr}};
   static PyMethodDef annotations_new[] = {
@@ -1121,12 +1296,17 @@ PjNamespaces* registerTypes() {
   g_scene_type = plainType<BuilderSlot<Scene>>("pj_binder.SceneBuilder", {{Py_tp_methods, scene_methods}});
   g_annotations_type =
       plainType<BuilderSlot<Annotations>>("pj_binder.AnnotationsBuilder", {{Py_tp_methods, annotations_methods}});
+  g_cloud_type = plainType<BuilderSlot<Cloud>>("pj_binder.CloudBuilder", {{Py_tp_methods, cloud_methods}});
+  g_voxels_type = plainType<BuilderSlot<Voxels>>("pj_binder.VoxelsBuilder", {{Py_tp_methods, voxels_methods}});
   PyTypeObject* scene_namespace = plainType<Unit>("pj_binder.SceneNamespace", {{Py_tp_methods, scene_new}});
   PyTypeObject* annotations_namespace =
       plainType<Unit>("pj_binder.AnnotationsNamespace", {{Py_tp_methods, annotations_new}});
+  PyTypeObject* cloud_namespace = plainType<Unit>("pj_binder.CloudNamespace", {{Py_tp_methods, cloud_new}});
+  PyTypeObject* voxels_namespace = plainType<Unit>("pj_binder.VoxelsNamespace", {{Py_tp_methods, voxels_new}});
   PyTypeObject* tf = plainType<Unit>("pj_binder.Tf", {{Py_tp_methods, tf_methods}, {Py_tp_getset, tf_properties}});
   return new PjNamespaces{
       newBoxed(scene_namespace, Unit{}).release().ptr(), newBoxed(annotations_namespace, Unit{}).release().ptr(),
+      newBoxed(cloud_namespace, Unit{}).release().ptr(), newBoxed(voxels_namespace, Unit{}).release().ptr(),
       newBoxed(tf, Unit{}).release().ptr()};
 }
 

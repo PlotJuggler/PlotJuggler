@@ -88,6 +88,13 @@ Expected<std::vector<uint8_t>> emptyObjectBytes(
       empty = std::move(info);
       break;
     }
+    case sdk::BuiltinObjectType::kVoxelGrid: {
+      sdk::VoxelGrid grid;
+      grid.frame_id = frame;
+      grid.timestamp_ns = stamp;
+      empty = std::move(grid);
+      break;
+    }
     default:
       return unexpected("no empty " + std::string(sdk::name(type)) + " to clear an unavailable output with");
   }
