@@ -103,8 +103,9 @@ precompressed variants automatically.
 On-demand Python scripts can run in the browser through a static CPython 3.14
 for Emscripten with pthreads. The option is `OFF` by default; WASM CI's
 acceptance configuration turns it on and runs `tests/wasm/python.spec.js` in
-Chromium and Firefox. It stays off for production until the browser compile no
-longer blocks the GUI (derived-objects slice P-c).
+Chromium and Firefox. It stays off for production until the items still open
+in `docs/derived_objects/ARCHITECTURE.md` §14 are settled; the main thread no
+longer waits on a Python compile (derived-objects slice P-c).
 
 `cmake/PjWasmPython.cmake` builds CPython at configure time, from the SHA-256
 pinned release tarball (its only download) and the files in
@@ -146,9 +147,11 @@ What to know before changing it:
 - **Process-wide syscall.** CPython's `__syscall_ioctl` replaces Emscripten's
   JS syscall for the whole module, Qt included (FIOCLEX/FIONCLEX succeed,
   FIONBIO goes through `fcntl`); without it every Python `open()` fails.
-- **Threads.** The pthread pool is 7 with Python, and `main.cpp` starts the
-  Python helper thread at startup: a worker created while the main thread waits
-  on it never starts.
+- **Threads.** The pthread pool is 7 with Python. A worker created while the
+  main thread waits on it never starts, so `main.cpp` starts the Python helper
+  thread at startup: a validate waits for it, at most 100 ms. The main thread
+  never compiles a recipe's Python (a script compiles at its first run, on the
+  Python lane).
 - **Notices.** The build writes `THIRD_PARTY_NOTICES.txt` (CPython's PSF-2.0
   licence, its incorporated-software notices including libmpdec's BSD licence,
   and HACL*'s MIT licence); `package_wasm.mjs` packages it next to the module.

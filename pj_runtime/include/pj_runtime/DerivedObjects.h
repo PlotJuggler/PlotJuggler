@@ -151,7 +151,9 @@ class DerivedObjects {
   /// one `objectTopicsChanged`; a node outside the restore's authority (a preview, an exempt
   /// one under history) reading a processor output the restore removed or created runs
   /// again, with its readers. One that fails to parse or install fails the restore, as a
-  /// transform does. Run `refusal` first.
+  /// transform does; a Python script that does not compile installs (nothing compiles Python
+  /// here), its error surfacing at the node's first demanded run, never as a diagnostic. Run
+  /// `refusal` first.
   [[nodiscard]] DerivedRestoreReport restore(DerivedSnapshot snapshot);
 
  private:

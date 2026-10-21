@@ -3,6 +3,7 @@
 //
 // WASM: no embedded CPython. Every entry point fails cleanly, so a caller that skips `pythonAvailable()` gets an
 // error instead of a link failure.
+#include <cstdint>
 #include <string>
 
 #include "pj_scripting/python_object_script.h"
@@ -18,6 +19,16 @@ bool pythonAvailable() {
 }
 
 void prestartPythonHelper() {}
+
+void setPythonValidateWaitForTest(std::uint64_t /*millis*/) {}
+
+Status checkOnDemandScriptPython(std::string_view /*source*/) {
+  return unexpected(std::string(kUnavailableMessage));
+}
+
+Expected<CompiledPythonScript> deferOnDemandScriptPython(std::string_view /*source*/) {
+  return unexpected(std::string(kUnavailableMessage));
+}
 
 Expected<CompiledPythonScript> compileOnDemandScriptPython(std::string_view /*source*/) {
   return unexpected(std::string(kUnavailableMessage));

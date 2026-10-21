@@ -39,7 +39,10 @@ class OnDemandService;
 /// `scripting::kMaxParamsDepth` levels; INSTANT pins the node (a finding, which the session requests at its pin);
 /// WINDOW refused. A refused create leaves the previous recipe as it was. Submit takes an
 /// installed node of this plugin (only its id, kind, flags and time fields) or a script evaluated as a preview,
-/// installed nowhere; a script that does not compile or bind is refused at submit. Budget fields of 0 take
+/// installed nowhere; a script that does not bind, or a Luau one that does not compile, is refused at submit (Python
+/// compiles at its first run, never on the calling thread: its compile error is the node's state, and an evaluation's
+/// report). Validate compiles Luau, and Python as `scripting::checkOnDemandScriptPython` does: at most
+/// `kPythonValidateWaitMillis`, then success meaning unchecked. Budget fields of 0 take
 /// `GridRunner::Budget`'s defaults, and the runner clamps them to its host caps. A finished evaluation is FAILED when
 /// it stopped on an error before any bundle, COMPLETED otherwise; both carry `GridRunner::toJson`'s report, written on
 /// a worker (the handle stays PENDING until it lands) and stable until release. State 3 (reserved) is never emitted.

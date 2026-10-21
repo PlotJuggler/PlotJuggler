@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
-// On-demand Python in a build with PJ_WASM_WITH_PYTHON. The probe (pj_app/tests/wasm_python_probe.inc) boots the
-// interpreter from the main thread as the app's first compile does, then runs the checks on a worker. Without the
-// option the spec skips, unless PJ_WASM_PYTHON=1 says the build must have it (WASM CI's acceptance package).
+// On-demand Python in a build with PJ_WASM_WITH_PYTHON. The probe (pj_app/tests/wasm_python_probe.inc) makes the
+// main thread's compile as the app's GUI does (no interpreter touched), then boots the interpreter and runs the checks
+// on a worker. Without the option the spec skips, unless PJ_WASM_PYTHON=1 says the build must have it (WASM CI's
+// acceptance package).
 const { test, expect } = require('@playwright/test');
 const { waitForQtApp } = require('./support/app');
 
 // The watchdog's 2 s budget plus its poll and a loaded runner's scheduling.
 const WATCHDOG_BOUND_MS = 2200;
-// kPythonCompileWaitMillis (2 s) plus one 20 ms tick and scheduling. Slice P-c removes this wait.
-const BUSY_COMPILE_GAP_BOUND_MS = 2200;
+// A GUI compile never waits for the GIL (slice P-c; it waited up to 2 s before), and a validate waits at most its
+// 100 ms bound (kPythonValidateWaitMillis): that, one 20 ms tick and a loaded runner's scheduling.
+const BUSY_COMPILE_GAP_BOUND_MS = 250;
 
-test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, bounded main-thread waits', async ({
+test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, no main-thread wait', async ({
   page,
 }) => {
   test.setTimeout(300_000);
@@ -86,8 +88,10 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   expect(maxGap).toBeLessThan(2000);
   expect(errors).toEqual([]);
 
-  // Worst case: the GUI compiles while a worker script holds the GIL inside one C call; the wait is bounded by
-  // kPythonCompileWaitMillis and the compile reports busy.
+  // Worst case: the GUI compiles and validates while a worker script holds the GIL inside one C call. The compile
+  // touches no interpreter, so it returns at once; the validate waits its bound and reports the script unchecked; the
+  // script then compiles and runs on a worker once the holder ends. Before the holder starts, a validate of the same
+  // broken script, with the interpreter free, reports its syntax error.
   await page.evaluate(() => window.pjWasmPythonHoldGilProbe());
   await page.waitForTimeout(500);
   await page.evaluate(() => {
@@ -101,10 +105,19 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
     () => consoleMessages.some(message => message.includes('PJ_WASM_PY_HOLD_DONE')),
     { timeout: 120_000 },
   ).toBe(true);
-  for (const message of consoleMessages.filter(m => m.includes('PJ_WASM_PY_BUSY') || m.includes('PJ_WASM_PY_HOLD'))) {
+  await expect.poll(
+    () => consoleMessages.some(message => message.includes('PJ_WASM_PY_BUSY_RUN')),
+    { timeout: 120_000 },
+  ).toBe(true);
+  for (const message of consoleMessages.filter(
+    m => m.includes('PJ_WASM_PY_BUSY') || m.includes('PJ_WASM_PY_HOLD') || m.includes('PJ_WASM_PY_FREE'))) {
     console.log(message);
   }
   console.log(`PJ_WASM_PY busy_main_thread_max_gap_ms=${busyGap.toFixed(1)}`);
-  expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_COMPILE'))).toContain('Python is busy');
+  expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_COMPILE'))).toContain(' ok');
+  expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_VALIDATE'))).toContain(' ok');
+  expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_FREE_VALIDATE'))).toContain('SyntaxError');
+  expect(Number((consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_RUN')).match(/value=([-0-9.]+)/) || [])[1]))
+    .toBeCloseTo(Math.sqrt(10), 5);
   expect(busyGap).toBeLessThan(BUSY_COMPILE_GAP_BOUND_MS);
 });

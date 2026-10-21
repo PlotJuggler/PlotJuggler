@@ -91,14 +91,19 @@ bool contains(const std::string& text, std::string_view part) {
   return text.find(part) != std::string::npos;
 }
 
-// A Python recipe compiles once per revision into the opaque handle its runs share: an identical upsert keeps it, an
-// edit compiles another; a script the Python checker refuses (a syntax error, Luau source) leaves the node as it was,
-// and a language no runner has is named. A build without Python refuses it with the reason.
+// A Python recipe holds one opaque handle per revision, which its runs share and its first run compiles (on the Python
+// lane): the graph compiles no Python, so an upsert never waits for the GIL. An identical upsert keeps the handle, an
+// edit gets another, and a script the Python checker refuses (a syntax error, Luau source) installs too, its first
+// run's error; a language no runner has is named. A build without Python refuses it with the reason.
 TEST(RecipeGraphTest, PythonScriptIsCompiledOncePerRevision) {
   Fixture fx;
   auto python = cropRecipe();
   python.language = "python";
   python.script = "def evaluate(inputs, params):\n    return {}\n";
+#ifdef PJ_PYTHON_TEST_PROBE
+  ASSERT_TRUE(scripting::compileOnDemandScriptPython(python.script).has_value());  // the probe counts once it is booted
+  const int compiles = test::pythonCompileEvents();
+#endif
   const Status installed = fx.graph.upsert(python);
   if (!scripting::pythonAvailable()) {
     ASSERT_FALSE(installed.has_value());
@@ -112,21 +117,14 @@ TEST(RecipeGraphTest, PythonScriptIsCompiledOncePerRevision) {
   const void* compiled = node->compiled.get();
   ASSERT_NE(compiled, nullptr);
 
-#ifdef PJ_PYTHON_TEST_PROBE
-  const int compiles = test::pythonCompileEvents();
-#endif
   ASSERT_TRUE(fx.graph.upsert(python).has_value());
-#ifdef PJ_PYTHON_TEST_PROBE
-  EXPECT_EQ(test::pythonCompileEvents(), compiles) << "an identical upsert compiles nothing";
-#endif
   EXPECT_EQ(fx.graph.find(python.key())->revision, revision);
   EXPECT_EQ(fx.graph.find(python.key())->compiled.get(), compiled) << "an identical upsert keeps the compiled script";
 
   for (const char* refused : {"def evaluate(inputs, params:\n    return {}\n", "local inputs = ...\nreturn {}\n"}) {
     auto broken = python;
     broken.script = refused;
-    EXPECT_FALSE(fx.graph.upsert(broken).has_value()) << refused;
-    EXPECT_EQ(fx.graph.find(python.key())->compiled.get(), compiled) << refused;
+    EXPECT_TRUE(fx.graph.upsert(broken).has_value()) << refused << ": its first run reports it";
   }
   auto other = python;
   other.language = "ruby";
@@ -137,11 +135,11 @@ TEST(RecipeGraphTest, PythonScriptIsCompiledOncePerRevision) {
   auto edited = python;
   edited.script = "def evaluate(inputs, params):\n    return {'x': 1}\n";
   ASSERT_TRUE(fx.graph.upsert(edited).has_value());
-#ifdef PJ_PYTHON_TEST_PROBE
-  EXPECT_GT(test::pythonCompileEvents(), compiles) << "an edit compiles its new source";
-#endif
   EXPECT_GT(fx.graph.find(python.key())->revision, revision);
   EXPECT_NE(fx.graph.find(python.key())->compiled.get(), compiled);
+#ifdef PJ_PYTHON_TEST_PROBE
+  EXPECT_EQ(test::pythonCompileEvents(), compiles) << "the graph compiles no Python";
+#endif
 }
 
 // REC-02 (and the recipe-level half of REC-04): a bad recipe is refused, and nothing is installed.

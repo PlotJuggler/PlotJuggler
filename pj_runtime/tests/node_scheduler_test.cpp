@@ -33,6 +33,10 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/OnDemandService.h"
+#ifdef PJ_PYTHON_TEST_PROBE
+#include "pj_scripting/python_object_script.h"
+#include "python_test_probe.h"
+#endif
 
 namespace PJ {
 namespace {
@@ -306,6 +310,110 @@ TEST(NodeSchedulerTest, RemovingARunningPythonLoopCancelsIt) {
   EXPECT_EQ(fx.state("owner/next").status, Status::kReady) << fx.state("owner/next").detail;
   const std::lock_guard<std::mutex> lock(mutex);
   EXPECT_EQ(outcomes, (std::vector<std::string>{"script cancelled", "ok"}));
+}
+
+#ifdef PJ_PYTHON_TEST_PROBE
+/// The real script run behind `OnDemandService::setRunForTest`, counting the runs that start and keeping each one's
+/// outcome ("ok" or its error); the default run comes back with it. Set it up before the fixture, which reads it.
+struct ObservedRun {
+  ObservedRun() {
+    // Booted first, so a `test::PythonGilHold` can take the GIL: an eager compile boots the interpreter.
+    EXPECT_TRUE(scripting::compileOnDemandScriptPython("def evaluate(inputs, params):\n    return 1\n").has_value());
+    OnDemandService::setRunForTest([this](
+                                       const scripting::CompiledOnDemandScript& script, Span<const NamedValue> inputs,
+                                       std::string_view params, Span<const OutputSpec> outputs,
+                                       const RunOptions& options) {
+      ++started;
+      auto ran = scripting::runOnDemand(script, inputs, params, outputs, options);
+      const std::lock_guard<std::mutex> lock(mutex);
+      outcomes.push_back(ran ? std::string("ok") : ran.error().message);
+      return ran;
+    });
+  }
+  ~ObservedRun() {
+    OnDemandService::setRunForTest({});
+  }
+  ObservedRun(const ObservedRun&) = delete;
+  ObservedRun& operator=(const ObservedRun&) = delete;
+
+  /// Waits up to 5 s for `runs` runs to have started.
+  [[nodiscard]] bool awaitStarted(int runs) const {
+    for (int spin = 0; spin < 500 && started.load() < runs; ++spin) {
+      std::this_thread::sleep_for(10ms);
+    }
+    return started.load() >= runs;
+  }
+  [[nodiscard]] std::vector<std::string> results() {
+    const std::lock_guard<std::mutex> lock(mutex);
+    return outcomes;
+  }
+
+  std::atomic<int> started{0};
+  std::mutex mutex;
+  std::vector<std::string> outcomes;
+};
+#endif
+
+// An edit while the old revision's run waits on the Python lane to compile (the GIL held, as by a script stuck in a
+// builtin C loop) returns at once; that run, a compile error, ends dropped: the node never shows it, and the new
+// revision runs and settles ready.
+TEST(NodeSchedulerTest, AnEditWhileItsOldRevisionCompilesDropsTheOldResult) {
+#ifndef PJ_PYTHON_TEST_PROBE
+  GTEST_SKIP() << "this build has no Python";
+#else
+  ObservedRun observed;
+  Fixture fx(8 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  fx.pushCloud(10 * kSec);
+  auto edited = test::pythonRecipe("edited", {"cloud"}, {numberSpec("n")});
+  edited.script = "def evaluate(inputs, params:\n    return 1\n";
+  {
+    const test::PythonGilHold hold;
+    fx.install(edited);
+    fx.request("owner/edited", 10 * kSec);
+    ASSERT_TRUE(observed.awaitStarted(1));
+    EXPECT_EQ(fx.state("owner/edited").status, Status::kPending);
+    edited.script = "def evaluate(inputs, params):\n    return 2\n";
+    const auto begin = std::chrono::steady_clock::now();
+    fx.install(edited);
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, 250ms) << "the edit never waits for the GIL";
+  }
+  fx.settle();
+  const NodeState state = fx.state("owner/edited");
+  EXPECT_EQ(state.status, Status::kReady) << state.detail;
+  EXPECT_EQ(state.detail, "");
+  const std::vector<std::string> outcomes = observed.results();
+  ASSERT_EQ(outcomes.size(), 2u);
+  EXPECT_NE(outcomes[0].find("SyntaxError"), std::string::npos) << outcomes[0] << ": the old revision compiled";
+  EXPECT_EQ(outcomes[1], "ok");
+#endif
+}
+
+// A recipe removed while its run waits on the Python lane to compile: the removal returns at once, and the run, once
+// the GIL is free, compiles, sees its cancellation and ends "script cancelled", publishing nothing and touching no
+// state.
+TEST(NodeSchedulerTest, RemovingAPythonRecipeWhileItCompilesPublishesNothing) {
+#ifndef PJ_PYTHON_TEST_PROBE
+  GTEST_SKIP() << "this build has no Python";
+#else
+  ObservedRun observed;
+  Fixture fx(8 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  fx.pushCloud(10 * kSec);
+  auto gone = test::pythonRecipe("gone", {"cloud"}, {cloudSpec()});
+  gone.script = "def evaluate(inputs, params):\n    return {'cropped': inputs['cloud']}\n";
+  {
+    const test::PythonGilHold hold;
+    fx.install(gone);
+    fx.request("owner/gone", 10 * kSec);
+    ASSERT_TRUE(observed.awaitStarted(1));
+    const auto begin = std::chrono::steady_clock::now();
+    (void)fx.service->remove("owner/gone");
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, 250ms) << "the removal never waits for the GIL";
+  }
+  fx.settle();
+  EXPECT_EQ(observed.results(), (std::vector<std::string>{"script cancelled"}));
+  EXPECT_EQ(fx.publishedCount("owner/gone"), 0u);
+  EXPECT_FALSE(fx.service->state("owner/gone").has_value());
+#endif
 }
 
 // ---- D30: the result policy --------------------------------------------------------------------------------

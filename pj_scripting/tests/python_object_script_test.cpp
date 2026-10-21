@@ -17,8 +17,10 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -35,6 +37,7 @@
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
+#include "pj_scripting/on_demand_script.h"
 #include "pj_scripting/python_engine.h"
 #include "python_object_binder.h"
 #include "python_sandbox.h"
@@ -1940,56 +1943,177 @@ TEST(PythonObjectScript, ACancelFlagInterruptsAPurePythonLoop) {
   EXPECT_DOUBLE_EQ(numberOf(runSource("def evaluate(inputs, params):\n    return 2\n")), 2.0);
 }
 
-// The caller never waits on the GIL without a bound. While a script stuck in a builtin C loop holds it (a held GIL
-// here): a compiled script's last release returns at once (it is posted to the helper, where it waits for the GIL); a
-// compile queued behind it fails "Python is busy" once its bound passes and marks the helper's item stuck; the next
-// fails at once. Once the GIL is free the release runs (the code object goes) and the abandoned compile is skipped. An
-// unbounded wait would hang the test; the elapsed-time checks are lax (a waiting compile takes the whole bound, one
-// that fails at once microseconds). Right after the hold the helper may still be finishing its item, so the next
-// compile is retried.
-TEST(PythonObjectScript, ACompileWaitsForTheGilOnlyUpToItsBoundAndAReleaseNever) {
+// The runtime's compile (`compileOnDemand`, which a recipe's create, validate and restore call on the GUI thread) never
+// takes the GIL: while a script stuck in a builtin C loop holds it (a held GIL here) it returns at once, and so does a
+// compiled script's last release (posted to the helper, where it waits for the GIL). The script compiles at its first
+// run, once: a compile error is that run's error, with the message an eager compile reports, and every later run
+// returns it without compiling again. An unbounded wait would hang the test; the elapsed-time bound is lax.
+TEST(PythonObjectScript, AnOnDemandCompileNeverWaitsForTheGil) {
   std::optional<Expected<CompiledPythonScript>> kept = compile("def evaluate(inputs, params):\n    return 1\n");
   ASSERT_TRUE(kept->has_value()) << kept->error();
   const int before = ::PJ::test::pythonCompileEvents();
-  ASSERT_TRUE(compile("def evaluate(inputs, params):\n    return 4\n").has_value());
-  const int per_compile = ::PJ::test::pythonCompileEvents() - before;
+  PyObject* const code = detail::codeObjectOf(**kept);
   PyObject* weak = nullptr;
   {
     py::gil_scoped_acquire gil;
-    weak = PyWeakref_NewRef(detail::codeObjectOf(**kept), nullptr);
+    weak = PyWeakref_NewRef(code, nullptr);
     ASSERT_NE(weak, nullptr);
   }
-  int abandoned_at = 0;
+  constexpr const char* kBroken = "def evaluate(inputs, params:\n    return 2\n";
+  std::optional<Expected<CompiledOnDemandScript>> good;
+  std::optional<Expected<CompiledOnDemandScript>> broken;
   {
     const ::PJ::test::PythonGilHold hold;
-    kept.reset();  // the last copy: its release becomes the helper's current item, waiting for the GIL
-    auto begin = std::chrono::steady_clock::now();
-    const auto busy = compile("def evaluate(inputs, params):\n    return 2\n");
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(30));
-    ASSERT_FALSE(busy.has_value());
-    EXPECT_NE(busy.error().find("Python is busy"), std::string::npos) << busy.error();
-    begin = std::chrono::steady_clock::now();
-    const auto again = compile("def evaluate(inputs, params):\n    return 5\n");
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(kPythonCompileWaitMillis / 2))
-        << "the first timeout marked the helper's item stuck: no wait";
-    ASSERT_FALSE(again.has_value());
-    EXPECT_NE(again.error().find("Python is busy"), std::string::npos) << again.error();
-    abandoned_at = ::PJ::test::pythonCompileEvents();
+    const auto begin = std::chrono::steady_clock::now();
+    kept.reset();  // the last copy: its release waits for the GIL on the helper
+    good = compileOnDemand("python", "def evaluate(inputs, params):\n    return 3\n");
+    broken = compileOnDemand("python", kBroken);
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(250)) << "no wait for the GIL";
   }
-  Expected<CompiledPythonScript> next = unexpected(std::string("not compiled"));
-  for (int attempt = 0; attempt < 200 && !next; ++attempt) {
-    next = compile("def evaluate(inputs, params):\n    return 3\n");
-    if (!next) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  ASSERT_TRUE(good->has_value()) << good->error();
+  ASSERT_TRUE(broken->has_value()) << broken->error() << ": a Python compile error is its first run's";
+  EXPECT_EQ(::PJ::test::pythonCompileEvents(), before) << "nothing compiled before a run";
+  const auto runs = [](const CompiledOnDemandScript& script) {
+    return runOnDemand(script, {}, "{}", {}, RunOptions{});
+  };
+  EXPECT_DOUBLE_EQ(numberOf(runs(**good)), 3.0);
+  const int compiled_once = ::PJ::test::pythonCompileEvents();
+  EXPECT_GT(compiled_once, before) << "the first run compiled";
+  EXPECT_DOUBLE_EQ(numberOf(runs(**good)), 3.0);
+  const auto failed = runs(**broken);
+  ASSERT_FALSE(failed.has_value());
+  const auto eager = compile(kBroken);
+  ASSERT_FALSE(eager.has_value());
+  EXPECT_EQ(failed.error().message, eager.error()) << "the same message as an eager compile";
+  const int after_broken = ::PJ::test::pythonCompileEvents();
+  EXPECT_EQ(errorOf(runs(**broken)), eager.error());
+  EXPECT_EQ(::PJ::test::pythonCompileEvents(), after_broken) << "a compile error is kept, not compiled again";
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    py::gil_scoped_acquire gil;
+    if (PyWeakref_GetObject(weak) == Py_None) {
+      break;
     }
+    const py::gil_scoped_release released;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-  ASSERT_TRUE(next.has_value()) << next.error();
-  EXPECT_EQ(::PJ::test::pythonCompileEvents() - abandoned_at, per_compile) << "the abandoned compile was skipped";
   {
     py::gil_scoped_acquire gil;
     EXPECT_EQ(PyWeakref_GetObject(weak), Py_None) << "the posted release dropped the code object";
     Py_DECREF(weak);
   }
+}
+
+// Two first runs of one handle racing (both inside while the GIL is held, released once they are): the script compiles
+// once, and both runs return the same value. The handle's lock is taken before the GIL, so neither deadlocks.
+TEST(PythonObjectScript, AConcurrentFirstRunCompilesOnce) {
+  ASSERT_TRUE(compile("def evaluate(inputs, params):\n    return 0\n").has_value());  // booted
+  int before = ::PJ::test::pythonCompileEvents();
+  ASSERT_TRUE(compile("def evaluate(inputs, params):\n    return -1\n").has_value());
+  const int per_compile = ::PJ::test::pythonCompileEvents() - before;
+  ASSERT_GT(per_compile, 0);
+  const auto script = deferOnDemandScriptPython("def evaluate(inputs, params):\n    return 7\n");
+  ASSERT_TRUE(script.has_value()) << script.error();
+  before = ::PJ::test::pythonCompileEvents();
+  std::atomic<int> inside{0};
+  double first = 0.0;
+  double second = 0.0;
+  const auto runner = [&](double& value) {
+    ++inside;
+    value = numberOf(run(*script));
+  };
+  std::thread one;
+  std::thread two;
+  {
+    const ::PJ::test::PythonGilHold hold;
+    one = std::thread(runner, std::ref(first));
+    two = std::thread(runner, std::ref(second));
+    while (inside.load() < 2) {
+      std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));  // both blocked: one on the GIL, one on the lock
+  }
+  one.join();
+  two.join();
+  EXPECT_DOUBLE_EQ(first, 7.0);
+  EXPECT_DOUBLE_EQ(second, 7.0);
+  EXPECT_EQ(::PJ::test::pythonCompileEvents() - before, per_compile) << "one compile for both first runs";
+}
+
+// A first run cancelled before it starts compiles nothing and caches nothing: the next run compiles and succeeds.
+TEST(PythonObjectScript, ACancelledFirstRunDoesNotCacheAnError) {
+  ASSERT_TRUE(compile("def evaluate(inputs, params):\n    return 0\n").has_value());  // booted
+  const auto script = deferOnDemandScriptPython("def evaluate(inputs, params):\n    return 5\n");
+  ASSERT_TRUE(script.has_value()) << script.error();
+  const int before = ::PJ::test::pythonCompileEvents();
+  RunOptions cancelled;
+  cancelled.cancelled = [] { return true; };
+  EXPECT_EQ(errorOf(run(*script, {}, {}, "{}", cancelled)), "script cancelled");
+  EXPECT_EQ(::PJ::test::pythonCompileEvents(), before) << "a cancelled run compiles nothing";
+  EXPECT_DOUBLE_EQ(numberOf(run(*script)), 5.0);
+  EXPECT_GT(::PJ::test::pythonCompileEvents(), before);
+}
+
+// A run stopped by the watchdog leaves nothing behind that fails the next revision's compile on the same thread.
+TEST(PythonObjectScript, ATimedOutRunDoesNotPoisonTheNextRevisionsCompile) {
+  const auto spinning = deferOnDemandScriptPython("def evaluate(inputs, params):\n    while True:\n        pass\n");
+  ASSERT_TRUE(spinning.has_value()) << spinning.error();
+  RunOptions quick;
+  quick.limits.python_watchdog_millis = 50;
+  EXPECT_NE(errorOf(run(*spinning, {}, {}, "{}", quick)).find("TimeoutError"), std::string::npos);
+  const auto next = deferOnDemandScriptPython("def evaluate(inputs, params):\n    return 9\n");
+  ASSERT_TRUE(next.has_value()) << next.error();
+  EXPECT_DOUBLE_EQ(numberOf(run(*next)), 9.0);
+}
+
+// The handle a run holds keeps the code object alive: dropping the last other copy while the first run executes
+// releases the code object only after the run returned.
+TEST(PythonObjectScript, DroppingTheLastExternalCopyDuringItsFirstRunReleasesAfterTheRun) {
+  std::optional<Expected<CompiledPythonScript>> external = deferOnDemandScriptPython(
+      "def evaluate(inputs, params):\n    s = 0\n    for i in range(3_000_000):\n        s += i\n    return 1\n");
+  ASSERT_TRUE(external->has_value()) << external->error();
+  CompiledPythonScript held = **external;  // the run's copy, as a job holds it
+  std::atomic<bool> returned{false};
+  double value = 0.0;
+  RunOptions patient;
+  patient.limits.python_watchdog_millis = 60'000;
+  std::thread runner([&] {
+    value = numberOf(run(held, {}, {}, "{}", patient));
+    returned = true;
+  });
+  PyObject* code = nullptr;
+  for (int attempt = 0; attempt < 500 && code == nullptr; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    code = detail::codeObjectOf(**external);  // under the handle's lock: after the runner's compile
+  }
+  ASSERT_NE(code, nullptr);
+  PyObject* weak = nullptr;
+  {
+    py::gil_scoped_acquire gil;
+    weak = PyWeakref_NewRef(code, nullptr);
+  }
+  ASSERT_NE(weak, nullptr);
+  ASSERT_FALSE(returned.load()) << "the loop outlasts the setup";
+  external.reset();  // the last copy but the run's
+  {
+    py::gil_scoped_acquire gil;
+    EXPECT_NE(PyWeakref_GetObject(weak), Py_None) << "alive while the run holds its copy";
+  }
+  runner.join();
+  EXPECT_DOUBLE_EQ(value, 1.0);
+  held = CompiledPythonScript{};  // the run's copy goes: its release is posted to the helper
+  bool released = false;
+  for (int attempt = 0; attempt < 500 && !released; ++attempt) {
+    {
+      py::gil_scoped_acquire gil;
+      released = PyWeakref_GetObject(weak) == Py_None;
+    }
+    if (!released) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+  EXPECT_TRUE(released) << "released once the run's copy went";
+  py::gil_scoped_acquire gil;
+  Py_DECREF(weak);
 }
 
 // ---- video: frame_at (the twins of object_script_test.cpp's) ------------------------------------------------------

@@ -87,7 +87,8 @@ struct PjNamespaces {
 /// keep, so the charge counts until the result dies. Null when `value` is not an object.
 [[nodiscard]] std::shared_ptr<const void> anchorOf(PyObject* value);
 
-/// The code object `script` holds (borrowed), for a test's weak reference to it.
+/// The code object `script` holds (borrowed; null until compiled), for a test's weak reference to it. Takes the
+/// script's lock: call it without the GIL.
 [[nodiscard]] PyObject* codeObjectOf(const CompiledPythonScript& script);
 
 }  // namespace PJ::scripting::detail

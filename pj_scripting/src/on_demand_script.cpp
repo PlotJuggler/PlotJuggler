@@ -23,9 +23,19 @@ Expected<CompiledOnDemandScript> compileOnDemand(std::string_view language, std:
     return held(compileOnDemandScript(source));
   }
   if (language == "python") {
-    return held(compileOnDemandScriptPython(source));
+    return held(deferOnDemandScriptPython(source));
   }
   return unexpected("unsupported language '" + std::string(language) + "' (only 'luau' or 'python')");
+}
+
+Status validateOnDemand(std::string_view language, std::string_view source) {
+  if (language == "python") {
+    return checkOnDemandScriptPython(source);
+  }
+  if (Expected<CompiledOnDemandScript> compiled = compileOnDemand(language, source); !compiled) {
+    return unexpected(std::move(compiled.error()));
+  }
+  return okStatus();
 }
 
 Expected<ScriptBundle, ScriptError> runOnDemand(

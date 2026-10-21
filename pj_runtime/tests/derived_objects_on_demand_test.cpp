@@ -15,6 +15,7 @@
 #include <QTemporaryDir>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -32,6 +33,10 @@
 #include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
+#include "pj_scripting/python_object_script.h"
+#ifdef PJ_PYTHON_TEST_PROBE
+#include "python_test_probe.h"
+#endif
 
 using namespace Qt::StringLiterals;
 
@@ -844,6 +849,74 @@ TEST(DerivedObjectsTest, EmptyParamsRoundTripByteForByte) {
   ASSERT_TRUE(static_cast<bool>(doc.setContent(first_save)));
   target.restoreCleanly(doc, RestoreIntent::kReplace);
   EXPECT_EQ(target.savedBlock(), first_save);
+}
+
+// A layout restore of many Python recipes waits for none of them, even while a script stuck in a builtin C loop holds
+// the interpreter (a held GIL here): Python compiles at a recipe's first run, on the Python lane, so every recipe
+// installs and the restore reports nothing. The time bound is lax; a compile that waited would take seconds.
+TEST(DerivedObjectsTest, ARestoreOfManyPythonRecipesWaitsForNone) {
+#ifndef PJ_PYTHON_TEST_PROBE
+  GTEST_SKIP() << "this build has no Python";
+#else
+  constexpr int kRecipes = 32;
+  QByteArray saved;
+  {
+    Fixture source;
+    for (int index = 0; index < kRecipes; ++index) {
+      RecipeGraph::Recipe python = recipe("py" + std::to_string(index));
+      python.language = "python";
+      python.script = "def evaluate(inputs, params):\n    return {'cropped': inputs['cloud']}\n";
+      source.install(python);
+    }
+    saved = source.savedBlock();
+  }
+  ASSERT_TRUE(scripting::compileOnDemandScriptPython("def evaluate(inputs, params):\n    return 1\n").has_value());
+  Fixture target;
+  QDomDocument doc;
+  ASSERT_TRUE(static_cast<bool>(doc.setContent(saved)));
+  {
+    const test::PythonGilHold hold;
+    const auto begin = std::chrono::steady_clock::now();
+    target.restoreCleanly(doc, RestoreIntent::kReplace);
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(500)) << "no wait per recipe";
+  }
+  EXPECT_EQ(target.onDemand().graph().keys().size(), static_cast<size_t>(kRecipes));
+#endif
+}
+
+// A Python compile error never fails a restore: the broken recipe installs with no diagnostic (nothing compiles
+// Python on the GUI thread), and its compile error surfaces at the node's first demanded run, as its error state, with
+// the message an eager compile gives.
+TEST(DerivedObjectsTest, ARestoredBrokenPythonRecipeInstallsSilentlyAndErrorsWhenDemanded) {
+  if (!scripting::pythonAvailable()) {
+    GTEST_SKIP() << "this build has no Python";
+  }
+  constexpr const char* kBroken = "def evaluate(inputs, params:\n    return {}\n";
+  QByteArray saved;
+  {
+    Fixture source;
+    RecipeGraph::Recipe broken = recipe("broken");
+    broken.language = "python";
+    broken.script = kBroken;
+    source.install(broken);
+    saved = source.savedBlock();
+  }
+  Fixture target;
+  target.fake.real = true;
+  QDomDocument doc;
+  ASSERT_TRUE(static_cast<bool>(doc.setContent(saved)));
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  ASSERT_NE(target.onDemand().graph().find("owner/broken"), nullptr) << "installed";
+  const std::optional<NodeScheduler::NodeState> before = target.onDemand().state("owner/broken");
+  EXPECT_TRUE(!before || before->status != NodeScheduler::NodeState::Status::kError) << "no error before a run";
+
+  target.materialize("owner/broken", 10 * kSec);
+  const auto eager = scripting::compileOnDemandScriptPython(kBroken);
+  ASSERT_FALSE(eager.has_value());
+  const std::optional<NodeScheduler::NodeState> after = target.onDemand().state("owner/broken");
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(after->status, NodeScheduler::NodeState::Status::kError);
+  EXPECT_EQ(after->detail, eager.error());
 }
 
 // What a restore's comparison and ordering cost per recipe and per edge, for a chain of N recipes the snapshot

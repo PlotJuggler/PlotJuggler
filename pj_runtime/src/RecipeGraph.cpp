@@ -141,8 +141,7 @@ Expected<std::shared_ptr<const scripting::CompiledOnDemandScript>> validate(
       installed->recipe.script == recipe.script) {
     return installed->compiled;
   }
-  // A Python compile runs on the Python helper thread and is waited for at most `kPythonCompileWaitMillis`: a script
-  // holding the GIL fails the upsert as busy instead of freezing the GUI.
+  // Python compiles at its first run, on the Python lane: an upsert never waits for the GIL.
   Expected<scripting::CompiledOnDemandScript> compiled = scripting::compileOnDemand(recipe.language, recipe.script);
   if (!compiled) {
     return unexpected(std::move(compiled.error()));

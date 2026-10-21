@@ -9,7 +9,7 @@
 #      the app must configure, build, package deterministically, and pass the
 #      deployment contract + cold threaded Chromium boot.
 #   2. Acceptance — Scene2D/Scene3D ON, ingress probe ON, browser Python ON
-#      (PJ_WASM_WITH_PYTHON, off in production until it stops blocking the GUI):
+#      (PJ_WASM_WITH_PYTHON, off in production until ARCHITECTURE §14's open items close):
 #      the retained QRhi capability probe and functional browser suite (with
 #      python.spec.js) run against the same source graph used by the packaged
 #      application, in Chromium (wasm-chromium job) and Firefox (wasm-firefox

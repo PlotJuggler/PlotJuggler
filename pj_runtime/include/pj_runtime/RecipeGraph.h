@@ -92,7 +92,8 @@ class RecipeGraph {
     uint64_t revision = 0;
     DatasetId dataset = 0;  ///< where every input resolved, and where the outputs live
     std::vector<Binding> bindings;
-    /// Compiled once per revision in the recipe's language, which also picks its runs' lane; the runs share it.
+    /// Compiled once per revision in the recipe's language (Python by its first run), which also picks its runs'
+    /// lane; the runs share it.
     std::shared_ptr<const scripting::CompiledOnDemandScript> compiled;
   };
 
@@ -107,7 +108,8 @@ class RecipeGraph {
   /// layout parse reads back. Rejected, with nothing changed: an empty owner or id; a key another owner's
   /// recipe holds (an id may contain '/', so two owners can spell one key); a language no runner has (Luau, and Python
   /// where `scripting::pythonAvailable()`);
-  /// params nested deeper than `scripting::kMaxParamsDepth`; a script that does not compile; no input
+  /// params nested deeper than `scripting::kMaxParamsDepth`; a Luau script that does not compile (a Python one
+  /// compiles at its first run, which reports its error, so an upsert never waits for the GIL); no input
   /// or no output; an output `scripting::parseOutputSpec` refuses (only types a script can produce); a
   /// name used twice among the inputs and outputs; a persistent id starting with `~` (`kPreviewIdPrefix`);
   /// an input that resolves nowhere (unless recorded as an absent node's output), that its

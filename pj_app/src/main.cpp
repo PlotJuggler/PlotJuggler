@@ -270,7 +270,7 @@ int main(int argc, char* argv[]) {
   // therefore retain their existing settings backend and behavior.
   auto* browser_persistence = new PJ::BrowserPersistence(&app);
   Q_UNUSED(browser_persistence);
-  // Before any GUI-thread wait on a Python compile: see prestartPythonHelper().
+  // Before a validate's bounded wait on the Python helper: see prestartPythonHelper().
   PJ::scripting::prestartPythonHelper();
 #endif
 

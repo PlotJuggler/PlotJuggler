@@ -251,12 +251,16 @@ class FakeRun {
   /// What its SceneEntities outputs hold at a query time; empty: no entity.
   std::function<std::vector<sdk::SceneEntity>(Timestamp)> entities;
   std::string text = "ok";  ///< its string outputs' value
+  bool real = false;        ///< runs the script for real (`scripting::runOnDemand`), recording nothing
 
   NodeScheduler::RunFunction function() {
-    return [this](
-               const scripting::CompiledOnDemandScript&, Span<const scripting::NamedValue> inputs,
-               std::string_view params, Span<const scripting::OutputSpec> outputs,
-               const scripting::RunOptions& options) { return run(inputs, params, outputs, options); };
+    return
+        [this](
+            const scripting::CompiledOnDemandScript& script, Span<const scripting::NamedValue> inputs,
+            std::string_view params, Span<const scripting::OutputSpec> outputs, const scripting::RunOptions& options) {
+          return real ? scripting::runOnDemand(script, inputs, params, outputs, options)
+                      : run(inputs, params, outputs, options);
+        };
   }
 
   void allow(int runs) {

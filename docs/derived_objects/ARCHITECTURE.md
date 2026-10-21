@@ -957,9 +957,9 @@ VM reuse is proposed (N1, N2).
   input is held for the run (`ScriptMedia`, both binders), so its address names that input even once
   the script drops it.
 - **In the runtime** (slice 10c): a recipe's `language` picks its compiler and runner in one place
-  (`pj_scripting/include/pj_scripting/on_demand_script.h`): `RecipeGraph` compiles each revision once into
-  a `CompiledOnDemandScript` (Luau bytecode or the opaque Python handle, so the graph includes no
-  CPython), its runs take the lane the language picks (§11) and run through `runOnDemand`. Cursor
+  (`pj_scripting/include/pj_scripting/on_demand_script.h`): `RecipeGraph` holds one `CompiledOnDemandScript`
+  per revision (Luau bytecode compiled at the upsert, or the opaque Python handle its first run compiles, so
+  the graph includes no CPython), its runs take the lane the language picks (§11) and run through `runOnDemand`. Cursor
   requests, evaluations, series and the plugin bridge's `validate` (headless sessions included) accept
   `python` wherever `pythonAvailable()`; a build without it (WASM) refuses it with "python is not
   available in this build". An identical upsert keeps the compiled script (no compile). Each input
@@ -968,20 +968,48 @@ VM reuse is proposed (N1, N2).
   its outputs' keepalives with their values. A run's cancellation reaches pure Python through the
   watchdog, which polls the pool token's flags (`RunOptions::cancel_flags`) and raises
   KeyboardInterrupt (past `except Exception`), so a removed or superseded loop frees the Python lane
-  within about 50 ms instead of at its timeout. A compile (create, validate) and the
-  interpreter's boot run on one Python helper thread (a thread and a queue,
-  `python_object_script.cpp`); the GUI waits for a compile at most `kPythonCompileWaitMillis` (2 s) and
-  otherwise fails it with "Python is busy (a running script holds the interpreter); try again", the late
-  result dropped on the helper. A compiled script's last release is posted there, never waited for. The
-  interpreter boots lazily, at the first Python compile, so a session without Python pays nothing.
-  What remains: a script stuck in a builtin C loop (`sum(range(10**11))`, `math.factorial(10**7)`) holds
-  the GIL until it ends, which neither the watchdog nor a cancellation can interrupt, so it keeps the
-  Python lane busy until then. The first compile that times out marks the helper's current item stuck,
-  and until that item finishes every compile fails at once (no clock decides it), so a restore of many
-  Python recipes waits 2 s once, not for each; a compile in the moment the helper takes to finish that
-  item after the script ends fails too, so a caller retries. Python filters are not routed through the
-  helper: their inspect, create, `calculate` and teardown still take the GIL on the
-  GUI or commit thread without a bound (`python_engine.cpp`); routing them is a later slice.
+  within about 50 ms instead of at its timeout.
+- **No GUI-thread wait on Python (slice P-c, decided 2026-10-21).** The GUI never compiles Python:
+  `compileOnDemand` keeps the source in the revision's handle (`deferOnDemandScriptPython`) without touching
+  the interpreter, and the revision's first run checks and compiles it on the Python lane, which holds the GIL
+  for the run anyway. The handle keeps the code object, or the compile error, so later runs compile nothing,
+  and frees the source. The compile comes after the run's cancellation check (a cancelled or removed run
+  compiles nothing, so caches nothing) and before its armed scope (whose hook refuses compiles); it takes the
+  handle's lock before the GIL, never while holding it, so racing first runs compile once.
+  - A create, an evaluation's bind and a restore of N recipes return at once, whatever holds the GIL. A node
+    whose first run waits for the GIL is `kPending`, as any run in flight, then shows its result.
+  - A compile error is that run's error: the node settles `kError` with the message an eager compile gives (the
+    layer's status, the bridge's `config` state and detail, an evaluation's report), and the scheduler
+    remembers it by cache key like any failed run. So a create no longer refuses Python that does not compile
+    (Luau still compiles at the create), and a restore never reports one as a diagnostic: the error surfaces at
+    the node's first demanded run.
+  - A validate (an editor's check button) keeps checking: a throwaway compile on the Python helper thread
+    (`checkOnDemandScriptPython`: no script handle touched, nothing cached), waited for at most
+    `kPythonValidateWaitMillis` (100 ms: about 100 uncontended compiles of a short script, 20 GIL switch
+    intervals behind a running pure-Python script, and within what a check may freeze the browser's main thread).
+    Finished in time, it returns the compile's result as before; otherwise (a script holds the GIL, the
+    interpreter is still booting) it reports success, meaning unchecked, and the helper skips the compile nobody
+    waits for. A validate finding the helper already busy (an item waiting for the GIL) reports unchecked at
+    once. The first validate of a session boots the interpreter on the helper and is most likely unchecked. The
+    ABI's validate has only a bool and an error, so "unchecked" cannot be told from "valid"; the first run
+    reports the error anyway. Proposed for the SDK (not done here): a tail-appended validate that also returns
+    a tri-state (valid, invalid, unchecked), so an editor can show "not checked yet" instead of a pass.
+  - Stale and removed revisions need nothing new: an edit or a removal cancels the old revision's run, and the
+    scheduler drops its result by revision (`NodeScheduler::finish`) and by cache key
+    (`CacheKey::completes`). Either guard alone keeps a stale compile error off the node.
+  - The interpreter boots at the first compile, on the thread that makes it (the Python lane, or the helper for
+    a validate), so a session without Python pays nothing. A compiled script's last release is posted to the
+    same Python helper thread (a thread and a queue, `python_object_script.cpp`), never waited for. In the
+    browser `main.cpp` starts the helper at startup (`prestartPythonHelper()`), because a thread created while
+    the main thread waits on it never starts.
+  - Rejected: compiling on the helper with a completion posted back to the GUI, which needs a compiling state
+    and an install path and still defers the error; a zero-wait bound with a retry in the browser, which keeps
+    the "Python is busy" failures.
+  - What remains: a script stuck in a builtin C loop (`sum(range(10**11))`, `math.factorial(10**7)`) holds
+    the GIL until it ends, which neither the watchdog nor a cancellation can interrupt, so every Python run,
+    a first compile included, waits behind it. Python filters do not use the lane: their inspect, create,
+    `calculate` and teardown still take the GIL on the GUI or commit thread without a bound
+    (`python_engine.cpp`); routing them is a later slice.
 - **Python in the browser** (D18 with D29) is CPython 3.14.8's Emscripten target, linked
   statically with pthreads behind `PJ_WASM_WITH_PYTHON` (slice P-a): off in production, on
   in WASM CI's acceptance build. Only the on-demand lane runs there; Python filters stay
@@ -989,9 +1017,13 @@ VM reuse is proposed (N1, N2).
   0.13-0.21 s, and a 4-line script's call is faster than the Luau lane's in the same browser
   (20 against 44 µs in Chromium, 112 against 300 µs in Firefox, which runs the whole build
   4-6 times slower). The build, the stdlib zip policy and the symbol audit are in
-  `docs/WASM_DEPLOYMENT.md`. Open before production: a GUI-thread compile still waits up to
-  2 s while a script holds the GIL inside one C call (slice P-c), and allocation-heavy code
-  runs about 27 times slower than native (P-b).
+  `docs/WASM_DEPLOYMENT.md`. Open before production: allocation-heavy code runs about 27 times
+  slower than native (P-b). A GUI compile while a script holds the GIL inside one C call no
+  longer freezes the page (slice P-c), and a validate then waits its 100 ms bound: the longest
+  main-thread gap is 103.4 ms in Chromium and 103.2 ms in Firefox (the validate's bound; a
+  compile alone gives 20.1 and 20.5 ms, one 20 ms tick; a validate with the interpreter free
+  returns its error in 2-3 ms), against 2002 ms in both before, and `python.spec.js` holds it
+  under 250 ms.
 
 ## 15. Series
 

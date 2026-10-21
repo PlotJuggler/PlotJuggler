@@ -336,53 +336,107 @@ TEST(OnDemandRuntimeHostTest, PythonRecipeIsAccepted) {
   EXPECT_EQ(done.report.bundles[0].outputs.at("count").value, 4.0);
 }
 
+/// Lengthens the Python validate's wait while alive (`scripting::setPythonValidateWaitForTest`), for a test asserting
+/// a checked result: a loaded runner must not turn a 1 ms compile into "unchecked" at the 100 ms production bound.
+struct CheckedPythonValidate {
+  CheckedPythonValidate() {
+    scripting::setPythonValidateWaitForTest(10'000);
+  }
+  ~CheckedPythonValidate() {
+    scripting::setPythonValidateWaitForTest(0);
+  }
+  CheckedPythonValidate(const CheckedPythonValidate&) = delete;
+  CheckedPythonValidate& operator=(const CheckedPythonValidate&) = delete;
+};
+
 // The bridge never waits on the GIL without a bound: while a script stuck in a builtin C loop holds the interpreter (a
-// held GIL here), a Python create fails "Python is busy" once the compile's bound passes, a validate after it at once
-// (a waiting compile takes the bound or more), and removing a
-// Python recipe (its compiled script's last release) returns at once. Afterwards the create works. An unbounded wait
-// would hang the test.
-TEST(OnDemandRuntimeHostTest, APythonCreateFailsWhileTheInterpreterIsHeld) {
+// held GIL here), a Python create returns at once (the script compiles at its first run, on the Python lane), and so
+// does removing a Python recipe (its compiled script's last release); a validate waits at most
+// `kPythonValidateWaitMillis`, then reports the script unchecked (success, even for a syntax error). The created recipe
+// is pending while the lane waits for the GIL, and ready once the GIL is free. An unbounded wait would hang the test;
+// the time bounds are lax.
+TEST(OnDemandRuntimeHostTest, APythonCreateNeverWaitsForTheInterpreter) {
 #ifndef PJ_PYTHON_TEST_PROBE
   GTEST_SKIP() << "this build has no Python";
 #else
-  Fixture fx;
+  Fixture fx(/*real_run=*/true);
   auto first = request("first");
   first.language = "python";
   first.script = kPythonScript;
-  ASSERT_TRUE(fx.view.createV2(first).has_value());  // boots the interpreter
+  ASSERT_TRUE(fx.view.createV2(first).has_value());
+  ASSERT_TRUE(scripting::compileOnDemandScriptPython(kPythonScript).has_value());  // boots the interpreter
   auto held = first;
   held.id = "held";
   {
     const test::PythonGilHold hold;
-    const auto created = fx.view.createV2(held);
-    ASSERT_FALSE(created.has_value());
-    EXPECT_NE(created.error().find("Python is busy"), std::string::npos) << created.error();
     const auto begin = std::chrono::steady_clock::now();
-    const auto validated = fx.view.validateScript("on_demand", "python", kPythonScript, "{}");
-    // The create's timeout marked the helper's item stuck, so the validate fails without waiting: a waiting compile
-    // takes the whole bound, this one microseconds (the margin is half the bound).
+    const auto created = fx.view.createV2(held);
+    ASSERT_TRUE(created.has_value()) << created.error();
+    fx.display("pluginA/held/cropped");
+    const auto validate_begin = std::chrono::steady_clock::now();
+    const auto validated = fx.view.validateScript("on_demand", "python", "def evaluate(inputs, params:\n", "{}");
+    EXPECT_TRUE(validated.has_value()) << "unchecked while the GIL is held: " << validated.error();
     EXPECT_LT(
-        std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(scripting::kPythonCompileWaitMillis / 2));
-    ASSERT_FALSE(validated.has_value());
-    EXPECT_NE(validated.error().find("Python is busy"), std::string::npos) << validated.error();
+        std::chrono::steady_clock::now() - validate_begin,
+        std::chrono::milliseconds(scripting::kPythonValidateWaitMillis + 100))
+        << "the validate waits its bound at most";
     EXPECT_TRUE(fx.view.remove("first").has_value());
+    const DisplayOffset offset = fx.manager.displayOffset(fx.ds);
+    fx.session.playbackEngine().setRangeAndCurrentTime(
+        DisplayRange{rawToDisplaySeconds(0, offset), rawToDisplaySeconds(100 * kSec, offset)},
+        rawToDisplaySeconds(10 * kSec, offset));
+    QCoreApplication::processEvents();
+    EXPECT_LT(
+        std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(scripting::kPythonValidateWaitMillis + 150))
+        << "no wait for the GIL but the validate's bound";
+    EXPECT_EQ(fx.config("held")["state"], "pending") << fx.config("held").dump();
   }
-  // Right after the hold the helper may still be finishing its item, during which a create fails at once: retry.
-  bool created = false;
-  for (int attempt = 0; attempt < 200 && !created; ++attempt) {
-    created = fx.view.createV2(held).has_value();
-    if (!created) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-  }
-  EXPECT_TRUE(created);
+  fx.settle();
+  EXPECT_EQ(fx.config("held")["state"], "ready") << fx.config("held").dump();
+  EXPECT_EQ(fx.ring("pluginA/held/cropped"), (std::vector<Timestamp>{10 * kSec}));
 #endif
+}
+
+// A Python compile error reaches the node's state, where every run error of the recipe is reported (`config`'s state
+// and detail), with the message an eager compile gives; an evaluation of the node reports it too, and so does a
+// validate of the source while the interpreter is free. The create succeeds: it never compiles Python.
+TEST(OnDemandRuntimeHostTest, APythonCompileErrorReachesTheNodesState) {
+  if (!scripting::pythonAvailable()) {
+    GTEST_SKIP() << "this build has no Python";
+  }
+  Fixture fx(/*real_run=*/true);
+  constexpr const char* kBroken = "def evaluate(inputs, params:\n    return {}\n";
+  auto made = request("broken");
+  made.language = "python";
+  made.script = kBroken;
+  const auto created = fx.view.createV2(made);
+  ASSERT_TRUE(created.has_value()) << created.error();
+  fx.display("pluginA/broken/cropped");
+  fx.seek(10 * kSec);
+  const auto eager = scripting::compileOnDemandScriptPython(kBroken);
+  ASSERT_FALSE(eager.has_value());
+  const nlohmann::json config = fx.config("broken");
+  EXPECT_EQ(config["state"], "error") << config.dump();
+  EXPECT_EQ(config["detail"], eager.error()) << config.dump();
+
+  const Finished done = fx.evaluate(installedAt("broken", 20 * kSec));
+  EXPECT_NE(done.json.find("SyntaxError"), std::string::npos) << done.json;
+
+  // The editor's check: with the interpreter free, validate returns the same error.
+  const CheckedPythonValidate checked;
+  const auto validated = fx.view.validateScript("on_demand", "python", kBroken, "{}");
+  ASSERT_FALSE(validated.has_value());
+  EXPECT_NE(validated.error().find(eager.error()), std::string::npos) << validated.error();
 }
 
 // ABI-05: validate compiles for kind on_demand in the language it names: Luau or Python source each passes its own
 // compiler and fails the other's; a language no runner has, and another kind, are refused.
 TEST(OnDemandRuntimeHostTest, ValidateScriptRoutesByKindAndLanguage) {
   Fixture fx;
+  // Booted, and the bound long, so the Python validate is checked; kept, so no release keeps the helper busy.
+  const CheckedPythonValidate checked;
+  const auto booted = scripting::compileOnDemandScriptPython(kPythonScript);
+  ASSERT_EQ(booted.has_value(), scripting::pythonAvailable());
   EXPECT_TRUE(fx.view.validateScript("on_demand", "luau", "return {}", "{}").has_value());
   const auto syntax = fx.view.validateScript("on_demand", "luau", "return {", "{}");
   EXPECT_FALSE(syntax.has_value());

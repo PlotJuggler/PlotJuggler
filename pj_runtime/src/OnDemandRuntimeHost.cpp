@@ -378,10 +378,9 @@ bool OnDemandRuntimeHost::onValidate(
     if (sdk::toStringView(kind) != kKind) {
       return rejectKind(out_error, kind);
     }
-    // A Python compile is bounded (`kPythonCompileWaitMillis`): a script holding the GIL fails it as busy.
-    const Expected<scripting::CompiledOnDemandScript> compiled =
-        scripting::compileOnDemand(sdk::toStringView(language), sdk::toStringView(script));
-    return compiled ? true : reject(out_error, kDomain, compiled.error());
+    // Python waits at most `kPythonValidateWaitMillis` for a throwaway compile, then reports the script unchecked.
+    const Status valid = scripting::validateOnDemand(sdk::toStringView(language), sdk::toStringView(script));
+    return valid ? true : reject(out_error, kDomain, valid.error());
   });
 }
 

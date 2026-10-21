@@ -29,13 +29,18 @@ Licensed MPL-2.0.
   instance) + `makeLuauEngine(BudgetLimits)`.
 - `python_engine.h` — `makePythonEngine()` and the Python filter-module contract
   (a top-level class `T` with `id` and a static `create(params)`), and its limits.
-- `python_object_script.h` — the on-demand Python lane: `compileOnDemandScriptPython` (checked and compiled once per
-  revision into an opaque `CompiledPythonScript`, so holders need no CPython include) and `runOnDemandScriptPython`
-  (`evaluate(inputs, params)` in a fresh namespace, the binding of `object_script.h`). On desktop, and in the browser
-  when built with `PJ_WASM_WITH_PYTHON` (`pythonAvailable()`; see the browser gotcha below). Compiles, the
-  interpreter's boot and a compiled script's last release run on one Python helper thread (a thread and a queue, `src/python_object_script.cpp`): a compile is waited for at most
-  `kPythonCompileWaitMillis` (busy otherwise, at once while an item a caller timed out behind still runs), a release never. Python filters
-  (`python_engine.cpp`) do not use it yet: they take the GIL on their caller's thread.
+- `python_object_script.h` — the on-demand Python lane: an opaque `CompiledPythonScript` per revision (holders need no
+  CPython include), checked and compiled once, and `runOnDemandScriptPython` (`evaluate(inputs, params)` in a fresh
+  namespace, the binding of `object_script.h`). On desktop, and in the browser when built with `PJ_WASM_WITH_PYTHON`
+  (`pythonAvailable()`; see the browser gotcha below). **No GUI-thread compile** (slice P-c):
+  `deferOnDemandScriptPython`, what `compileOnDemand` gives the runtime, touches no interpreter, and the script's first
+  run compiles it on the Python lane (booting the interpreter on first use), keeping the code object or the compile
+  error for every later run; `compileOnDemandScriptPython` compiles on the calling thread and may wait for the GIL, so
+  only tests, probes and workers call it. A validate's check, `checkOnDemandScriptPython`, is a throwaway compile on one
+  Python helper thread (a thread and a queue, `src/python_object_script.cpp`), waited for at most
+  `kPythonValidateWaitMillis` (100 ms) and reported unchecked (success) past it; a compiled script's last release is
+  posted there too, never waited for. Python filters (`python_engine.cpp`) do not
+  use the lane yet: they take the GIL on their caller's thread.
 - `on_demand_script.h` — where a recipe's `language` picks its on-demand compiler and runner: `CompiledOnDemandScript`
   (Luau bytecode or the opaque Python handle), `compileOnDemand` and `runOnDemand`, which `pj_runtime` holds and calls
   without knowing the language.
@@ -183,10 +188,10 @@ Licensed MPL-2.0.
   drops 26 unused builtins, and `stdlib_zip.py`); pybind11 is 3.0.4 there (2.13 predates 3.14), against 3.12 and
   2.13 on desktop. The stdlib is a pyc-only zip embedded at `/lib/python314.zip` holding only the import closure of
   a root list; `pj_app`'s acceptance probe (`tests/wasm_python_stdlib_probe.cpp`) walks the strict profile's reach
-  and fails on any lazy import not loaded at boot (see the next bullet's preload). `main.cpp` calls `prestartPythonHelper()` at startup, because a thread
-  created while the browser's main thread waits on it never starts, and the pthread pool is 7. A GUI-thread compile
-  still waits up to `kPythonCompileWaitMillis` while a script holds the GIL inside one C call, the page frozen for
-  that time (slice P-c makes it asynchronous). Guide: `docs/WASM_DEPLOYMENT.md`.
+  and fails on any lazy import not loaded at boot (see the next bullet's preload). `main.cpp` calls `prestartPythonHelper()` at startup, because a
+  thread created while the browser's main thread waits on it never starts, and the pthread pool is 7. The GUI never
+  compiles Python for a recipe, and a validate waits for the helper at most 100 ms, so a script holding the GIL inside
+  one C call no longer freezes the page. Guide: `docs/WASM_DEPLOYMENT.md`.
 - **Time contract (precision-critical).** The script sees `t` = **seconds since
   session start**. The int64-ns session-start is subtracted on the absolute spine
   **before** the double cast (avoiding epoch-double quantization, ~256 ns at epoch

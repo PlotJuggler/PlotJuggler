@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "pj_scripting/object_script.h"
+#include "pj_scripting/on_demand_script.h"
 #include "pj_scripting/python_object_script.h"
 
 /// wasm_python_stdlib_probe.cpp: the stdlib zip's gaps a strict script could reach, empty when there is none.
@@ -127,7 +128,13 @@ double wasmPyMeanMicros(
 /// The worker half: everything a script run checks, off the GUI thread, as the app's EnginePool lanes run scripts.
 void wasmPyWorkerChecks() {
   using namespace PJ::scripting;
-  // First, before anything else imports: the allowed modules' lazy dependencies inside a strict, armed run (heapq
+  // The first compile boots the interpreter, here on a worker, as the app's first Python run does on the Python lane.
+  const auto boot_begin = std::chrono::steady_clock::now();
+  auto booted = compileOnDemandScriptPython(kWasmPyValueScript);
+  qInfo(
+      "PJ_WASM_PY_BOOT worker_ms=%.1f %s", wasmPyMillisSince(boot_begin),
+      booted ? "ok" : ("error=" + booted.error()).c_str());
+  // Then, before anything else imports: the allowed modules' lazy dependencies inside a strict, armed run (heapq
   // behind statistics.Counter, decimal's C fallback to _pydecimal behind statistics.Decimal), then the surface walk.
   if (auto lazy = compileOnDemandScriptPython(kWasmPyLazyScript)) {
     qInfo("PJ_WASM_PY_LAZY %s", wasmPyOutcome(wasmPyRun(*lazy, {})).c_str());
@@ -218,8 +225,8 @@ void wasmPyWorkerChecks() {
 
 }  // namespace
 
-/// The GUI half: the first compile boots the interpreter on the helper while this (the browser main) thread waits,
-/// unbounded, exactly as the app's first Python compile does; then a bounded compile; then the worker checks.
+/// The GUI half: the compile the app's GUI thread makes for a recipe (`compileOnDemand`, which touches no interpreter),
+/// timed, then the worker checks.
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_smoke() {
   using namespace PJ::scripting;
   qInfo("PJ_WASM_PY_AVAILABLE %d", pythonAvailable() ? 1 : 0);
@@ -227,26 +234,30 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_smoke() {
   qInfo(
       "PJ_WASM_PY_STDLIB stat=%d bytes=%lld", ::stat("/lib/python314.zip", &zip_stat),
       static_cast<long long>(zip_stat.st_size));
-  auto begin = std::chrono::steady_clock::now();
-  auto first = compileOnDemandScriptPython(kWasmPyValueScript);
-  qInfo(
-      "PJ_WASM_PY_BOOT gui_wait_ms=%.1f %s", wasmPyMillisSince(begin),
-      first ? "ok" : ("error=" + first.error()).c_str());
-  begin = std::chrono::steady_clock::now();
-  auto second = compileOnDemandScriptPython(kWasmPyFourLineScript);
+  const auto begin = std::chrono::steady_clock::now();
+  auto compiled = compileOnDemand("python", kWasmPyFourLineScript);
   qInfo(
       "PJ_WASM_PY_COMPILE gui_wait_ms=%.2f %s", wasmPyMillisSince(begin),
-      second ? "ok" : ("error=" + second.error()).c_str());
+      compiled ? "ok" : ("error=" + compiled.error()).c_str());
   std::thread(&wasmPyWorkerChecks).detach();
 }
 
 /// Worst case for the GUI thread: a worker script holds the GIL inside one C call (`sum` over a long range, sized to
-/// outlast the 2 s compile bound with room even in the fastest browser; it is a wall-clock hold, which
-/// neither the GIL switch interval nor the watchdog interrupts) while the GUI compiles. A pure-Python loop would not
+/// outlast the spec's 500 ms settle and the validate's 100 ms bound many times over even in the fastest browser; it is
+/// a wall-clock hold, which neither the GIL switch interval nor the watchdog interrupts) while the GUI compiles. A pure-Python loop would not
 /// do: it hands the GIL over every switch interval (5 ms).
-/// `pj_wasm_test_python_hold_gil` starts the holder; `pj_wasm_test_python_compile_now`, called while it runs, logs how
-/// long the GUI waited (the bound is kPythonCompileWaitMillis).
+/// `pj_wasm_test_python_hold_gil` first validates a broken script while the interpreter is free (the error comes back),
+/// then starts the holder; `pj_wasm_test_python_compile_now`, called while it runs, logs how long the GUI waited for a
+/// compile (no wait: the script compiles at its first run) and for a validate (its bound, then unchecked), then runs
+/// that script on a worker, which compiles it once the holder lets the GIL go.
+constexpr const char* kWasmPyBrokenScript = "def evaluate(inputs, params:\n    return 1\n";
+
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_hold_gil() {
+  const auto begin = std::chrono::steady_clock::now();
+  const PJ::Status checked = PJ::scripting::validateOnDemand("python", kWasmPyBrokenScript);
+  qInfo(
+      "PJ_WASM_PY_FREE_VALIDATE gui_wait_ms=%.1f %s", wasmPyMillisSince(begin),
+      checked ? "ok" : ("error=" + checked.error()).c_str());
   std::thread([] {
     using namespace PJ::scripting;
     if (auto spin =
@@ -261,9 +272,25 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_hold_gil() {
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_compile_now() {
+  using namespace PJ::scripting;
   const auto begin = std::chrono::steady_clock::now();
-  auto compiled = PJ::scripting::compileOnDemandScriptPython(kWasmPyFourLineScript);
+  auto compiled = compileOnDemand("python", kWasmPyFourLineScript);
   qInfo(
       "PJ_WASM_PY_BUSY_COMPILE gui_wait_ms=%.1f %s", wasmPyMillisSince(begin),
       compiled ? "ok" : ("error=" + compiled.error()).c_str());
+  const auto validate_begin = std::chrono::steady_clock::now();
+  const PJ::Status checked = validateOnDemand("python", kWasmPyBrokenScript);
+  qInfo(
+      "PJ_WASM_PY_BUSY_VALIDATE gui_wait_ms=%.1f %s", wasmPyMillisSince(validate_begin),
+      checked ? "ok" : ("error=" + checked.error()).c_str());
+  if (!compiled) {
+    return;
+  }
+  std::thread([script = std::move(*compiled)] {
+    const std::vector<NamedValue> x_input{NamedValue{.name = "x", .value = 3.0}};
+    qInfo(
+        "PJ_WASM_PY_BUSY_RUN %s",
+        wasmPyOutcome(runOnDemand(script, PJ::Span<const NamedValue>(x_input.data(), x_input.size()), "{}", {}, {}))
+            .c_str());
+  }).detach();
 }
