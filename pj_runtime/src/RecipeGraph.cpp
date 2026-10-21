@@ -39,6 +39,38 @@ const OutputSpec* objectOutput(const RecipeGraph::Recipe& recipe, std::string_vi
   return found == recipe.outputs.end() ? nullptr : &*found;
 }
 
+/// `RecipeGraph::missingInput`, not walking again the upstreams in `providing`, whose own inputs this walk already
+/// found provided, so a shared ancestor is walked once. Its views name bindings of `graph`, which the walk does not
+/// change.
+std::optional<std::string> missingFrom(
+    const RecipeGraph& graph, std::string_view key, std::unordered_set<std::string_view>& providing) {
+  const RecipeGraph::Node* node = graph.find(key);
+  if (node == nullptr) {
+    return std::nullopt;
+  }
+  for (const RecipeGraph::Binding& binding : node->bindings) {
+    if (binding.upstream.empty()) {
+      continue;
+    }
+    const RecipeGraph::Node* producer = graph.find(binding.upstream);
+    if (producer == nullptr) {
+      return "on-demand: upstream '" + binding.upstream + "' removed";
+    }
+    const OutputSpec* spec = objectOutput(producer->recipe, binding.name);
+    if (spec == nullptr || spec->object_type != binding.object_type || producer->dataset != node->dataset) {
+      return "on-demand: upstream '" + binding.upstream + "' no longer provides '" + binding.name + "'";
+    }
+    if (providing.contains(binding.upstream)) {
+      continue;
+    }
+    if (std::optional<std::string> reason = missingFrom(graph, binding.upstream, providing)) {
+      return reason;
+    }
+    providing.insert(binding.upstream);
+  }
+  return std::nullopt;
+}
+
 /// Whether `node` has a topic input rooted at a name in `topics` (`seriesKeyBelongsToTopic`).
 bool readsSeriesOf(const RecipeGraph::Node& node, const std::vector<std::string>& topics) {
   return std::ranges::any_of(node.bindings, [&topics](const RecipeGraph::Binding& b) {
@@ -321,28 +353,8 @@ const RecipeGraph::Node* RecipeGraph::find(std::string_view key) const {
 }
 
 std::optional<std::string> RecipeGraph::missingInput(std::string_view key) const {
-  const Node* node = find(key);
-  if (node == nullptr) {
-    return std::nullopt;
-  }
-  for (const Binding& binding : node->bindings) {
-    if (binding.upstream.empty()) {
-      continue;
-    }
-    const Node* producer = find(binding.upstream);
-    if (producer == nullptr) {
-      return "on-demand: upstream '" + binding.upstream + "' removed";
-    }
-    const OutputSpec* spec = objectOutput(producer->recipe, binding.name);
-    if (spec == nullptr || spec->object_type != binding.object_type || producer->dataset != node->dataset) {
-      return "on-demand: upstream '" + binding.upstream + "' no longer provides '" + binding.name + "'";
-    }
-    // ponytail: re-walks shared ancestors (exponential on deep diamonds); memoize if recipe graphs grow large.
-    if (std::optional<std::string> reason = missingInput(binding.upstream)) {
-      return reason;
-    }
-  }
-  return std::nullopt;
+  std::unordered_set<std::string_view> providing;
+  return missingFrom(*this, key, providing);
 }
 
 std::vector<std::string> RecipeGraph::readersOfSeries(const std::vector<std::string>& topics) const {
@@ -375,18 +387,28 @@ std::vector<std::string> RecipeGraph::keys() const {
 }
 
 std::vector<std::string> RecipeGraph::dependentsOf(const std::vector<std::string>& keys) const {
+  std::unordered_map<std::string_view, std::vector<const std::string*>> readers;  // upstream -> reader keys
+  for (const auto& [key, node] : nodes_) {
+    for (const Binding& binding : node.bindings) {
+      if (!binding.upstream.empty()) {
+        readers[binding.upstream].push_back(&key);
+      }
+    }
+  }
   std::unordered_set<std::string> visited(keys.begin(), keys.end());
   std::vector<std::string> pending = keys;
   std::vector<std::string> dependents;
   while (!pending.empty()) {
     const std::string current = std::move(pending.back());
     pending.pop_back();
-    for (const auto& [key, node] : nodes_) {
-      const bool reads =
-          std::ranges::any_of(node.bindings, [&current](const Binding& b) { return b.upstream == current; });
-      if (reads && visited.insert(key).second) {
-        dependents.push_back(key);
-        pending.push_back(key);
+    const auto found = readers.find(current);
+    if (found == readers.end()) {
+      continue;
+    }
+    for (const std::string* key : found->second) {
+      if (visited.insert(*key).second) {
+        dependents.push_back(*key);
+        pending.push_back(*key);
       }
     }
   }

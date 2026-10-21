@@ -468,7 +468,7 @@ void ResultHistory::cacheResult(
 
 bool ResultHistory::present(const NodeResults& node, const Stored& stored) const {
   for (size_t index = 0; index < node.outputs.size(); ++index) {
-    if (!store_.at(node.outputs[index].topic, stored.entries[index].uid).has_value()) {
+    if (!store_.indexOf(node.outputs[index].topic, stored.entries[index].uid).has_value()) {  // decode-free
       return false;
     }
   }

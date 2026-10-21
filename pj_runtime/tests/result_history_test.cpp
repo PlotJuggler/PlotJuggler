@@ -1473,7 +1473,7 @@ TEST(ResultHistoryBench, PublishCostAt600RetainedResults) {
 }
 
 // `lookup` at 1, 100 and 10,000 results per node in the window: a hit at the middle stamp (from the compute
-// cache) and a miss, median of 1001 calls. The store's `at` per output is the production one.
+// cache) and a miss, median of 1001 calls. The store's `indexOf` per output is the production one.
 TEST(ResultHistoryBench, LookupCost) {
   if (!sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";

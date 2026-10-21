@@ -100,11 +100,11 @@ Performance follow-ups (2026-10-18 hot-loop review):
 - (a) The point iterator divides per point and switches types through `readXyz` (`nextFinitePoint`, binder `xyz_points`): about 3 ms per evaluation of 260k points.
 - (b) A list element read allocates a userdata box and scans field names linearly (binder).
 - (c) `estimateBytes` walks fixed-size list elements.
-- (d) `ResultHistory::present()` fetches an entry to test it exists (needs `ObjectStore::contains`).
-- (e) `InputStager` looks topics up by linear `findTopic`.
-- (f) `RecipeGraph` queries: `missingInput` grows exponentially on diamonds, `dependentsOf` is O(V·(V+E)).
+- (d) Done (F2): `ResultHistory::present()` tests an entry through the store's decode-free `indexOf` (no new `contains`); `lookup` 98-128 → 82-109 ns (ARCHITECTURE §19).
+- (e) Closed without change (F2): `InputStager::topicOf` already remembers each topic id (slice 6c); staging among 10k topics stays 2.5 µs, the bench's own scalar scan.
+- (f) Done (F2): `missingInput` walks a shared upstream once per call (33-node diamond ladder: 5.06 ms → 4.6-5.5 µs); `dependentsOf` uses one reverse-edge map (12.8 → 8.2-9.3 µs).
 - (g) The SDK's `serializeBuiltinObject` reallocates once more than needed (a `reserve` in the SDK writer).
-- (h) Replace the `drop` predicate with a time range plus a sorted stamp list, if the per-entry `std::function` shows up in a profile.
+- (h) Skipped (F2): the per-entry `drop` predicate costs 0.06-0.2 µs of a 3.1-3.3 µs evicting publication in a `perf` profile.
 
 ## Open decisions, by the slice they block
 

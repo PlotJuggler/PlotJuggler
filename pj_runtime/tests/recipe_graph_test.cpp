@@ -3,11 +3,14 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "on_demand_test_utils.h"
+#include "pj_base/sdk/platform.hpp"
 #include "pj_runtime/RecipeGraph.h"
 #include "pj_scripting/python_object_script.h"
 #ifdef PJ_PYTHON_TEST_PROBE
@@ -314,6 +317,27 @@ TEST(RecipeGraphTest, RemovedUpstreamLeavesItsReadersMissingAndRelinksByName) {
   ASSERT_TRUE(renamed.has_value());
   EXPECT_TRUE(contains(*renamed, "no longer provides")) << *renamed;
   EXPECT_TRUE(fx.graph.missingInput("owner/grandchild").has_value());
+}
+
+// `missingInput` walks a shared upstream once, but still checks every binding that reads it: a reader of two outputs
+// of one upstream misses the one renamed after the other was checked.
+TEST(RecipeGraphTest, MissingInputChecksEveryBindingOfAnUpstreamWalkedOnce) {
+  Fixture fx;
+  auto source = cropRecipe();
+  source.outputs.push_back({"extra", OutputType::kObject, sdk::BuiltinObjectType::kPointCloud});
+  source.script = "local inputs = ...\nreturn {cropped = inputs.cloud, extra = inputs.cloud}\n";
+  ASSERT_TRUE(fx.graph.upsert(source).has_value());
+  auto mix = chainedRecipe("mix", "owner/crop/cropped");
+  mix.inputs = {"owner/crop/cropped", "owner/crop/extra"};
+  ASSERT_TRUE(fx.graph.upsert(mix).has_value());
+  EXPECT_FALSE(fx.graph.missingInput("owner/mix").has_value());
+
+  source.outputs.back().name = "renamed";
+  source.script = "local inputs = ...\nreturn {cropped = inputs.cloud, renamed = inputs.cloud}\n";
+  ASSERT_TRUE(fx.graph.upsert(source).has_value());
+  const auto missing = fx.graph.missingInput("owner/mix");
+  ASSERT_TRUE(missing.has_value());
+  EXPECT_TRUE(contains(*missing, "no longer provides 'extra'")) << *missing;
 }
 
 // DAG-10
@@ -632,6 +656,40 @@ TEST(RecipeGraphTest, APersistentIdMayNotStartWithTheReservedPrefix) {
   transient.user_id = "~evaluation/crop";
   transient.ephemeral = true;
   EXPECT_TRUE(fx.graph.bind(transient).has_value());
+}
+
+// PJ_BENCH=1: graph queries over a ladder of 16 diamonds (33 nodes: the crop, then two nodes per layer, each reading
+// both nodes of the layer before): `missingInput` of the last node and `dependentsOf` the crop, median of 101 calls.
+TEST(RecipeGraphBench, QueriesOverADiamondLadder) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kLayers = 16;
+  Fixture fx;
+  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
+  std::vector<std::string> previous = {"owner/crop/cropped", "owner/crop/cropped"};
+  for (int layer = 0; layer < kLayers; ++layer) {
+    std::vector<std::string> current;
+    for (const char* side : {"a", "b"}) {
+      auto recipe = chainedRecipe("l" + std::to_string(layer) + side, previous[0]);
+      recipe.inputs = layer == 0 ? std::vector<std::string>{previous[0]} : previous;
+      ASSERT_TRUE(fx.graph.upsert(recipe).has_value());
+      current.push_back(recipe.key() + "/cropped");
+    }
+    previous = current;
+  }
+  const std::string last = "owner/l" + std::to_string(kLayers - 1) + "a";
+  bool any_missing = false;
+  const double missing_us =
+      test::medianMicros(101, [&] { any_missing = fx.graph.missingInput(last).has_value() || any_missing; });
+  std::size_t dependents = 0;
+  const double dependents_us =
+      test::medianMicros(101, [&] { dependents = fx.graph.dependentsOf({"owner/crop"}).size(); });
+  EXPECT_FALSE(any_missing);
+  EXPECT_EQ(dependents, std::size_t{2 * kLayers});
+  std::printf(
+      "[RecipeGraphBench] %d-diamond ladder, %zu nodes: missingInput %.2f us, dependentsOf %.2f us\n", kLayers,
+      fx.graph.keys().size(), missing_us, dependents_us);
 }
 
 }  // namespace
