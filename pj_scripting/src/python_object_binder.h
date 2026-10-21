@@ -13,8 +13,8 @@
 
 // The object half of the Python on-demand binding (docs/derived_objects/ARCHITECTURE.md §6, §14), the twin of
 // object_binder.h over the same native operations: objects as read-only views over their SDK field tables (a list is a
-// lazy sequence read through `list_at`, an int64 field a Python int), the point-cloud methods, the `pj.scene` /
-// `pj.annotations` builders and `pj.tf`. The surface is python_object_script.h's.
+// lazy sequence read through `list_at`, an int64 field a Python int), the point-cloud, image and decoded-pixel methods,
+// the `pj.scene` / `pj.annotations` builders and `pj.tf`. The surface is python_object_script.h's.
 //
 // Every operation that walks the data runs without the GIL: it reads only C++ state the call's arguments keep alive.
 // The types are plain CPython types, registered once per process: they have no constructor, take no attribute and
@@ -50,7 +50,8 @@ struct PythonRun {
 
   const RunOptions& options;
   ScriptMedia& media;
-  const std::uint64_t generation;  ///< unique per run: a builder made in it works in no other
+  const std::uint64_t generation;   ///< unique per run: a builder made in it works in no other
+  PyObject* unavailable = nullptr;  ///< `pj.unavailable` (borrowed), which makes the marker an operation returns
   bool observed_query_clock = false;
   bool observed_tf = false;
 

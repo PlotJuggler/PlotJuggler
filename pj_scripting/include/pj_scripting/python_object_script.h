@@ -43,20 +43,22 @@ struct CompiledPythonScript {
 /// (a dict is keyed, a list or tuple positional; a `None` value in a dict is a missing output; `bool` is not a
 /// number); `pj.unavailable(reason)` marks an output unavailable (D25). An unavailable input is an error (D6).
 ///
-/// Script surface: `object_script.h`'s except the image methods (slice 10b-2) and a video's `frame_at` (10c), in
-/// Python's idiom (python_object_binder.h binds it over the same native operations). Objects are read-only: a field is
-/// an attribute (an int64 is a Python int, a raw buffer is refused), a list a lazy sequence. Methods take keyword
-/// arguments named as Luau's option keys; a vector is a tuple (`bounds()["min"]`), every index 0-based, not-equal `!=`.
-/// `pj.scene.new(frame_id=, id=)` and `pj.annotations.new(image_topic=)` build and chain; `pj.tf.now` is an int,
-/// `pj.tf.lookup(target, source, when=None)` returns `(transform, None)` or `(None, reason)`, the transform a dict of
-/// `translation`, `rotation` and `target_frame`, and `when` an int or float time, or an object (its own stamp, on the
-/// header clock). A call that needs the run's limits, media or observations raises outside its run (field reads,
-/// `count`, `bounds`, `extreme_point` and `xyz_points` iteration work anywhere); an object a script leaves behind holds
-/// its input's `keepalive`, and a builder works only in the run that made it. An output keeps its native charge in its
-/// `keepalive`. `import` of `math`, `cmath`, `statistics` and `json` only, each a read-only copy (an assignment to a
-/// module attribute is an error; state a script leaves on a class a copy shares with its module, such as
-/// `statistics.NormalDist`, reaches the next run, the trust model's documented limit) without its private names or the
-/// modules it imports outside that list
+/// Script surface: `object_script.h`'s except a video's `frame_at` (10c), in Python's idiom (python_object_binder.h
+/// binds it over the same native operations). Objects are read-only: a field is an attribute (an int64 is a Python int,
+/// a raw buffer is refused), a list a lazy sequence. Methods take keyword arguments named as Luau's option keys; a
+/// vector is a tuple (`bounds()["min"]`), every index 0-based, not-equal `!=`. `pj.scene.new(frame_id=, id=)` and
+/// `pj.annotations.new(image_topic=)` build and chain; `pj.tf.now` is an int, `pj.tf.lookup(target, source, when=None)`
+/// returns `(transform, None)` or `(None, reason)`, the transform a dict of `translation`, `rotation` and
+/// `target_frame`, and `when` an int or float time, or an object (its own stamp, on the header clock). An image's
+/// `decode()` returns `(pixels, None)` or `(None, reason)`, the shape of every fallible call;
+/// `to_point_cloud(camera_info, step=None, max_depth=None)` and `threshold`, whose result is an output, a value or
+/// `pj.unavailable(reason)`. A call that needs the run's limits, media or observations raises outside its run (field
+/// reads, `count`, `bounds`, `extreme_point` and `xyz_points` iteration work anywhere); an object a script leaves
+/// behind holds its input's `keepalive`, and a builder works only in the run that made it. An output keeps its native
+/// charge in its `keepalive`. `import` of `math`, `cmath`, `statistics` and `json` only, each a read-only copy (an
+/// assignment to a module attribute is an error; state a script leaves on a class a copy shares with its module, such
+/// as `statistics.NormalDist`, reaches the next run, the trust model's documented limit) without its private names or
+/// the modules it imports outside that list
 /// (`statistics.sys`); no `open`, `exec`, `eval`, `compile`, `getattr`, `setattr`, `type`, `input` or `help`.
 ///
 /// Spends from `options`: `limits.mem_bytes` caps the run's Python allocations, the host's construction of its inputs

@@ -146,8 +146,8 @@ header-only 0.36.0:
 ## 6. Types and bindings
 
 **Status: Built.** The Luau binder (slice 5c-1, `pj_scripting/src/object_binder.cpp`) has both
-fixes below, and so has the Python binder (slice 10b, `pj_scripting/src/python_object_binder.cpp`;
-images and depth wait for 10b-2).
+fixes below, and so has the Python binder (slices 10b and 10b-2,
+`pj_scripting/src/python_object_binder.cpp`).
 
 - **SDK field tables** describe each builtin struct's members: name, kind, accessors. They
   drive generic binders in Luau and Python, so a script and an agent see the same fields.
@@ -184,7 +184,7 @@ images and depth wait for 10b-2).
   (`RunOptions::result_stamp`). An input with no store topic (an evaluation's chained image) is
   named by its input name. Scope: a `compressedDepth` stream is unsupported ("unsupported image
   encoding"), and an 8-bit grey PNG decodes to 3 channels (Scene2D's PNG codec expands it to RGB;
-  a 16-bit one keeps its single channel).
+  a 16-bit one keeps its single channel). Python scripts read them the same way (slice 10b-2).
 - **Video (built, slice 9b):** a video input is the packet at or before the requested time (decode order);
   `video:frame_at(t)` returns the full frame presented at `t` (B-frames reordered), as an rgb8 image charged to the
   run's native budget, through a source the shell injects (`pj_scripting/video_frame_source.h`; `pj_app`'s
@@ -885,7 +885,7 @@ join it (slice 6b). The rest is **Built**.
 
 **Status: Built** for Luau; for Python the core and the binder are built (slice 10a-1: the shared
 interpreter, its limits and the hook; slice 10a-2: the strict profile and compile once; slice 10b:
-objects, builders and `pj.tf`; images and depth are 10b-2) and its runtime wiring is not (10c). Luau
+objects, builders and `pj.tf`; slice 10b-2: images and depth) and its runtime wiring is not (10c). Luau
 VM reuse is proposed (N1, N2).
 
 - **Luau** gets a fresh sandboxed VM per call, from bytecode compiled once per recipe
@@ -924,10 +924,12 @@ VM reuse is proposed (N1, N2).
     that also refuses `exec` and `compile`. A copy's functions still share the real module's
     globals, so a filter can patch, say, `statistics._sum`, and later on-demand runs call the
     patched code; accepted under the trust model.
-- **The Python binder** (slice 10b; `python_object_script.h` owns the surface) reads the objects with
+- **The Python binder** (slices 10b and 10b-2; `python_object_script.h` owns the surface) reads the objects with
   Luau's native operations, through the language-neutral `script_contract.h`. In Python's idiom:
   0-based indices, tuples for vectors, keyword arguments for the builders, `!=` for not equal, and
-  `(value, None)` or `(None, reason)` where Luau returns `value` or `nil, reason`. Every operation
+  `(value, None)` or `(None, reason)` where Luau returns `value` or `nil, reason` (`pj.tf.lookup`,
+  an image's `decode()`); a call whose result is an output (`to_point_cloud`, `threshold`) returns a
+  value or `pj.unavailable(reason)`, as in Luau. Every operation
   that walks the data releases the GIL (N6), so GUI-thread Python work proceeds meanwhile. Every type
   is a plain CPython type: pybind11 dereferences an allocation the cap refuses (in a keyword call's
   dispatch and in instance creation) and costs a type lookup per list element (1.5 µs against about

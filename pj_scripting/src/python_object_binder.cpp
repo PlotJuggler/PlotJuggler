@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "native/depth_ops.h"
 #include "native/image_annotations_ops.h"
 #include "native/image_ops.h"
 #include "native/scene_entities_ops.h"
@@ -97,6 +98,7 @@ PyTypeObject* g_list_type = nullptr;
 PyTypeObject* g_points_type = nullptr;
 PyTypeObject* g_scene_type = nullptr;
 PyTypeObject* g_annotations_type = nullptr;
+PyTypeObject* g_decoded_type = nullptr;
 
 /// A C++ value inside a Python object of a plain type.
 template <class Value>
@@ -586,6 +588,175 @@ PyObject* nextPoint(PyObject* self) {
   });
 }
 
+// ---- images -------------------------------------------------------------------
+
+py::object unavailable(std::string_view reason) {
+  return checked(PyObject_CallOneArg(currentRun().unavailable, newString(reason).ptr()));
+}
+
+/// A pixel coordinate or size: a non-negative integer.
+uint32_t pixelInteger(PyObject* value) {
+  int overflow = 0;
+  const long long number = PyLong_Check(value) != 0 ? PyLong_AsLongLongAndOverflow(value, &overflow) : -1;
+  if (overflow != 0 || number < 0 || number > UINT32_MAX) {
+    throw py::value_error("expected a non-negative pixel integer");
+  }
+  return static_cast<uint32_t>(number);
+}
+
+/// The receiver of an image method: exactly one of `image` and `depth` is set.
+struct ImageReceiver {
+  const sdk::Image* image = nullptr;
+  const sdk::DepthImage* depth = nullptr;
+};
+
+ImageReceiver imageOf(PyObject* self) {
+  const sdk::BuiltinObject& object = heldObject(self);
+  ImageReceiver receiver{object.get<sdk::Image>(), object.get<sdk::DepthImage>()};
+  if (receiver.image == nullptr && receiver.depth == nullptr) {
+    throw py::type_error("image or depth image expected");
+  }
+  return receiver;
+}
+
+/// The receiver's pixels, decoded once per run.
+Expected<DecodedPixels> decodeReceiver(ScriptMedia& media, const ImageReceiver& receiver) {
+  if (receiver.image != nullptr) {
+    return released([&] { return media.decode(receiver.image, *receiver.image); });
+  }
+  return released([&] { return media.decode(receiver.depth, native::depthAsImage(*receiver.depth)); });
+}
+
+py::object representation(PyObject* self) {
+  const ImageReceiver receiver = imageOf(self);
+  return newString(
+      receiver.image != nullptr ? native::imageRepresentation(*receiver.image)
+                                : native::imageRepresentation(*receiver.depth));
+}
+
+/// `(pixels, None)`, or `(None, reason)`.
+py::object decode(PyObject* self) {
+  Expected<DecodedPixels> pixels = decodeReceiver(currentRun().media, imageOf(self));
+  if (!pixels) {
+    return newTuple(py::none(), newString(pixels.error()));
+  }
+  return newTuple(newBoxed(g_decoded_type, std::move(*pixels)), py::none());
+}
+
+/// A cloud, or `pj.unavailable(reason)`.
+py::object toPointCloud(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"camera_info", "step", "max_depth", nullptr};
+  PyObject* camera_object = nullptr;
+  PyObject* step = Py_None;
+  PyObject* max_depth = Py_None;
+  parse(args, kwargs, "O|OO:to_point_cloud", kNames, &camera_object, &step, &max_depth);
+  const sdk::BuiltinObject* object = toObject(camera_object);
+  const sdk::CameraInfo* camera = object != nullptr ? object->get<sdk::CameraInfo>() : nullptr;
+  if (camera == nullptr) {
+    throw py::type_error("to_point_cloud: camera info expected");
+  }
+  native::DepthOptions options;
+  if (step != Py_None) {
+    options.step = pixelInteger(step);
+  }
+  options.max_depth = numberOr(max_depth, options.max_depth);
+  const ImageReceiver receiver = imageOf(self);
+  if (receiver.depth != nullptr && !receiver.depth->distortion_model.empty()) {
+    return unavailable("depth must be rectified before unprojection");
+  }
+  ScriptMedia& media = currentRun().media;
+  Expected<DecodedPixels> pixels = decodeReceiver(media, receiver);
+  if (!pixels) {
+    return unavailable(pixels.error());
+  }
+  const std::string& encoding = receiver.image != nullptr ? receiver.image->encoding : receiver.depth->encoding;
+  const Timestamp stamp = ownStamp(heldObject(self)).value_or(0);
+  Expected<sdk::PointCloud> cloud =
+      released([&] { return native::depthToPointCloud(*pixels, encoding, stamp, *camera, options, media.limits()); });
+  if (!cloud && cloud.error() != native::kCancelledError) {
+    return unavailable(cloud.error());
+  }
+  return newCloud(std::move(cloud));
+}
+
+py::object pixel(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"x", "y", nullptr};
+  PyObject* x = nullptr;
+  PyObject* y = nullptr;
+  parse(args, kwargs, "OO:pixel", kNames, &x, &y);
+  const std::vector<float> samples =
+      valueOf(native::imagePixel(unboxed<DecodedPixels>(self), pixelInteger(x), pixelInteger(y)));
+  if (samples.size() == 1) {
+    return newFloat(samples[0]);
+  }
+  constexpr const char* kChannels[] = {"r", "g", "b", "a"};
+  py::object out = checked(PyDict_New());
+  for (std::size_t channel = 0; channel < samples.size(); ++channel) {
+    if (PyDict_SetItemString(out.ptr(), kChannels[channel], newFloat(samples[channel]).ptr()) != 0) {
+      throw py::error_already_set();
+    }
+  }
+  return out;
+}
+
+py::object toGray(PyObject* self) {
+  const DecodedPixels& image = unboxed<DecodedPixels>(self);
+  return newBoxed(g_decoded_type, valueOf(released([&] { return native::imageToGray(image, limits()); })));
+}
+
+py::object crop(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"x", "y", "width", "height", nullptr};
+  std::array<PyObject*, 4> values{};
+  parse(args, kwargs, "OOOO:crop", kNames, &values[0], &values[1], &values[2], &values[3]);
+  const uint32_t left = pixelInteger(values[0]);
+  const uint32_t top = pixelInteger(values[1]);
+  const uint32_t columns = pixelInteger(values[2]);
+  const uint32_t rows = pixelInteger(values[3]);
+  const DecodedPixels& image = unboxed<DecodedPixels>(self);
+  return newBoxed(
+      g_decoded_type, valueOf(released([&] { return native::imageCrop(image, left, top, columns, rows, limits()); })));
+}
+
+/// `threshold(op, value, channel=0)`: channel 0-3 or "r", "g", "b", "a"; matches over the budget are unavailable.
+py::object threshold(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"op", "value", "channel", nullptr};
+  const char* op = nullptr;
+  double value = 0.0;
+  PyObject* channel_value = nullptr;
+  parse(args, kwargs, "sd|O:threshold", kNames, &op, &value, &channel_value);
+  const native::CompareOp compare = comparison(op, "threshold");
+  uint32_t channel = 0;
+  if (channel_value != nullptr && PyUnicode_Check(channel_value) != 0) {
+    Py_ssize_t length = 0;
+    const char* text = PyUnicode_AsUTF8AndSize(channel_value, &length);
+    if (text == nullptr) {
+      throw py::error_already_set();
+    }
+    channel = valueOf(thresholdChannel(std::string_view(text, static_cast<std::size_t>(length))));
+  } else if (channel_value != nullptr) {
+    channel = pixelInteger(channel_value);
+  }
+  const DecodedPixels& image = unboxed<DecodedPixels>(self);
+  auto annotations = released([&] { return native::imageThreshold(image, compare, value, channel, limits()); });
+  if (!annotations && annotations.error().starts_with(native::kNativeLimitError)) {
+    return unavailable(annotations.error());
+  }
+  return newCharged(valueOf(std::move(annotations)));
+}
+
+py::object stats(PyObject* self) {
+  const DecodedPixels& image = unboxed<DecodedPixels>(self);
+  const native::ImageStats found = valueOf(released([&] { return native::imageStats(image, limits()); }));
+  return newDict({{"min", newFloat(found.min)}, {"max", newFloat(found.max)}, {"mean", newFloat(found.mean)}});
+}
+
+/// `width`, `height` or `channels` (the member `closure` points to) of decoded pixels.
+PyObject* decodedSize(PyObject* self, void* closure) {
+  const auto member = reinterpret_cast<std::uintptr_t>(closure);
+  const DecodedPixels& image = unboxed<DecodedPixels>(self);
+  return PyLong_FromUnsignedLong(member == 0 ? image.width : member == 1 ? image.height : image.channels);
+}
+
 // ---- builders -------------------------------------------------------------------
 
 constexpr sdk::ColorRGBA kWhite{255, 255, 255, 255};
@@ -848,7 +1019,22 @@ PjNamespaces* registerTypes() {
       {"filter", cfunction(&withArguments<&filter>), kKeywords, nullptr},
       {"transform", cfunction(&withArguments<&transform>), kKeywords, nullptr},
       {"xyz_points", cfunction(&withoutArguments<&xyzPoints>), METH_NOARGS, nullptr},
+      {"representation", cfunction(&withoutArguments<&representation>), METH_NOARGS, nullptr},
+      {"decode", cfunction(&withoutArguments<&decode>), METH_NOARGS, nullptr},
+      {"to_point_cloud", cfunction(&withArguments<&toPointCloud>), kKeywords, nullptr},
       {nullptr, nullptr, 0, nullptr}};
+  static PyMethodDef decoded_methods[] = {
+      {"pixel", cfunction(&withArguments<&pixel>), kKeywords, nullptr},
+      {"to_gray", cfunction(&withoutArguments<&toGray>), METH_NOARGS, nullptr},
+      {"crop", cfunction(&withArguments<&crop>), kKeywords, nullptr},
+      {"threshold", cfunction(&withArguments<&threshold>), kKeywords, nullptr},
+      {"stats", cfunction(&withoutArguments<&stats>), METH_NOARGS, nullptr},
+      {nullptr, nullptr, 0, nullptr}};
+  static PyGetSetDef decoded_properties[] = {
+      {"width", &decodedSize, nullptr, nullptr, reinterpret_cast<void*>(std::uintptr_t{0})},
+      {"height", &decodedSize, nullptr, nullptr, reinterpret_cast<void*>(std::uintptr_t{1})},
+      {"channels", &decodedSize, nullptr, nullptr, reinterpret_cast<void*>(std::uintptr_t{2})},
+      {nullptr, nullptr, nullptr, nullptr, nullptr}};
   static PyMethodDef scene_methods[] = {
       {"sphere", cfunction(&withArguments<&sceneSphere>), kKeywords, nullptr},
       {"cube", cfunction(&withArguments<&sceneCube>), kKeywords, nullptr},
@@ -884,6 +1070,8 @@ PjNamespaces* registerTypes() {
   g_points_type = plainType<PointIterator>(
       "pj_binder.PointIterator", {{Py_tp_iter, reinterpret_cast<void*>(&PyObject_SelfIter)},
                                   {Py_tp_iternext, reinterpret_cast<void*>(&nextPoint)}});
+  g_decoded_type = plainType<DecodedPixels>(
+      "pj_binder.DecodedImage", {{Py_tp_methods, decoded_methods}, {Py_tp_getset, decoded_properties}});
   g_scene_type = plainType<BuilderSlot<Scene>>("pj_binder.SceneBuilder", {{Py_tp_methods, scene_methods}});
   g_annotations_type =
       plainType<BuilderSlot<Annotations>>("pj_binder.AnnotationsBuilder", {{Py_tp_methods, annotations_methods}});

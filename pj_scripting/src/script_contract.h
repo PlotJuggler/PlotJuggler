@@ -3,8 +3,8 @@
 #pragma once
 
 // The language-neutral half of an on-demand run, shared by the Luau and Python runners and their binders: which objects
-// enter a script and at what stamp, the comparison and extreme names, the checks of a run's params and native budget,
-// the memory-limit wording, and the binding of the returned values to outputs (object_script.h).
+// enter a script and at what stamp, the comparison, extreme and channel names, the checks of a run's params and native
+// budget, the memory-limit wording, and the binding of the returned values to outputs (object_script.h).
 
 #include <cstddef>
 #include <memory>
@@ -50,6 +50,10 @@ inline constexpr std::size_t kMaxReasonBytes = 1024;
 
 /// The extreme `which` names, "max" or "min"; nullopt for any other text.
 [[nodiscard]] std::optional<native::Extreme> parseExtreme(std::string_view which);
+
+/// The channel of decoded pixels that `threshold`'s name `name` ("r", "g", "b" or "a") picks, else the error a script
+/// reads.
+[[nodiscard]] Expected<uint32_t> thresholdChannel(std::string_view name);
 
 /// How a script reads a failed `pj.tf.lookup`: "unknown source frame", "frames disconnected", ...
 [[nodiscard]] const char* tfLookupErrorText(pj::tf::LookupError error);

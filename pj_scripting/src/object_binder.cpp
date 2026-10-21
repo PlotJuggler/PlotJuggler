@@ -907,12 +907,7 @@ int lDecodedThreshold(lua_State* L) {
   const double value = luaL_checknumber(L, 3);
   uint32_t channel = 0;
   if (lua_type(L, 4) == LUA_TSTRING) {
-    const std::string_view name = lua_tostring(L, 4);
-    const std::size_t found = std::string_view("rgba").find(name);
-    if (name.size() != 1 || found == std::string_view::npos) {
-      luaL_error(L, "threshold: unknown channel '%s' (expected r, g, b, a or 0-3)", lua_tostring(L, 4));
-    }
-    channel = static_cast<uint32_t>(found);
+    channel = nativeResult(L, thresholdChannel(lua_tostring(L, 4)));
   } else if (!lua_isnoneornil(L, 4)) {
     channel = checkPixelInteger(L, 4);
   }

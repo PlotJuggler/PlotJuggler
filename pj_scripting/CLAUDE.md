@@ -34,12 +34,14 @@ Licensed MPL-2.0.
   (`evaluate(inputs, params)` in a fresh namespace, the binding of `object_script.h`). Desktop only
   (`pythonAvailable()`).
 - `src/python_object_binder.h` (private) — the Python twin of `object_binder.h` over the same native operations:
-  objects, lazy lists and the point iterator, the point-cloud methods, the builders and `pj.tf`, all plain CPython types
+  objects, lazy lists and the point iterator, the point-cloud and image methods with the decoded pixels (a fallible
+  call such as `decode()` returns `(value, None)` or `(None, reason)`), the builders
+  and `pj.tf`, all plain CPython types
   (pybind11 dereferences an allocation the cap refuses, and a list element costs about 195 ns, not 1.5 µs). Every operation
   that walks the data runs without the GIL; a call that needs the run's limits, media or observations (the thread's
   `PythonRun`) raises outside its run, a builder outside the run that made it, and an object kept past its run keeps
-  its input's keepalive. Every proxy exposes only its
-  documented names, no attribute and no buffer.
+  its input's keepalive. Every proxy exposes only its documented names, no
+  attribute and no buffer.
 - `src/python_sandbox.h` (private) — the one interpreter (`ensureInterpreter`) and what every Python script call runs
   under: the audit hook (`ScopedAuditGuard`), the allocation cap, the watchdog thread, `ScriptCallScope`, which arms
   the three around one call, and `ClearedOnExit`, which clears a script namespace inside it; and the strict profile
@@ -48,7 +50,7 @@ Licensed MPL-2.0.
   that also refuses `exec` and `compile`.
 - `src/script_contract.h` (private) — the language-neutral half of an on-demand run, shared by the Luau and Python
   runners and binders: which objects enter a script and at what stamp (`inputProblem`, `withStampShifted`,
-  `ownStamp`), the comparison and extreme names, the TF lookup wording, binding the returned values to outputs
+  `ownStamp`), the comparison, extreme and channel names, the TF lookup wording, binding the returned values to outputs
   (`bindReturned`), parsing the params, the native budget of a run and the memory-limit wording.
 - `filter_class.h` — the `FilterClass` schema + `ParamSpec`
   (`id/name/description/version/output_kind/parameters/source/origin`; `ParamType` ∈

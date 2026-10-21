@@ -32,6 +32,7 @@
 #include "pj_base/builtin/image_annotations.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/python_engine.h"
 #include "python_sandbox.h"
@@ -653,6 +654,7 @@ TEST(PythonObjectScript, CancelledRunFailsWithoutRunning) {
 
 // ---- objects, builders, pj.tf and media (slice 10b) -------------------------------------------------
 
+using test::FakeImageDecoder;
 using test::kNaN;
 using test::kSecond;
 using test::makeCloud;
@@ -707,6 +709,28 @@ RunOptions withNativeBudget(std::size_t bytes) {
   RunOptions options;
   options.native_budget_bytes = bytes;
   return options;
+}
+
+/// A 4 x 3 gradient (sample = index) behind every image.
+RunOptions withGradient(std::shared_ptr<FakeImageDecoder>* decoder = nullptr) {
+  auto made = std::make_shared<FakeImageDecoder>(4, 3);
+  if (decoder != nullptr) {
+    *decoder = made;
+  }
+  RunOptions options;
+  options.image_decoder = made;
+  return options;
+}
+
+NamedValue imageInput(std::string name, std::string topic, Timestamp stamp, const char* encoding = "mono8") {
+  sdk::Image image;
+  image.encoding = encoding;
+  image.width = 4;
+  image.height = 3;
+  image.timestamp_ns = stamp;
+  NamedValue input = objectInput(std::move(name), sdk::BuiltinObject(image));
+  input.topic = std::move(topic);
+  return input;
 }
 
 // US1 + US5, the twin of object_script_test.cpp's reference script (LUA-04).
@@ -808,11 +832,13 @@ TEST(PythonObjectScript, AnnotationsCountSumsPointsOverAllEntries) {
   auto result = runSource(
       R"PY(
 def evaluate(inputs, params):
+    overlay = inputs["image"].decode()[0].threshold(">", 8)
     built = (pj.annotations.new(image_topic="/cam").points(points=[(0, 0), (1, 1)], type="points")
              .points(points=[(2, 2)], type="points").finish())
-    return {"built_count": built.count()}
+    return {"matching": overlay.count(), "built_count": built.count()}
 )PY",
-      {}, specs({"built_count:number"}));
+      {imageInput("image", "/cam", 0)}, specs({"matching:number", "built_count:number"}), "{}", withGradient());
+  EXPECT_DOUBLE_EQ(numberOf(result, "matching"), 3.0);  // 9, 10, 11 exceed 8
   EXPECT_DOUBLE_EQ(numberOf(result, "built_count"), 3.0);
 }
 
@@ -1195,28 +1221,165 @@ TEST(PythonObjectScript, AFailedRunReportsWhatItObserved) {
   EXPECT_TRUE(result.error().observed_query_clock);
 }
 
-// GAP-25: every operation that walks the data runs without the GIL. The probe is the run's cancel check, which the
-// cloud operations poll every 65536 records.
+// ---- images (MED-18's binder half, the twins of object_script_test.cpp's) ----------------------------------
+
+TEST(PythonObjectScript, DecodedPixelsMatchLuau) {
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    image = inputs["image"]
+    d, why = image.decode()
+    if why is not None:
+        raise ValueError("a decode that succeeds returns (pixels, None)")
+    c = d.crop(1, 1, 2, 2)
+    s = c.stats()
+    return {"representation": image.representation(), "w": d.width, "h": d.height, "c": d.channels,
+            "direct": d.pixel(1, 1), "from_crop": c.pixel(0, 0), "gray": d.to_gray().pixel(1, 1),
+            "min": s["min"], "max": s["max"], "ann": d.threshold(">", 8)}
+)PY",
+      {imageInput("image", "/cam", 0)},
+      specs(
+          {"representation:string", "w:number", "h:number", "c:number", "direct:number", "from_crop:number",
+           "gray:number", "min:number", "max:number", "ann:kImageAnnotations"}),
+      "{}", withGradient());
+  EXPECT_EQ(textOf(result, "representation"), "raw:mono8");
+  EXPECT_DOUBLE_EQ(numberOf(result, "w"), 4.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "h"), 3.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "c"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "direct"), 5.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "from_crop"), 5.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "gray"), 5.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "min"), 5.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "max"), 10.0);
+  const auto* annotations = objectOf<sdk::ImageAnnotations>(result, "ann");
+  ASSERT_NE(annotations, nullptr);
+  EXPECT_EQ(annotations->image_topic, "/cam");  // paired with the image input
+  ASSERT_EQ(annotations->points.size(), 1u);
+  EXPECT_EQ(annotations->points[0].points.size(), 3u);
+
+  auto undecoded = runSource(
+      "def evaluate(inputs, params):\n    d, why = inputs['image'].decode()\n    return pj.unavailable(why)\n",
+      {imageInput("image", "/cam", 0)}, {}, "{}");
+  EXPECT_EQ(reasonOf(undecoded, "value"), "no image decoder");
+  for (const auto& [call, expected] : std::vector<std::pair<std::string, std::string>>{
+           {"inputs['image'].decode()[0].crop(3, 0, 2, 1)", "outside"},
+           {"inputs['image'].decode()[0].pixel(-1, 0)", "pixel integer"},
+           {"inputs['image'].decode()[0].threshold('=>', 1)", "'=>'"},
+           {"inputs['image'].to_point_cloud(inputs['image'])", "camera info"},
+           {"inputs['camera'].decode()", "image or depth image"}}) {
+    const std::string error = errorOf(runSource(
+        "def evaluate(inputs, params):\n    return " + call + "\n",
+        {imageInput("image", "/cam", 0), objectInput("camera", sdk::CameraInfo{})}, {}, "{}", withGradient()));
+    EXPECT_NE(error.find(expected), std::string::npos) << call << " -> " << error;
+  }
+}
+
+TEST(PythonObjectScript, TooManyPointsIsUnavailable) {
+  RunOptions options;
+  options.image_decoder = std::make_shared<FakeImageDecoder>(1000, 600, 100.0f);
+  options.native_budget_bytes = std::size_t{8} << 20;  // 2.4 MB of pixels fit; 600k points (9.6 MB) do not
+  auto result = runSource(
+      "def evaluate(inputs, params):\n    return {'ann': inputs['image'].decode()[0].threshold('>', 50)}\n",
+      {imageInput("image", "/cam", 0)}, specs({"ann:kImageAnnotations"}), "{}", options);
+  EXPECT_NE(reasonOf(result, "ann").find("native memory limit"), std::string::npos) << reasonOf(result, "ann");
+}
+
+TEST(PythonObjectScript, ParserDepthImageSupportsProjectionAndRejectsOrdinaryImages) {
+  sdk::CameraInfo camera;
+  camera.K = {2, 0, 0, 0, 2, 0, 0, 0, 1};
+  camera.frame_id = "optical";
+  for (const char* encoding : {"16UC1", "mono16", "32FC1", "mono8"}) {
+    SCOPED_TRACE(encoding);
+    auto decoder = std::make_shared<FakeImageDecoder>(2, 1, 1000.0f);
+    RunOptions options;
+    options.image_decoder = decoder;
+    auto result = runSource(
+        "def evaluate(inputs, params):\n    first = inputs['image'].to_point_cloud(inputs['camera'])\n"
+        "    return {'cloud': inputs['image'].to_point_cloud(inputs['camera'], step=1)}\n",
+        {imageInput("image", "/depth", 42, encoding), objectInput("camera", camera)}, specs({"cloud:kPointCloud"}),
+        "{}", options);
+    EXPECT_EQ(decoder->calls, 1);
+    if (std::string_view(encoding) == "mono8") {
+      EXPECT_EQ(reasonOf(result, "cloud"), "unsupported depth encoding: mono8");
+      continue;
+    }
+    const auto* cloud = objectOf<sdk::PointCloud>(result, "cloud");
+    ASSERT_NE(cloud, nullptr);
+    EXPECT_EQ(cloud->timestamp_ns, 42);
+    EXPECT_EQ(cloud->width, 2u);
+    EXPECT_EQ(cloud->frame_id, "optical");
+    float z = 0;
+    std::memcpy(&z, cloud->data.data() + 8, sizeof(z));
+    EXPECT_EQ(z, std::string_view(encoding) == "32FC1" ? 1000.0f : 1.0f);
+  }
+  sdk::DepthImage distorted;
+  distorted.distortion_model = "plumb_bob";
+  RunOptions options;
+  options.image_decoder = std::make_shared<FakeImageDecoder>(2, 1, 1000.0f);
+  auto result = runSource(
+      "def evaluate(inputs, params):\n    return {'cloud': inputs['depth'].to_point_cloud(inputs['camera'])}\n",
+      {objectInput("depth", distorted), objectInput("camera", camera)}, specs({"cloud:kPointCloud"}), "{}", options);
+  EXPECT_EQ(reasonOf(result, "cloud"), "depth must be rectified before unprojection");
+}
+
+// GAP-25: every operation that walks the data runs without the GIL. The probes are the run's cancel check, which the
+// cloud and image operations poll, and the decoder.
+class GilProbeDecoder final : public IImageDecoder {
+ public:
+  mutable std::atomic<int> held{0};
+  mutable std::atomic<int> calls{0};
+  /// 300 x 300 pixels: RGB for an rgb8 image (so to_gray converts), else one channel.
+  Expected<DecodedPixels> decode(
+      const sdk::Image& image, const std::shared_ptr<native::MemoryBudget>& /*budget*/) const override {
+    ++calls;
+    held += PyGILState_Check();
+    DecodedPixels pixels;
+    pixels.width = 300;
+    pixels.height = 300;
+    pixels.channels = image.encoding == "rgb8" ? 3 : 1;
+    pixels.samples = std::make_shared<const std::vector<float>>(std::size_t{300} * 300 * pixels.channels, 10.0f);
+    return pixels;
+  }
+};
+
 TEST(PythonObjectScript, NativeOpsReleaseTheGil) {
+  auto decoder = std::make_shared<GilProbeDecoder>();
   std::atomic<int> polls{0};
   std::atomic<int> held{0};
   RunOptions options = hostAt(2 * kSecond);
+  options.image_decoder = decoder;
   options.cancelled = [&] {
     ++polls;
     held += PyGILState_Check();
     return false;
   };
-  for (const std::string call :
-       {"c.crop_box(min=(-1, -1, -1), max=(1e9, 1, 1)).count()", "c.filter('x', '>', 5).count()",
-        "c.transform(pj.tf.lookup('map', 'base_link')[0]).count()"}) {
+  sdk::CameraInfo camera;
+  camera.K = {2, 0, 0, 0, 2, 0, 0, 0, 1};
+  camera.width = 300;
+  camera.height = 300;
+  const std::vector<std::string> calls{
+      "c.crop_box(min=(-1, -1, -1), max=(1e9, 1, 1)).count()",
+      "c.filter('x', '>', 5).count()",
+      "c.transform(pj.tf.lookup('map', 'base_link')[0]).count()",
+      "d.to_gray().width",
+      "d.crop(0, 0, 300, 300).width",
+      "d.threshold('>', 5).count()",
+      "d.stats()['max']",
+      "inputs['depth'].to_point_cloud(inputs['camera']).count()"};
+  for (const std::string& call : calls) {
     polls = 0;
     auto result = runSource(
-        "def evaluate(inputs, params):\n    c = inputs['cloud']\n    return " + call + "\n",
-        {objectInput("cloud", makeLineCloud(200'000))}, {}, "{}", options);
+        "def evaluate(inputs, params):\n    c = inputs['cloud']\n    d = inputs['image'].decode()[0]\n    return " +
+            call + "\n",
+        {objectInput("cloud", makeLineCloud(200'000)), imageInput("image", "/cam", 0, "rgb8"),
+         imageInput("depth", "/depth", 0, "16UC1"), objectInput("camera", camera)},
+        {}, "{}", options);
     EXPECT_TRUE(result.has_value()) << call << " -> " << result.error().message;
     EXPECT_GT(polls.load(), 2) << call << ": the operation polled the cancel check";
   }
   EXPECT_EQ(held.load(), 0) << "an operation polled its cancel check holding the GIL";
+  EXPECT_GT(decoder->calls.load(), 0);
+  EXPECT_EQ(decoder->held.load(), 0) << "the decoder ran holding the GIL";
 }
 
 // BUD-18: the watchdog never interrupts a native call. The crop's cancel check, polled every 65536 records, observes
@@ -1267,18 +1430,23 @@ def closed(x):
 def evaluate(inputs, params):
     cloud = inputs["cloud"]
     return {"object": closed(cloud), "struct": closed(cloud.fields[0]), "list": closed(cloud.fields),
-            "points": closed(cloud.xyz_points()), "scene": closed(pj.scene.new(frame_id="m", id="e")),
+            "points": closed(cloud.xyz_points()), "decoded": closed(inputs["image"].decode()[0]),
+            "scene": closed(pj.scene.new(frame_id="m", id="e")),
             "annotations": closed(pj.annotations.new(image_topic="/cam")), "scene_new": closed(pj.scene),
             "annotations_new": closed(pj.annotations), "tf": closed(pj.tf)}
 )PY",
-      {objectInput("cloud", makeCloud({{0, 0, 0, 0}}))},
+      {objectInput("cloud", makeCloud({{0, 0, 0, 0}})), imageInput("image", "/cam", 0)},
       specs(
-          {"object:string", "struct:string", "list:string", "points:string", "scene:string", "annotations:string",
-           "scene_new:string", "annotations_new:string", "tf:string"}));
-  EXPECT_EQ(textOf(result, "object"), "bounds,count,crop_box,extreme_point,filter,transform,xyz_points");
+          {"object:string", "struct:string", "list:string", "points:string", "decoded:string", "scene:string",
+           "annotations:string", "scene_new:string", "annotations_new:string", "tf:string"}),
+      "{}", withGradient());
+  EXPECT_EQ(
+      textOf(result, "object"),
+      "bounds,count,crop_box,decode,extreme_point,filter,representation,to_point_cloud,transform,xyz_points");
   EXPECT_EQ(textOf(result, "struct"), "");
   EXPECT_EQ(textOf(result, "list"), "");
   EXPECT_EQ(textOf(result, "points"), "");
+  EXPECT_EQ(textOf(result, "decoded"), "channels,crop,height,pixel,stats,threshold,to_gray,width");
   EXPECT_EQ(textOf(result, "scene"), "cube,finish,line_strip,sphere,text");
   EXPECT_EQ(textOf(result, "annotations"), "circle,finish,points,text");
   EXPECT_EQ(textOf(result, "scene_new"), "new");
@@ -1364,6 +1532,44 @@ def evaluate(inputs, params):
   }
   for (std::size_t cap = fits - 2048; cap < fits; cap += 8) {
     EXPECT_FALSE(runsUnder(cap, *compiled, inputs, options)) << cap;
+  }
+}
+
+// Every allocation of an image method's return (the decoded pixels, a decode's `(None, reason)`, a pixel or stats dict,
+// a crop, a threshold's annotations, an unavailable marker) that the cap refuses fails the run on the memory limit.
+TEST(PythonObjectScript, ImageAllocationsTheCapRefusesFailTheRun) {
+  constexpr const char* kDecoded = R"PY(
+def evaluate(inputs, params):
+    kept = []
+    for i in range(4):
+        d = inputs["image"].decode()[0]
+        kept.append((d, d.pixel(1, 1), d.stats(), d.crop(0, 0, 2, 2), d.to_gray(), d.threshold(">", 8),
+                     inputs["image"].representation(), inputs["image"].to_point_cloud(inputs["camera"]),
+                     inputs["rgb"].decode()[0].pixel(1, 1)))
+    return len(kept)
+)PY";
+  constexpr const char* kUndecoded = R"PY(
+def evaluate(inputs, params):
+    kept = [inputs["image"].decode() for i in range(8)]
+    return len(kept)
+)PY";
+  const std::vector<NamedValue> inputs{
+      imageInput("image", "/cam", 0), imageInput("rgb", "/rgb", 0, "rgb8"), objectInput("camera", sdk::CameraInfo{})};
+  RunOptions decoding;
+  decoding.image_decoder = std::make_shared<GilProbeDecoder>();  // RGB for the rgb8 image: pixel() returns a dict
+  for (const auto& [source, options] : {std::pair{kDecoded, decoding}, std::pair{kUndecoded, RunOptions{}}}) {
+    auto compiled = compile(source);
+    ASSERT_TRUE(compiled) << compiled.error();
+    std::size_t fails = 0;
+    std::size_t fits = std::size_t{1} << 20;
+    ASSERT_TRUE(runsUnder(fits, *compiled, inputs, options));
+    while (fits - fails > 8) {
+      const std::size_t middle = (fails + fits) / 2 / 8 * 8;
+      (runsUnder(middle, *compiled, inputs, options) ? fits : fails) = middle;
+    }
+    for (std::size_t cap = fits - 4096; cap < fits; cap += 8) {
+      EXPECT_FALSE(runsUnder(cap, *compiled, inputs, options)) << cap;
+    }
   }
 }
 

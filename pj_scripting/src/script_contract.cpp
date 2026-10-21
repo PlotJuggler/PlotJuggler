@@ -236,6 +236,14 @@ std::optional<native::Extreme> parseExtreme(std::string_view which) {
   return which == "min" ? std::optional(native::Extreme::kMin) : std::nullopt;
 }
 
+Expected<uint32_t> thresholdChannel(std::string_view name) {
+  const std::size_t found = std::string_view("rgba").find(name);
+  if (name.size() != 1 || found == std::string_view::npos) {
+    return unexpected("threshold: unknown channel '" + std::string(name) + "' (expected r, g, b, a or 0-3)");
+  }
+  return static_cast<uint32_t>(found);
+}
+
 const char* tfLookupErrorText(pj::tf::LookupError error) {
   switch (error) {
     case pj::tf::LookupError::kUnknownSource:

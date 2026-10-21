@@ -316,6 +316,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
     try {
       const PjHelpers& pj = pjHelpers();
       const detail::PjNamespaces& namespaces = detail::pjNamespaces();
+      run.unavailable = pj.unavailable.ptr();
       const py::dict globals = detail::checked(PyDict_New());
       const detail::ClearedOnExit cleared(globals);  // its functions hold it: cleared here, on every exit
       setItem(globals, pj.builtins_key, detail::strictBuiltins());
