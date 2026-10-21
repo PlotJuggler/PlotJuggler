@@ -3,7 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -63,6 +66,25 @@ RecipeGraph::Recipe chainedRecipe(std::string id, const std::string& input) {
   recipe.inputs = {input};
   recipe.script = "local inputs = ...\nreturn {cropped = inputs[\"" + input + "\"]}\n";
   return recipe;
+}
+
+/// Installs `cropRecipe()` and a ladder of `layers` diamonds on it (2 * layers + 1 nodes): the first layer's two nodes
+/// read the crop, each later layer's two nodes read both nodes of the layer before. Sets `last` to the first node of
+/// the last layer, which reaches the crop by 2^layers paths.
+void addDiamondLadder(Fixture& fx, int layers, std::string& last) {
+  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
+  std::vector<std::string> previous = {"owner/crop/cropped", "owner/crop/cropped"};
+  for (int layer = 0; layer < layers; ++layer) {
+    std::vector<std::string> current;
+    for (const char* side : {"a", "b"}) {
+      auto recipe = chainedRecipe("l" + std::to_string(layer) + side, previous[0]);
+      recipe.inputs = layer == 0 ? std::vector<std::string>{previous[0]} : previous;
+      ASSERT_TRUE(fx.graph.upsert(recipe).has_value());
+      current.push_back(recipe.key() + "/cropped");
+    }
+    previous = current;
+  }
+  last = "owner/l" + std::to_string(layers - 1) + "a";
 }
 
 bool contains(const std::string& text, std::string_view part) {
@@ -338,6 +360,29 @@ TEST(RecipeGraphTest, MissingInputChecksEveryBindingOfAnUpstreamWalkedOnce) {
   const auto missing = fx.graph.missingInput("owner/mix");
   ASSERT_TRUE(missing.has_value());
   EXPECT_TRUE(contains(*missing, "no longer provides 'extra'")) << *missing;
+}
+
+// `missingInput` walks a shared upstream once: on a ladder of diamonds, where each layer reads both nodes of the one
+// before, a walk that forgets what it checked takes 2^layers steps (the walk-once memo's guard). The graph exposes no
+// step count, so the bound is time: 22 layers take microseconds with the memo (the bound is 3 orders of magnitude
+// above) and hundreds of milliseconds without it. The best of a few calls is taken so a stalled host cannot fail it.
+TEST(RecipeGraphTest, MissingInputOverADiamondLadderWalksEachSharedUpstreamOnce) {
+  constexpr int kLayers = 22;
+  constexpr double kBoundMicros = 20'000.0;
+  Fixture fx;
+  std::string last;
+  ASSERT_NO_FATAL_FAILURE(addDiamondLadder(fx, kLayers, last));
+
+  double best_micros = std::numeric_limits<double>::infinity();
+  for (int attempt = 0; attempt < 3 && best_micros >= kBoundMicros; ++attempt) {
+    const auto begin = std::chrono::steady_clock::now();
+    const bool missing = fx.graph.missingInput(last).has_value();
+    best_micros = std::min(
+        best_micros, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count());
+    EXPECT_FALSE(missing);
+  }
+  EXPECT_LT(best_micros, kBoundMicros) << "missingInput re-walks the ladder's shared upstreams";
+  EXPECT_EQ(fx.graph.dependentsOf({"owner/crop"}).size(), std::size_t{2 * kLayers});
 }
 
 // DAG-10
@@ -666,19 +711,8 @@ TEST(RecipeGraphBench, QueriesOverADiamondLadder) {
   }
   constexpr int kLayers = 16;
   Fixture fx;
-  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
-  std::vector<std::string> previous = {"owner/crop/cropped", "owner/crop/cropped"};
-  for (int layer = 0; layer < kLayers; ++layer) {
-    std::vector<std::string> current;
-    for (const char* side : {"a", "b"}) {
-      auto recipe = chainedRecipe("l" + std::to_string(layer) + side, previous[0]);
-      recipe.inputs = layer == 0 ? std::vector<std::string>{previous[0]} : previous;
-      ASSERT_TRUE(fx.graph.upsert(recipe).has_value());
-      current.push_back(recipe.key() + "/cropped");
-    }
-    previous = current;
-  }
-  const std::string last = "owner/l" + std::to_string(kLayers - 1) + "a";
+  std::string last;
+  ASSERT_NO_FATAL_FAILURE(addDiamondLadder(fx, kLayers, last));
   bool any_missing = false;
   const double missing_us =
       test::medianMicros(101, [&] { any_missing = fx.graph.missingInput(last).has_value() || any_missing; });

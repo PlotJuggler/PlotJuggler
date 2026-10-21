@@ -389,6 +389,55 @@ TEST(OnDemandEvaluationTest, AWindowReadingAnUnreadableColumnIsRefusedAccurately
   }
 }
 
+// The refusal of a window follows the column's real type: a string column a stream adds after rows are stored
+// (ensureColumn) is a string series, as one its schema declares; a topic without any column, whose exact name reads
+// column 0 past the last one, is neither a number nor a string. The numeric column added before stays readable.
+TEST(OnDemandEvaluationTest, AWindowReadingAColumnAddedMidStreamIsRefusedByItsType) {
+  CursorFixture fx;
+  DataWriter writer = fx.manager.dataEngine().createWriter();
+  const auto register_schemaless = [&](const std::string& name) {
+    TopicDescriptor descriptor;
+    descriptor.name = name;
+    const auto topic = writer.registerTopic(fx.ds, descriptor);
+    EXPECT_TRUE(topic.has_value()) << topic.error();
+    return topic ? *topic : TopicId{};
+  };
+  const TopicId stream = register_schemaless("/robot/stream");
+  register_schemaless("/robot/bare");
+
+  ASSERT_TRUE(writer.ensureColumn(stream, "gain", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.beginRow(stream, 10 * kSec).has_value());
+  writer.set(stream, 0, 1.5);
+  ASSERT_TRUE(writer.finishRow(stream).has_value());
+  ASSERT_FALSE(fx.manager.commitChunks(writer.flushAll()).empty());
+  const auto label = writer.ensureColumn(stream, "label", PrimitiveType::kString);
+  ASSERT_TRUE(label.has_value()) << label.error();
+  ASSERT_TRUE(writer.beginRow(stream, 20 * kSec).has_value());
+  writer.set(stream, 0, 2.5);
+  writer.set(stream, *label, std::string_view("moving"));
+  ASSERT_TRUE(writer.finishRow(stream).has_value());
+  ASSERT_FALSE(fx.manager.commitChunks(writer.flushAll()).empty());
+  fx.session.catalogModel().rebuildFromDatastore();
+
+  GridRunner& runner = fx.manager.onDemandService().evaluations();
+  const auto window_error = [&](const std::string& input) {
+    fx.install(test::onDemandRecipe("read", {input}, {cloudSpec()}));
+    const auto window = runner.submit(
+        *fx.manager.onDemandService().graph().find("owner/read"), true, 10 * kSec, 30 * kSec, {}, [](auto) {});
+    return window.has_value() ? std::string() : window.error();
+  };
+  EXPECT_EQ(
+      window_error("/robot/stream/label"),
+      "on-demand: input '/robot/stream/label' is a string series, whose changes a window evaluation cannot read yet; "
+      "evaluate an instant");
+  EXPECT_EQ(
+      window_error("/robot/bare"),
+      "on-demand: input '/robot/bare' is neither a numeric nor a string series, so a window evaluation cannot read "
+      "its changes");
+  EXPECT_EQ(window_error("/robot/stream/gain"), std::string()) << "a numeric column is read";
+  fx.settle();
+}
+
 // A merge re-binds a consumed dataset's recipe on the anchor once the catalog lists the merged series there: a
 // scalar input resolves through the catalog, which AppSession rebuilds after the store's merge.
 TEST(AppSessionTest, MergeReBindsAScalarInputOnTheAnchor) {

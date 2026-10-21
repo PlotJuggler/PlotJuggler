@@ -18,6 +18,7 @@
 #include <QTreeWidgetItem>
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -233,6 +234,62 @@ TEST(CurveListPanelTest, UnsubscribedRowsFollowTheDemandTracker) {
   panel.setTopicDemandTracker(nullptr);
   EXPECT_FALSE(tree->isKeyUnsubscribed(key_a)) << "a detached tracker clears every flag";
   EXPECT_FALSE(tree->isKeyUnsubscribed(key_b));
+}
+
+// A demand change walks the catalog only while some dataset can pause topics, and it reads that capability at every
+// change, not once when the tracker attached: a dataset that becomes pause-capable afterwards dims its idle topics, and
+// one that stops being so is cleared (the walk is skipped, the flags still pushed).
+TEST(CurveListPanelTest, DemandChangeWalksTheCatalogOnlyWhileADatasetCanPauseTopics) {
+  AppSession app_session;
+  const DatasetId stream = pj_test::createDataset(app_session, "stream");
+  const DatasetId file = pj_test::createDataset(app_session, "file.mcap");
+  ASSERT_NE(stream, 0U);
+  ASSERT_NE(file, 0U);
+  for (const auto& [dataset, topic] : {std::pair{stream, "/a"}, {stream, "/b"}, {file, "/c"}}) {
+    ASSERT_TRUE(app_session.sessionManager()
+                    .objectStore()
+                    .registerTopic(
+                        ObjectTopicDescriptor{
+                            .dataset_id = dataset,
+                            .topic_name = topic,
+                            .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                    .has_value());
+  }
+  CatalogModel& catalog = app_session.catalogModel();
+  catalog.rebuildFromDatastore();
+  TopicDemandTracker& tracker = app_session.topicDemandTracker();
+
+  CurveListPanel panel;
+  panel.setCatalog(&catalog);
+  panel.setTopicDemandTracker(&tracker);
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  const QString key_a = keyOfTopic(catalog, u"/a"_s);
+  const QString key_b = keyOfTopic(catalog, u"/b"_s);
+  const QString key_c = keyOfTopic(catalog, u"/c"_s);
+  ASSERT_FALSE(key_a.isEmpty());
+  ASSERT_FALSE(key_b.isEmpty());
+  ASSERT_FALSE(key_c.isEmpty());
+
+  std::size_t walks = catalog.wholeCatalogWalks();
+  tracker.addReference(stream, u"/a"_s);
+  tracker.removeReference(stream, u"/a"_s);
+  EXPECT_EQ(catalog.wholeCatalogWalks(), walks) << "no dataset can pause topics: nothing to dim, nothing to walk";
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_b));
+
+  catalog.setPerTopicPauseCapable(stream, true);
+  walks = catalog.wholeCatalogWalks();
+  tracker.addReference(stream, u"/a"_s);
+  EXPECT_EQ(catalog.wholeCatalogWalks(), walks + 1) << "a dataset that can pause topics: one walk per change";
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_a));
+  EXPECT_TRUE(tree->isKeyUnsubscribed(key_b)) << "pause-capable after the panel attached";
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_c)) << "a dataset that cannot pause topics never dims";
+
+  catalog.setPerTopicPauseCapable(stream, false);
+  walks = catalog.wholeCatalogWalks();
+  tracker.removeReference(stream, u"/a"_s);
+  EXPECT_EQ(catalog.wholeCatalogWalks(), walks) << "the capability is gone: nothing to walk";
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_b)) << "the skipped walk still clears the flags it set";
 }
 
 // PJ_BENCH=1: one demand change in a catalog of 10k object topics, a dataset that cannot pause topics (nothing to

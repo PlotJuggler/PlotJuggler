@@ -240,6 +240,9 @@ class CatalogModel : public QObject {
   /// Calls `visit` on every item in no particular order, without the copy and sort of `items()`. `visit` must not
   /// change the catalog.
   void forEachItem(const std::function<void(const CatalogItem&)>& visit) const;
+  /// How many times `items()` and `forEachItem()` have walked the whole catalog: a test reads the difference around a
+  /// call to pin that it did not walk it.
+  [[nodiscard]] std::size_t wholeCatalogWalks() const noexcept;
   /// The object-topic items named `topic_name`, in `items()` order: one per dataset that
   /// has it. A non-empty `dataset_source` keeps only the dataset with that source NAME.
   /// Walks the catalog in place, without the copy and sort of `items()`.

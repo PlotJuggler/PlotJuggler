@@ -13,6 +13,7 @@
 #include <QLoggingCategory>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <nlohmann/json.hpp>
@@ -301,6 +302,7 @@ struct CatalogModel::Impl {
   // the samplesIngested gate (rebuildIfChanged) to skip redundant full rebuilds.
   // Unset until the first rebuild, so the first ingest always rebuilds.
   std::optional<std::uint64_t> last_fingerprint;
+  std::atomic<std::size_t> whole_catalog_walks{0};  ///< `items()` and `forEachItem()` calls, for `wholeCatalogWalks()`
 };
 
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
@@ -314,6 +316,7 @@ CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
 CatalogModel::~CatalogModel() = default;
 
 std::vector<CatalogItem> CatalogModel::items() const {
+  impl_->whole_catalog_walks.fetch_add(1, std::memory_order_relaxed);
   std::vector<CatalogItem> items;
   items.reserve(impl_->items.size());
   for (const auto& [key, item] : impl_->items) {
@@ -324,7 +327,12 @@ std::vector<CatalogItem> CatalogModel::items() const {
   return items;
 }
 
+std::size_t CatalogModel::wholeCatalogWalks() const noexcept {
+  return impl_->whole_catalog_walks.load(std::memory_order_relaxed);
+}
+
 void CatalogModel::forEachItem(const std::function<void(const CatalogItem&)>& visit) const {
+  impl_->whole_catalog_walks.fetch_add(1, std::memory_order_relaxed);
   for (const auto& entry : impl_->items) {
     visit(entry.second);
   }

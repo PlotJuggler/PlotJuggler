@@ -1769,6 +1769,36 @@ TEST(EngineIntegrationTest, ColumnTypeReadsTheSchemaAndRefusesAMissingColumn) {
   EXPECT_EQ(reader.columnType(*topic_or + 1000, 0), std::nullopt) << "no such topic";
 }
 
+// A column added mid-stream (ensureColumn after rows were stored and sealed) is known to columnType, the index just
+// past it is not: the answer comes from the live column layout, not from the schema or the first sealed chunk.
+TEST(EngineIntegrationTest, ColumnTypeSeesAColumnAddedAfterRowsAreStored) {
+  DataEngine engine;
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "types", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+  DataWriter writer = engine.createWriter();
+  TopicDescriptor td;
+  td.name = "/dynamic";
+  td.schema_id = 0;
+  auto topic_or = writer.registerTopic(*dataset_or, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  const TopicId topic = *topic_or;
+
+  ASSERT_TRUE(writer.ensureColumn(topic, "gain", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.beginRow(topic, 1000).has_value());
+  writer.set(topic, 0, 1.5);
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  engine.commitChunks(writer.flushAll());
+  const DataReader reader = engine.createReader();
+  EXPECT_EQ(reader.columnType(topic, 0), PrimitiveType::kFloat64);
+  EXPECT_EQ(reader.columnType(topic, 1), std::nullopt) << "no second column yet";
+
+  const auto label = writer.ensureColumn(topic, "label", PrimitiveType::kString);
+  ASSERT_TRUE(label.has_value()) << label.error();
+  EXPECT_EQ(reader.columnType(topic, *label), PrimitiveType::kString) << "added after the first chunk was sealed";
+  EXPECT_EQ(reader.columnType(topic, 0), PrimitiveType::kFloat64);
+  EXPECT_EQ(reader.columnType(topic, *label + 1), std::nullopt) << "just past the added column";
+}
+
 // Both null-aware reads must distinguish a NULL latest cell from a real value
 // (so the Value column shows "-" not a fabricated "0.000"), and latestStringAt
 // must refuse a non-string column (readString is UB on numeric storage).
