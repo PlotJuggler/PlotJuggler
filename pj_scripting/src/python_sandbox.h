@@ -30,7 +30,9 @@ namespace py = pybind11;
 /// fragile, and the watchdog thread outlives every caller), then leaves the GIL released: every entry point takes it
 /// with `py::gil_scoped_acquire`. The boot installs the audit hook and the allocation wrapper while only the booting
 /// thread runs Python, and imports the modules scripts may import while nothing is armed (a first import opens files,
-/// which an armed hook refuses). Idempotent; any thread.
+/// which an armed hook refuses). Idempotent; any thread. Boots once even when it fails: every call then throws
+/// `std::runtime_error` with the first failure, and the caller must not touch Python. The interpreter is unusable, and
+/// the GIL is free after a failure past the start but still held by the booting thread when CPython failed to start.
 void ensureInterpreter();
 
 /// What a script call runs under, beyond the limits and the hook every call gets. kCompatible: nothing more, the

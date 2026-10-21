@@ -16,17 +16,22 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/python_engine.h"
+#include "pj_scripting/python_object_script.h"
 #include "pj_scripting/sandbox.h"
 #include "python_test_helpers.h"
 
@@ -808,6 +813,98 @@ TEST(PythonSandbox, AFilterMakingFunctionsPastItsCapFailsCleanly) {
     EXPECT_TRUE((*instance)->calculate(0.0, 1.0).suppress) << "sticky";
   }
   EXPECT_GT(exercised, 1000);
+}
+
+// ---- a failed boot -----------------------------------------------------------------------------
+
+/// A failed boot lasts for the process, so these cases run only alone, as ctest runs every case.
+bool runsAlone() {
+  return ::testing::UnitTest::GetInstance()->test_to_run_count() == 1;
+}
+
+void setEnvironment(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  ::setenv(name, value.c_str(), 1);
+#endif
+}
+
+std::filesystem::path freshDirectory() {
+  auto dir = std::filesystem::temp_directory_path() / ("pj_python_boot_" + std::to_string(std::random_device{}()));
+  std::filesystem::create_directories(dir);
+  return dir;
+}
+
+std::string bootError() {
+  try {
+    detail::ensureInterpreter();
+  } catch (const std::exception& error) {
+    return error.what();
+  }
+  return {};
+}
+
+/// `work()` on a detached thread, waited for at most 5 s: nullopt when it hangs, instead of hanging the test.
+template <typename Work>
+std::optional<std::invoke_result_t<Work>> onAnotherThread(Work work) {
+  auto task = std::make_shared<std::packaged_task<std::invoke_result_t<Work>()>>(std::move(work));
+  auto result = task->get_future();
+  std::thread([task] { (*task)(); }).detach();
+  if (result.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+    return std::nullopt;
+  }
+  return result.get();
+}
+
+// The interpreter starts and an import of the boot fails (a `json` shadowing the stdlib's): every later call, on any
+// thread, reports that failure, and the GIL is not left held by the booting thread.
+TEST(PythonBootFailure, AFailedImportIsReportedToEveryCallAndLeavesTheGilFree) {
+  if (!runsAlone()) {
+    GTEST_SKIP() << "a failed boot lasts for the process: run this case alone";
+  }
+  ASSERT_EQ(Py_IsInitialized(), 0) << "Python booted before the test: it cannot fail the boot";
+  const std::filesystem::path dir = freshDirectory();
+  std::ofstream(dir / "json.py") << "raise RuntimeError('injected boot failure')\n";
+  setEnvironment("PYTHONPATH", dir.string());
+  const std::string first = bootError();
+  EXPECT_NE(first.find("injected boot failure"), std::string::npos) << first;
+  EXPECT_EQ(bootError(), first);
+  EXPECT_TRUE(onAnotherThread([] {
+                py::gil_scoped_acquire gil;
+                return true;
+              }).has_value())
+      << "the booting thread still holds the GIL";
+  const auto compiled =
+      onAnotherThread([] { return compileOnDemandScriptPython("def evaluate(inputs, params):\n    return 1\n"); });
+  ASSERT_TRUE(compiled.has_value()) << "a compile on another thread hung";
+  ASSERT_FALSE(*compiled);
+  EXPECT_NE(compiled->error().find("injected boot failure"), std::string::npos) << compiled->error();
+  const auto filters = onAnotherThread([] { return makePythonEngine()->inspectModule(filter("pass"), "test"); });
+  ASSERT_TRUE(filters.has_value()) << "a filter inspection on another thread hung";
+  ASSERT_FALSE(*filters);
+  EXPECT_NE(filters->error().find("injected boot failure"), std::string::npos) << filters->error();
+  std::filesystem::remove_all(dir);
+}
+
+// The interpreter itself fails to start (no stdlib under PYTHONHOME): pybind11 throws CPython's status, and every
+// later call reports it instead of starting the half-initialized runtime again.
+TEST(PythonBootFailure, AnInterpreterThatCannotStartIsReportedToEveryCall) {
+  if (!runsAlone()) {
+    GTEST_SKIP() << "a failed boot lasts for the process: run this case alone";
+  }
+  ASSERT_EQ(Py_IsInitialized(), 0) << "Python booted before the test: it cannot fail the boot";
+  const std::filesystem::path dir = freshDirectory();
+  setEnvironment("PYTHONHOME", dir.string());
+  const std::string first = bootError();
+  EXPECT_FALSE(first.empty());
+  EXPECT_EQ(bootError(), first);
+  const auto compiled =
+      onAnotherThread([] { return compileOnDemandScriptPython("def evaluate(inputs, params):\n    return 1\n"); });
+  ASSERT_TRUE(compiled.has_value()) << "a compile on another thread hung";
+  ASSERT_FALSE(*compiled);
+  EXPECT_NE(compiled->error().find(first), std::string::npos) << compiled->error();
+  std::filesystem::remove_all(dir);
 }
 
 // PJ_BENCH=1 prints the best-of-N ns per element of five loops (the last allocates nothing, a control), run bare (no

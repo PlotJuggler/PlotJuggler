@@ -14,9 +14,11 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pj_scripting/sandbox.h"
@@ -80,6 +82,16 @@ py::dict makeFilterNamespace() {
   py::dict ns;
   ns["__builtins__"] = gated;
   return ns;
+}
+
+/// Why the interpreter cannot run filters, empty when it can: a failed boot fails the call, through its Expected.
+std::string bootFailure() {
+  try {
+    detail::ensureInterpreter();
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return {};
 }
 
 /// `source` compiled on the host, unarmed: the armed run executes the code object (detail::runCode). The compile is
@@ -252,7 +264,9 @@ class PythonEngine final : public ScriptEngine {
 
   // The scope covers the attribute reads too: a script's metaclass or `__str__` runs on them.
   Expected<std::vector<FilterClass>> inspectModule(const std::string& source, const std::string& origin) override {
-    detail::ensureInterpreter();
+    if (std::string failure = bootFailure(); !failure.empty()) {
+      return PJ::unexpected(std::move(failure));
+    }
     py::gil_scoped_acquire gil;
     Expected<py::object> code = compileSource(source);
     if (!code) {
@@ -273,7 +287,9 @@ class PythonEngine final : public ScriptEngine {
 
   Expected<std::unique_ptr<FilterInstance>> createInstance(
       const FilterClass& klass, const std::string& params_json) override {
-    detail::ensureInterpreter();
+    if (std::string failure = bootFailure(); !failure.empty()) {
+      return PJ::unexpected(std::move(failure));
+    }
     py::gil_scoped_acquire gil;
     Expected<py::object> code = compileSource(klass.source);
     if (!code) {

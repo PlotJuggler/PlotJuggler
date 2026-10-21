@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -472,7 +474,10 @@ bool isArmed(const PersistentWatchdog::Slot& slot) {
 }  // namespace
 
 void ensureInterpreter() {
-  static const bool booted = []() {
+  // Once per process, failure included: a second start is refused by pybind11 ("already running") or, after CPython
+  // failed to start, runs on a half-initialized runtime, either way losing the cause. Leaked like the interpreter: a
+  // thread still running at exit may call this after static destruction.
+  static const std::string* const failure = new std::string([]() -> std::string {  // NOLINT: never destroyed
 #ifdef PJ_PYTHON_HOME
     // The stdlib lives under the CPython prefix baked at build time, unless the user set PYTHONHOME.
     if (!sdk::getEnv("PYTHONHOME")) {
@@ -483,36 +488,49 @@ void ensureInterpreter() {
 #endif
     }
 #endif
-    new py::scoped_interpreter();  // NOLINT: leaked on purpose, never finalized
-    PySys_AddAuditHook(&auditHook, nullptr);
-    installAllocatorWrapper();
-    for (const char* name : {"ast", "types", "json", "math", "cmath", "statistics"}) {
-      py::module_::import(name);
-    }
-    // Modules the allowed ones import at a first call: loaded now, before any run arms the hook, because an import
-    // inside a run opens its file, which the hook refuses. The browser's stdlib zip (stdlib_zip.py) roots them too.
-    for (const char* name : kLazyDependencies) {
-      py::module_::import(name);
-    }
-    // statistics re-exports decimal.Decimal, whose C format falls back to _pydecimal for a spec libmpdec lacks (the
-    // "_" grouping). It imports it through the caller's __import__, which in a strict run is the gate, and keeps the
-    // class once found: one such format now makes every later one import nothing. A _pydecimal that refuses the spec
-    // too (CPython 3.12) raises ValueError after the import.
     try {
-      (void)py::module_::import("decimal").attr("Decimal")(1).attr("__format__")("_");
-    } catch (py::error_already_set& error) {
-      if (!error.matches(PyExc_ValueError)) {
-        throw;
-      }
+      new py::scoped_interpreter();  // NOLINT: leaked on purpose, never finalized
+    } catch (const std::exception& error) {
+      // CPython's start-up status: the runtime is left half-initialized, so nothing touches it again.
+      return std::string("Python failed to start: ") + error.what();
     }
-    py::dict scope;
-    scope["__builtins__"] = py::module_::import("builtins");
-    py::exec(kGateSource, scope);
-    g_strict_builtins = new py::dict(makeBuiltins(scope["make_gate"], kStrictImports));
+    std::string error;
+    try {
+      PySys_AddAuditHook(&auditHook, nullptr);
+      installAllocatorWrapper();
+      for (const char* name : {"ast", "types", "json", "math", "cmath", "statistics"}) {
+        py::module_::import(name);
+      }
+      // Modules the allowed ones import at a first call: loaded now, before any run arms the hook, because an import
+      // inside a run opens its file, which the hook refuses. The browser's stdlib zip (stdlib_zip.py) roots them too.
+      for (const char* name : kLazyDependencies) {
+        py::module_::import(name);
+      }
+      // statistics re-exports decimal.Decimal, whose C format falls back to _pydecimal for a spec libmpdec lacks (the
+      // "_" grouping). It imports it through the caller's __import__, which in a strict run is the gate, and keeps the
+      // class once found: one such format now makes every later one import nothing. A _pydecimal that refuses the spec
+      // too (CPython 3.12) raises ValueError after the import.
+      try {
+        (void)py::module_::import("decimal").attr("Decimal")(1).attr("__format__")("_");
+      } catch (py::error_already_set& error) {
+        if (!error.matches(PyExc_ValueError)) {
+          throw;
+        }
+      }
+      py::dict scope;
+      scope["__builtins__"] = py::module_::import("builtins");
+      py::exec(kGateSource, scope);
+      g_strict_builtins = new py::dict(makeBuiltins(scope["make_gate"], kStrictImports));
+    } catch (const std::exception& caught) {
+      error = "Python failed to start: " + pythonErrorText(caught);  // a Python error dies here, the GIL still held
+    }
+    // Released on failure too: the interpreter runs, and no thread may wait for a GIL the booting thread keeps.
     new py::gil_scoped_release();  // NOLINT: leaked on purpose, the GIL is handed to the callers
-    return true;
-  }();
-  (void)booted;
+    return error;
+  }());
+  if (!failure->empty()) {
+    throw std::runtime_error(*failure);
+  }
 }
 
 py::dict strictBuiltins() {
