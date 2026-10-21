@@ -49,8 +49,9 @@ PJ_string_view_t s(std::string_view v) {
 
 // An in-memory backend: it tracks its live ids so the routing can be observed. A
 // preview is owned but hidden from list and config, as the markers bridge hides it.
-// `evaluates` gives it the submit/poll/release slots (the on-demand backend's shape);
-// without it, it has create_v2 only (the transform and markers bridges' shape).
+// `evaluates` gives it the submit/poll/release slots and the three-way check (the on-demand
+// backend's shape); without it, it has create_v2 only, whatever the real transform and markers
+// bridges fill, so the router's fallback for a backend without the check is exercised.
 struct FakeBackend {
   std::set<std::string> ids;
   std::set<std::string> previews;
@@ -60,6 +61,9 @@ struct FakeBackend {
   int calls = 0;  ///< every vtable call and ownership probe
   int config_calls = 0;
   bool validate_called = false;
+  std::string validate_error;  ///< when set, validate() refuses with it
+  bool check_called = false;
+  uint32_t check_status = PJ_SCRIPT_CHECK_UNCHECKED;  ///< what check() answers, with the message "fake: not decided"
   uint32_t last_v2_struct_size = 0;
   std::string last_v2_kind;
   std::map<uint64_t, std::string> evaluations;
@@ -117,8 +121,23 @@ struct FakeBackend {
     return backend.ids.count(std::string(sv(id))) > 0;
   }
   static bool validate(
-      void* ctx, PJ_string_view_t, PJ_string_view_t, PJ_string_view_t, PJ_string_view_t, PJ_error_t*) noexcept {
-    self(ctx).validate_called = true;
+      void* ctx, PJ_string_view_t, PJ_string_view_t, PJ_string_view_t, PJ_string_view_t,
+      PJ_error_t* out_error) noexcept {
+    FakeBackend& backend = self(ctx);
+    backend.validate_called = true;
+    if (!backend.validate_error.empty()) {
+      PJ::sdk::fillError(out_error, PJ_ERROR_CODE_REJECTED, "fake_backend", backend.validate_error);
+      return false;
+    }
+    return true;
+  }
+  static bool check(
+      void* ctx, PJ_string_view_t, PJ_string_view_t, PJ_string_view_t, PJ_string_view_t, uint32_t* out_status,
+      PJ_error_t* out_error) noexcept {
+    FakeBackend& backend = self(ctx);
+    backend.check_called = true;
+    *out_status = backend.check_status;
+    PJ::sdk::fillError(out_error, PJ_ERROR_CODE_REJECTED, "fake_backend", "fake: not decided");
     return true;
   }
   static bool createV2(
@@ -186,6 +205,7 @@ struct FakeBackend {
         .submit_evaluation = &FakeBackend::submit,
         .poll_evaluation = &FakeBackend::poll,
         .release_evaluation = &FakeBackend::release,
+        .check_data_processor_script = &FakeBackend::check,
     };
     return PJ_data_processors_host_t{this, evaluates ? &kEvaluating : &kBridge};
   }
@@ -750,6 +770,43 @@ TEST(DataProcessorsKindRouterTest, UnboundBackendsAreSkipped) {
   EXPECT_FALSE(r.vtable->remove_data_processor(r.ctx, s("nope"), &err));
   EXPECT_TRUE(contains(err, "unknown")) << err.message;
   EXPECT_TRUE(r.vtable->remove_data_processor(r.ctx, s("t1"), &err));
+}
+
+// The three-way check: a backend with the slot answers through it, so the on-demand backend's UNCHECKED and its reason
+// reach the plugin instead of a pass; a backend without it is asked its validate, a pass reading VALID and a refusal
+// INVALID with the reason. An unknown kind, a NULL out_status and a null ctx are calls that could not be made.
+TEST(DataProcessorsKindRouterTest, CheckForwardsToTheBackendsCheckElseMapsItsValidate) {
+  Fixture fx;
+  const PJ::sdk::DataProcessorsHostView view = fx.view();
+  const auto unchecked = view.checkScript("on_demand", "python", "x");
+  ASSERT_TRUE(unchecked.has_value()) << unchecked.error();
+  EXPECT_EQ(unchecked->status, PJ::sdk::ScriptCheckStatus::kUnchecked);
+  EXPECT_NE(unchecked->message.find("fake: not decided"), std::string::npos) << unchecked->message;
+  EXPECT_TRUE(fx.on_demand.check_called);
+  EXPECT_FALSE(fx.on_demand.validate_called);
+
+  const auto valid = view.checkScript("markers", "luau", "return 1");
+  ASSERT_TRUE(valid.has_value()) << valid.error();
+  EXPECT_EQ(valid->status, PJ::sdk::ScriptCheckStatus::kValid);
+  EXPECT_TRUE(fx.markers.validate_called);
+  fx.transforms.validate_error = "fake: syntax error";
+  const auto invalid = view.checkScript("transform", "luau", "return {");
+  ASSERT_TRUE(invalid.has_value()) << invalid.error();
+  EXPECT_EQ(invalid->status, PJ::sdk::ScriptCheckStatus::kInvalid);
+  EXPECT_NE(invalid->message.find("fake: syntax error"), std::string::npos) << invalid->message;
+
+  const auto unknown = view.checkScript("nope", "luau", "return 1");
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_NE(unknown.error().find("unknown data processor kind"), std::string::npos) << unknown.error();
+  const PJ_data_processors_host_t r = fx.r();
+  ASSERT_TRUE(PJ_HAS_TAIL_SLOT(PJ_data_processors_host_vtable_t, r.vtable, check_data_processor_script));
+  PJ_error_t err{};
+  EXPECT_FALSE(r.vtable->check_data_processor_script(r.ctx, s("markers"), s("luau"), s(""), s("{}"), nullptr, &err));
+  EXPECT_GT(std::strlen(err.message), 0u);
+  err = PJ_error_t{};
+  uint32_t status = PJ_SCRIPT_CHECK_VALID;
+  EXPECT_FALSE(r.vtable->check_data_processor_script(nullptr, s("markers"), s("luau"), s(""), s("{}"), &status, &err));
+  EXPECT_GT(std::strlen(err.message), 0u);
 }
 
 // ABI-27: every router refusal is PJ_ERROR_CODE_REJECTED, and a null ctx still says why.

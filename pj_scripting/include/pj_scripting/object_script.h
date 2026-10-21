@@ -226,7 +226,7 @@ struct RunOptions {
 ///     within float32's range, r/g/b 0-255, packed into 16-byte records (native/point_cloud_builder.h).
 ///   - `pj.voxels.new{frame_id, origin, cell_size, dims}` -> `:set(i, j, k, value)` (1-based indices): a dense
 ///     VoxelGrid of one float32 `value` channel, every cell 0 until set (a finite value within float32's range), at
-///     most 2^24 cells (D16). It has no readable fields until the SDK describes the type.
+///     most 2^24 cells (D16). Its fields read as any object's; its cells are a raw buffer.
 /// `math.random` is seeded the same way on every run, and there is no `os` and no clock (D2).
 ///
 /// Binding the returned value: with no declared `outputs`, a non-table is one output `value`, a keyed

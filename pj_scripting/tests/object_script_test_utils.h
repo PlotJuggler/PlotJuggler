@@ -20,6 +20,7 @@
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/video_frame.hpp"
+#include "pj_base/builtin/voxel_grid.hpp"
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/object_script.h"
@@ -66,6 +67,30 @@ inline sdk::PointCloud makeLineCloud(size_t count, uint32_t point_step = 16) {
     points[index] = {static_cast<float>(index), 0, 0, 0};
   }
   return makeCloud(points, point_step);
+}
+
+/// A 1 x 1 x `slices` float32 `value` grid in "odom", cells of 0.25 m, cell k holding k.
+inline sdk::VoxelGrid makeColumnGrid(uint32_t slices) {
+  sdk::VoxelGrid grid;
+  grid.frame_id = "odom";
+  grid.cell_size = {0.25, 0.25, 0.25};
+  grid.column_count = 1;
+  grid.row_count = 1;
+  grid.slice_count = slices;
+  grid.cell_stride = sizeof(float);
+  grid.row_stride = sizeof(float);
+  grid.slice_stride = sizeof(float);
+  grid.fields = {
+      sdk::PointField{.name = "value", .offset = 0, .datatype = sdk::PointField::Datatype::kFloat32, .count = 1}};
+  std::vector<uint8_t> bytes(sizeof(float) * slices);
+  for (uint32_t slice = 0; slice < slices; ++slice) {
+    const auto value = static_cast<float>(slice);
+    std::memcpy(bytes.data() + slice * sizeof(float), &value, sizeof(float));
+  }
+  sdk::PayloadView view = sdk::makePayloadView(std::move(bytes));
+  grid.data = view.bytes;
+  grid.anchor = view.anchor;
+  return grid;
 }
 
 /// Decodes any image into width x height samples, charged to the budget; counts its calls. `value` < 0: sample = its

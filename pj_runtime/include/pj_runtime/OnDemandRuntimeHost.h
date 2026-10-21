@@ -41,8 +41,9 @@ class OnDemandService;
 /// installed node of this plugin (only its id, kind, flags and time fields) or a script evaluated as a preview,
 /// installed nowhere; a script that does not bind, or a Luau one that does not compile, is refused at submit (Python
 /// compiles at its first run, never on the calling thread: its compile error is the node's state, and an evaluation's
-/// report). Validate compiles Luau, and Python as `scripting::checkOnDemandScriptPython` does: at most
-/// `kPythonValidateWaitMillis`, then success meaning unchecked. Budget fields of 0 take
+/// report). Validate and the three-way check compile Luau, and Python as `scripting::checkOnDemandScriptPython` does:
+/// at most `kPythonValidateWaitMillis`, then unchecked, which the check reports and validate passes (it has no third
+/// answer). Budget fields of 0 take
 /// `GridRunner::Budget`'s defaults, and the runner clamps them to its host caps. A finished evaluation is FAILED when
 /// it stopped on an error before any bundle, COMPLETED otherwise; both carry `GridRunner::toJson`'s report, written on
 /// a worker (the handle stays PENDING until it lands) and stable until release. State 3 (reserved) is never emitted.
@@ -119,6 +120,9 @@ class OnDemandRuntimeHost {
   static bool onValidate(
       void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
       PJ_string_view_t params_json, PJ_error_t* out_error) noexcept;
+  static bool onCheck(
+      void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
+      PJ_string_view_t params_json, uint32_t* out_status, PJ_error_t* out_error) noexcept;
   static bool onCreateV2(
       void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
       uint64_t* out_topics_count, PJ_error_t* out_error) noexcept;

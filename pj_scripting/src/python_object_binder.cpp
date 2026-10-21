@@ -415,7 +415,7 @@ template <bool kMethods>
 PyObject* attribute(PyObject* self, PyObject* name) {
   return slotCall([&]() -> PyObject* {
     const StructView& view = unboxed<StructView>(self);
-    if (view.table == nullptr) {  // a builder's voxel grid: its methods, no readable fields
+    if (view.table == nullptr) {  // a type the SDK does not describe: its methods, no readable fields
       PyObject* method = PyObject_GenericGetAttr(self, name);
       if (method == nullptr && PyErr_ExceptionMatches(PyExc_AttributeError) != 0) {
         PyErr_Clear();

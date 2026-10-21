@@ -38,8 +38,9 @@ Licensed MPL-2.0.
   error for every later run; `compileOnDemandScriptPython` compiles on the calling thread and may wait for the GIL, so
   only tests, probes and workers call it. A validate's check, `checkOnDemandScriptPython`, is a throwaway compile on one
   Python helper thread (a thread and a queue, `src/python_object_script.cpp`), waited for at most
-  `kPythonValidateWaitMillis` (100 ms) and reported unchecked (success) past it; a compiled script's last release is
-  posted there too, never waited for. Python filters (`python_engine.cpp`) do not
+  `kPythonValidateWaitMillis` (100 ms) and answering unchecked past it (an `sdk::ScriptCheck`: valid, invalid or
+  unchecked; `checkOnDemand` in `on_demand_script.h` picks it or the Luau compile by language); a compiled script's
+  last release is posted there too, never waited for. Python filters (`python_engine.cpp`) do not
   use the lane yet: they take the GIL on their caller's thread.
 - `on_demand_script.h` — where a recipe's `language` picks its on-demand compiler and runner: `CompiledOnDemandScript`
   (Luau bytecode or the opaque Python handle), `compileOnDemand` and `runOnDemand`, which `pj_runtime` holds and calls
@@ -128,8 +129,8 @@ Licensed MPL-2.0.
     (D14); its buffer's capacity is charged before it grows (the old buffer beside the new until freed), every value
     must fit a float32, and a cloud is capped so its byte size fits a uint32.
   - `voxel_grid_ops.h`: `VoxelGridBuilder`, a dense float32 VoxelGrid (D16), its dimensions capped at 2^24 cells
-    before anything is charged or allocated. A VoxelGrid is producible but has no SDK field table yet, so a script
-    cannot read its fields.
+    before anything is charged or allocated. A VoxelGrid, built or an input, reads through its SDK field table (SDK
+    0.38.0-dev.2) like any object; its cells are a raw buffer, as a cloud's points are.
   - `image_annotations_ops.h`: `ImageAnnotationsBuilder`, the same shape for pixel-space annotations
     (`image_topic` required, no text background; the binder pairs a finished set through `ScriptMedia`).
     `field_checks.h`: the argument checks both builders share.

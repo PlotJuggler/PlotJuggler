@@ -118,7 +118,7 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   }
   console.log(`PJ_WASM_PY busy_main_thread_max_gap_ms=${busyGap.toFixed(1)}`);
   expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_COMPILE'))).toContain(' ok');
-  expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_VALIDATE'))).toContain(' ok');
+  expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_VALIDATE'))).toContain(' unchecked ');
   expect(consoleMessages.find(m => m.includes('PJ_WASM_PY_FREE_VALIDATE'))).toContain('SyntaxError');
   expect(Number((consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_RUN')).match(/value=([-0-9.]+)/) || [])[1]))
     .toBeCloseTo(Math.sqrt(10), 5);

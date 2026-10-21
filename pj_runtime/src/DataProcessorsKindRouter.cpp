@@ -115,6 +115,7 @@ DataProcessorsKindRouter::DataProcessorsKindRouter(
           .submit_evaluation = &DataProcessorsKindRouter::onSubmit,
           .poll_evaluation = &DataProcessorsKindRouter::onPoll,
           .release_evaluation = &DataProcessorsKindRouter::onRelease,
+          .check_data_processor_script = &DataProcessorsKindRouter::onCheck,
       },
       raw_{this, &vtable_} {
   assert(!isBound(markers_) || owns_.markers);
@@ -246,6 +247,24 @@ bool DataProcessorsKindRouter::onValidate(
     }
     return backend->vtable->validate_data_processor_script(
         backend->ctx, kind, language, script, params_json, out_error);
+  });
+}
+
+bool DataProcessorsKindRouter::onCheck(
+    void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script, PJ_string_view_t params_json,
+    uint32_t* out_status, PJ_error_t* out_error) noexcept {
+  return guarded<DataProcessorsKindRouter>(ctx, out_error, kDomain, [&](DataProcessorsKindRouter& self) {
+    const PJ_data_processors_host_t* backend = self.backendFor(kind);
+    if (backend == nullptr) {
+      return rejectKind(out_error, kind);
+    }
+    if (PJ_HAS_TAIL_SLOT(PJ_data_processors_host_vtable_t, backend->vtable, check_data_processor_script)) {
+      return backend->vtable->check_data_processor_script(
+          backend->ctx, kind, language, script, params_json, out_status, out_error);
+    }
+    return host_slot::checkByValidate(
+        backend->vtable->validate_data_processor_script, backend->ctx, kind, language, script, params_json, out_status,
+        out_error);
   });
 }
 

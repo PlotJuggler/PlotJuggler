@@ -46,6 +46,22 @@ std::string wasmPyOutcome(const PJ::Expected<PJ::scripting::ScriptBundle, PJ::sc
   return "no-number";
 }
 
+/// A validate's check as a log token: "ok", "invalid error=<compile error>", "unchecked <why>" or "error=<reason>".
+std::string wasmPyCheckOutcome(const PJ::Expected<PJ::sdk::ScriptCheck>& check) {
+  if (!check) {
+    return "error=" + check.error();
+  }
+  switch (check->status) {
+    case PJ::sdk::ScriptCheckStatus::kValid:
+      return "ok";
+    case PJ::sdk::ScriptCheckStatus::kInvalid:
+      return "invalid error=" + check->message;
+    case PJ::sdk::ScriptCheckStatus::kUnchecked:
+      return "unchecked " + check->message;
+  }
+  return "error=unknown status";
+}
+
 constexpr const char* kWasmPyValueScript =
     "import statistics, math\ndef evaluate(inputs, params):\n"
     "    return {'y': statistics.fmean([1, 2, 3]) + math.pi}\n";
@@ -272,10 +288,8 @@ constexpr const char* kWasmPyBrokenScript = "def evaluate(inputs, params:\n    r
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_hold_gil() {
   const auto begin = std::chrono::steady_clock::now();
-  const PJ::Status checked = PJ::scripting::validateOnDemand("python", kWasmPyBrokenScript);
-  qInfo(
-      "PJ_WASM_PY_FREE_VALIDATE gui_wait_ms=%.1f %s", wasmPyMillisSince(begin),
-      checked ? "ok" : ("error=" + checked.error()).c_str());
+  const auto checked = PJ::scripting::checkOnDemand("python", kWasmPyBrokenScript);
+  qInfo("PJ_WASM_PY_FREE_VALIDATE gui_wait_ms=%.1f %s", wasmPyMillisSince(begin), wasmPyCheckOutcome(checked).c_str());
   std::thread([] {
     using namespace PJ::scripting;
     if (auto spin =
@@ -297,10 +311,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_compile_now() {
       "PJ_WASM_PY_BUSY_COMPILE gui_wait_ms=%.1f %s", wasmPyMillisSince(begin),
       compiled ? "ok" : ("error=" + compiled.error()).c_str());
   const auto validate_begin = std::chrono::steady_clock::now();
-  const PJ::Status checked = validateOnDemand("python", kWasmPyBrokenScript);
+  const auto checked = checkOnDemand("python", kWasmPyBrokenScript);
   qInfo(
       "PJ_WASM_PY_BUSY_VALIDATE gui_wait_ms=%.1f %s", wasmPyMillisSince(validate_begin),
-      checked ? "ok" : ("error=" + checked.error()).c_str());
+      wasmPyCheckOutcome(checked).c_str());
   if (!compiled) {
     return;
   }

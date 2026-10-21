@@ -22,7 +22,7 @@ void prestartPythonHelper() {}
 
 void setPythonValidateWaitForTest(std::uint64_t /*millis*/) {}
 
-Status checkOnDemandScriptPython(std::string_view /*source*/) {
+Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view /*source*/) {
   return unexpected(std::string(kUnavailableMessage));
 }
 

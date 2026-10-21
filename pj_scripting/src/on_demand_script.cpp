@@ -8,6 +8,10 @@
 namespace PJ::scripting {
 namespace {
 
+std::string unsupported(std::string_view language) {
+  return "unsupported language '" + std::string(language) + "' (only 'luau' or 'python')";
+}
+
 template <class Compiled>
 Expected<CompiledOnDemandScript> held(Expected<Compiled> compiled) {
   if (!compiled) {
@@ -25,17 +29,20 @@ Expected<CompiledOnDemandScript> compileOnDemand(std::string_view language, std:
   if (language == "python") {
     return held(deferOnDemandScriptPython(source));
   }
-  return unexpected("unsupported language '" + std::string(language) + "' (only 'luau' or 'python')");
+  return unexpected(unsupported(language));
 }
 
-Status validateOnDemand(std::string_view language, std::string_view source) {
+Expected<sdk::ScriptCheck> checkOnDemand(std::string_view language, std::string_view source) {
   if (language == "python") {
     return checkOnDemandScriptPython(source);
   }
-  if (Expected<CompiledOnDemandScript> compiled = compileOnDemand(language, source); !compiled) {
-    return unexpected(std::move(compiled.error()));
+  if (language != "luau") {
+    return unexpected(unsupported(language));
   }
-  return okStatus();
+  if (Expected<CompiledScript> compiled = compileOnDemandScript(source); !compiled) {
+    return sdk::ScriptCheck{sdk::ScriptCheckStatus::kInvalid, std::move(compiled.error())};
+  }
+  return sdk::ScriptCheck{};
 }
 
 Expected<ScriptBundle, ScriptError> runOnDemand(

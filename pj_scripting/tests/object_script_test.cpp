@@ -880,7 +880,7 @@ TEST(ObjectScript, VoxelGridOutputIsProducible) {
   float first = 0;
   std::memcpy(&first, grid->data.data(), sizeof(first));
   EXPECT_EQ(first, 1.0f);
-  // Its cells count where a result's size is estimated (the compute cache's budget), without a field table.
+  // Its cells count where a result's size is estimated (the compute cache's budget).
   EXPECT_GE(estimateBytes(*find(*result, "occupied")), 96u);
 
   auto inferred = run("return { pj.voxels.new{frame_id='m', origin={0,0,0}, cell_size=1, dims={1,1,1}}:finish() }");
@@ -893,7 +893,7 @@ TEST(ObjectScript, VoxelGridOutputIsProducible) {
   expectScriptErrorNaming(head + "g:set(1.5, 1, 1, 1)", "integer");
   expectScriptErrorNaming(head + "g:finish()\ng:set(1, 1, 1, 1)", "finished");
   expectScriptErrorNaming(head + "g:finish()\ng:finish()", "finished");
-  expectScriptErrorNaming(head + "return g:finish().frame_id", "no readable fields");
+  expectScriptErrorNaming(head + "return g:finish().data", "raw buffer");
   expectScriptErrorNaming(
       "pj.voxels.new{frame_id='m', origin={0,0,0}, cell_size=1, dims={65536,65536,65536}}", "cells");
   expectScriptErrorNaming("pj.voxels.new{frame_id='m', origin={0,0,0}, cell_size=1, dims={2,2}}", "'dims'");
@@ -905,6 +905,32 @@ TEST(ObjectScript, VoxelGridOutputIsProducible) {
   }
   expectScriptErrorNaming(head + "g:set(1, 1, 1, 1e300)", "32-bit float");
   expectScriptErrorNaming("pj.voxels.new{frame_id='m', cell_size=1, dims={2,2,2}}", "'origin'");
+}
+
+// D16: a VoxelGrid reads through its SDK field table, built by the script or given as an input; its cells are a raw
+// buffer, as a cloud's points are.
+TEST(ObjectScript, VoxelGridFieldsAreReadable) {
+  constexpr const char* kScript = R"LUAU(
+    local inputs = ...
+    local built = pj.voxels.new{frame_id="map", origin={1, 2, 3}, cell_size=0.5, dims={2, 3, 4}}:finish()
+    local given = inputs.grid
+    return {
+      frame = built.frame_id, x = built.origin.position.x, size = built.cell_size.y, stride = built.cell_stride,
+      cells = built.column_count * built.row_count * built.slice_count, channel = built.fields[1].name,
+      given_frame = given.frame_id, given_slices = given.slice_count, given_size = given.cell_size.z,
+    }
+  )LUAU";
+  auto result = run(kScript, {object("grid", test::makeColumnGrid(5))});
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(text(*result, "frame"), "map");
+  EXPECT_DOUBLE_EQ(number(*result, "x"), 1.0);
+  EXPECT_DOUBLE_EQ(number(*result, "size"), 0.5);
+  EXPECT_DOUBLE_EQ(number(*result, "stride"), 4.0);
+  EXPECT_DOUBLE_EQ(number(*result, "cells"), 24.0);
+  EXPECT_EQ(text(*result, "channel"), "value");
+  EXPECT_EQ(text(*result, "given_frame"), "odom");
+  EXPECT_DOUBLE_EQ(number(*result, "given_slices"), 5.0);
+  EXPECT_DOUBLE_EQ(number(*result, "given_size"), 0.25);
 }
 
 // D14: a script builds a cloud from scratch with a PCL-like preset, and downsamples one into voxel centroids.

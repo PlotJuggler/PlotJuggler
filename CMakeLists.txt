@@ -177,7 +177,7 @@ set(_pj_sdk_url https://github.com/PlotJuggler/plotjuggler_sdk/archive/refs/tags
 # hash in the same commit as any PJ_SDK_VERSION bump in conanfile.txt — a stale
 # hash aborts the download loudly, which is the intended failure mode.
 set(_pj_sdk_url_hash
-    SHA256=907886a85bc36f9230dbe4162cdddd9aae84a2ff1d3d2fcb5a4f8136aa3eabd8)  # v0.38.0-dev.1
+    SHA256=17515210ef67b5f0902808eba418899c27786d669ba6ba73236e4342800fc8ef)  # v0.38.0-dev.3
 include(FetchContent)
 # Timestamps on extracted archives. DOWNLOAD_EXTRACT_TIMESTAMP is a CMake 3.24
 # keyword and the sanctioned builder image ships 3.22, where an unrecognised

@@ -412,7 +412,7 @@ void setPythonValidateWaitForTest(std::uint64_t millis) {
   g_validate_wait_for_test.store(millis, std::memory_order_relaxed);
 }
 
-Status checkOnDemandScriptPython(std::string_view source) {
+Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view source) {
   struct Pending {
     std::mutex mutex;
     std::condition_variable done;
@@ -421,8 +421,8 @@ Status checkOnDemandScriptPython(std::string_view source) {
     bool abandoned = false;        ///< guarded by mutex: the caller stopped waiting, so the helper skips the compile
   };
   PythonHelper& helper = PythonHelper::instance();
-  if (helper.busy()) {
-    return okStatus();  // unchecked: behind an item that may hold the helper for as long as a script holds the GIL
+  if (helper.busy()) {  // behind an item that may hold the helper for as long as a script holds the GIL
+    return sdk::ScriptCheck{sdk::ScriptCheckStatus::kUnchecked, "not checked: the Python helper is busy"};
   }
   auto pending = std::make_shared<Pending>();
   // A fresh handle, compiled and dropped on the helper (inline, under the GIL): nothing a recipe holds. The waiter
@@ -451,9 +451,14 @@ Status checkOnDemandScriptPython(std::string_view source) {
   const std::chrono::milliseconds bound(override_millis != 0 ? override_millis : kPythonValidateWaitMillis);
   if (!pending->done.wait_for(lock, bound, [&pending] { return pending->finished; })) {
     pending->abandoned = true;
-    return okStatus();  // unchecked
+    return sdk::ScriptCheck{
+        sdk::ScriptCheckStatus::kUnchecked, "not checked: Python did not compile it within " +
+                                                std::to_string(bound.count()) + " ms (busy or still booting)"};
   }
-  return *pending->result;
+  if (!*pending->result) {
+    return sdk::ScriptCheck{sdk::ScriptCheckStatus::kInvalid, pending->result->error()};
+  }
+  return sdk::ScriptCheck{};
 }
 
 PyObject* detail::codeObjectOf(const CompiledPythonScript& script) {

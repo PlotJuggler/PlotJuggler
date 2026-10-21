@@ -299,6 +299,10 @@ class BatchEngine : public QObject {
   /// Every loaded dataset as the injected lister reports it (empty without one).
   [[nodiscard]] std::vector<DatasetId> loadedDatasets() const;
 
+  /// Refuses a script language markers do not run: anything but "luau" (empty means luau). The one guard of the
+  /// validate, the upsert and the plugin bridge's script check.
+  [[nodiscard]] static Status checkLanguage(std::string_view language);
+
   /// Compile-only validation for `kind`/`language` (drives the editor red/green dot):
   /// rejects a non-"luau" language, else compiles + module-loads the script WITHOUT
   /// running it (no inputs, no side effects). Runtime errors are NOT caught here.

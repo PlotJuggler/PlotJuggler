@@ -131,6 +131,41 @@ TEST(MarkersRuntimeHostTest, PluginCreateRunsPublishesAndNamespaces) {
   EXPECT_TRUE(service.recipes().empty());
 }
 
+// The three-way check over markers always decides: a rule that compiles is VALID, one that does not is INVALID with
+// the compile error, never UNCHECKED. A kind or language markers do not run is a call that could not be made: false,
+// the status untouched, no compiler run.
+TEST(MarkersRuntimeHostTest, CheckScriptAnswersValidOrInvalid) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+  ASSERT_TRUE(PJ_HAS_TAIL_SLOT(PJ_data_processors_host_vtable_t, bridge.raw().vtable, check_data_processor_script));
+  const PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  const auto valid = view.checkScript("markers", "luau", "createMarker(0.0)\n");
+  ASSERT_TRUE(valid) << valid.error();
+  EXPECT_EQ(valid->status, PJ::sdk::ScriptCheckStatus::kValid);
+  const auto invalid = view.checkScript("markers", "luau", "createMarker(\n");
+  ASSERT_TRUE(invalid) << invalid.error();
+  EXPECT_EQ(invalid->status, PJ::sdk::ScriptCheckStatus::kInvalid);
+  EXPECT_FALSE(invalid->message.empty());
+
+  const PJ_data_processors_host_t raw = bridge.raw();
+  const auto refused = [&raw](std::string_view kind, std::string_view language, std::string_view expected) {
+    uint32_t status = 77;
+    PJ_error_t err{};
+    EXPECT_FALSE(raw.vtable->check_data_processor_script(
+        raw.ctx, PJ::sdk::toAbiString(kind), PJ::sdk::toAbiString(language),
+        PJ::sdk::toAbiString("createMarker(0.0)\n"), PJ::sdk::toAbiString("{}"), &status, &err))
+        << kind << "/" << language;
+    EXPECT_EQ(status, 77u) << kind << "/" << language;
+    EXPECT_NE(std::string_view(err.message).find(expected), std::string_view::npos) << err.message;
+  };
+  refused("markers", "python", "unsupported script language 'python'");
+  refused("bogus", "luau", "unknown generator kind 'bogus'");
+}
+
 // The dataset callback owns qualified-key handling: an error it returns fails
 // the create through the ABI (nothing may land on a dataset the caller did not
 // name), and the keys it normalizes are what the service stores.

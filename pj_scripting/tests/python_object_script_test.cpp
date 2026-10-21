@@ -991,7 +991,7 @@ def evaluate(inputs, params):
   fails("g.set(-1, 0, 0, 1)", "outside the grid");
   fails("g.set(1.5, 0, 0, 1)", "integer");
   fails("g.finish()\n    g.set(0, 0, 0, 1)", "finished");
-  fails("g.finish().frame_id", "no readable fields");
+  fails("g.finish().data", "raw buffer");
   fails("pj.voxels.new(frame_id='m', origin=(0, 0, 0), cell_size=1, dims=(65536, 65536, 65536))", "cells");
   fails("pj.voxels.new(frame_id='m', origin=(0, 0, 0), cell_size=1, dims=(2, 2))", "'dims'");
   for (const char* cell_size : {"-1", "float('nan')", "float('inf')"}) {
@@ -1004,6 +1004,30 @@ def evaluate(inputs, params):
       "def evaluate(inputs, params):\n    return [pj.voxels.new(frame_id='m', origin=(0, 0, 0), cell_size=1, "
       "dims=(1, 1, 1)).finish()]\n");
   EXPECT_NE(objectOf<sdk::VoxelGrid>(inferred, "voxels"), nullptr);
+}
+
+// The twin of ObjectScript.VoxelGridFieldsAreReadable; list indices are 0-based.
+TEST(PythonObjectScript, VoxelGridFieldsAreReadable) {
+  const auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    built = pj.voxels.new(frame_id="map", origin=(1, 2, 3), cell_size=0.5, dims=(2, 3, 4)).finish()
+    given = inputs["grid"]
+    return {"frame": built.frame_id, "x": built.origin.position.x, "size": built.cell_size.y,
+            "stride": built.cell_stride, "cells": built.column_count * built.row_count * built.slice_count,
+            "channel": built.fields[0].name, "given_frame": given.frame_id, "given_slices": given.slice_count,
+            "given_size": given.cell_size.z}
+)PY",
+      {objectInput("grid", test::makeColumnGrid(5))});
+  EXPECT_EQ(textOf(result, "frame"), "map");
+  EXPECT_DOUBLE_EQ(numberOf(result, "x"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "size"), 0.5);
+  EXPECT_DOUBLE_EQ(numberOf(result, "stride"), 4.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "cells"), 24.0);
+  EXPECT_EQ(textOf(result, "channel"), "value");
+  EXPECT_EQ(textOf(result, "given_frame"), "odom");
+  EXPECT_DOUBLE_EQ(numberOf(result, "given_slices"), 5.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "given_size"), 0.25);
 }
 
 // The twin of ObjectScript.BuiltCloudsAndGridsTakeTheResultStamp.

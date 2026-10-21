@@ -847,13 +847,20 @@ bool DataProcessorService::outputNameInUse(const std::string& name, const std::s
   return false;
 }
 
+Status DataProcessorService::checkLanguage(std::string_view language) {
+  if (!language.empty() && language != "luau" && language != "python") {
+    return PJ::unexpected(
+        "unsupported script language '" + std::string(language) + "' (only 'luau' or 'python' are available)");
+  }
+  return PJ::okStatus();
+}
+
 Status DataProcessorService::validateScript(
     std::string_view script, std::string_view language, std::string_view params_json) {
-  // Luau and Python backends are available; anything else is rejected.
-  const std::string lang = language.empty() ? "luau" : std::string(language);
-  if (lang != "luau" && lang != "python") {
-    return PJ::unexpected("unsupported script language '" + lang + "' (only 'luau' or 'python' are available)");
+  if (Status usable = checkLanguage(language); !usable) {
+    return usable;
   }
+  const std::string lang = language.empty() ? "luau" : std::string(language);
   const std::string src(script);
   const std::string params(params_json.empty() ? "{}" : std::string(params_json));
   // Compile through the matching backend. Python uses a transient catalogue (the

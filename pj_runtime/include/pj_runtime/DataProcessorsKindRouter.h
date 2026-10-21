@@ -107,6 +107,10 @@ class DataProcessorsKindRouter {
   static bool onValidate(
       void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
       PJ_string_view_t params_json, PJ_error_t* out_error) noexcept;
+  /// The backend's own check, or its validate as VALID / INVALID when it has none.
+  static bool onCheck(
+      void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
+      PJ_string_view_t params_json, uint32_t* out_status, PJ_error_t* out_error) noexcept;
   static bool onCreateV2(
       void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
       uint64_t* out_topics_count, PJ_error_t* out_error) noexcept;

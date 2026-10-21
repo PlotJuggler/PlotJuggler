@@ -126,6 +126,7 @@ OnDemandRuntimeHost::OnDemandRuntimeHost(
           .submit_evaluation = &OnDemandRuntimeHost::onSubmit,
           .poll_evaluation = &OnDemandRuntimeHost::onPoll,
           .release_evaluation = &OnDemandRuntimeHost::onRelease,
+          .check_data_processor_script = &OnDemandRuntimeHost::onCheck,
       },
       raw_{this, &vtable_} {}
 
@@ -378,9 +379,37 @@ bool OnDemandRuntimeHost::onValidate(
     if (sdk::toStringView(kind) != kKind) {
       return rejectKind(out_error, kind);
     }
-    // Python waits at most `kPythonValidateWaitMillis` for a throwaway compile, then reports the script unchecked.
-    const Status valid = scripting::validateOnDemand(sdk::toStringView(language), sdk::toStringView(script));
-    return valid ? true : reject(out_error, kDomain, valid.error());
+    const Expected<sdk::ScriptCheck> check =
+        scripting::checkOnDemand(sdk::toStringView(language), sdk::toStringView(script));
+    if (!check) {
+      return reject(out_error, kDomain, check.error());
+    }
+    // No third answer here: an unchecked script passes; onCheck reports it unchecked.
+    return check->status != sdk::ScriptCheckStatus::kInvalid || reject(out_error, kDomain, check->message);
+  });
+}
+
+bool OnDemandRuntimeHost::onCheck(
+    void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
+    PJ_string_view_t /*params_json*/, uint32_t* out_status, PJ_error_t* out_error) noexcept {
+  return guarded<OnDemandRuntimeHost>(ctx, out_error, kDomain, [&](OnDemandRuntimeHost&) {
+    if (sdk::toStringView(kind) != kKind) {
+      return rejectKind(out_error, kind);
+    }
+    if (out_status == nullptr) {
+      return reject(out_error, kDomain, "out_status is NULL");
+    }
+    // Python waits at most `kPythonValidateWaitMillis` for a throwaway compile, then answers unchecked.
+    const Expected<sdk::ScriptCheck> check =
+        scripting::checkOnDemand(sdk::toStringView(language), sdk::toStringView(script));
+    if (!check) {
+      return reject(out_error, kDomain, check.error());
+    }
+    *out_status = static_cast<uint32_t>(check->status);
+    if (!check->message.empty()) {
+      sdk::fillError(out_error, PJ_ERROR_CODE_REJECTED, kDomain, check->message);
+    }
+    return true;
   });
 }
 

@@ -24,9 +24,11 @@ using CompiledOnDemandScript = std::variant<CompiledScript, CompiledPythonScript
 /// `pythonAvailable()` is false, "python" fails with "python is not available in this build". Any thread.
 [[nodiscard]] Expected<CompiledOnDemandScript> compileOnDemand(std::string_view language, std::string_view source);
 
-/// A validate's check of `source` as `language`, refusing what `compileOnDemand` refuses: Luau compiles here, Python is
-/// checked by `checkOnDemandScriptPython` (at most `kPythonValidateWaitMillis`, then unchecked, which is success).
-[[nodiscard]] Status validateOnDemand(std::string_view language, std::string_view source);
+/// A validate's check of `source` as `language`: Luau compiles here (valid, or invalid with the compile error), Python
+/// is checked by `checkOnDemandScriptPython`, the only one that may answer unchecked (past
+/// `kPythonValidateWaitMillis`). An error is what `compileOnDemand` refuses before compiling: another language, or
+/// Python where `pythonAvailable()` is false.
+[[nodiscard]] Expected<sdk::ScriptCheck> checkOnDemand(std::string_view language, std::string_view source);
 
 /// `runOnDemandScript` or `runOnDemandScriptPython`, by the script's language: same contract. A Python run takes the
 /// GIL, so it belongs on the Python lane.

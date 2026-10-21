@@ -110,16 +110,6 @@ scripting::SeriesProvider buildProvider(
   return provider;
 }
 
-/// Reject a non-"luau" script language (empty = default = luau). Shared by the
-/// validate and upsert paths so the policy + message stay in one place — this is the
-/// exact guard that grows when a second backend lands.
-Status checkLanguage(std::string_view language) {
-  if (!language.empty() && language != "luau") {
-    return unexpected("unsupported script language '" + std::string(language) + "' (only 'luau')");
-  }
-  return okStatus();
-}
-
 /// Shift every marker's [t_start, t_end] window by `shift` — the rebase a marker set
 /// needs when it moves onto another dataset's clock. kValueBand markers ignore
 /// t_start/t_end, so shifting them is a harmless no-op for that kind.
@@ -377,6 +367,13 @@ void BatchEngine::reachNewDatasets() {
 
 std::vector<DatasetId> BatchEngine::loadedDatasets() const {
   return dataset_lister_ ? dataset_lister_() : std::vector<DatasetId>{};
+}
+
+Status BatchEngine::checkLanguage(std::string_view language) {
+  if (!language.empty() && language != "luau") {
+    return unexpected("unsupported script language '" + std::string(language) + "' (only 'luau')");
+  }
+  return okStatus();
 }
 
 Status BatchEngine::validateScript(GeneratorKind /*kind*/, std::string_view language, const std::string& script) const {

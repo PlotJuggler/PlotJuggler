@@ -40,8 +40,7 @@ void registerBinder(lua_State* L, ScriptMedia& media);
 /// `registerBinder`, it must outlive every call made on `L`.
 void installBuilders(lua_State* L, const native::NativeLimits& limits);
 
-/// Pushes `object` as a read-only script object (it shares the value); `canEnterScript(object)` must hold, except for a
-/// builder's voxel grid, which has methods and no readable fields.
+/// Pushes `object` as a read-only script object (it shares the value); `canEnterScript(object)` must hold.
 /// `charge` is what a builder paid for `object`'s native memory: the box, and every view read through it,
 /// shares it, so it counts against the evaluation's budget until the script has dropped them all (or the state
 /// closes).

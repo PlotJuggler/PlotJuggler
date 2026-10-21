@@ -159,8 +159,8 @@ fixes below, and so has the Python binder (slices 10b and 10b-2,
   views are plain CPython types rather than pybind11 classes (150 ms as those) (§19).
 - **Producible outputs (built, slice 5c-1):** an output declaration accepts only the object
   types a script can produce: point cloud, scene entities, image annotations, image, depth
-  image, camera info and, since slice 14, a voxel grid (built, never read: the SDK has no field table for it yet,
-  so reading one of its fields is an error). A video frame is an input only (`frame_at`, below), frame transforms wait for a decision on
+  image, camera info and, since slice 14, a voxel grid (readable through its SDK field table since 0.38.0-dev.2,
+  its cells a raw buffer). A video frame is an input only (`frame_at`, below), frame transforms wait for a decision on
   the TF ingest tap (a derived TF topic would feed the dataset's buffer). The prototype's
   `parseOutputSpec` accepted any builtin type, so a script could declare an output it could
   never return.
@@ -988,12 +988,15 @@ VM reuse is proposed (N1, N2).
     `kPythonValidateWaitMillis` (100 ms: about 100 uncontended compiles of a short script, 20 GIL switch
     intervals behind a running pure-Python script, and within what a check may freeze the browser's main thread).
     Finished in time, it returns the compile's result as before; otherwise (a script holds the GIL, the
-    interpreter is still booting) it reports success, meaning unchecked, and the helper skips the compile nobody
-    waits for. A validate finding the helper already busy (an item waiting for the GIL) reports unchecked at
-    once. The first validate of a session boots the interpreter on the helper and is most likely unchecked. The
-    ABI's validate has only a bool and an error, so "unchecked" cannot be told from "valid"; the first run
-    reports the error anyway. Proposed for the SDK (not done here): a tail-appended validate that also returns
-    a tri-state (valid, invalid, unchecked), so an editor can show "not checked yet" instead of a pass.
+    interpreter is still booting) it answers unchecked, and the helper skips the compile nobody waits for. A
+    validate finding the helper already busy (an item waiting for the GIL) answers unchecked at once. The first
+    validate of a session boots the interpreter on the helper and is most likely unchecked. The ABI's
+    `validate_data_processor_script` has only a bool and an error, so it passes an unchecked script; the
+    tail-appended `check_data_processor_script` (SDK 0.38.0-dev.3) returns the tri-state (valid, invalid,
+    unchecked, the last with why), so an editor can show "not checked yet" instead of a pass. Every PJ4 host
+    vtable fills it: the on-demand bridge from `scripting::checkOnDemand`; the markers and transform bridges,
+    which always decide, refuse a kind or language they do not run and map their compile to valid or invalid;
+    the kind router forwards to the backend's check, or maps its validate when it has none. The first run reports a compile error either way.
   - Stale and removed revisions need nothing new: an edit or a removal cancels the old revision's run, and the
     scheduler drops its result by revision (`NodeScheduler::finish`) and by cache key
     (`CacheKey::completes`). Either guard alone keeps a stale compile error off the node.

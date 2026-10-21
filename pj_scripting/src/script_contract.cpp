@@ -25,7 +25,7 @@ template <class Visit>
 bool visitDescribed(const sdk::BuiltinObject& object, Visit&& visit) {
   return visitAs<
       sdk::PointCloud, sdk::SceneEntities, sdk::ImageAnnotations, sdk::Image, sdk::DepthImage, sdk::CameraInfo,
-      sdk::VideoFrame, sdk::FrameTransforms>(object, visit);
+      sdk::VideoFrame, sdk::FrameTransforms, sdk::VoxelGrid>(object, visit);
 }
 
 const sdk::FieldDescriptor* stampField(sdk::BuiltinObjectType type) {
@@ -269,9 +269,8 @@ bool isOverBudget(std::string_view message) {
 }
 
 bool producible(sdk::BuiltinObjectType type) {
-  return type == sdk::BuiltinObjectType::kVoxelGrid ||
-         (sdk::describe(type) != nullptr && type != sdk::BuiltinObjectType::kVideoFrame &&
-          type != sdk::BuiltinObjectType::kFrameTransforms);
+  return sdk::describe(type) != nullptr && type != sdk::BuiltinObjectType::kVideoFrame &&
+         type != sdk::BuiltinObjectType::kFrameTransforms;
 }
 
 Expected<nlohmann::json> parseParams(std::string_view params_json) {

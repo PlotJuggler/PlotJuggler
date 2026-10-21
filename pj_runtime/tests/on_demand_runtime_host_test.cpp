@@ -352,9 +352,9 @@ struct CheckedPythonValidate {
 // The bridge never waits on the GIL without a bound: while a script stuck in a builtin C loop holds the interpreter (a
 // held GIL here), a Python create returns at once (the script compiles at its first run, on the Python lane), and so
 // does removing a Python recipe (its compiled script's last release); a validate waits at most
-// `kPythonValidateWaitMillis`, then reports the script unchecked (success, even for a syntax error). The created recipe
-// is pending while the lane waits for the GIL, and ready once the GIL is free. An unbounded wait would hang the test;
-// the time bounds are lax.
+// `kPythonValidateWaitMillis`, then reports the script unchecked (success, even for a syntax error, and UNCHECKED
+// through the three-way check). The created recipe is pending while the lane waits for the GIL, and ready once the GIL
+// is free. An unbounded wait would hang the test; the time bounds are lax.
 TEST(OnDemandRuntimeHostTest, APythonCreateNeverWaitsForTheInterpreter) {
 #ifndef PJ_PYTHON_TEST_PROBE
   GTEST_SKIP() << "this build has no Python";
@@ -380,6 +380,11 @@ TEST(OnDemandRuntimeHostTest, APythonCreateNeverWaitsForTheInterpreter) {
         std::chrono::steady_clock::now() - validate_begin,
         std::chrono::milliseconds(scripting::kPythonValidateWaitMillis + 100))
         << "the validate waits its bound at most";
+    // The three-way check says so instead of passing it: the helper is still busy with the abandoned compile.
+    const auto check = fx.view.checkScript("on_demand", "python", "def evaluate(inputs, params:\n", "{}");
+    ASSERT_TRUE(check.has_value()) << check.error();
+    EXPECT_EQ(check->status, sdk::ScriptCheckStatus::kUnchecked) << check->message;
+    EXPECT_FALSE(check->message.empty());
     EXPECT_TRUE(fx.view.remove("first").has_value());
     const DisplayOffset offset = fx.manager.displayOffset(fx.ds);
     fx.session.playbackEngine().setRangeAndCurrentTime(
@@ -430,7 +435,7 @@ TEST(OnDemandRuntimeHostTest, APythonCompileErrorReachesTheNodesState) {
 }
 
 // ABI-05: validate compiles for kind on_demand in the language it names: Luau or Python source each passes its own
-// compiler and fails the other's; a language no runner has, and another kind, are refused.
+// compiler and fails the other's; a language no runner has, and another kind, are refused. The three-way check agrees.
 TEST(OnDemandRuntimeHostTest, ValidateScriptRoutesByKindAndLanguage) {
   Fixture fx;
   // Booted, and the bound long, so the Python validate is checked; kept, so no release keeps the helper busy.
@@ -450,6 +455,28 @@ TEST(OnDemandRuntimeHostTest, ValidateScriptRoutesByKindAndLanguage) {
   const auto markers = fx.view.validateScript("markers", "luau", "return {}", "{}");
   ASSERT_FALSE(markers.has_value());
   EXPECT_NE(markers.error().find("unknown data processor kind"), std::string::npos) << markers.error();
+
+  // The three-way check decides the same scripts the same way; what validate refuses it cannot ask.
+  const auto checked_as = [&fx](std::string_view language, std::string_view script) {
+    const auto check = fx.view.checkScript("on_demand", language, script, "{}");
+    EXPECT_TRUE(check.has_value()) << language << ": " << (check ? "" : check.error());
+    return check ? check->status : sdk::ScriptCheckStatus::kUnchecked;
+  };
+  EXPECT_EQ(checked_as("luau", "return {}"), sdk::ScriptCheckStatus::kValid);
+  const auto luau_syntax = fx.view.checkScript("on_demand", "luau", "return {", "{}");
+  ASSERT_TRUE(luau_syntax.has_value()) << luau_syntax.error();
+  EXPECT_EQ(luau_syntax->status, sdk::ScriptCheckStatus::kInvalid);
+  EXPECT_EQ(luau_syntax->message, syntax.error());
+  if (scripting::pythonAvailable()) {
+    EXPECT_EQ(checked_as("python", kPythonScript), sdk::ScriptCheckStatus::kValid);
+    EXPECT_EQ(checked_as("python", "return {}"), sdk::ScriptCheckStatus::kInvalid);
+  }
+  const auto ruby_check = fx.view.checkScript("on_demand", "ruby", "return {}", "{}");
+  ASSERT_FALSE(ruby_check.has_value());
+  EXPECT_NE(ruby_check.error().find("unsupported language 'ruby'"), std::string::npos) << ruby_check.error();
+  const auto markers_check = fx.view.checkScript("markers", "luau", "return {}", "{}");
+  ASSERT_FALSE(markers_check.has_value());
+  EXPECT_NE(markers_check.error().find("unknown data processor kind"), std::string::npos) << markers_check.error();
 }
 
 // ABI-06: an INSTANT create is a finding, evaluated at its pin once: its one entry sits at the finding timestamp and

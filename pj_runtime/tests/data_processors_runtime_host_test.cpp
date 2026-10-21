@@ -86,6 +86,43 @@ TEST(DataProcessorsRuntimeHostTest, CreateRunsTransformViaAbi) {
   EXPECT_EQ(readValues(fx.engine, recipe.output_topic_ids.front()), (std::vector<double>{1.0, -2.0, 3.0}));
 }
 
+// The three-way check over transforms always decides: a filter that compiles is VALID, one that does not is INVALID
+// with the compile error, never UNCHECKED. A kind or language transforms do not run is a call that could not be made:
+// false, the status untouched, no compiler run.
+TEST(DataProcessorsRuntimeHostTest, CheckScriptAnswersValidOrInvalid) {
+  Fixture fx;
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  ASSERT_TRUE(PJ_HAS_TAIL_SLOT(PJ_data_processors_host_vtable_t, bridge.raw().vtable, check_data_processor_script));
+  const sdk::DataProcessorsHostView view(bridge.raw());
+
+  // A validate compiles the filter class whose id is "__validate__" (DataProcessorService::validateScript).
+  constexpr const char* kValidated = R"LUAU(-- pj-script: luau
+return { id="__validate__", name="Negate", output="same",
+  create = function(p) return { calculate = function(t, v) return -v end } end }
+)LUAU";
+  const auto valid = view.checkScript("transform", "luau", kValidated);
+  ASSERT_TRUE(valid) << valid.error();
+  EXPECT_EQ(valid->status, sdk::ScriptCheckStatus::kValid) << valid->message;
+  const auto invalid = view.checkScript("transform", "luau", "return {");
+  ASSERT_TRUE(invalid) << invalid.error();
+  EXPECT_EQ(invalid->status, sdk::ScriptCheckStatus::kInvalid);
+  EXPECT_FALSE(invalid->message.empty());
+
+  const PJ_data_processors_host_t raw = bridge.raw();
+  const auto refused = [&raw](std::string_view kind, std::string_view language, std::string_view expected) {
+    uint32_t status = 77;
+    PJ_error_t err{};
+    EXPECT_FALSE(raw.vtable->check_data_processor_script(
+        raw.ctx, sdk::toAbiString(kind), sdk::toAbiString(language), sdk::toAbiString("return {"),
+        sdk::toAbiString("{}"), &status, &err))
+        << kind << "/" << language;
+    EXPECT_EQ(status, 77u) << kind << "/" << language;
+    EXPECT_NE(std::string_view(err.message).find(expected), std::string_view::npos) << err.message;
+  };
+  refused("transform", "ruby", "unsupported script language 'ruby'");
+  refused("bogus", "luau", "unknown data processor kind 'bogus'");
+}
+
 TEST(DataProcessorsRuntimeHostTest, ListAndConfigRoundTrip) {
   Fixture fx;
   fx.seed("speed", {1.0});

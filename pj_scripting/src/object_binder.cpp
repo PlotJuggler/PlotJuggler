@@ -1392,9 +1392,6 @@ std::size_t describedBytes(const sdk::FieldTableView& table, const void* owner) 
 
 std::size_t estimateBytes(const ScriptValue& value) {
   if (const auto* object = std::get_if<sdk::BuiltinObject>(&value)) {
-    if (const auto* grid = object->get<sdk::VoxelGrid>()) {  // producible, but without a field table yet
-      return sizeof(sdk::BuiltinObject) + grid->frame_id.size() + grid->data.size();
-    }
     const sdk::FieldTableView* table = sdk::describe(object->type());
     const void* data = detail::structPointer(*object);
     return sizeof(sdk::BuiltinObject) + (table != nullptr && data != nullptr ? describedBytes(*table, data) : 0);

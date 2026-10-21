@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "pj_base/expected.hpp"
+#include "pj_base/sdk/plugin_data_api.hpp"  // sdk::ScriptCheck
 #include "pj_base/span.hpp"
 #include "pj_scripting/object_script.h"
 
@@ -30,7 +31,7 @@ struct CompiledPythonScript {
   std::shared_ptr<const PythonCode> code;
 };
 
-/// How long `checkOnDemandScriptPython` waits for its throwaway compile before reporting the script unchecked: about
+/// How long `checkOnDemandScriptPython` waits for its throwaway compile before answering unchecked: about
 /// 100 times an uncontended compile of a short script (under 1 ms native, a few ms in the browser), and 20 GIL switch
 /// intervals (5 ms) behind a running pure-Python script, yet within one frame budget a check button may freeze the
 /// browser's main thread. The interpreter's boot (0.13-0.24 s in the browser) does not fit: the first validate of a
@@ -51,12 +52,12 @@ void prestartPythonHelper();
 void setPythonValidateWaitForTest(std::uint64_t millis);
 
 /// A validate's check of `source`: a throwaway compile (nothing cached, no script handle touched) on the Python
-/// helper thread, waited for at most `kPythonValidateWaitMillis`. Finished in time: `compileOnDemandScriptPython`'s
-/// result, error text and all. Not finished (a script holds the GIL, the interpreter is still booting), or the helper
-/// already busy with an item (then at once): success, meaning unchecked, which the caller cannot tell from valid; the
-/// first run reports the error anyway, and the helper skips a compile nobody waits for any more. Any thread but the
-/// helper, without the GIL.
-[[nodiscard]] Status checkOnDemandScriptPython(std::string_view source);
+/// helper thread, waited for at most `kPythonValidateWaitMillis`. Finished in time: valid, or invalid with
+/// `compileOnDemandScriptPython`'s error text. Not finished (a script holds the GIL, the interpreter is still booting),
+/// or the helper already busy with an item (then at once): unchecked, with why; the first run reports the error anyway,
+/// and the helper skips a compile nobody waits for any more. An error only where `pythonAvailable()` is false. Any
+/// thread but the helper, without the GIL.
+[[nodiscard]] Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view source);
 
 /// `source` as a script its first `runOnDemandScriptPython` checks and compiles, on that run's thread: what the runtime
 /// holds per recipe revision. Touches no interpreter, so it never waits for the GIL (in the browser a main-thread wait

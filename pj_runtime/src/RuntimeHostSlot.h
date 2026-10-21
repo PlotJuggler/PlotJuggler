@@ -26,6 +26,24 @@ inline bool finish(PJ_error_t* out_error, std::string_view domain, const Status&
   return status.has_value() ? true : reject(out_error, domain, status.error());
 }
 
+/// The `validate_data_processor_script` slot's function type.
+using ValidateScriptSlot = decltype(PJ_data_processors_host_vtable_t::validate_data_processor_script);
+
+/// `check_data_processor_script` answered by a validate: its pass is VALID, its refusal INVALID with its reason. A
+/// validate cannot tell a script that does not compile from a call that could not be made, so a caller that can runs
+/// its kind and language guards first (the markers and transform bridges); the router uses it as is for a backend
+/// without the slot, with the SDK client's own fallback's limitation. A null `ctx` or `out_status` is refused.
+inline bool checkByValidate(
+    ValidateScriptSlot validate, void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
+    PJ_string_view_t params_json, uint32_t* out_status, PJ_error_t* out_error) {
+  if (ctx == nullptr || out_status == nullptr) {
+    return reject(out_error, "data_processors", ctx == nullptr ? "null host context" : "out_status is NULL");
+  }
+  const bool valid = validate(ctx, kind, language, script, params_json, out_error);
+  *out_status = valid ? PJ_SCRIPT_CHECK_VALID : PJ_SCRIPT_CHECK_INVALID;
+  return true;
+}
+
 /// Count-then-fill return of a string list: `*out_count` gets the full size, `out` the first min(capacity, size)
 /// views, which borrow `storage` (keep it alive until the next call on the vtable). Either pointer may be null.
 inline void fillViews(

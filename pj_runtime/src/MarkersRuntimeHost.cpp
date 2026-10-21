@@ -55,6 +55,7 @@ MarkersRuntimeHost::MarkersRuntimeHost(
       .data_processor_config = &MarkersRuntimeHost::onConfig,
       .validate_data_processor_script = &MarkersRuntimeHost::onValidate,
       .create_data_processor_v2 = &MarkersRuntimeHost::onCreateV2,
+      .check_data_processor_script = &MarkersRuntimeHost::onCheck,
   };
   data_processors_ = PJ_data_processors_host_t{.ctx = this, .vtable = &vtable_};
 }
@@ -298,6 +299,22 @@ bool MarkersRuntimeHost::onValidate(
     return finish(
         out_error, kDomain,
         self.service_.validateScript(parsed, sdk::toStringView(language), std::string(sdk::toStringView(script))));
+  });
+}
+
+bool MarkersRuntimeHost::onCheck(
+    void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script, PJ_string_view_t params_json,
+    uint32_t* out_status, PJ_error_t* out_error) noexcept {
+  return guarded<MarkersRuntimeHost>(ctx, out_error, kDomain, [&](MarkersRuntimeHost&) {
+    GeneratorKind parsed = GeneratorKind::kMarkers;
+    if (!parseKind(sdk::toStringView(kind), parsed)) {
+      return reject(out_error, kDomain, "unknown generator kind '" + std::string(sdk::toStringView(kind)) + "'");
+    }
+    if (Status usable = BatchEngine::checkLanguage(sdk::toStringView(language)); !usable) {
+      return reject(out_error, kDomain, usable.error());
+    }
+    return host_slot::checkByValidate(
+        &MarkersRuntimeHost::onValidate, ctx, kind, language, script, params_json, out_status, out_error);
   });
 }
 

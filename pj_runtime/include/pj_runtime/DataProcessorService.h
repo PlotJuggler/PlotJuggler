@@ -359,6 +359,10 @@ class DataProcessorService {
   /// True while a time-sliced replay has input left.
   [[nodiscard]] bool materializationPending() const;
 
+  /// Refuses a script language no transform backend runs: anything but "luau" or "python" (empty means luau). The
+  /// one guard of `validateScript` and the plugin bridge's script check.
+  [[nodiscard]] static Status checkLanguage(std::string_view language);
+
   /// Validate a transform script WITHOUT installing anything: compile it with the
   /// backend for `language` ("luau" today; other values are rejected until their
   /// backend lands, e.g. "python") and run one synthetic test point to catch

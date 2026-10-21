@@ -76,8 +76,7 @@ struct PjNamespaces {
 [[nodiscard]] const PjNamespaces& pjNamespaces();
 
 /// `object` as a read-only script object (it shares the value) holding `keepalive` (`NamedValue::keepalive`) for as
-/// long as it or a view read from it lives; `canEnterScript(object)` must hold (a builder's voxel grid, which has no
-/// readable fields, is wrapped internally). GIL held.
+/// long as it or a view read from it lives; `canEnterScript(object)` must hold. GIL held.
 [[nodiscard]] py::object newObject(sdk::BuiltinObject object, std::shared_ptr<const void> keepalive = {});
 
 /// The object `value` wraps, matched by exact type so no script code runs, or null.

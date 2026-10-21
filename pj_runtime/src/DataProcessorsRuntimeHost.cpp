@@ -50,6 +50,7 @@ DataProcessorsRuntimeHost::DataProcessorsRuntimeHost(DataProcessorService& servi
           .data_processor_config = &DataProcessorsRuntimeHost::onConfig,
           .validate_data_processor_script = &DataProcessorsRuntimeHost::onValidate,
           .create_data_processor_v2 = &DataProcessorsRuntimeHost::onCreateV2,
+          .check_data_processor_script = &DataProcessorsRuntimeHost::onCheck,
       },
       raw_{this, &vtable_} {}
 
@@ -188,6 +189,21 @@ bool DataProcessorsRuntimeHost::onValidate(
         out_error, kDomain,
         self.service_.validateScript(
             sdk::toStringView(script), sdk::toStringView(language), sdk::toStringView(params_json)));
+  });
+}
+
+bool DataProcessorsRuntimeHost::onCheck(
+    void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script, PJ_string_view_t params_json,
+    uint32_t* out_status, PJ_error_t* out_error) noexcept {
+  return guarded<DataProcessorsRuntimeHost>(ctx, out_error, kDomain, [&](DataProcessorsRuntimeHost&) {
+    if (!parseKind(sdk::toStringView(kind))) {
+      return rejectKind(out_error, kind);
+    }
+    if (Status usable = DataProcessorService::checkLanguage(sdk::toStringView(language)); !usable) {
+      return reject(out_error, kDomain, usable.error());
+    }
+    return host_slot::checkByValidate(
+        &DataProcessorsRuntimeHost::onValidate, ctx, kind, language, script, params_json, out_status, out_error);
   });
 }
 
