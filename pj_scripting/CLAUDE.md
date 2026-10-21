@@ -31,9 +31,9 @@ Licensed MPL-2.0.
   (a top-level class `T` with `id` and a static `create(params)`), and its limits.
 - `python_object_script.h` — the on-demand Python lane: `compileOnDemandScriptPython` (checked and compiled once per
   revision into an opaque `CompiledPythonScript`, so holders need no CPython include) and `runOnDemandScriptPython`
-  (`evaluate(inputs, params)` in a fresh namespace, the binding of `object_script.h`). Desktop only
-  (`pythonAvailable()`). Compiles, the interpreter's boot and a compiled script's last release run on one Python
-  helper thread (a thread and a queue, `src/python_object_script.cpp`): a compile is waited for at most
+  (`evaluate(inputs, params)` in a fresh namespace, the binding of `object_script.h`). On desktop, and in the browser
+  when built with `PJ_WASM_WITH_PYTHON` (`pythonAvailable()`; see the browser gotcha below). Compiles, the
+  interpreter's boot and a compiled script's last release run on one Python helper thread (a thread and a queue, `src/python_object_script.cpp`): a compile is waited for at most
   `kPythonCompileWaitMillis` (busy otherwise, at once while an item a caller timed out behind still runs), a release never. Python filters
   (`python_engine.cpp`) do not use it yet: they take the GIL on their caller's thread.
 - `on_demand_script.h` — where a recipe's `language` picks its on-demand compiler and runner: `CompiledOnDemandScript`
@@ -156,8 +156,12 @@ Licensed MPL-2.0.
   their builtins, syntax and real modules behind the `math`/`cmath`/`statistics` allowlist, so existing filters run
   unchanged and stay as escapable as before; on-demand scripts add the strict profile. The trust model (decided
   2026-10-18) is in-process with cooperative limits: scripts are trusted input. Compile on the host and run the code
-  object inside the scope (`runCode`).
-- **CPython is linked SHARED on every platform** (`conanfile.txt`
+  object inside the scope (`runCode`). An armed run cannot import a module that is not loaded yet (the hook refuses
+  its file open), and a C-level import from a strict run goes through the gate, so the boot also loads what the
+  allowed modules import lazily on a reachable path (`kLazyDependencies`: `heapq` behind `statistics.Counter`) and
+  formats one Decimal to cache decimal's `_pydecimal` fallback (`statistics.Decimal`); a new such path is added there
+  and to the browser's `stdlib_zip.py` roots.
+- **CPython is linked SHARED on every desktop platform** (`conanfile.txt`
   `cpython/*:shared=True`), and this is load-bearing, not a preference. The stdlib's
   C extensions (`lib-dynload/*.so` — `math`, `zlib`, …) carry no copy of the
   interpreter and resolve `Py*` at dlopen time against the process; a static
@@ -167,6 +171,19 @@ Licensed MPL-2.0.
   `STV_HIDDEN`, and ELF visibility only ever narrows. `pj_app`'s
   `ExportedSymbolsGuard` test pins that flag in place; `--selftest-python` (run
   against the packaged AppImage in CI) pins the runtime end.
+- **Python in the browser (`PJ_WASM_WITH_PYTHON`, off by default; WASM CI's acceptance build turns it on).** Only the
+  on-demand lane: Python filters stay unavailable (`python_engine_unavailable.cpp`), because they take the GIL on the
+  commit thread without a bound. `cmake/PjWasmPython.cmake` builds a static CPython 3.14.8 for wasm32-emscripten with
+  pthreads at configure time from the SHA-256-pinned tarball (`cmake/wasm_python/`: the build script, two local
+  patches in one file — every thread uses the JS call trampoline, and of upstream's syscall overrides only
+  `__syscall_ioctl` is kept, which replaces Emscripten's for the whole process, Qt included — the `Setup.local` that
+  drops 26 unused builtins, and `stdlib_zip.py`); pybind11 is 3.0.4 there (2.13 predates 3.14), against 3.12 and
+  2.13 on desktop. The stdlib is a pyc-only zip embedded at `/lib/python314.zip` holding only the import closure of
+  a root list; `pj_app`'s acceptance probe (`tests/wasm_python_stdlib_probe.cpp`) walks the strict profile's reach
+  and fails on any lazy import not loaded at boot (see the next bullet's preload). `main.cpp` calls `prestartPythonHelper()` at startup, because a thread
+  created while the browser's main thread waits on it never starts, and the pthread pool is 7. A GUI-thread compile
+  still waits up to `kPythonCompileWaitMillis` while a script holds the GIL inside one C call, the page frozen for
+  that time (slice P-c makes it asynchronous). Guide: `docs/WASM_DEPLOYMENT.md`.
 - **Time contract (precision-critical).** The script sees `t` = **seconds since
   session start**. The int64-ns session-start is subtracted on the absolute spine
   **before** the double cast (avoiding epoch-double quantization, ~256 ns at epoch

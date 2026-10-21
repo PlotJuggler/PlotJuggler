@@ -44,7 +44,10 @@ The main window wears the **system** title bar by default and `TitleBar` is just
   input bridge, included behind `PJ_WASM_ENABLE_INGRESS_PROBE` (with the plot
   readback probes, `MainWindow::installWasmPlotAcceptanceProbes()`); it is never
   part of desktop or production WASM behavior. `tests/wasm_scene3d_acceptance_probes.cpp`
-  is its Scene3D counterpart, reading the view through `SceneViewTestAccess`.
+  is its Scene3D counterpart, reading the view through `SceneViewTestAccess`. With
+  `PJ_WASM_WITH_PYTHON` it also includes `tests/wasm_python_probe.inc` (the on-demand Python
+  checks `tests/wasm/python.spec.js` asserts) and compiles `tests/wasm_python_stdlib_probe.cpp`,
+  which walks what a strict script can reach and imports it from the embedded stdlib zip.
 
 `pj_app` has no `docs/` folder by design — the shell's intent is "wire the services to the widgets," and the wiring is best read directly from `MainWindow.cpp` and `main.cpp`.
 

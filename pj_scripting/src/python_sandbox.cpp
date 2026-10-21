@@ -82,6 +82,11 @@ def make_gate(real_import, allowed):
 
 constexpr std::array<const char*, 4> kStrictImports{"math", "cmath", "statistics", "json"};
 
+/// What the allowed modules import lazily on a path a script reaches: statistics re-exports collections.Counter, whose
+/// most_common(n) imports heapq. The browser's acceptance probe (pj_app/tests/wasm_python_stdlib_probe.cpp) finds
+/// such imports in Python code; the C-level one, decimal's, is warmed by `ensureInterpreter` instead.
+constexpr std::array<const char*, 1> kLazyDependencies{"heapq"};
+
 /// The builtins a script never gets: file and console access, code from strings, and the attribute functions that
 /// would rebuild by name the dunder walk `compileChecked` refuses lexically.
 constexpr std::array<const char*, 11> kRemovedBuiltins{"open", "exec",    "eval",    "compile", "input", "breakpoint",
@@ -389,6 +394,22 @@ void ensureInterpreter() {
     installAllocatorWrapper();
     for (const char* name : {"ast", "types", "json", "math", "cmath", "statistics"}) {
       py::module_::import(name);
+    }
+    // Modules the allowed ones import at a first call: loaded now, before any run arms the hook, because an import
+    // inside a run opens its file, which the hook refuses. The browser's stdlib zip (stdlib_zip.py) roots them too.
+    for (const char* name : kLazyDependencies) {
+      py::module_::import(name);
+    }
+    // statistics re-exports decimal.Decimal, whose C format falls back to _pydecimal for a spec libmpdec lacks (the
+    // "_" grouping). It imports it through the caller's __import__, which in a strict run is the gate, and keeps the
+    // class once found: one such format now makes every later one import nothing. A _pydecimal that refuses the spec
+    // too (CPython 3.12) raises ValueError after the import.
+    try {
+      (void)py::module_::import("decimal").attr("Decimal")(1).attr("__format__")("_");
+    } catch (py::error_already_set& error) {
+      if (!error.matches(PyExc_ValueError)) {
+        throw;
+      }
     }
     py::dict scope;
     scope["__builtins__"] = py::module_::import("builtins");

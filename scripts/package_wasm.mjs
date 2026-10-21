@@ -35,14 +35,17 @@ const REQUIRED_ARTIFACTS = [
   'qtloader.js',
   'qtlogo.svg',
 ];
+// Packaged beside the required artifacts when the build wrote them (PJ_WASM_WITH_PYTHON writes the notices).
+const OPTIONAL_ARTIFACTS = ['THIRD_PARTY_NOTICES.txt'];
 const CONTENT_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.svg', 'image/svg+xml'],
+  ['.txt', 'text/plain; charset=utf-8'],
   ['.wasm', 'application/wasm'],
 ]);
-const COMPRESSIBLE_TYPES = new Set(['.html', '.js', '.svg', '.wasm']);
+const COMPRESSIBLE_TYPES = new Set(['.html', '.js', '.svg', '.txt', '.wasm']);
 const MINIMUM_COMPRESSED_SIZE = 1024;
 const BROTLI_QUALITY = 9;
 const BROTLI_WINDOW = 22;
@@ -265,7 +268,16 @@ export async function packageWasm(options) {
   await validateReplaceableOutput(outputRoot);
   await validateSource(sourceRoot);
 
-  const sourceAssets = await Promise.all(REQUIRED_ARTIFACTS.map(async fileName => ({
+  const optionalArtifacts = [];
+  for (const fileName of OPTIONAL_ARTIFACTS) {
+    try {
+      await access(path.join(sourceRoot, fileName));
+      optionalArtifacts.push(fileName);
+    } catch {
+      // Not written by this build configuration.
+    }
+  }
+  const sourceAssets = await Promise.all([...REQUIRED_ARTIFACTS, ...optionalArtifacts].map(async fileName => ({
     fileName,
     contents: await readFile(path.join(sourceRoot, fileName)),
   })));

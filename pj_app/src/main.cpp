@@ -55,6 +55,7 @@
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/python_engine.h"
 #endif
+#include "pj_scripting/python_object_script.h"
 #include "pj_widgets/GraphicsApi.h"
 #ifdef PJ_WITH_SCENE3D
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
@@ -269,6 +270,8 @@ int main(int argc, char* argv[]) {
   // therefore retain their existing settings backend and behavior.
   auto* browser_persistence = new PJ::BrowserPersistence(&app);
   Q_UNUSED(browser_persistence);
+  // Before any GUI-thread wait on a Python compile: see prestartPythonHelper().
+  PJ::scripting::prestartPythonHelper();
 #endif
 
   // Register the bundled Noto Sans and apply it as the application font, before

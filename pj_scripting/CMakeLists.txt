@@ -202,7 +202,12 @@ set(PJ_SCRIPTING_SOURCES
   # A recipe's language picks its on-demand compiler and runner (Luau or Python).
   src/on_demand_script.cpp
 )
-if(EMSCRIPTEN)
+if(EMSCRIPTEN AND PJ_WASM_WITH_PYTHON)
+  # The on-demand lane only (cmake/PjWasmPython.cmake): Python filters take the GIL on the commit thread, unbounded,
+  # which the browser main thread must never do, so the filter engine stays unavailable.
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp src/python_sandbox.cpp
+       src/python_object_script.cpp src/python_object_binder.cpp)
+elseif(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp src/python_object_script_unavailable.cpp)
 else()
   # The Python filter engine and the on-demand Python lane share one interpreter and its hardening.
@@ -226,7 +231,7 @@ target_link_libraries(pj_scripting
     Luau::Compiler
 )
 
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN OR PJ_WASM_WITH_PYTHON)
   target_link_libraries(pj_scripting PRIVATE
     pybind11::embed               # Python backend (embedded CPython) — python_engine.cpp only
     cpython::embed                # libpython for the embedded interpreter
@@ -235,6 +240,10 @@ endif()
 
 if(NOT EMSCRIPTEN)
   target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="${_pj_python_home_define}")
+elseif(PJ_WASM_WITH_PYTHON)
+  # The stdlib zip is embedded at /lib/python314.zip; pybind11 reports Python errors by throwing.
+  target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="/")
+  target_compile_options(pj_scripting PRIVATE -fexceptions)
 endif()
 
 # ---------------------------------------------------------------------------

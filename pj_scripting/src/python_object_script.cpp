@@ -355,6 +355,10 @@ bool pythonAvailable() {
   return true;
 }
 
+void prestartPythonHelper() {
+  (void)PythonHelper::instance();
+}
+
 PyObject* detail::codeObjectOf(const CompiledPythonScript& script) {
   return script.code->code;
 }
@@ -389,6 +393,8 @@ Expected<CompiledPythonScript> compileOnDemandScriptPython(std::string_view sour
   });  // a result nobody waits for any more dies with `pending`, here on the helper
   std::unique_lock lock(pending->mutex);
   const auto ready = [&pending] { return pending->result.has_value(); };
+  // ponytail: in the browser a GUI-thread compile blocks the page for up to kBound (2 s) while a script holds the GIL
+  // inside one C call; making the browser compile asynchronous (derived-objects slice P-c) removes the wait.
   if (!bounded) {
     pending->done.wait(lock, ready);  // the first boot: nothing can hold the GIL yet
   } else if (!pending->done.wait_for(lock, kBound, ready)) {

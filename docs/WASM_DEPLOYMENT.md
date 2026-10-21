@@ -85,7 +85,8 @@ build-wasm/deploy/
     ├── plotjuggler4.js[.br|.gz]
     ├── plotjuggler4.wasm[.br|.gz]
     ├── qtloader.js[.br|.gz]
-    └── qtlogo.svg[.br|.gz]
+    ├── qtlogo.svg[.br|.gz]
+    └── THIRD_PARTY_NOTICES.txt[.br|.gz]   (only when the build wrote it)
 ```
 
 `manifest.json` records every identity/Brotli/gzip path, byte size, SHA-256,
@@ -96,6 +97,68 @@ file's path, size, and hash are covered separately as deployment configuration;
 the file configures isolation and cache policy on hosts that
 support the Netlify/Cloudflare Pages format; it does not make a host select
 precompressed variants automatically.
+
+### Browser Python (`PJ_WASM_WITH_PYTHON`)
+
+On-demand Python scripts can run in the browser through a static CPython 3.14
+for Emscripten with pthreads. The option is `OFF` by default; WASM CI's
+acceptance configuration turns it on and runs `tests/wasm/python.spec.js` in
+Chromium and Firefox. It stays off for production until the browser compile no
+longer blocks the GUI (derived-objects slice P-c).
+
+`cmake/PjWasmPython.cmake` builds CPython at configure time, from the SHA-256
+pinned release tarball (its only download) and the files in
+`cmake/wasm_python/`: `build_cpython.sh`, one patch for the two upstream files
+PJ4 changes, the `Setup.local` that disables unused builtins, and
+`stdlib_zip.py`, which writes the pyc-only stdlib. The host needs a native C
+compiler, `make`, `patch` and `node` (CPython's cross build first builds a
+native interpreter of the same release). A cold build takes about 4 minutes;
+the result is a stage `stage-<key>` under `PJ_WASM_PYTHON_CACHE_DIR` (default
+`<build>/_deps/pj_wasm_cpython`), the key a hash over the tarball, the
+Emscripten release and every recipe file, so a reconfigure or a restored CI
+cache skips it. A stage is published by a rename under a per-key lock, so
+build trees can share the cache; stages of old keys stay until it is cleared.
+The build runs in a cleared environment (only the emsdk variables pass), with a
+fixed `SOURCE_DATE_EPOCH`, the work directory mapped out of the debug info and
+configure run by a relative path: inherited flags cannot change it unseen, and
+two cold builds in different directories give identical stages:
+
+```bash
+cmake ... -DPJ_WASM_WITH_PYTHON=ON -DPJ_WASM_PYTHON_CACHE_DIR="$HOME/.cache/pj-wasm-cpython"
+```
+
+What to know before changing it:
+
+- **Size budget.** It adds about 1.93 MB (+13.6 %) to the Brotli download
+  (2026-10-21, the acceptance configuration with and without it); CI fails the
+  acceptance package above 2.5 MB over production (`scripts/wasm_size_delta.mjs`).
+  About 0.67 MB of it is the stdlib zip, stored uncompressed so the package's
+  Brotli compresses it with the module.
+- **The stdlib zip** holds only the modules that importing the roots in
+  `stdlib_zip.py` loads (68 of them). A module the stdlib imports
+  lazily is missed unless a root names it, and even one in the zip cannot be
+  imported inside a strict run, whose audit hook refuses the file open: the
+  sandbox loads the ones a strict script reaches at boot
+  (`python_sandbox.cpp`, `heapq` and decimal's `_pydecimal` fallback, on
+  desktop too). The acceptance probe runs those calls in a strict run and
+  walks what a strict script can reach, failing on each lazy import not
+  loaded by then: the signal to add it to both lists.
+- **Process-wide syscall.** CPython's `__syscall_ioctl` replaces Emscripten's
+  JS syscall for the whole module, Qt included (FIOCLEX/FIONCLEX succeed,
+  FIONBIO goes through `fcntl`); without it every Python `open()` fails.
+- **Threads.** The pthread pool is 7 with Python, and `main.cpp` starts the
+  Python helper thread at startup: a worker created while the main thread waits
+  on it never starts.
+- **Notices.** The build writes `THIRD_PARTY_NOTICES.txt` (CPython's PSF-2.0
+  licence, its incorporated-software notices including libmpdec's BSD licence,
+  and HACL*'s MIT licence); `package_wasm.mjs` packages it next to the module.
+- **Symbol audit** (rerun on every CPython or Emscripten bump). `llvm-nm
+  --defined-only -g` over the CPython archives (3,352 globals), against the
+  other 240 inputs of `pj_app`'s link line (113,891) and the 13 sysroot
+  libraries the link pulls (6,243, from `-Wl,--trace`): no symbol is defined
+  twice (2026-10-21). 58 CPython globals carry no `Py`/`mpd`/`Hacl` prefix
+  (libmpdec's `crt3` and `fnt_*`, libpython's `fileio_spec`, `bytesio_spec`, …):
+  those are the names a future archive could clash with.
 
 ## Required HTTP contract
 

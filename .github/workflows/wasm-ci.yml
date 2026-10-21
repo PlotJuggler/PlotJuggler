@@ -8,10 +8,13 @@
 #   1. Production — the shipped defaults (Scene2D/Scene3D ON), probes OFF:
 #      the app must configure, build, package deterministically, and pass the
 #      deployment contract + cold threaded Chromium boot.
-#   2. Acceptance — Scene2D/Scene3D ON, ingress probe ON: the retained QRhi
-#      capability probe and functional browser suite run against the same
-#      source graph used by the packaged application, in Chromium (wasm-chromium
-#      job) and Firefox (wasm-firefox job), which run in parallel on this job's package.
+#   2. Acceptance — Scene2D/Scene3D ON, ingress probe ON, browser Python ON
+#      (PJ_WASM_WITH_PYTHON, off in production until it stops blocking the GUI):
+#      the retained QRhi capability probe and functional browser suite (with
+#      python.spec.js) run against the same source graph used by the packaged
+#      application, in Chromium (wasm-chromium job) and Firefox (wasm-firefox
+#      job), which run in parallel on this job's package. Its download may
+#      exceed production's by the Python budget only.
 #
 # The deterministic release archive and performance budgets remain part of
 # the release tranche.
@@ -29,6 +32,9 @@ on:
       - '**/wasm/**'
       - 'tests/wasm/**'
       - 'cmake/PjWasm*'
+      - 'cmake/wasm_python/**'
+      # The on-demand Python lane compiles into the acceptance build.
+      - 'pj_scripting/**'
       # Packaging, serving and size-gate scripts: this job is their only
       # consumer, and '**/wasm/**' does not match a file whose name — not
       # directory — carries the wasm token.
@@ -204,7 +210,16 @@ jobs:
           PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-prod/deploy
         run: npm run test:deployment
 
-      - name: Build acceptance configuration (Scene2D/Scene3D on, ingress probe on)
+      - name: Cache the WebAssembly CPython build
+        # A content key (the recipe with its pinned tarball hash, the Emscripten
+        # release): an exact hit or a cold ~4 minute build, so the plain action,
+        # which saves only on a miss, adds one entry per recipe change.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pj-wasm-cpython
+          key: wasm-cpython-${{ hashFiles('cmake/PjWasmPython.cmake', 'cmake/wasm_python/**') }}-emsdk-${{ steps.versions.outputs.emscripten }}
+
+      - name: Build acceptance configuration (Scene2D/Scene3D on, ingress probe on, Python on)
         shell: bash
         run: |
           set -euo pipefail
@@ -220,7 +235,9 @@ jobs:
             -DPJ_WASM_ENABLE_INGRESS_PROBE=ON \
             -DPJ_WASM_SCENE3D_CAPABILITY_PROBE=ON \
             -DPJ_WASM_WITH_SCENE2D=ON \
-            -DPJ_WASM_WITH_SCENE3D=ON
+            -DPJ_WASM_WITH_SCENE3D=ON \
+            -DPJ_WASM_WITH_PYTHON=ON \
+            -DPJ_WASM_PYTHON_CACHE_DIR="${HOME}/.cache/pj-wasm-cpython"
           cmake --build build-wasm-probe \
             --target pj_app pj_scene3d_wasm_capability_probe --parallel 4
           ccache --show-stats
@@ -260,6 +277,12 @@ jobs:
           node scripts/package_wasm.mjs \
             --source build-wasm-probe/pj_app --output build-wasm-probe/deploy
 
+      - name: Download budget of the acceptance package
+        # Python measured +1.93 MB Brotli (2026-10-21), the ingress probes 38 kB.
+        run: |
+          node scripts/wasm_size_delta.mjs build-wasm-prod/deploy/manifest.json \
+            build-wasm-probe/deploy/manifest.json 2500000
+
       - name: Upload acceptance package for the browser jobs
         uses: actions/upload-artifact@v4
         with:
@@ -289,6 +312,7 @@ jobs:
     env:
       PJ_WASM_URL: http://127.0.0.1:6931/
       PJ_WASM_BUILD_DIR: build-wasm-probe
+      PJ_WASM_PYTHON: '1'  # the acceptance package has Python: python.spec.js must not skip
 
     steps:
       - name: Checkout
@@ -347,6 +371,7 @@ jobs:
     env:
       LIBGL_ALWAYS_SOFTWARE: '1'
       PJ_WASM_URL: http://127.0.0.1:6931/
+      PJ_WASM_PYTHON: '1'
       PJ_WASM_SCENE3D_CAP_URL: http://127.0.0.1:6932/scene3d_capability_probe.html
 
     steps:

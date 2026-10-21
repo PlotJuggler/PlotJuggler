@@ -982,8 +982,16 @@ VM reuse is proposed (N1, N2).
   item after the script ends fails too, so a caller retries. Python filters are not routed through the
   helper: their inspect, create, `calculate` and teardown still take the GIL on the
   GUI or commit thread without a bound (`python_engine.cpp`); routing them is a later slice.
-- **Python in the browser** is a goal (D18 with D29), gated on a spike: CPython 3.14's
-  Emscripten target, statically linked, with pthreads. Until then, desktop only.
+- **Python in the browser** (D18 with D29) is CPython 3.14.8's Emscripten target, linked
+  statically with pthreads behind `PJ_WASM_WITH_PYTHON` (slice P-a): off in production, on
+  in WASM CI's acceptance build. Only the on-demand lane runs there; Python filters stay
+  unavailable. It adds about 1.93 MB (+13.6 %) of Brotli download; the first boot costs
+  0.13-0.21 s, and a 4-line script's call is faster than the Luau lane's in the same browser
+  (20 against 44 µs in Chromium, 112 against 300 µs in Firefox, which runs the whole build
+  4-6 times slower). The build, the stdlib zip policy and the symbol audit are in
+  `docs/WASM_DEPLOYMENT.md`. Open before production: a GUI-thread compile still waits up to
+  2 s while a script holds the GIL inside one C call (slice P-c), and allocation-heavy code
+  runs about 27 times slower than native (P-b).
 
 ## 15. Series
 

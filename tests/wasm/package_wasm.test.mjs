@@ -108,3 +108,23 @@ test('replaces empty and prior-package outputs but removes stale package files',
   assert.equal(manifest.version, 'second');
   await assert.rejects(access(path.join(output, 'stale-package-file')), error => error.code === 'ENOENT');
 });
+
+test('packages the third-party notices a build wrote, and nothing when it wrote none', async t => {
+  const { root, source } = await fixture(t);
+  const without = await packageWasm({ source, output: path.join(root, 'without'), version: 'test' });
+  assert.equal(without.files.some(file => file.path.endsWith('THIRD_PARTY_NOTICES.txt')), false);
+
+  await writeFile(path.join(source, 'THIRD_PARTY_NOTICES.txt'), 'PSF LICENSE AGREEMENT\n'.repeat(100));
+  const output = path.join(root, 'with');
+  const manifest = await packageWasm({ source, output, version: 'test' });
+  const notices = manifest.files.find(file => file.path.endsWith('/THIRD_PARTY_NOTICES.txt'));
+  assert.ok(notices, 'the notices are packaged');
+  assert.equal(notices.contentType, 'text/plain; charset=utf-8');
+  assert.equal(notices.cache, 'immutable');
+  assert.ok(notices.representations.br, 'the notices are precompressed');
+  assert.equal(
+    await readFile(path.join(output, notices.path), 'utf8'),
+    'PSF LICENSE AGREEMENT\n'.repeat(100),
+  );
+  assert.notEqual(manifest.bundleId, without.bundleId, 'the notices are part of the bundle identity');
+});

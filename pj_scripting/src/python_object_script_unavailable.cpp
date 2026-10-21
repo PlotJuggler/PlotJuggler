@@ -17,6 +17,8 @@ bool pythonAvailable() {
   return false;
 }
 
+void prestartPythonHelper() {}
+
 Expected<CompiledPythonScript> compileOnDemandScriptPython(std::string_view /*source*/) {
   return unexpected(std::string(kUnavailableMessage));
 }

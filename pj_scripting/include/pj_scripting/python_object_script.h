@@ -35,8 +35,13 @@ inline constexpr std::uint64_t kPythonCompileWaitMillis = 2000;
 inline constexpr std::string_view kPythonBusyError =
     "Python is busy (a running script holds the interpreter); try again";
 
-/// Whether this build runs Python scripts: true on desktop, false on WASM.
+/// Whether this build runs Python scripts: true on desktop and on a WASM build with PJ_WASM_WITH_PYTHON, else false.
 [[nodiscard]] bool pythonAvailable();
+
+/// Starts the Python helper thread without booting the interpreter. In the browser a thread created while the main
+/// thread waits may never start (Emscripten spawns its worker only once the main thread yields), so the app calls this
+/// at startup, before anything waits on a compile. Idempotent; a no-op without Python.
+void prestartPythonHelper();
 
 /// Checks and compiles `source` without running any of it: a syntax error (with its line in `<string>`), a
 /// dunder attribute, a frame or generator internal (`gi_frame`, `f_globals`, ...), a name reaching the

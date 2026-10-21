@@ -284,6 +284,23 @@ def evaluate(inputs, params):
       numberOf(runSource("import cmath\ndef evaluate(inputs, params):\n    return abs(cmath.sqrt(-4))\n")), 2.0);
 }
 
+TEST(PythonObjectScript, AllowedModulesImportTheirLazyDependenciesInAStrictRun) {
+  // statistics re-exports collections.Counter, whose most_common(n) imports heapq, and decimal.Decimal, whose format
+  // falls back to _pydecimal for a spec libmpdec lacks. Both imports would run at the first call, inside the armed
+  // run. CPython 3.12's _pydecimal then refuses "_" itself (ValueError), after the import this checks.
+  auto result = runSource(R"PY(
+import statistics
+def evaluate(inputs, params):
+    top = statistics.Counter("aba").most_common(1)[0][1]
+    try:
+        text = format(statistics.Decimal("1234"), "_")
+    except ValueError:
+        text = "1_234"
+    return top + len(text)
+)PY");
+  EXPECT_DOUBLE_EQ(numberOf(result), 2.0 + 5.0);
+}
+
 // ---- limits (GAP-25, the watchdog, the allocation cap) -------------------------------
 
 TEST(PythonObjectScript, WatchdogInterruptsAPureLoop) {

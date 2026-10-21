@@ -16,6 +16,7 @@ module.exports = defineConfig({
     'editors.spec.js',
     'streaming.spec.js',
     'dialogs.spec.js',
+    'python.spec.js',
   ],
   // No project name in snapshot paths: both browsers compare against one
   // committed baseline set.
