@@ -499,7 +499,8 @@ double runOverBag(const Bag& bag, const std::string& source) {
   detail::BudgetState budget;
   lua_State* L = detail::newSandboxedState(&budget, BudgetLimits{});
   ScriptMedia media(nullptr, native::NativeLimits{}, 0);
-  detail::registerBinder(L, media);
+  detail::registerBinder(L);
+  detail::setRunMedia(L, media);
   size_t size = 0;
   char* bytecode = luau_compile(source.data(), source.size(), nullptr, &size);
   double sum = std::nan("");
@@ -1409,29 +1410,107 @@ TEST(ObjectScript, ClockAndPlainScriptsDoNotObserveTheTf) {
 
 // ---- sandbox and limits (LUA-09, LUA-14, BUD-13, BUD-14, GAP-27, GAP-38) ---------------------------
 
+// GAP-38: runs on one thread share a sandboxed state (F8), yet nothing a run writes reaches the next one: not a
+// global, not a stdlib table, not a builtin metatable, not `_G` nor `pj`.
 TEST(ObjectScript, GlobalsDoNotLeakBetweenRuns) {
-  constexpr const char* kScript = R"LUAU(
+  constexpr const char* kWriter = R"LUAU(
     if x == nil then x = 1 else x = x + 1 end
     pcall(function() getmetatable("").__index.leaked = true end)
-    return { seen = x, leaked = (string.leaked ~= nil) and 1 or 0 }
+    pcall(function() string.leaked = true end)
+    pcall(function() math.leaked = true end)
+    pcall(function() _G.leaked = true end)
+    pcall(function() rawset(_G, "leaked_raw", true) end)
+    pcall(function() setmetatable(_G, nil) end)
+    pj.leaked = true
+    leaked_global = true
+    return { seen = x }
   )LUAU";
-  auto compiled = compileOnDemandScript(kScript);
-  ASSERT_TRUE(compiled.has_value()) << compiled.error();
+  constexpr const char* kReader = R"LUAU(
+    local function flag(value) return value ~= nil and 1 or 0 end
+    return {
+      global = flag(leaked_global), x = flag(x), string = flag(string.leaked), meta = flag(("").leaked),
+      math = flag(math.leaked), g = flag(_G.leaked) + flag(leaked) + flag(leaked_raw), pj = flag(pj.leaked),
+      g_meta = flag(getmetatable(_G)),
+    }
+  )LUAU";
+  auto writer = compileOnDemandScript(kWriter);
+  auto reader = compileOnDemandScript(kReader);
+  ASSERT_TRUE(writer.has_value()) << writer.error();
+  ASSERT_TRUE(reader.has_value()) << reader.error();
+  const auto baseline = runOnDemandScript(*reader, {}, "{}", {});
+  ASSERT_TRUE(baseline.has_value()) << baseline.error();
   for (int call = 0; call < 2; ++call) {
-    auto result = runOnDemandScript(*compiled, {}, "{}", {});
+    auto written = runOnDemandScript(*writer, {}, "{}", {});
+    ASSERT_TRUE(written.has_value()) << written.error();
+    EXPECT_DOUBLE_EQ(number(*written, "seen"), 1.0);  // its own globals start empty every call
+    auto result = runOnDemandScript(*reader, {}, "{}", {});
     ASSERT_TRUE(result.has_value()) << result.error();
-    EXPECT_DOUBLE_EQ(number(*result, "seen"), 1.0);  // a fresh VM each call
-    EXPECT_DOUBLE_EQ(number(*result, "leaked"), 0.0);
+    EXPECT_EQ(describe(*result), describe(*baseline));
+    for (const char* name : {"global", "x", "string", "meta", "math", "g", "pj", "g_meta"}) {
+      EXPECT_DOUBLE_EQ(number(*result, name), number(*baseline, name)) << name << ", call " << call;
+    }
   }
 }
 
+// A run's `math.random` starts from the same seed whatever ran before it on the thread.
 TEST(ObjectScript, SandboxRandomIsDeterministicAcrossRuns) {
   constexpr const char* kScript = "return math.random() * 1e6 + math.random(1, 1000)";
   auto first = run(kScript);
+  ASSERT_TRUE(run("for i = 1, 7 do math.random() end\nreturn 1").has_value());
   auto second = run(kScript);
   ASSERT_TRUE(first.has_value()) << first.error();
   ASSERT_TRUE(second.has_value()) << second.error();
   EXPECT_DOUBLE_EQ(number(*first, "value"), number(*second, "value"));
+}
+
+// The VM memory cap counts one run's allocations: what an earlier run on the thread kept, even in a global, is gone.
+TEST(ObjectScript, TheVmCapCountsOnlyItsOwnRun) {
+  RunOptions options;
+  options.limits.mem_bytes = std::size_t{8} << 20;
+  // About 4 MB of array (262,144 slots of 16 bytes), 6 MB at its last growth: one fits the cap, two do not.
+  constexpr const char* kHog = "hog = {}\nfor i = 1, 200000 do hog[i] = i end\nreturn #hog";
+  constexpr const char* kLocalHog = "local t = {}\nfor i = 1, 200000 do t[i] = i end\nreturn #t";
+  auto first = run(kHog, {}, {}, "{}", options);
+  ASSERT_TRUE(first.has_value()) << first.error();
+  auto second = run(kLocalHog, {}, {}, "{}", options);
+  ASSERT_TRUE(second.has_value()) << second.error();
+  EXPECT_DOUBLE_EQ(number(*second, "value"), 200000.0);
+}
+
+// A run that ends in a trip (memory, instruction budget, cancel) or a script error leaves the thread's state clean:
+// the next run on it succeeds, sees none of the failed run's globals and has its whole VM cap.
+TEST(ObjectScript, AFailedRunLeavesTheThreadsStateClean) {
+  struct Case {
+    const char* name;
+    const char* script;
+    RunOptions options;
+    const char* error;
+  };
+  std::vector<Case> cases;
+  cases.push_back({"memory", "left = {}\nfor i = 1, 50000000 do left[i] = i end\nreturn 1", {}, "memory limit"});
+  cases.back().options.limits.mem_bytes = std::size_t{8} << 20;
+  cases.push_back({"fuel", "left = {}\nwhile true do left[#left % 1000 + 1] = {} end\nreturn 1", {}, "instruction"});
+  cases.back().options.limits.setup_fuel = 10'000;
+  cases.push_back({"cancel", "left = {}\npcall(function() while true do end end)\nreturn 1", {}, "cancelled"});
+  auto polls = std::make_shared<int>(0);
+  cases.back().options.cancelled = [polls] { return ++*polls > 1000; };
+  cases.push_back({"error", "left = {}\nerror('boom')", {}, "boom"});
+  RunOptions capped;
+  capped.limits.mem_bytes = std::size_t{8} << 20;
+  for (const Case& failing : cases) {
+    auto failed = run(failing.script, {}, {}, "{}", failing.options);
+    ASSERT_FALSE(failed.has_value()) << failing.name;
+    EXPECT_TRUE(contains(failed.error(), failing.error)) << failing.name << " -> " << failed.error().message;
+    auto next =
+        run("local t = {}\nfor i = 1, 200000 do t[i] = i end\nreturn { left = left == nil and 0 or 1, n = #t }", {}, {},
+            "{}", capped);
+    if (!next) {
+      ADD_FAILURE() << failing.name << " -> " << next.error().message;
+      continue;
+    }
+    EXPECT_DOUBLE_EQ(number(*next, "left"), 0.0) << failing.name;
+    EXPECT_DOUBLE_EQ(number(*next, "n"), 200000.0) << failing.name;
+  }
 }
 
 TEST(ObjectScript, SandboxExposesNoClock) {
@@ -1739,8 +1818,8 @@ TEST(ObjectScriptBench, BinderPerElementCost) {
   }
 }
 
-// PJ_BENCH=1 prints a trivial run's cost (median of 2001 calls, us) against its sandboxed state's creation and close
-// alone: the part one state per worker would save (F8, Luau VM reuse).
+// PJ_BENCH=1 prints a trivial run's cost (median of 2001 calls, us) against a sandboxed state's creation and close
+// alone, what one state per worker saves (F8, Luau VM reuse), and the full collection that ends every run.
 TEST(ObjectScriptBench, SandboxedStateShareOfATrivialRun) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";
@@ -1765,10 +1844,16 @@ TEST(ObjectScriptBench, SandboxedStateShareOfATrivialRun) {
     ASSERT_NE(L, nullptr);
     lua_close(L);
   });
+  detail::BudgetState budget;
+  lua_State* L = detail::newFrozenState(&budget, BudgetLimits{}.setup_fuel);
+  ASSERT_NE(L, nullptr);
+  detail::registerBinder(L);
+  const double collect = median_micros([L] { lua_gc(L, LUA_GCCOLLECT, 0); });
+  lua_close(L);
   std::printf(
       "[ObjectScriptBench] trivial run over a 4-point cloud: %.1f us; sandboxed state create + close alone: %.1f us "
-      "(%.0f%%)\n",
-      run, state, 100.0 * state / run);
+      "(%.0f%%); the full collection ending a run, on a worker's bare state: %.1f us\n",
+      run, state, 100.0 * state / run, collect);
 }
 
 // PJ_BENCH=1 prints `estimateBytes` (the GUI thread runs it on every result it caches) over large lists, median of 21:
@@ -2251,6 +2336,33 @@ TEST(ObjectScript, FrameAtPassesTheRunsCancelCheck) {
           "{}", options);
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_TRUE(video->saw_cancel_check);
+}
+
+// A run's state lives on after it (F8), yet what the run read or built and kept only in the VM is released when it
+// ends: the input cloud's buffer, an operation's cloud, the decoded pixels, a video frame and a builder's output.
+TEST(ObjectScript, WhatARunKeptInItsVmIsReleasedWhenItEnds) {
+  RunOptions options = withVideo(std::make_shared<BucketVideo>(), std::make_shared<FakeImageDecoder>(4, 3));
+  options.native_budget = makeNativeBudget(std::size_t{1} << 20);
+  const sdk::PointCloud cloud = makeLineCloud(4);
+  const long before = cloud.anchor.use_count();
+  auto inputs = std::make_unique<std::vector<NamedValue>>(
+      std::vector<NamedValue>{object("cloud", cloud), imageInput("image", "/cam", 0), videoInput()});
+  auto result = run(
+      R"LUAU(
+local inputs = ...
+kept = {
+  cloud = inputs.cloud, fields = inputs.cloud.fields, cropped = inputs.cloud:crop_box{min={-5,-5,-5}, max={5,5,5}},
+  pixels = inputs.image:decode(), frame = inputs.video:frame_at(13),
+  built = pj.cloud.new{preset="xyz", frame_id="map"}:add(1, 2, 3):finish(),
+}
+return inputs.cloud:count()
+)LUAU",
+      *inputs, {}, "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_DOUBLE_EQ(number(*result, "value"), 4.0);
+  inputs.reset();
+  EXPECT_EQ(cloud.anchor.use_count(), before);
+  EXPECT_EQ(options.native_budget->used(), 0u);
 }
 
 }  // namespace PJ::scripting

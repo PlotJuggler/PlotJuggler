@@ -79,13 +79,15 @@ Licensed MPL-2.0.
   eager `pj_datastore::IncrementalEngine` node.
 - `sandbox.h` — `BudgetLimits` (the per-VM sandbox/watchdog budget).
 - `src/luau_sandbox_state.h` (private) — the sandbox state every Luau engine shares: `BudgetState` (memory cap, fuel,
-  optional `cancelled` poll, sticky `trip` reason), the allocator and interrupt, `tripRun`, and `newSandboxedState`.
+  optional `cancelled` poll, sticky `trip` reason), the allocator and interrupt, `tripRun`, `newFrozenState` (the
+  frozen stdlib, which untrusted code only reaches from a thread with globals of its own) and `newSandboxedState`
+  (that plus the VM's own globals).
   `trip` is checked by the host after each protected call even if the script `pcall`-swallowed the error.
 - `marker_engine.h` — `runMarkerScript`, the whole-series → markers path (Luau). Its interrupt callback also polls
   the caller's `cancelled` check, so a cancelled script stops inside the interpreter, and native marker output is
   capped by `max_output_bytes` (16 MiB by default) independently of the VM's memory cap.
 - `object_script.h` — the Luau object-script engine the on-demand service calls on a worker: compile once per recipe
-  revision, a fresh sandboxed VM per run, `pj.tf` over a TF snapshot, output inference or lenient binding, the
+  revision, one sandboxed state per thread and a fresh thread on it per run (F8: see the sandbox bullet), `pj.tf` over a TF snapshot, output inference or lenient binding, the
   observed-clock/TF flags on the result and the error (and `over_budget` when a memory limit ended the run), a native ledger runs may share (`makeNativeBudget`, `RunOptions::native_budget`), and `estimateBytes(value)` (a decoded value's size from its
   field table, never by serializing it). Contract: the header; design:
   [`docs/derived_objects/ARCHITECTURE.md`](../docs/derived_objects/ARCHITECTURE.md) §5-7, §12, §14.
@@ -109,7 +111,8 @@ Licensed MPL-2.0.
   (`stampUnset`).
 - `object_summary.h` — `summarizeObject` (a small JSON description of an object output: counts, bounds, frame ids) and
   `isEmptyObject` (the report's "empty" status), what an evaluation report carries instead of the object's bytes.
-- `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
+- `src/object_binder.h` (private) — registered once per state (`registerBinder`); its functions read the run's
+  `ScriptMedia` through the calling thread (`setRunMedia`). Objects as locked, read-only views over their SDK field tables (lists read
   lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker, the point-cloud methods over `src/native/`, and
   the image methods (`representation`, `decode`, `to_point_cloud`) with the decoded-pixel box, and a video's `frame_at`.
   Also the `pj.scene` / `pj.annotations` / `pj.cloud` / `pj.voxels` builders: chainable boxed builders over the
@@ -155,6 +158,13 @@ Licensed MPL-2.0.
   Each VM loads exactly ONE module, so `safeenv` stays on and stdlib imports keep
   the fast path. A sticky `trip` reason is checked by the host **even if the script
   `pcall`-swallows the error**, so a runaway can never silently survive.
+  On-demand object scripts (`runOnDemandScript`) reuse one frozen state per worker thread instead (F8,
+  `ThreadState` in `src/object_script.cpp`). Every run gets a fresh thread with its own `luaL_sandboxthread` globals,
+  its own `pj` table and the random seed reset, and the cap, fuel and trip re-armed. A full collection ends the run
+  (about 2 µs), so the boxes it left release their inputs, frames and native charges, and the next run's cap starts
+  from the bare state. A run that hit `LUA_ERRMEM` closes the state. Anything shared by the state must stay frozen or
+  unreachable: a new writable table or metatable reachable from a script would leak between recipes (the GAP-38
+  tests in `tests/object_script_test.cpp` guard this). A trivial run costs 7.3 µs instead of 49.6 µs.
 - **Python runs under cooperative limits, and it is a guardrail — NOT a sandbox.** Both Python engines share one
   interpreter, never finalized, and `src/python_sandbox.h`: every call into script code, a filter's teardown included,
   runs inside a `ScriptCallScope` (the watchdog; the allocation cap, which refuses only blocks of 1 KiB or more and

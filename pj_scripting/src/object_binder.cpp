@@ -101,6 +101,15 @@ T& checkBox(lua_State* L, int index, Tag tag, const char* what) {
   luaL_error(L, "%s", message.c_str());
 }
 
+/// The run of the calling thread (`setRunMedia`).
+ScriptMedia& runMedia(lua_State* L) {
+  auto* media = static_cast<ScriptMedia*>(lua_getthreaddata(L));
+  if (media == nullptr) {
+    luaL_error(L, "no script run on this thread");
+  }
+  return *media;
+}
+
 /// The value of a native operation, else its error raised; a cancellation also trips the run, so a script
 /// `pcall` cannot swallow it.
 template <class T>
@@ -438,7 +447,7 @@ int lCloudCropBox(lua_State* L) {
   luaL_checktype(L, 2, LUA_TTABLE);
   const auto min = readPoint<sdk::Vector3, 3>(L, 2, "min");
   const auto max = readPoint<sdk::Vector3, 3>(L, 2, "max");
-  return pushNativeCloud(L, [&] { return native::cropBox(cloud, min, max, upvalueAs<native::NativeLimits>(L)); });
+  return pushNativeCloud(L, [&] { return native::cropBox(cloud, min, max, runMedia(L).limits()); });
 }
 
 /// The comparison named by the string at `index` (`parseComparison`); `what` names the caller.
@@ -457,8 +466,7 @@ int lCloudFilter(lua_State* L) {
   const char* channel = luaL_checkstring(L, 2);
   const native::CompareOp op = checkComparison(L, 3, "filter");
   const double threshold = luaL_checknumber(L, 4);
-  return pushNativeCloud(
-      L, [&] { return native::filterByField(cloud, channel, op, threshold, upvalueAs<native::NativeLimits>(L)); });
+  return pushNativeCloud(L, [&] { return native::filterByField(cloud, channel, op, threshold, runMedia(L).limits()); });
 }
 
 /// `cloud:transform(tf)`, `tf` as `pj.tf.lookup` returns it: the result is in `tf.target_frame` when set.
@@ -476,7 +484,7 @@ int lCloudTransform(lua_State* L) {
     tf.parent_frame_id.assign(frame, length);  // charged with the output by transformXyz
   }
   lua_pop(L, 1);
-  return pushNativeCloud(L, [&] { return native::transformXyz(cloud, tf, upvalueAs<native::NativeLimits>(L)); });
+  return pushNativeCloud(L, [&] { return native::transformXyz(cloud, tf, runMedia(L).limits()); });
 }
 
 int lPointsNext(lua_State* L) {
@@ -644,13 +652,13 @@ int pushCharged(lua_State* L, native::Charged<Object> done) {
 }
 
 /// `:finish()`: pushes the finished object, which carries the builder's charge, and spends the builder. An object with
-/// a stamp of its own is stamped with the result's (`ScriptMedia::stampUnset`; upvalue 1 of its `finish`).
+/// a stamp of its own is stamped with the result's (`ScriptMedia::stampUnset`).
 template <class Builder>
 int finishBuilder(lua_State* L, std::optional<Builder>& slot) {
   auto done = std::move(live(L, slot)).finish();
   slot.reset();
   if constexpr (requires { done.value.timestamp_ns; }) {
-    upvalueAs<ScriptMedia>(L).stampUnset(done.value.timestamp_ns);
+    runMedia(L).stampUnset(done.value.timestamp_ns);
   }
   return pushCharged(L, std::move(done));
 }
@@ -660,8 +668,7 @@ int lSceneNew(lua_State* L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   std::string frame_id = readString(L, 1, "frame_id");
   std::string id = readString(L, 1, "id");
-  auto builder =
-      native::SceneEntityBuilder::create(std::move(frame_id), std::move(id), upvalueAs<native::NativeLimits>(L).budget);
+  auto builder = native::SceneEntityBuilder::create(std::move(frame_id), std::move(id), runMedia(L).limits().budget);
   newBox(L, kSceneBuilderTag, SceneSlot(nativeResult(L, std::move(builder))));
   return 1;
 }
@@ -711,8 +718,7 @@ int lSceneFinish(lua_State* L) {
 int lAnnotationsNew(lua_State* L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   std::string image_topic = readString(L, 1, "image_topic");
-  auto builder =
-      native::ImageAnnotationsBuilder::create(std::move(image_topic), upvalueAs<native::NativeLimits>(L).budget);
+  auto builder = native::ImageAnnotationsBuilder::create(std::move(image_topic), runMedia(L).limits().budget);
   newBox(L, kAnnotationsBuilderTag, AnnotationsSlot(nativeResult(L, std::move(builder))));
   return 1;
 }
@@ -757,12 +763,12 @@ int lAnnotationsText(lua_State* L) {
   return chain(L, builder.addText(position, std::move(text), font_size, color));
 }
 
-/// `:finish()`, paired with the image input `image_topic` names (`ScriptMedia::pairing`; upvalue 1).
+/// `:finish()`, paired with the image input `image_topic` names (`ScriptMedia::pairing`).
 int lAnnotationsFinish(lua_State* L) {
   AnnotationsSlot& slot = annotationsSlot(L);
   auto done = std::move(live(L, slot)).finish();
   slot.reset();
-  auto [topic, stamp] = upvalueAs<ScriptMedia>(L).pairing(done.value.image_topic);
+  auto [topic, stamp] = runMedia(L).pairing(done.value.image_topic);
   done.value.image_topic = std::move(topic);
   done.value.timestamp = stamp;
   return pushCharged(L, std::move(done));
@@ -799,8 +805,7 @@ int lCloudNew(lua_State* L) {
     raise(L, "'preset' must be \"xyz\", \"xyzi\" or \"xyzrgb\"");
   }
   std::string frame_id = readString(L, 1, "frame_id");
-  auto builder =
-      native::PointCloudBuilder::create(*preset, std::move(frame_id), upvalueAs<native::NativeLimits>(L).budget);
+  auto builder = native::PointCloudBuilder::create(*preset, std::move(frame_id), runMedia(L).limits().budget);
   newBox(L, kCloudBuilderTag, CloudSlot(nativeResult(L, std::move(builder))));
   return 1;
 }
@@ -870,8 +875,8 @@ int lVoxelsNew(lua_State* L) {
     }
     dims[axis] = *count;
   }
-  auto builder = native::VoxelGridBuilder::create(
-      std::move(frame_id), origin, cell_size, dims, upvalueAs<native::NativeLimits>(L).budget);
+  auto builder =
+      native::VoxelGridBuilder::create(std::move(frame_id), origin, cell_size, dims, runMedia(L).limits().budget);
   newBox(L, kVoxelsBuilderTag, VoxelsSlot(nativeResult(L, std::move(builder))));
   return 1;
 }
@@ -900,11 +905,11 @@ int lCloudDownsample(lua_State* L) {
   const sdk::PointCloud& cloud = checkCloud(L);
   const double voxel_size = luaL_checknumber(L, 2);
   return pushCharged(L, nativeResult(L, retryAfterCollect(L, [&] {
-                                       return native::downsample(cloud, voxel_size, upvalueAs<native::NativeLimits>(L));
+                                       return native::downsample(cloud, voxel_size, runMedia(L).limits());
                                      })));
 }
 
-// ---- images: decode, decoded pixels, depth unprojection (upvalue 1: the run's ScriptMedia) ----------------
+// ---- images: decode, decoded pixels, depth unprojection ---------------------------------------------------------
 
 /// The receiver of an image method: exactly one of `image` and `depth` is set.
 struct ImageReceiver {
@@ -960,7 +965,7 @@ int lImageRepresentation(lua_State* L) {
 
 /// `image:decode()` -> decoded pixels, or `nil, reason`.
 int lImageDecode(lua_State* L) {
-  Expected<DecodedPixels> pixels = decodeReceiver(L, upvalueAs<ScriptMedia>(L), checkImageReceiver(L));
+  Expected<DecodedPixels> pixels = decodeReceiver(L, runMedia(L), checkImageReceiver(L));
   if (!pixels) {
     lua_pushnil(L);
     lua_pushlstring(L, pixels.error().data(), pixels.error().size());
@@ -972,7 +977,7 @@ int lImageDecode(lua_State* L) {
 
 /// `image:to_point_cloud(camera_info[, {step=, max_depth=}])` -> a cloud, or `pj.unavailable(reason)`.
 int lImageToPointCloud(lua_State* L) {
-  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  ScriptMedia& media = runMedia(L);
   const ImageReceiver receiver = checkImageReceiver(L);
   const sdk::BuiltinObject* camera_object = toObject(L, 2);
   const sdk::CameraInfo* camera = camera_object != nullptr ? camera_object->get<sdk::CameraInfo>() : nullptr;
@@ -1028,7 +1033,7 @@ int lDecodedPixel(lua_State* L) {
 
 int lDecodedToGray(lua_State* L) {
   const DecodedPixels& image = checkDecoded(L);
-  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  ScriptMedia& media = runMedia(L);
   pushDecoded(L, nativeResult(L, retryAfterCollect(L, [&] { return native::imageToGray(image, media.limits()); })));
   return 1;
 }
@@ -1040,7 +1045,7 @@ int lDecodedCrop(lua_State* L) {
   const uint32_t y = checkPixelInteger(L, 3);
   const uint32_t width = checkPixelInteger(L, 4);
   const uint32_t height = checkPixelInteger(L, 5);
-  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  ScriptMedia& media = runMedia(L);
   pushDecoded(L, nativeResult(L, retryAfterCollect(L, [&] {
                                 return native::imageCrop(image, x, y, width, height, media.limits());
                               })));
@@ -1059,7 +1064,7 @@ int lDecodedThreshold(lua_State* L) {
   } else if (!lua_isnoneornil(L, 4)) {
     channel = checkPixelInteger(L, 4);
   }
-  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  ScriptMedia& media = runMedia(L);
   auto annotations =
       retryAfterCollect(L, [&] { return native::imageThreshold(image, op, value, channel, media.limits()); });
   if (!annotations && annotations.error().starts_with(native::kNativeLimitError)) {
@@ -1072,7 +1077,7 @@ int lDecodedThreshold(lua_State* L) {
 /// `decoded:stats()` -> `{min, max, mean}` over the finite samples.
 int lDecodedStats(lua_State* L) {
   const DecodedPixels& image = checkDecoded(L);
-  const native::ImageStats stats = nativeResult(L, native::imageStats(image, upvalueAs<ScriptMedia>(L).limits()));
+  const native::ImageStats stats = nativeResult(L, native::imageStats(image, runMedia(L).limits()));
   lua_createtable(L, 0, 3);
   setNumber(L, "min", stats.min);
   setNumber(L, "max", stats.max);
@@ -1080,7 +1085,7 @@ int lDecodedStats(lua_State* L) {
   return 1;
 }
 
-// ---- video: frame_at (upvalue 1: the run's ScriptMedia) ----------------------------------------------------------
+// ---- video: frame_at -------------------------------------------------------------------------------------------
 
 /// `video:frame_at(t)` -> `{image, presentation_ns}`, or `nil, reason`: the frame presented at `t`, an integer number
 /// of nanoseconds or a `pj.int64`.
@@ -1099,7 +1104,7 @@ int lVideoFrameAt(lua_State* L) {
     }
     t = static_cast<Timestamp>(ns);
   }
-  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  ScriptMedia& media = runMedia(L);
   Expected<sdk::BuiltinObject> image = retryAfterCollect(L, [&] { return media.frameAt(video, t); });
   if (!image) {
     lua_pushnil(L);
@@ -1158,8 +1163,11 @@ void setFunctions(
   }
 }
 
-void registerBinder(lua_State* L, ScriptMedia& media) {
-  const native::NativeLimits& limits = media.limits();
+void setRunMedia(lua_State* L, ScriptMedia& media) {
+  lua_setthreaddata(L, &media);
+}
+
+void registerBinder(lua_State* L) {
   lua_setuserdatadtor(L, kObjectTag, &destroy<ObjectBox>);
   lua_setuserdatadtor(L, kViewTag, &destroy<View>);
   lua_setuserdatadtor(L, kPointIteratorTag, &destroy<PointIterator>);
@@ -1173,29 +1181,27 @@ void registerBinder(lua_State* L, ScriptMedia& media) {
   lua_createtable(L, 0, 1);  // methods by type
   lua_createtable(L, 0, 8);
   setFunctions(
-      L,
-      {{"count", lCloudCount},
-       {"downsample", lCloudDownsample},
-       {"bounds", lCloudBounds},
-       {"extreme_point", lCloudExtremePoint},
-       {"crop_box", lCloudCropBox},
-       {"filter", lCloudFilter},
-       {"transform", lCloudTransform},
-       {"xyz_points", lCloudXyzPoints}},
-      &limits);
+      L, {{"count", lCloudCount},
+          {"downsample", lCloudDownsample},
+          {"bounds", lCloudBounds},
+          {"extreme_point", lCloudExtremePoint},
+          {"crop_box", lCloudCropBox},
+          {"filter", lCloudFilter},
+          {"transform", lCloudTransform},
+          {"xyz_points", lCloudXyzPoints}});
   lua_rawseti(L, -2, static_cast<int>(sdk::BuiltinObjectType::kPointCloud));
   for (const sdk::BuiltinObjectType image : {sdk::BuiltinObjectType::kImage, sdk::BuiltinObjectType::kDepthImage}) {
     lua_createtable(L, 0, 3);
     setFunctions(
-        L, {{"representation", lImageRepresentation}, {"decode", lImageDecode}, {"to_point_cloud", lImageToPointCloud}},
-        &media);
+        L,
+        {{"representation", lImageRepresentation}, {"decode", lImageDecode}, {"to_point_cloud", lImageToPointCloud}});
     lua_rawseti(L, -2, static_cast<int>(image));
   }
   lua_createtable(L, 0, 1);
   setFunctions(L, {{"count", lAnnotationsCount}});
   lua_rawseti(L, -2, static_cast<int>(sdk::BuiltinObjectType::kImageAnnotations));
   lua_createtable(L, 0, 1);
-  setFunctions(L, {{"frame_at", lVideoFrameAt}}, &media);
+  setFunctions(L, {{"frame_at", lVideoFrameAt}});
   lua_rawseti(L, -2, static_cast<int>(sdk::BuiltinObjectType::kVideoFrame));
   lua_pushcclosure(L, lObjectIndex, "__index", 1);
   lua_setfield(L, -2, "__index");
@@ -1230,37 +1236,33 @@ void registerBinder(lua_State* L, ScriptMedia& media) {
   newTagMetatable(L, "pj.annotations_builder", kAnnotationsBuilderTag);
   lua_createtable(L, 0, 4);
   setFunctions(
-      L,
-      {{"points", lAnnotationsPoints},
-       {"circle", lAnnotationsCircle},
-       {"text", lAnnotationsText},
-       {"finish", lAnnotationsFinish}},
-      &media);
+      L, {{"points", lAnnotationsPoints},
+          {"circle", lAnnotationsCircle},
+          {"text", lAnnotationsText},
+          {"finish", lAnnotationsFinish}});
   lua_setfield(L, -2, "__index");
   lua_pop(L, 1);
 
   newTagMetatable(L, "pj.cloud_builder", kCloudBuilderTag);
   lua_createtable(L, 0, 3);
-  setFunctions(L, {{"add", lCloudAdd}, {"add_points", lCloudAddPoints}, {"finish", lCloudFinish}}, &media);
+  setFunctions(L, {{"add", lCloudAdd}, {"add_points", lCloudAddPoints}, {"finish", lCloudFinish}});
   lua_setfield(L, -2, "__index");
   lua_pop(L, 1);
 
   newTagMetatable(L, "pj.voxels_builder", kVoxelsBuilderTag);
   lua_createtable(L, 0, 2);
-  setFunctions(L, {{"set", lVoxelsSet}, {"finish", lVoxelsFinish}}, &media);
+  setFunctions(L, {{"set", lVoxelsSet}, {"finish", lVoxelsFinish}});
   lua_setfield(L, -2, "__index");
   lua_pop(L, 1);
 
   newTagMetatable(L, "pj.decoded_image", kDecodedTag);
   lua_createtable(L, 0, 5);
   setFunctions(
-      L,
-      {{"pixel", lDecodedPixel},
-       {"to_gray", lDecodedToGray},
-       {"crop", lDecodedCrop},
-       {"threshold", lDecodedThreshold},
-       {"stats", lDecodedStats}},
-      &media);
+      L, {{"pixel", lDecodedPixel},
+          {"to_gray", lDecodedToGray},
+          {"crop", lDecodedCrop},
+          {"threshold", lDecodedThreshold},
+          {"stats", lDecodedStats}});
   lua_pushcclosure(L, lDecodedIndex, "__index", 1);
   lua_setfield(L, -2, "__index");
   setFunctions(L, {{"__newindex", lReadOnly}});
@@ -1270,18 +1272,18 @@ void registerBinder(lua_State* L, ScriptMedia& media) {
   lua_pop(L, 1);
 }
 
-void installBuilders(lua_State* L, const native::NativeLimits& limits) {
+void installBuilders(lua_State* L) {
   lua_createtable(L, 0, 1);
-  setFunctions(L, {{"new", lSceneNew}}, &limits);
+  setFunctions(L, {{"new", lSceneNew}});
   lua_setfield(L, -2, "scene");
   lua_createtable(L, 0, 1);
-  setFunctions(L, {{"new", lAnnotationsNew}}, &limits);
+  setFunctions(L, {{"new", lAnnotationsNew}});
   lua_setfield(L, -2, "annotations");
   lua_createtable(L, 0, 1);
-  setFunctions(L, {{"new", lCloudNew}}, &limits);
+  setFunctions(L, {{"new", lCloudNew}});
   lua_setfield(L, -2, "cloud");
   lua_createtable(L, 0, 1);
-  setFunctions(L, {{"new", lVoxelsNew}}, &limits);
+  setFunctions(L, {{"new", lVoxelsNew}});
   lua_setfield(L, -2, "voxels");
 }
 

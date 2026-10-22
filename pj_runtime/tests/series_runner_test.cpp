@@ -1065,8 +1065,8 @@ TEST(SeriesRunnerBench, ReplayOver400Clouds) {
 }
 
 // A one-hour 10 Hz replay (36,000 rows over 4-point clouds) through AppSession, from the display to the last row, wall
-// time: the fake run (instant), then the real Luau run of `script` (a fresh sandboxed VM per row). Their difference is
-// what the Luau runs cost; with a trivial script it is the per-call setup.
+// time: the fake run (instant), then the real Luau run of `script` on each worker's sandboxed state. Their difference
+// is what the Luau runs cost; with a trivial script it is the per-call setup.
 double replay36kMillis(const char* script) {
   SeriesFixture fx;
   fx.fake.real = script != nullptr;

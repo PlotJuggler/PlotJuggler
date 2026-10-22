@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Luau sandbox state shared by the filter, marker and object-script engines: the memory cap, the
-// instruction-budget watchdog (with an optional cancel poll) and the sandboxed-VM factory.
+// instruction-budget watchdog (with an optional cancel poll) and the sandboxed-VM factories.
 // Private to src/ and header-only, so it ships with pj_scripting_core's sources (see conanfile.py).
 #pragma once
 
@@ -85,18 +85,13 @@ inline void armFuel(BudgetState* b, std::uint64_t fuel) {
   b->fuel = static_cast<std::int64_t>(fuel > kCap ? kCap : fuel);
 }
 
-// Create a sandboxed VM: curated stdlib, os/coroutine/debug/setfenv/getfenv
-// dropped, the shared stdlib frozen read-only (luaL_sandbox), then a fresh
-// per-VM writable global table layered on top (luaL_sandboxthread). Net effect: a
-// filter can assign its own top-level globals for persistent state, but cannot
-// mutate the stdlib or leak globals into a sibling filter's VM. Also installs a
-// memory cap + watchdog. `budget` must outlive the returned state. The byte cap is
-// left OPEN during trusted setup (openlibs/sandbox) and clamped to limits.mem_bytes
-// only once setup is done, so a small cap can never make setup fail/abort.
-inline lua_State* newSandboxedState(BudgetState* budget, const BudgetLimits& limits) {
+// Creates a state whose curated stdlib is frozen read-only (luaL_sandbox): os/coroutine/debug/setfenv/getfenv
+// dropped, the memory cap and the watchdog installed, the cap left OPEN (trusted setup). Untrusted code never runs on
+// it directly, only on a thread with globals of its own (luaL_sandboxthread). `budget` must outlive the state.
+inline lua_State* newFrozenState(BudgetState* budget, std::uint64_t setup_fuel) {
   budget->used = 0;
   budget->max_bytes = std::numeric_limits<std::size_t>::max();  // no cap during setup
-  armFuel(budget, limits.setup_fuel);
+  armFuel(budget, setup_fuel);
   lua_State* L = lua_newstate(budgetAlloc, budget);
   if (L == nullptr) {
     return nullptr;
@@ -110,12 +105,23 @@ inline lua_State* newSandboxedState(BudgetState* budget, const BudgetLimits& lim
     lua_setglobal(L, lib);
   }
   luaL_sandbox(L);  // freeze the shared stdlib read-only
-  // Own writable global table for this VM (frozen stdlib as read-only __index):
-  // top-level globals the script assigns land here, stdlib reads fall through.
-  // One module loads per VM, so safeenv stays on and imports keep the fast path.
-  luaL_sandboxthread(L);
   lua_callbacks(L)->userdata = budget;
   lua_callbacks(L)->interrupt = budgetInterrupt;
+  return L;
+}
+
+// Create a sandboxed VM: `newFrozenState`, then a writable global table of the VM's own layered on the frozen stdlib
+// (luaL_sandboxthread). Net effect: a filter can assign its own top-level globals for persistent state, but cannot
+// mutate the stdlib or leak globals into a sibling filter's VM. `budget` must outlive the returned state. The byte cap
+// is left OPEN during trusted setup and clamped to limits.mem_bytes only once setup is done, so a small cap can never
+// make setup fail/abort.
+inline lua_State* newSandboxedState(BudgetState* budget, const BudgetLimits& limits) {
+  lua_State* L = newFrozenState(budget, limits.setup_fuel);
+  if (L == nullptr) {
+    return nullptr;
+  }
+  // One module loads per VM, so safeenv stays on and imports keep the fast path.
+  luaL_sandboxthread(L);
   budget->max_bytes = limits.mem_bytes;  // cap now applies to all untrusted execution
   return L;
 }

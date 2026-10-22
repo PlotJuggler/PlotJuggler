@@ -22,8 +22,9 @@
 
 // The Luau object-script engine the on-demand service calls on a worker thread
 // (docs/derived_objects/ARCHITECTURE.md §5-7, §12, §14): a stateless evaluation over named
-// scalar and object inputs that returns one value per output. Compile once per recipe revision;
-// every run gets a fresh sandboxed VM, so two runs never see each other's state (D2).
+// scalar and object inputs that returns one value per output. Compile once per recipe revision; each thread keeps
+// one sandboxed state, and every run gets a fresh thread on it with its own globals, its own random seed and a full
+// collection when it ends, so two runs never see each other's state (D2, GAP-38).
 
 namespace PJ::scripting {
 
@@ -170,9 +171,9 @@ struct RunOptions {
   Timestamp result_stamp = 0;
 };
 
-/// Runs `script` once in a fresh sandboxed VM as `chunk(inputs, params)`: `inputs` is a table of
-/// `inputs` by name, `params` the JSON object `params_json` (empty means `{}`; at most `kMaxParamsDepth` levels deep).
-/// An unavailable input is an error: the caller does not run a node whose input is unavailable (D25).
+/// Runs `script` once on the calling thread's sandboxed state, in a fresh thread, as `chunk(inputs, params)`: `inputs`
+/// is a table of `inputs` by name, `params` the JSON object `params_json` (empty means `{}`; at most `kMaxParamsDepth`
+/// levels deep). An unavailable input is an error: the caller does not run a node whose input is unavailable (D25).
 ///
 /// Script surface: objects are read-only views over their SDK field tables (lists are read element by
 /// element; an int64 field is a `pj.int64`, exact past 2^53; a raw buffer is never exposed); a point

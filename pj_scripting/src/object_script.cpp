@@ -1,8 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The Luau object-script engine (see object_script.h): a fresh sandboxed VM per run, the `pj` table,
-// and the binding of the returned value to outputs. Objects and their methods are object_binder.cpp's.
+// The Luau object-script engine (see object_script.h): one sandboxed state per thread and a fresh thread on it per
+// run, the `pj` table, and the binding of the returned value to outputs. Objects and their methods are
+// object_binder.cpp's.
 
 #include "pj_scripting/object_script.h"
 
@@ -131,10 +132,10 @@ int lUnavailable(lua_State* L) {
   return 1;
 }
 
-void installPj(lua_State* L, Run& run, const native::NativeLimits& limits) {
+void installPj(lua_State* L, Run& run) {
   lua_createtable(L, 0, 6);
   detail::setFunctions(L, {{"unavailable", lUnavailable}});
-  detail::installBuilders(L, limits);
+  detail::installBuilders(L);
   lua_createtable(L, 0, 2);
   detail::setFunctions(L, {{"lookup", lTfLookup}, {"frames", lTfFrames}}, &run);
   lua_createtable(L, 0, 1);
@@ -142,13 +143,58 @@ void installPj(lua_State* L, Run& run, const native::NativeLimits& limits) {
   lua_setmetatable(L, -2);
   lua_setfield(L, -2, "tf");
   lua_setglobal(L, "pj");
-  // luaopen_math seeds math.random from the clock and an address; a result must depend on its inputs only.
+  // luaopen_math seeds math.random from the clock and an address, and the state's earlier runs moved it on; a result
+  // must depend on its inputs only.
   lua_getglobal(L, "math");
   lua_getfield(L, -1, "randomseed");
   lua_pushinteger(L, 0);
   lua_call(L, 1, 0);
   lua_pop(L, 1);
 }
+
+// ---- one state per thread (F8) ----------------------------------------------------
+
+/// A thread's sandboxed state: the frozen stdlib and the binder, made on its first run. Every run gets a thread of
+/// its own on it, with its own globals, and leaves nothing behind (`EndRun`).
+struct ThreadState {
+  detail::BudgetState budget;  ///< the state's allocator and watchdog; re-armed by every run
+  lua_State* L = nullptr;
+  bool busy = false;  ///< a run is on it: a nested run (none today) takes a state of its own
+
+  ThreadState() = default;
+  ThreadState(const ThreadState&) = delete;
+  ThreadState& operator=(const ThreadState&) = delete;
+  ~ThreadState() {
+    close();
+  }
+
+  void close() {
+    if (L != nullptr) {
+      lua_close(L);
+      L = nullptr;
+    }
+  }
+};
+
+/// Ends a run on its `ThreadState`: drops the run's thread and collects in full, so the objects the run left in the VM
+/// release their inputs, frames and native charges now, and the next run's memory cap starts from the bare state. A
+/// run the allocator failed inside (`drop`) closes the state instead; the next run makes a new one.
+struct EndRun {
+  ThreadState& state;
+  bool drop = false;
+
+  ~EndRun() {
+    state.budget.max_bytes = std::numeric_limits<std::size_t>::max();
+    state.budget.cancelled = nullptr;  // the run's check dies with it
+    if (drop) {
+      state.close();
+    } else {
+      lua_settop(state.L, 0);
+      lua_gc(state.L, LUA_GCCOLLECT, 0);
+    }
+    state.busy = false;
+  }
+};
 
 // ---- inputs ---------------------------------------------------------------------
 
@@ -366,17 +412,26 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
 
   const native::NativeLimits native_limits{detail::nativeBudgetOf(options), options.cancelled};
   ScriptMedia media(options.image_decoder, native_limits, options.result_stamp, options.video_source);
-  detail::BudgetState budget;
-  budget.cancelled = options.cancelled ? &options.cancelled : nullptr;
-  std::unique_ptr<lua_State, decltype(&lua_close)> state(
-      detail::newSandboxedState(&budget, options.limits), &lua_close);
-  lua_State* L = state.get();
-  if (L == nullptr) {
-    return fail("failed to create a Luau state");
+  thread_local ThreadState worker_state;
+  ThreadState nested_state;
+  ThreadState& state = worker_state.busy ? nested_state : worker_state;
+  if (state.L == nullptr) {
+    state.L = detail::newFrozenState(&state.budget, options.limits.setup_fuel);
+    if (state.L == nullptr) {
+      return fail("failed to create a Luau state");
+    }
+    detail::registerBinder(state.L);
   }
+  detail::BudgetState& budget = state.budget;
   budget.max_bytes = std::numeric_limits<std::size_t>::max();  // the host's own setup is not capped
-  detail::registerBinder(L, media);
-  installPj(L, run, native_limits);
+  budget.cancelled = options.cancelled ? &options.cancelled : nullptr;
+  state.busy = true;
+  EndRun end_run{state};
+  // The run's thread, anchored on the state's stack until `end_run`: globals of its own over the frozen stdlib.
+  lua_State* L = lua_newthread(state.L);
+  luaL_sandboxthread(L);
+  detail::setRunMedia(L, media);
+  installPj(L, run);
   if (luau_load(L, "=script", script.bytecode.data(), script.bytecode.size(), 0) != 0) {
     return fail(lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed");
   }
@@ -395,6 +450,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
     return fail(budget.trip);
   }
   if (status == LUA_ERRMEM) {
+    end_run.drop = true;  // an allocation failed somewhere inside the VM: do not run on that state again
     return fail(detail::vmLimitMessage(options.limits.mem_bytes));
   }
   if (status != LUA_OK) {

@@ -132,7 +132,7 @@ Slices 0-4, M, L and S have landed (batch 1). Batch 2 is slices 5a to 7, planned
 | ~~Robot-model bridges in a script's TF snapshot (D2)~~: decided for slice 5c-1, accepted: they only add frames, never change a lookup between recorded frames | Slice 5c-1 | A 3D dock injects fixed-joint edges into the dataset's buffer, so a lookup would depend on whether such a dock is open |
 | ~~SDK host-contract items~~: decided 2026-10-13 with the prototype's author (ARCHITECTURE §5, §18) | Applied before the host-contract tag | They become permanent at the tag |
 | ~~Python trust model~~: decided 2026-10-18, in-process with cooperative limits, documented as not a security boundary (slice 10a-1) | Slice 10 | It decides how far the Python sandbox goes |
-| TF R5, Luau VM reuse | When their measurements are in (R10 first; the series slice) | Conditional by design |
+| TF R5, Luau VM reuse | Measured (#792): TF R5 skipped (0-17 % spurious reruns at ≥ 10 Hz, under the 20 % bar); Luau VM reuse adopted in #793 (setup was 45 % of a series replay) | Done |
 
 ## SDK
 

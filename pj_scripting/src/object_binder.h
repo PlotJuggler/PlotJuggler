@@ -30,20 +30,22 @@ class ScriptMedia;
 
 namespace PJ::scripting::detail {
 
-/// Prepares `L` (made by `newSandboxedState`) for the functions below: userdata destructors and
-/// metatables. `media` is the run's: the object and decoded-image methods allocate under its limits, decode
-/// through it, and pair the annotations a builder finishes with it; it must outlive every call made on `L`.
-void registerBinder(lua_State* L, ScriptMedia& media);
+/// Prepares a state for the functions below, once per state: userdata destructors and metatables. The functions read
+/// their run through the calling thread's `setRunMedia`, so one state serves run after run.
+void registerBinder(lua_State* L);
+
+/// Makes `media` the run of every binder call made on thread `L` (its thread data): the object and decoded-image
+/// methods and the builders allocate under its limits, decode through it, and pair the annotations a builder finishes
+/// with it. It must outlive every call made on `L`.
+void setRunMedia(lua_State* L, ScriptMedia& media);
 
 /// Sets the builder namespaces `scene`, `annotations`, `cloud` and `voxels` (`pj.scene.new{...}`, ...) as fields of
-/// the table on top of the stack. `limits` is what the builders allocate under; as for
-/// `registerBinder`, it must outlive every call made on `L`.
-void installBuilders(lua_State* L, const native::NativeLimits& limits);
+/// the table on top of the stack.
+void installBuilders(lua_State* L);
 
 /// Pushes `object` as a read-only script object (it shares the value); `canEnterScript(object)` must hold.
 /// `charge` is what a builder paid for `object`'s native memory: the box, and every view read through it,
-/// shares it, so it counts against the evaluation's budget until the script has dropped them all (or the state
-/// closes).
+/// shares it, so it counts against the evaluation's budget until the script has dropped them all (or its run ends).
 void pushObject(
     lua_State* L, sdk::BuiltinObject object, std::shared_ptr<const native::MemoryReservation> charge = nullptr);
 
@@ -51,7 +53,7 @@ void pushObject(
 [[nodiscard]] const sdk::BuiltinObject* toObject(lua_State* L, int idx);
 
 /// What a builder paid for the object at `idx` (its native charge), which a result must keep to go on counting after
-/// the VM closes; null when that value is not an object or carries none.
+/// its run ends; null when that value is not an object or carries none.
 [[nodiscard]] std::shared_ptr<const void> toCharge(lua_State* L, int idx);
 
 /// Pushes a read-only view of the struct at `owner`, described by `table`; `keep` keeps `owner` alive
