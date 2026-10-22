@@ -35,7 +35,8 @@ const REQUIRED_ARTIFACTS = [
   'qtloader.js',
   'qtlogo.svg',
 ];
-// Every build writes it (cmake/PjWasmNotices.cmake); packaged beside the module, never referenced by the page.
+// Every build writes it (cmake/PjWasmNotices.cmake). Packaged beside the module, and again at the deployment root,
+// where the About dialog opens it by this name (pj_app/src/ui/AboutDialog.ui).
 const NOTICES = 'THIRD_PARTY_NOTICES.txt';
 const CONTENT_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -188,6 +189,9 @@ function deploymentHeaders(bundlePath) {
 /manifest.json
   Cache-Control: no-cache
 
+/${NOTICES}
+  Cache-Control: no-cache
+
 /${bundlePath}/*
   Cache-Control: public, max-age=31536000, immutable
 `;
@@ -297,6 +301,9 @@ export async function packageWasm(options) {
         COMPRESSIBLE_TYPES.has(path.extname(asset.fileName)),
       ));
     }
+
+    const notices = sourceAssets.find(asset => asset.fileName === NOTICES);
+    files.push(await writeAsset(stagingRoot, NOTICES, notices.contents, true));
 
     let entrypoint = await readFile(path.join(sourceRoot, 'plotjuggler4.html'), 'utf8');
     for (const fileName of REQUIRED_ARTIFACTS.filter(name => name !== 'plotjuggler4.wasm')) {

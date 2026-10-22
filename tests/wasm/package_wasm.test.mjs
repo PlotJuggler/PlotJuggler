@@ -13,8 +13,11 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { packageWasm } from '../../scripts/package_wasm.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 async function fixture(
   t,
@@ -129,4 +132,30 @@ test('packages the third-party notices precompressed, and refuses a build withou
     packageWasm({ source, output: path.join(root, 'without'), version: 'test' }),
     /Required Qt\/WASM artifact is missing: .*THIRD_PARTY_NOTICES\.txt/,
   );
+});
+
+test('serves the notices at a stable root URL, revalidated, beside the immutable copy', async t => {
+  const { root, source } = await fixture(t);
+  const output = path.join(root, 'stable');
+  const manifest = await packageWasm({ source, output, version: 'test' });
+  const stable = manifest.files.find(file => file.path === 'THIRD_PARTY_NOTICES.txt');
+  assert.ok(stable, 'the notices are at the deployment root');
+  assert.equal(stable.cache, 'revalidate');
+  assert.ok(stable.representations.br, 'the stable copy is precompressed too');
+  const immutable = manifest.files.find(file => file.path.endsWith('/THIRD_PARTY_NOTICES.txt'));
+  assert.equal(stable.representations.identity.sha256, immutable.representations.identity.sha256);
+  assert.match(await readFile(path.join(output, '_headers'), 'utf8'), /\n\/THIRD_PARTY_NOTICES\.txt\n {2}Cache-Control: no-cache\n/);
+});
+
+test("the About dialog's licences link is a file the package serves at its root", async t => {
+  const dialog = await readFile(path.join(ROOT, 'pj_app', 'src', 'ui', 'AboutDialog.ui'), 'utf8');
+  const label = dialog.match(/<widget class="QLabel" name="noticesLabel">[\s\S]*?<\/widget>/);
+  assert.ok(label, 'AboutDialog.ui has a noticesLabel');
+  const href = label[0].match(/href="([^"]+)"/)?.[1];
+  assert.ok(href, 'the label links somewhere');
+  assert.match(label[0], /<bool>true<\/bool>/, 'the link opens in the browser (openExternalLinks)');
+
+  const { root, source } = await fixture(t);
+  const manifest = await packageWasm({ source, output: path.join(root, 'link'), version: 'test' });
+  assert.ok(manifest.files.some(file => file.path === href), `the package serves ${href} at its root`);
 });

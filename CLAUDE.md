@@ -360,7 +360,10 @@ hash-checks them. Every new static archive in the
 monolithic WASM executable also needs an ABI/process-global-symbol collision
 audit; a successful link alone did not catch the prior Qt/libjpeg collision. It
 also needs its entry in the bundle's `THIRD_PARTY_NOTICES.txt`
-(`cmake/PjWasmNotices.cmake`; see `docs/WASM_DEPLOYMENT.md`).
+(`cmake/PjWasmNotices.cmake`; see `docs/WASM_DEPLOYMENT.md`) and its source in the bundle's
+source offer (`scripts/wasm_source_offer.mjs` archives every `FetchContent_Declare` pin; a download
+made another way needs a line there): the browser bundle as a whole is GPL-3.0 (it statically
+links Qt's GPL-3.0-only WebAssembly platform plugin), while the desktop app stays MPL-2.0.
 
 Deterministic browser fixtures must reproduce both bytes and the product state
 needed by the UI. In particular, the global Timeline prefers scalar/object

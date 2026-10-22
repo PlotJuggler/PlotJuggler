@@ -5,26 +5,19 @@
 // dependency something declares. A library linked another way (the Qt kit, the Emscripten runtime, 3rdparty/) has a
 // section of its own there, which this cannot see.
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+import { declaredDependencies } from '../../scripts/wasm_source_offer.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 // Declared inside a dependency's own build: protobuf fetches Abseil.
 const DECLARED_BY_DEPENDENCIES = ['absl'];
 
 async function declaredNames() {
-  const cmake = (await readdir(path.join(ROOT, 'cmake'))).filter(name => /^PjWasm.*\.cmake$/.test(name));
-  const files = [...cmake.map(name => path.join('cmake', name)), 'CMakeLists.txt', '3rdparty/qwt/CMakeLists.txt'];
-  const names = new Set();
-  for (const file of files) {
-    const text = await readFile(path.join(ROOT, file), 'utf8');
-    for (const match of text.matchAll(/FetchContent_Declare\(\s*([A-Za-z0-9_.+-]+)/g)) {
-      names.add(match[1].toLowerCase());
-    }
-  }
-  return names;
+  return new Set((await declaredDependencies()).map(dependency => dependency.name.toLowerCase()));
 }
 
 test('every FetchContent dependency of the WASM build has a third-party notice', async () => {

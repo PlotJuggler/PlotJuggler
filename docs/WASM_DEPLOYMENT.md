@@ -39,6 +39,10 @@ node scripts/package_wasm.mjs \
   --output build-wasm/deploy
 ```
 
+A public deployment also publishes the source offer
+([licence and source offer](#licence-of-the-browser-bundle-and-the-source-offer)):
+`node scripts/wasm_source_offer.mjs --output build-wasm/deploy/sources`.
+
 ### Built-in plugins
 
 The browser cannot `dlopen` extensions, so a fixed set of official plugins is
@@ -84,6 +88,7 @@ build-wasm/deploy/
 ├── index.html
 ├── manifest.json
 ├── _headers
+├── THIRD_PARTY_NOTICES.txt[.br|.gz]
 └── assets/sha256-<bundle-id>/
     ├── plotjuggler4.js[.br|.gz]
     ├── plotjuggler4.wasm[.br|.gz]
@@ -117,10 +122,76 @@ WASM build has no `pj_wasm_notice()` entry. What that test cannot see is kept
 by hand in the same file: a Qt module or plugin added to the link
 (`_PJ_QT_NOTICE_PACKAGES`), a vendored directory or font, third-party code
 bundled inside a dependency (assimp's `contrib/`, the plugins' `contrib/`,
-rosx_introspection's `contrib/`), and the Emscripten runtime. The notices are
-attribution only: how the LGPL's relinking terms apply to the statically linked
-Qt, FFmpeg and Qt Advanced Docking System is a separate decision, not taken
-here.
+rosx_introspection's `contrib/`), and the Emscripten runtime. The About dialog's
+"Third-party licences" link (browser build only) opens `THIRD_PARTY_NOTICES.txt`
+by that relative name, so the package serves a copy at the deployment root
+(`no-cache`), beside the immutable one in the bundle directory;
+`tests/wasm/package_wasm.test.mjs` fails if the link and the package disagree.
+
+### Licence of the browser bundle and the source offer
+
+The browser build (`plotjuggler4.wasm`, `plotjuggler4.js`, `qtloader.js`) is a
+combined work conveyed under the GNU GPL version 3, because it statically links
+Qt's WebAssembly platform plugin, which Qt provides only under the GPL v3 or a
+commercial licence. PlotJuggler 4's own source is MPL-2.0, which permits this
+combination; the desktop application remains MPL-2.0 (its Qt is LGPL, shared).
+The libraries linked statically, none replaceable at run time, keep their own
+licences:
+
+| Library | Licence | Source |
+|---|---|---|
+| Qt (Core, Gui, Widgets, Network, OpenGL, OpenGLWidgets, PrintSupport, Xml, Concurrent, Svg, SvgWidgets, UiTools, image/TLS plugins) | LGPL-3.0-only | the official prebuilt `wasm_multithread` kit, unmodified |
+| Qt's WebAssembly platform plugin (qwasm) | GPL-3.0-only or commercial (the kit's SBOM, `QWasmIntegrationPlugin`) | the same kit |
+| FFmpeg (libavcodec, libavutil, libswscale) | LGPL-2.1-or-later, built `--disable-gpl --disable-nonfree` | the SHA-256-pinned tarball of `cmake/PjWasmFfmpeg.cmake`, unmodified |
+| Qt Advanced Docking System | LGPL-2.1-or-later | PlotJuggler's fork, the `3rdparty/Qt-Advanced-Docking` submodule |
+
+Qwt (LGPL-2.1 with the Qwt exception, which addresses static linking) is in
+the offer like every other fetched dependency. The header of `THIRD_PARTY_NOTICES.txt` (written in
+`cmake/PjWasmNotices.cmake`) states the bundle's licence, points at the GPL-3.0
+text in its Qt section, and says, as the desktop packages'
+`packaging/deb/copyright` does, that the complete corresponding source is in
+`sources/` next to the deployment and on written request via the PJ4 issue
+tracker. No object files are published; PJ4's source pins the toolchain and the
+commands to rebuild the module against a modified library.
+
+`scripts/wasm_source_offer.mjs` writes that `sources/` directory. Run it after
+`package_wasm.mjs` (which replaces its output), from a clean checkout of the
+built revision, and upload the result with the deployment:
+
+```bash
+node scripts/package_wasm.mjs --source build-wasm/pj_app --output build-wasm/deploy
+node scripts/wasm_source_offer.mjs --output build-wasm/deploy/sources   # ~300 MB, needs network
+```
+
+It takes a `git archive` of PlotJuggler 4 at `HEAD` (its vendored `3rdparty/`
+libraries included) and of the pinned Qt Advanced Docking System commit,
+downloads `qtbase`, `qtsvg` and `qttools` at `PJ_QT_VERSION` from download.qt.io,
+and archives every other library the build fetches: each `FetchContent_Declare`
+pin of `cmake/PjWasm*.cmake`, the root `CMakeLists.txt` (the SDK) and
+`3rdparty/qwt`, the CPython tarball of `PjWasmPython.cmake`, and the Abseil that
+protobuf fetches in its own build (at the `abseil-cpp-version` of the protobuf
+archive's `cmake/dependencies.cmake`). It writes `SOURCE-OFFER.txt` (each
+archive with its URL, SHA-256 or commit, and how to rebuild with a modified
+library). A `URL_HASH` is verified and the run fails on a mismatch or on a pin
+without one; Qt's hashes are in the script (`QT_SHA256`, from the `.sha256`
+files beside the archives), so a Qt bump needs its three hashes added there. A
+`GIT_TAG` pin has no hash: the tag is resolved with `git ls-remote` to its
+commit, which is archived as GitHub's tarball of that commit (the build's git
+clone would also fetch submodules, so a tag whose repository lists any fails
+the run), and the SHA-256 it has is recorded in `SOURCE-OFFER.txt`. A new
+`FetchContent_Declare` needs no change here: `npm run test:package`
+(`tests/wasm/wasm_source_offer.test.mjs`, no download) fails when a declaration
+has no usable pin, and a dependency a build fetches another way needs a line in
+`planSourceOffer`. `--dry-run` lists the files. The Emscripten runtime (musl,
+libc++, compiler-rt, the zlib port) is not copied: it comes with the pinned
+Emscripten SDK, which `SOURCE-OFFER.txt` names. Writing it takes about a minute
+and 300 MB. The host must serve `sources/` as plain static files, the largest
+about 60 MB; the reference server `serve_wasm.mjs` serves only manifest files, so
+it does not. A host with a per-file limit (Cloudflare Pages: 25 MiB) cannot hold
+`qtbase`, `assimp` or `draco`: `sources/` may then live on another origin (a
+release asset, object storage), in which case a `SOURCE-OFFER.txt` with the
+absolute URLs must sit at the deployment's `sources/SOURCE-OFFER.txt` path so the
+pointer in the notices keeps working.
 
 ### Browser Python (`PJ_WASM_WITH_PYTHON`)
 

@@ -94,7 +94,7 @@ set(_PJ_QT_NOTICE_PACKAGES
 function(_pj_qt_notices output)
   get_filename_component(sbom_dir "${Qt6_DIR}/../../../sbom" ABSOLUTE)
   file(APPEND "${output}" "\n${_PJ_NOTICE_RULE}\nQt ${Qt6_VERSION}\n"
-      "SPDX-License-Identifier: LGPL-3.0-only (Qt is also offered under GPL-2.0-only, GPL-3.0-only or commercially)\n"
+      "SPDX-License-Identifier: LGPL-3.0-only (the qwasm platform plugin: GPL-3.0-only; also offered commercially)\n"
       "${_PJ_NOTICE_RULE}\n\n"
       "Copyright (C) The Qt Company Ltd. and other contributors. Modules and the third-party code they contain, from\n"
       "the Qt kit's SBOM (sbom/<module>-${Qt6_VERSION}.spdx.json); the text of each standard licence they name\n"
@@ -166,7 +166,19 @@ function(pj_wasm_write_notices output python_notices)
       "Third-party software in PlotJuggler 4's browser build\n\n"
       "plotjuggler4.wasm, plotjuggler4.js and qtloader.js contain the libraries below, linked statically. PlotJuggler\n"
       "itself is MPL-2.0 (https://github.com/PlotJuggler/PJ4). Each section names a library, its licence as an SPDX\n"
-      "expression, and its copyright and licence text as its source distributes them.\n")
+      "expression, and its copyright and licence text as its source distributes them.\n\n"
+      "Licence of this bundle. The browser build (plotjuggler4.wasm, plotjuggler4.js, qtloader.js) is a combined work\n"
+      "conveyed under the GNU General Public License version 3, because it statically links Qt's WebAssembly platform\n"
+      "plugin, which Qt provides only under the GPL version 3 or a commercial licence. The GPL version 3 text is the\n"
+      "GPL-3.0-only entry of the Qt section below. PlotJuggler 4's own source is MPL-2.0, which permits this\n"
+      "combination; the desktop application remains MPL-2.0. The complete corresponding source, PlotJuggler 4's\n"
+      "included, is in the sources/ directory next to this deployment (sources/SOURCE-OFFER.txt lists it with\n"
+      "checksums), and on written request via https://github.com/PlotJuggler/PJ4/issues.\n\n"
+      "The libraries below keep their own licences. Qt is used under the GNU LGPL version 3, except its WebAssembly\n"
+      "platform plugin, as above. FFmpeg (libavcodec, libavutil, libswscale), built LGPL-only, and the Qt Advanced\n"
+      "Docking System, PlotJuggler's fork, are used under the LGPL version 2.1 or later. PlotJuggler 4's source pins\n"
+      "the toolchain and the commands that build this module (versions.env, .github/workflows/wasm-ci.yml), so it can\n"
+      "be rebuilt against a modified copy of any of them.\n")
   _pj_qt_notices("${output}")
 
   # The Emscripten runtime: its own code, musl and LLVM's C++ runtime, and the sysroot zlib.
