@@ -72,6 +72,7 @@ class TransformService;
 
 class AppSession;
 struct CatalogItem;
+struct CustomTopicDeleteRefusal;
 struct DerivedDiagnostic;
 struct DerivedSnapshot;
 class CurveEditor;
@@ -141,9 +142,11 @@ class MainWindow : public QMainWindow {
   friend class MainWindowLayoutDatasetPathsTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
+  friend class MainWindowCustomTopicsTestPeer;
   friend class MainWindowRelease41LayoutTestPeer;
   friend class MainWindowScene3dDropFramingTestPeer;
   friend class MainWindowOnDemandRestoreTestPeer;
+  friend class MainWindowEditorIntegrationTestPeer;
   friend class ToolboxPanelFoldTestPeer;
   friend class ToolboxPresenter;
 
@@ -378,11 +381,15 @@ class MainWindow : public QMainWindow {
 
   // Before deleting `removed_topics`, find every derived series (transform) that
   // depends on them transitively, warn the user, and — if confirmed — remove those
-  // transforms and their Custom Series entries, then run `proceed`. `proceed` runs
+  // transforms and their Custom Topics entries, then run `proceed`. `proceed` runs
   // at once when nothing depends on the removed series, and never on cancel or a
   // failed removal. It may run after this returns (the browser prompt is
   // non-blocking), so it must re-validate anything that could change meanwhile.
-  void confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics, std::function<void()> proceed);
+  // `still_allowed`, when given, is asked once the prompt is accepted and before
+  // anything is removed: false abandons the whole delete (it reports why itself).
+  void confirmAndRemoveDependentTransforms(
+      const std::vector<TopicId>& removed_topics, std::function<void()> proceed,
+      std::function<bool()> still_allowed = {});
 
   // Removes the selected datasets (curve tree "Remove"): shows one
   // combined confirmation, then erases each. Widget sync is signal-driven.
@@ -1087,20 +1094,46 @@ class MainWindow : public QMainWindow {
   // has to undo a moved offset.
   [[nodiscard]] bool checkDataProcessorDependencies(const DerivedSnapshot& snapshot, QString* out_reason = nullptr);
   // Restores `snapshot` under its intent, reports its parse and apply warnings and
-  // re-derives the Custom Series list. The default (empty) snapshot clears every recipe.
+  // re-derives the Custom Topics list. The default (empty) snapshot clears every recipe.
   [[nodiscard]] bool applyDataProcessors(DerivedSnapshot snapshot);
 
-  // Re-derives the Custom Series list from the live transform recipes and hands
-  // the whole set to the panel.
+  // Re-derives the Custom Topics rows from the live transform recipes and the
+  // persistent on-demand recipes (one flat row per object output, with its node's
+  // state) and hands the whole set to the panel.
   //
-  // The panel cannot maintain that list on its own: only DataProcessorService
-  // knows which catalog topics are transform outputs. Call this from any path that
-  // changes the recipe set WITHOUT retiring the outputs' catalog items — a plugin
-  // creating or withdrawing a transform, and a layout restore, which rebuilds the
-  // graph with no plugin announcing it. A path that does retire them needs nothing:
+  // The panel cannot maintain that list on its own: only the services know which
+  // catalog topics are derived. Every on-demand install (onDemandRecipeInstalled)
+  // calls this after the catalog has relisted; call it from any other path that changes the recipe set WITHOUT
+  // retiring the outputs' catalog items — a plugin creating or withdrawing a
+  // transform, and a layout restore. A path that does retire them needs nothing:
   // the panel prunes on CatalogModel::itemsRemoved. Call it AFTER the catalog
   // rebuild, or the new outputs have no keys yet.
-  void syncCustomSeriesPanel();
+  void syncCustomTopicsPanel();
+  // The rows again with the transform rows of the last sync (rebuilt only once the catalog changed since):
+  // what a node's state or an offset changes. Costs per derived row, never per catalog row.
+  void refreshCustomTopicsPanel();
+  // Runs refreshCustomTopicsPanel once at the next event-loop turn, however many state
+  // changes asked for it before then (a node's state changes on every request).
+  void scheduleCustomTopicsSync();
+  // Mirrors the extension catalog's Custom Topics editor into the panel.
+  void syncCustomTopicsEditor();
+  // The panel's Delete: an on-demand recipe's object topic or a transform output. Only
+  // the Custom Topics editor's rows are deleted; another owner's is refused with a
+  // warning (the panel disables the action; this is the backstop for any other caller).
+  void deleteCustomTopic(const QString& catalog_key);
+  // The panel's Delete of several rows: each recipe once, however many of its rows (series
+  // columns, `id/output` object rows) are among `catalog_keys`, then the transform outputs.
+  void deleteCustomTopics(const QStringList& catalog_keys);
+  // Removes the recipe `key` after confirming when other recipes read it (they stay,
+  // missing their input). A non-exempt recipe's removal is one undo step.
+  void deleteOnDemandRecipe(const std::string& key);
+  // Removes the transform whose output `catalog_key` is, with its dependents after confirming.
+  void deleteTransformOutput(const QString& catalog_key);
+  // Whether the Custom Topics editor may delete the transform writing `output_topic` now
+  // (`transformDeleteRefusal`); a refusal is reported before it returns false.
+  [[nodiscard]] bool mayDeleteTransformWriting(TopicId output_topic);
+  // Words a refusal of CustomTopicsPolicy.h as a warning; a row whose recipe is gone is re-synced instead.
+  void reportDeleteRefusal(const CustomTopicDeleteRefusal& refusal);
 
   // Size the bottom panel from the Source Timeline strip's open/closed state:
   // when OPEN, pin a minimum height so the strip can't be dragged to a clipped
@@ -1721,6 +1754,19 @@ class MainWindow : public QMainWindow {
   bool show_points_ = false;
   bool activate_grid_ = false;
   bool dots_ = false;
+
+  // A refreshCustomTopicsPanel is queued by scheduleCustomTopicsSync and has not run yet.
+  bool custom_topics_sync_pending_ = false;
+  int custom_topics_syncs_ = 0;            ///< refreshCustomTopicsPanel runs, read by the coalescing test
+  int custom_topics_transform_scans_ = 0;  ///< transform-row rebuilds, read by the refresh test
+  /// One Custom Topics row of a transform output, as the last rebuild matched it to the catalog.
+  struct TransformTopicRow {
+    QString key;
+    QString owner;
+  };
+  std::vector<TransformTopicRow> custom_topic_transform_rows_;
+  /// The catalog changed, or a sync asked for it, since custom_topic_transform_rows_ were built.
+  bool custom_topic_transform_rows_stale_ = true;
 
   // Loaded from QSettings before any child widget is built so the first
   // applyIcons() of each widget already uses the saved metrics.

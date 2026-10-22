@@ -160,7 +160,8 @@ class SessionManager : public QObject {
   void notifyMarkersChanged() {
     emit markersChanged();
   }
-  /// Announces object topics registered or retired outside an ingest (a layout restore's on-demand step).
+  /// Announces object topics registered or retired outside an ingest (a layout restore's on-demand step, the Custom
+  /// Topics delete); the catalog relists on it.
   void notifyObjectTopicsChanged() {
     emit objectTopicsChanged();
   }

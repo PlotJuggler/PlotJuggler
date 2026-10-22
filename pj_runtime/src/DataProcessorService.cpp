@@ -1506,21 +1506,38 @@ DataProcessorService::RemovalImpact DataProcessorService::removalImpact(
   std::unordered_set<TopicId> affected =
       std::move(removalSet(keep_keys, keep_filter_outputs, intent == RestoreIntent::kHistory).outputs);
   impact.exempt_transform_names = exemptTransformsDependingOn(affected);
+  impact.removed_output_names = topicNames(affected);
+  return impact;
+}
+
+std::vector<std::string> DataProcessorService::topicNames(const std::unordered_set<TopicId>& topics) const {
   // Names come from the materialized topics, not the recipe declarations: a grouped
   // output "rpy:a,b" materializes ONE topic named "rpy", which is what a marker
   // generator's input key ("rpy/a") is matched against.
-  impact.removed_output_names.reserve(affected.size());
+  std::vector<std::string> names;
+  names.reserve(topics.size());
   const auto engine_lock = engine_.lockEngine();
-  for (const TopicId topic_id : affected) {
+  for (const TopicId topic_id : topics) {
     if (const TopicStorage* storage = engine_.getTopicStorage(topic_id); storage != nullptr) {
-      impact.removed_output_names.push_back(storage->descriptor().name);
+      names.push_back(storage->descriptor().name);
     }
   }
-  std::sort(impact.removed_output_names.begin(), impact.removed_output_names.end());
-  impact.removed_output_names.erase(
-      std::unique(impact.removed_output_names.begin(), impact.removed_output_names.end()),
-      impact.removed_output_names.end());
-  return impact;
+  std::sort(names.begin(), names.end());
+  names.erase(std::unique(names.begin(), names.end()), names.end());
+  return names;
+}
+
+std::vector<std::string> DataProcessorService::removedOutputNames(std::string_view transform_key) const {
+  const auto it = transform_recipes_.find(std::string(transform_key));
+  if (it == transform_recipes_.end()) {
+    return {};
+  }
+  const std::vector<TopicId>& own = it->second.output_topic_ids;
+  std::unordered_set<TopicId> removed(own.begin(), own.end());
+  for (const TopicId topic : dependentProcessorOutputs(own)) {
+    removed.insert(topic);
+  }
+  return topicNames(removed);
 }
 
 std::vector<std::string> DataProcessorService::exemptDependentsOf(const std::vector<NodeId>& nodes) const {
@@ -1654,6 +1671,17 @@ std::vector<DataProcessorService::TransformRecipe> DataProcessorService::transfo
     out.push_back(recipe);
   }
   return out;
+}
+
+std::optional<DataProcessorService::TransformRecipe> DataProcessorService::transformOwning(TopicId output_topic) const {
+  for (const auto& [key, recipe] : transform_recipes_) {
+    (void)key;
+    const auto& outputs = recipe.output_topic_ids;
+    if (!recipe.ephemeral && std::find(outputs.begin(), outputs.end(), output_topic) != outputs.end()) {
+      return recipe;
+    }
+  }
+  return std::nullopt;
 }
 
 std::vector<std::pair<DatasetId, std::string>> DataProcessorService::sourceTopicsForOutput(

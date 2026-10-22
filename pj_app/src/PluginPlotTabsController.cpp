@@ -180,7 +180,7 @@ PlotDocker* PluginPlotTabsController::newOwnedTab(
   // though it is durable in a full layout file.
   docker->setHistoryExempt(true);
   docker->setOwnerMetadata(plugin_id, tab_id);
-  docker->setOwnerBadge(toolboxBadge(plugin_id));
+  docker->setOwnerBadge(extensions_.toolboxBadge(plugin_id));
   return docker;
 }
 
@@ -230,18 +230,10 @@ Status PluginPlotTabsController::createTabOfKind(
   return okStatus();
 }
 
-QString PluginPlotTabsController::toolboxBadge(const QString& plugin_id) const {
-  const LoadedToolbox* toolbox = extensions_.findToolbox(plugin_id);
-  if (toolbox == nullptr) {
-    return {};
-  }
-  return toolbox->name.empty() ? plugin_id : QString::fromStdString(toolbox->name);
-}
-
 void PluginPlotTabsController::refreshAvailability() {
   tabs_.forEachDocker([this](PlotDocker* docker) {
     if (!docker->ownerPlugin().isEmpty()) {
-      docker->setOwnerBadge(toolboxBadge(docker->ownerPlugin()));
+      docker->setOwnerBadge(extensions_.toolboxBadge(docker->ownerPlugin()));
     }
   });
 }

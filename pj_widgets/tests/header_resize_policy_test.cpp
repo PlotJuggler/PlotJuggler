@@ -67,19 +67,24 @@ int expectedFloor(QHeaderView* header, const QString& label) {
   return QFontMetrics(header->font()).horizontalAdvance(label) + kSideMargins;
 }
 
+// A seed width above every non-fill label floor. The floor depends on the
+// platform plugin's font (offscreen on Windows renders these labels wider than
+// 96 px), and a seed below it is clamped up, so tests about seeds or resizes
+// rather than the floor rule seed with this.
+int seedAboveFloors(const Fixture& f) {
+  int seed = kSeedWidth;
+  for (int i = 1; i < f.header->count(); ++i) {
+    seed = std::max(seed, expectedFloor(f.header, f.table.horizontalHeaderItem(i)->text()));
+  }
+  return seed;
+}
+
 TEST(HeaderResizePolicy, SeedingWidthsDoesNotStarveLaterColumns) {
   // The regression this guards: seeding through QHeaderView::resizeSection is
   // read back as a user drag, so each seed steals from the next column and the
   // rightmost ones end up under their labels.
   Fixture f({"Channel name", "Schema", "Encoding", "Msg Count"});
-  // Seed above every label floor: the floor depends on the platform plugin's
-  // font (offscreen on Windows renders these labels wider than 96 px), and this
-  // test is about seeds not stealing from neighbours, not about the floor rule.
-  int seed = kSeedWidth;
-  for (int i = 1; i < f.header->count(); ++i) {
-    const QString label = f.table.horizontalHeaderItem(i)->text();
-    seed = std::max(seed, expectedFloor(f.header, label));
-  }
+  const int seed = seedAboveFloors(f);
   for (int i = 1; i < f.header->count(); ++i) {
     f.policy->setSectionWidth(i, seed);
   }
@@ -136,6 +141,41 @@ TEST(HeaderResizePolicy, TotalWidthIsPreservedAcrossADrag) {
 
   f.dragDivider(1, -20);
   EXPECT_EQ(f.total(), before);
+}
+
+TEST(HeaderResizePolicy, HiddenHeaderFillsTheViewportAfterAResize) {
+  Fixture f({"Name", "Schema", "Encoding"});
+  f.header->hide();
+  const int seed = seedAboveFloors(f);
+  for (int i = 1; i < f.header->count(); ++i) {
+    f.policy->setSectionWidth(i, seed);
+  }
+  f.table.resize(kTableWidth + 200, kTableHeight);
+  QApplication::processEvents();
+  EXPECT_EQ(f.total(), f.table.viewport()->width());
+  EXPECT_EQ(f.header->sectionSize(1), seed) << "only the fill column should absorb the change";
+
+  f.table.resize(kTableWidth - 100, kTableHeight);
+  QApplication::processEvents();
+  EXPECT_EQ(f.total(), f.table.viewport()->width());
+  EXPECT_EQ(f.header->sectionSize(2), seed) << "only the fill column should absorb the change";
+}
+
+TEST(HeaderResizePolicy, HiddenHeaderGrowingAColumnKeepsTheTotal) {
+  Fixture f({"Name", "Schema", "Encoding"});
+  f.header->hide();
+  for (int i = 1; i < f.header->count(); ++i) {
+    f.policy->setSectionWidth(i, kSeedWidth);
+  }
+  QApplication::processEvents();
+
+  f.table.insertColumn(3);
+  QApplication::processEvents();
+
+  EXPECT_EQ(f.total(), f.table.viewport()->width());
+  EXPECT_GE(f.header->sectionSize(3), kAbsoluteFloor);
+  EXPECT_LE(f.header->sectionSize(3), f.header->defaultSectionSize());
+  EXPECT_GE(f.header->sectionSize(0), kAbsoluteFloor);
 }
 
 }  // namespace

@@ -62,6 +62,8 @@ add_library(pj_app_shell OBJECT
     src/LayoutImportBatch.h
     src/IngestProgressController.cpp
     src/IngestProgressController.h
+    src/SeriesProgressController.cpp
+    src/SeriesProgressController.h
     src/IngestProgressWiring.cpp
     src/IngestProgressWiring.h
     src/MainWindow.cpp
@@ -503,6 +505,11 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_custom_series_test.cpp)
 
+    # The Custom Topics panel through the shell: listed recipes, row names, owner gates on edit and delete, the
+    # declared editor's "+", the row glyph following the node state, and the coalesced refresh.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_custom_topics_test.cpp)
+
     # Layouts saved by a release-4.1 build restore through the real load paths and
     # save back to the same <data_processors> block.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
@@ -516,6 +523,19 @@ if(PJ_BUILD_TESTS)
     # On-demand recipes through undo and redo: deletion, exemption, previews.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_on_demand_restore_test.cpp)
+
+    # The Custom Topics editor through the shell: the toolbox declaring `custom_topics_editor` opens from "+" and its
+    # preview frame embeds a scene view. The fixture toolbox is staged into the test's extensions directory.
+    add_library(custom_topics_editor_fixture_plugin SHARED tests/custom_topics_editor_fixture.cpp)
+    target_compile_features(custom_topics_editor_fixture_plugin PRIVATE cxx_std_20)
+    target_link_libraries(custom_topics_editor_fixture_plugin PRIVATE plotjuggler_sdk::plugin_sdk)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(custom_topics_editor_fixture_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_editor_integration_test.cpp)
+    set_source_files_properties(tests/main_window_editor_integration_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_CUSTOM_TOPICS_EDITOR_FIXTURE_PATH="$<TARGET_FILE:custom_topics_editor_fixture_plugin>")
 
     # A hand-made 3D view filled by a user drop frames its first content; a
     # restored layout keeps its saved fixed frame and camera (SCN-16).
@@ -856,6 +876,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/ingest_progress_controller_test.cpp)
 
+    # A series replay as a progress entry of its topic: the linger, and the stop by topic.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/series_progress_controller_test.cpp)
+
     pj_add_test_runner(pj_app_gui_tests
         MAIN gui WARNINGS
         SOURCES ${PJ_APP_GUI_TEST_SOURCES} tests/support/gui_test_env.cpp
@@ -864,6 +888,8 @@ if(PJ_BUILD_TESTS)
         LIBS pj_app_shell pj_resources Qt6::Test
     )
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
+    # $<TARGET_FILE:...> in a compile definition creates no build-order dependency.
+    add_dependencies(pj_app_gui_tests custom_topics_editor_fixture_plugin)
     # on_demand_test_utils.h: the fake script run and clouds shared with pj_runtime's tests.
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
 

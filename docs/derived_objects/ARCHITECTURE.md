@@ -258,7 +258,8 @@ at its pin once per install, and demand leaving withdraws the node and, recursiv
 upstreams nothing else needs (DEM-03, `NodeScheduler::withdraw`). The dataset life cycle is
 §13. Each consumer moves to the
 component it needs (a layer reads its content from the store and its state from
-`NodeScheduler`, the Custom Topics panel moves to `RecipeGraph`).
+`NodeScheduler`, the Custom Topics panel reads its rows from `RecipeGraph` and its glyphs
+from `NodeScheduler`).
 
 | Component | Responsibility |
 |---|---|
@@ -267,6 +268,26 @@ component it needs (a layer reads its content from the store and its state from
 | `ResultHistory` | Per node: the compute cache and the ring (§9). Results keyed by cache identity (§10), ordered by stamp and sized by time span: a window around the node's cursor, then one global byte budget each that evicts the result farthest from its node's cursor. A miss checks the store first (§9), and the cache keeps no decoded copy of what the ring holds. Built (slice 6a-2). |
 | `NodeScheduler` | Per node: one running run plus one pending request, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (idle, pending, ready, missing input, error, with the lag). Built (slice 6a-4a); `withdraw` when demand leaves and the hold of a dataset whose storage changes (slice 6a-5). |
 | `GridRunner` | The per-instant loop shared by window evaluations and series (§15). Built for explicit evaluations (slice 8a-1a, `pj_runtime/include/pj_runtime/GridRunner.h`): a window's grid (its start, or the end of its leading retention gap, and every raw input change after it, through the whole chain; a finding adds its real stamp, an instant is a window of one), the chain evaluated at each instant with the job's own upstream results (an installed upstream served read-only from its history, a result reused while it serves the next instant), one in-flight reservation per job, and a report in the SDK's shape; nothing published, no cursor moved. Slice 8a-1b adds the budgets (time and evaluations between instants, the job's memory split between each run's VM cap and one native ledger all its runs share, so the objects a chain keeps count against its later runs; all clamped to host caps), the JSON report (`GridRunner::toJson`; its size kept as a running count, never re-serialized per bundle) and the object summaries, made on the worker. Slice 8a-2b puts it in `OnDemandService` (`evaluations()`), with the session's scalar change lookup, TF, epoch and run, and serves it to plugins through `OnDemandRuntimeHost` (§18). Slice 11a adds the column sink (`submitRows`): a series chunk, the first instants of a node's object clock after a watermark, each ending in a row of its number outputs or a counted gap (§15). That lookup reads numeric series only, so a window (not an instant) whose chain reads a raw string input is refused naming the input, until it reads the string's row stamps, its first retained row and the instant limit (GAP-54). |
+
+**Custom Topics (slice 12).** `MainWindow::syncCustomTopicsPanel` lists the persistent
+recipes of every dataset (`RecipeGraph::keysOf`), one flat row per object output
+(`ResultHistory::topicsOf`, each resolved to its catalog row by `CatalogModel::objectTopicKey`),
+with the node's state (`NodeScheduler::NodeState`, the glyph and the D30 lag in the tooltip) and
+a finding's pin on the display axis; transform outputs keep their rows, matched to the catalog by
+name. A preview is in no tree, yet stays in the catalog (`CatalogModel::ephemeralPreviewKeys`),
+which relists on `onDemandRecipeInstalled` and `objectTopicsChanged`. An install, a restore and a
+toolbox write sync every row, a removal through the catalog's relist. A state change or an offset
+only refreshes, once per event-loop turn (`refreshCustomTopicsPanel`): it rebuilds the on-demand
+rows and reuses the transform rows of the last sync, which a catalog change marks stale, so a
+refresh costs per derived row and does not scale with the catalog (§19). Only the rows of the
+Custom Topics editor (§18) can be edited or deleted. Who may delete what is
+`pj_runtime/include/pj_runtime/CustomTopicsPolicy.h`; the shell asks it again once a prompt is
+answered. It refuses another plugin's recipe (and one with no owner), a transform whose removal
+would cascade into another plugin's, and a delete whose removed outputs (a transform's with its
+cascade, `DataProcessorService::removedOutputNames`) a history-exempt on-demand recipe or marker
+generator reads: the delete is an undo step, and its redo would strand that reader (§13). A derived or marker topic is
+no part of the data universe that history is checked against on a file load
+(`isOffClockTopic`), so a delete keeps its undo step across the next load.
 
 Data flow for one cursor request:
 
@@ -1119,8 +1140,13 @@ the series is not complete; a live append keeps a complete series complete (`rep
 streaming series' legend does not blink at every tick. *A plugin's
 read*: a whole-series read (`read_series_arrow`, and a marker rule's input) is an explicit request (decision 2): the
 engine's complete-read barrier, which the session composes with the transforms' replay finish, calls
-`SeriesRunner::requestTopic`, from another thread through a posted call; the reader gets the rows so far. Left for slice
-11b-2: the Custom Topics progress row and its stop button.
+`SeriesRunner::requestTopic`, from another thread through a posted call; the reader gets the rows so far.
+
+**Built (slice 11b-2).** A persistent series is one flat Custom Topics row per number column, named `id/output` and
+deleted with its recipe. `SeriesProgressController` (`pj_app`) reads `SeriesRunner::State` on
+`SessionManager::seriesStateChanged`: a replay (`replaying && !complete`) is a cancellable, not discardable bar on the
+series' rows, its end lingers as completed or cancelled, and the row's stop is `SeriesRunner::stop`, keeping the rows
+written. A live append of a complete series shows no bar.
 
 ## 16. Streaming
 
@@ -1376,7 +1402,17 @@ rules.
   exactly when it has an `EmbeddedViewHost`, a modal dialog never.
 - Manifest keys: `badge`. `custom_topics_editor` is a tag in the existing `capabilities`
   array: declarative tags read without loading the plugin, distinct from the
-  `capabilities()` bits in code.
+  `capabilities()` bits in code. A row's badge and a plugin tab's watermark are the owner's
+  `badge`, else its name (`ExtensionCatalogService::toolboxBadge`).
+- The Custom Topics editor contract (slice 12). A toolbox is the editor when its manifest says
+  `"capabilities": ["custom_topics_editor"]`; a top-level `custom_topics_editor` key is
+  ignored. The host reads it with the catalog (`ExtensionCatalogService::customTopicsEditorId`):
+  of several declarers, the one in use stays selected across a reload, and otherwise the first
+  scanned is chosen, with one warning naming the rest. The panel's "+" launches the editor with
+  no initial config; the pencil launches it with the row's recipe `params_json` as the initial
+  config, so the editor stores in `params_json` what it needs to reopen a recipe. A row is
+  editable and deletable only when its recipe's `owner_plugin` is the editor's id; every other
+  row, one with no owner included, is read-only and badged.
 - Metadata keys: `pj_snapshot`; `pj_derived`, an open value set (the key means "produced
   by a host data processor", the value names the kind); the marker keys of §13.
 - Marker generators on the v2 request take a typed `scope`, instead of `"__global__"` and
@@ -1392,7 +1428,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1, slice 9a-2, slice 9b, slice 10a-2, slice 10b and slice 11a rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1, slice 9a-2, slice 9b, slice 10a-2, slice 10b, slice 11a and slice 12 rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1428,6 +1464,7 @@ Linux, RelWithDebInfo.
 | The on-demand plugin bridge after slice 8a-2b (`OnDemandRuntimeHostBench`, `pj_runtime/tests/on_demand_runtime_host_test.cpp`, `PJ_BENCH=1`; through `AppSession` and the SDK's client view, fake runs; three runs) | `data_processor_config` of a finding (the JSON, state, findings accounting over two recipes): 5.5-10.4 µs, so the editor's once-a-second read is negligible. With 63 live handles: submit, poll and release of one more 2.0-4.5 µs, a poll 39-75 ns. The playhead tick of one demanded recipe (GUI CPU, median of 100, the cold path of 6a-5's bench with a 2 ms fake run instead of a 260k-point Luau crop): the move 6.6-6.7 µs with no evaluation, 6.8-6.9 µs while 64 mixed evaluations (instants on the installed node, scripted windows) run and finish between the ticks, within 6a-5's 6.9-14.1 µs; with the drain after it (publications, evaluation steps, completions) 58-61 µs and 59-63 µs. One evaluation whose report reaches the 8 MiB cap (1908 bundles of a 4 KiB string): `GridRunner::toJson` takes 34 ms, over the GUI-thread slice a create may take (`BatchEngine::kCreateBudget`, 8 ms), so the bridge serializes (and frees) the report on a pool worker and moves the string into the slot (decided 2026-10-19): the longest GUI event-loop pass of that evaluation fell from 35.1-35.4 ms to 0.09-0.21 ms. The playhead's result latency right after 64 evaluations are submitted (from the request to its result in the ring, on a 20-thread shared lane): 32.4-39.7 ms with all 64 in the runner, 4.4-4.6 ms with one per bridge (decided 2026-10-19); the tick's GUI CPU is unchanged (move 6.5-14.6 µs, with the drain 60-78 µs). On a one-thread lane the first figure grows with the evaluations' total run time |
 | Catalog snapshot v2 after slice 8b-1 (`PluginDataHostCatalogV2Bench.SnapshotNsPerObjectTopic`, `pj_datastore/tests/plugin_data_host_catalog_v2_test.cpp`, `PJ_BENCH=1`; through the SDK's client view, which also checks every entry; one entry per topic, a derived cloud's metadata, no scalar topics; median of 21, three runs) | 1.27-1.33 µs per object topic at 100 topics, 0.83-0.90 µs at 10,000 (about 9 ms per snapshot), 1.03 µs at 100,000. Reading each topic's type from its metadata (a JSON parse, after the store's lock is released) is about two thirds of it: 0.11 / 0.27 / 0.41 µs without it (one run) |
 | Series after slice 11a (`SeriesRunnerBench.ReplayOver400Clouds`, `pj_runtime/tests/series_runner_test.cpp`, and `GridRunnerBench.RowsChunkAmong100kEntries`, `grid_runner_test.cpp`, `PJ_BENCH=1`; three runs) | A replay over 400 clouds of 24k points through `AppSession`, the fake run instant (a real script adds worker time only: the GUI thread stages, collects and writes): GUI-thread CPU 9.9-11.6 µs per row, the test's pump included, the longest event-loop pass 56-65 µs against PERF-03's 8 ms, 64 rows per commit (one per chunk). Submitting a 64-instant chunk in the middle of 100k entries (the clock sliced by binary search): 0.85-0.94 µs; a live tick with nothing after the watermark: 0.46-0.47 µs, so the clock is never held or rebuilt. After the 11a fix round (the late-arrival check, input topics found through `InputStager`'s remembered ids): 1.01-1.09 µs and 0.57-0.58 µs; GUI CPU 11.0-13.0 µs per row, longest pass 61-65 µs. An idle live tick of 5 complete series among 10k object topics (`GridRunnerBench.IdleSeriesTickAmong10kObjectTopics`): 166.6 µs (a scan by name per input) → 3.2-3.6 µs. After the gate round (the live edge, looked up through `InputStager` per chunk, the 100 ms chunk budget, the state reports): the idle tick 3.2-3.3 → 3.7-4.0 µs (the live edge's lookups); a chunk submit 1.08-1.11 → 1.01-1.10 µs, nothing new 0.58 → 0.56-0.57 µs; the replay 11.1-11.5 → 8.0-11.1 µs per row, longest pass 59-65 → 60-63 µs |
+| The Custom Topics panel after slice 12 (`ThousandRowRefreshBench`, `pj_app/tests/main_window_custom_topics_test.cpp`, `PJ_BENCH=1`; three runs, 1,000 on-demand rows plus 20 transform outputs) | The scheduled refresh a coalesced state change or offset runs (during streaming or a Timeline drag) reuses the transform rows of the last sync: 2.06-2.07 ms (a copy of `transformRecipes()` and a walk of `CatalogModel::items()` on every refresh) → 1.32-1.34 ms, of which the panel's per-row compare and state repaint is 1.24-1.29 ms. A full sync (an install, a restore, a toolbox write) stays 2.09-2.11 ms; a renamed set refills the view in 21 ms |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |
 | The same after slice 6c, through the session's live edge (`DerivedStreamingBench.FiveMinuteRetentionAndMemoryPlateau`, `pj_runtime/tests/on_demand_live_edge_test.cpp`, `PJ_STREAM_BENCH=1`; 3,000 ticks simulated back to back with the fake run, the raw topic kept 5 s, one demanded recipe; three runs) | From the first minute on: 51 raw entries, 301 derived entries (the ring's ±30 s window around the cursor), ring 9.9 MB under its 256 MiB budget, compute cache 46 KB, nothing protected past the budget, 0 bytes reserved between ticks; RSS 77-78 MB, +0.8 MB from minute 1 to minute 5 |
 | Live edge after slice 6c (`OnDemandLiveEdgeBench.LiveEdgeAmongTenThousandTopics`, same file, `PJ_BENCH=1`; one demanded recipe reading a cloud topic registered after 10k others and a scalar, median of 101 calls, three runs) | `liveEdgeOf`: 21.4-21.7 µs → 194-197 ns; an unchanged tick's `followLiveEdge` (the edge plus what the request would read, no request): 41.6-42.6 µs → 510-529 ns, once the stager remembers each input's topic id (checked by the store's id index) instead of scanning the topics by name. `stage` among 10k topics and 10k scalar names (`StageAmongTenThousandTopics`): 35 µs → 2.5 µs, the rest being that bench's own scalar scan |

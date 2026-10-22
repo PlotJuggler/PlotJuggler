@@ -113,6 +113,7 @@
 #include "PluginPlotTabsController.h"
 #include "PreferencesDialog.h"
 #include "RasterKeyMap.h"
+#include "SeriesProgressController.h"
 #include "SourcePromotionHost.h"
 #include "SourceTimelineController.h"
 #include "StreamingSourceManager.h"
@@ -160,9 +161,11 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/CustomTopicsPolicy.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DerivedObjects.h"
 #include "pj_runtime/DerivedRuntimeHosts.h"
+#include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
@@ -479,6 +482,28 @@ inline constexpr std::array<std::pair<const char*, double>, 4> kWidthButtonSpecs
     {"globalWidth2_0", 2.0},
     {"globalWidth3_0", 3.0},
 }};
+
+// The on-demand node whose object output the catalog item `catalog_key` is; null otherwise.
+const RecipeGraph::Node* onDemandNodeOfCatalogKey(AppSession& session, const QString& catalog_key) {
+  const std::optional<CatalogItem> item = session.catalogModel().itemDescriptor(catalog_key);
+  if (!item.has_value()) {
+    return nullptr;
+  }
+  const OnDemandService& on_demand = session.sessionManager().onDemandService();
+  if (const ScalarFieldPayload* field = asScalarField(*item)) {
+    // A series column: its topic is named like its node's key, and only that node's series owns it.
+    const RecipeGraph::Node* node = on_demand.graph().find(item->topic_name.toStdString());
+    const std::optional<SeriesRunner::State> series =
+        node != nullptr ? on_demand.series().state(node->recipe.key()) : std::nullopt;
+    return series.has_value() && series->topic == field->topic_id ? node : nullptr;
+  }
+  const ObjectTopicPayload* object = asObjectTopic(*item);
+  if (object == nullptr) {
+    return nullptr;
+  }
+  const std::optional<std::string> key = on_demand.keyOfTopic(object->object_topic_id);
+  return key.has_value() ? on_demand.graph().find(*key) : nullptr;
+}
 
 }  // namespace
 
@@ -984,67 +1009,66 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       session_->sessionManager().batchEngine().refreshAll(dataset_id);
     }
   });
-  // The "+" in Custom Series opens the Transform Editor — now provided by the
-  // toolbox plugin (the native panel was retired). Launch it like any toolbox.
-  connect(ui_->curveListPanel, &CurveListPanel::createCustomSeriesRequested, this, [this]() {
-    launchToolbox(u"toolbox-transform-editor"_s);
-  });
-  // Edit (pencil): open the Transform Editor pre-populated with the selected custom
-  // series' saved editor state (stored in the recipe's params_json at create time),
-  // so the user can Modify it in place.
-  connect(ui_->curveListPanel, &CurveListPanel::editCustomSeriesRequested, this, [this](const QString& catalog_key) {
-    // The custom view yields a catalog KEY (same as the delete path); resolve it to
-    // the output topic name, then find that transform's saved editor state.
-    QString output_name;
-    for (const auto& item : session_->catalogModel().items()) {
-      if (item.key == catalog_key) {
-        output_name = item.topic_name;
-        break;
-      }
+  // The "+" opens the toolbox whose manifest declares `custom_topics_editor`, like any toolbox.
+  connect(ui_->curveListPanel, &CurveListPanel::createCustomTopicRequested, this, [this]() {
+    if (const QString editor = session_->extensionCatalog().customTopicsEditorId(); !editor.isEmpty()) {
+      launchToolbox(editor);
     }
-    auto& dp = session_->sessionManager().dataProcessorService();
+  });
+  // Edit (pencil): open the Custom Topics editor pre-populated with the row's saved editor
+  // state (the recipe's params_json), so the user can modify it in place. The panel gates
+  // the pencil to the editor's own rows; the owner is checked again here.
+  connect(ui_->curveListPanel, &CurveListPanel::editCustomTopicRequested, this, [this](const QString& catalog_key) {
+    const ExtensionCatalogService& extensions = session_->extensionCatalog();
     QString initial_config;
-    for (const auto& recipe : dp.transformRecipes()) {
-      const bool owns = std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&](const std::string& o) {
-        return QString::fromStdString(o) == output_name;
-      });
-      if (owns) {
-        initial_config = QString::fromStdString(recipe.params_json);
-        break;
-      }
-    }
-    launchToolbox(u"toolbox-transform-editor"_s, initial_config);
-  });
-  connect(ui_->curveListPanel, &CurveListPanel::deleteCustomSeriesRequested, this, [this](const QString& catalog_key) {
-    const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
-    if (!output.has_value()) {
-      // The row outlived its catalog item, so there is nothing to delete and the
-      // row itself is what needs clearing — refusing here is what would make it
-      // unremovable.
-      syncCustomSeriesPanel();
-      return;
-    }
-    const TopicId output_topic = output->topic_id;
-    confirmAndRemoveDependentTransforms({output_topic}, [this, output_topic]() {
-      auto& dp = session_->sessionManager().dataProcessorService();
-      bool removed = false;
-      for (const auto& recipe : dp.transformRecipes()) {
-        const bool owns = std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), output_topic) !=
-                          recipe.output_topic_ids.end();
-        if (owns) {
-          removed = dp.removeTransform(recipe.key).has_value();
-          break;
-        }
-      }
-      if (!removed) {
-        syncCustomSeriesPanel();
+    if (const RecipeGraph::Node* node = onDemandNodeOfCatalogKey(*session_, catalog_key)) {
+      if (!extensions.isCustomTopicsEditor(QString::fromStdString(node->recipe.owner_plugin))) {
         return;
       }
-      // The rebuild retires the output topic, so itemsRemoved fires synchronously and
-      // the panel drops the row on its own.
-      session_->catalogModel().rebuildFromDatastore();
-    });
+      initial_config = QString::fromStdString(node->recipe.params_json);
+    } else {
+      const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+      const auto transform = output.has_value()
+                                 ? session_->sessionManager().dataProcessorService().transformOwning(output->topic_id)
+                                 : std::nullopt;
+      if (!transform.has_value() || !extensions.isCustomTopicsEditor(QString::fromStdString(transform->owner_plugin))) {
+        return;
+      }
+      initial_config = QString::fromStdString(transform->params_json);
+    }
+    launchToolbox(extensions.customTopicsEditorId(), initial_config);
   });
+  connect(ui_->curveListPanel, &CurveListPanel::deleteCustomTopicsRequested, this, &MainWindow::deleteCustomTopics);
+  // A series replay is a stoppable bar on its Custom Topics rows.
+  wireSeriesProgress(
+      session_->sessionManager(), *new SeriesProgressController(this), *ui_->curveListPanel, /*context=*/this);
+  ui_->curveListPanel->setOwnerResolver([this](const QString& plugin_id) {
+    const ExtensionCatalogService& extensions = session_->extensionCatalog();
+    return CurveListPanel::OwnerInfo{extensions.toolboxDisplayName(plugin_id), extensions.toolboxBadge(plugin_id)};
+  });
+  ui_->curveListPanel->setDisplayTimeResolver([this](DatasetId dataset_id, Timestamp raw_ns) {
+    return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, raw_ns);
+  });
+  // An on-demand recipe's topics join Custom Topics with every install (an announced
+  // removal needs nothing: the catalog relists and the panel prunes on itemsRemoved).
+  // Connected after the catalog's own slot, so the new topics already have catalog keys.
+  connect(
+      &session_->sessionManager(), &SessionManager::onDemandRecipeInstalled, this, &MainWindow::syncCustomTopicsPanel);
+  // A transform row is matched to the catalog by name, so the refresh reuses the matches until the catalog changes.
+  const auto transform_rows_stale = [this]() { custom_topic_transform_rows_stale_ = true; };
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, transform_rows_stale);
+  connect(&session_->catalogModel(), &CatalogModel::itemsRemoved, this, transform_rows_stale);
+  connect(&session_->catalogModel(), &CatalogModel::cleared, this, transform_rows_stale);
+  // A node's state changes on every request, a finding's pin moves on the display axis
+  // with the offsets: both only repaint, once per event-loop turn.
+  connect(
+      &session_->sessionManager(), &SessionManager::derivedStateChanged, this, &MainWindow::scheduleCustomTopicsSync);
+  connect(
+      &session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this,
+      &MainWindow::scheduleCustomTopicsSync);
+  connect(
+      &session_->sessionManager(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      &MainWindow::scheduleCustomTopicsSync);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
     if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
       streaming_manager_->stopAllAndWait(tr("dataset removed"));
@@ -1544,7 +1568,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this, [this]() {
     ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
     plugin_plot_tabs_->refreshAvailability();
+    syncCustomTopicsEditor();
   });
+  syncCustomTopicsEditor();
 
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
@@ -2964,10 +2990,14 @@ QSet<QString> MainWindow::captureHistoryDataUniverse() const {
     }
   }
 
-  // ObjectStore has an independent lock; never nest it under DataEngine's.
+  // ObjectStore has an independent lock; never nest it under DataEngine's. A marker or
+  // derived topic is a processor output too: the host publishes it, an undo recreates it.
   const ObjectStore& objects = session_manager.objectStore();
   for (const ObjectTopicId topic_id : objects.listTopics()) {
     const ObjectTopicDescriptor object_descriptor = objects.descriptor(topic_id);
+    if (isOffClockTopic(object_descriptor)) {
+      continue;
+    }
     QStringList object_identity{u"object-topic"_s};
     object_identity.append(dataset_identities.value(
         object_descriptor.dataset_id, {QString::number(object_descriptor.dataset_id), QString(),
@@ -3081,7 +3111,7 @@ void MainWindow::onFileLoaded(
 }
 
 void MainWindow::confirmAndRemoveDependentTransforms(
-    const std::vector<TopicId>& removed_topics, std::function<void()> proceed) {
+    const std::vector<TopicId>& removed_topics, std::function<void()> proceed, std::function<bool()> still_allowed) {
   auto& dp = session_->sessionManager().dataProcessorService();
   const std::vector<TopicId> outputs = dp.dependentProcessorOutputs(removed_topics);
   if (outputs.empty()) {
@@ -3111,9 +3141,13 @@ void MainWindow::confirmAndRemoveDependentTransforms(
       tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
           .arg(names.join(u"\n• "_s)),
       {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
-      [this, removed_topics, dependent_curve_keys, proceed = std::move(proceed)](int choice, bool) {
+      [this, removed_topics, dependent_curve_keys, proceed = std::move(proceed),
+       still_allowed = std::move(still_allowed)](int choice, bool) {
         if (choice != 0) {
           return;  // user cancelled — leave everything intact
+        }
+        if (still_allowed && !still_allowed()) {
+          return;
         }
         for (const QString& key : dependent_curve_keys) {
           ui_->curveListPanel->removeCustomCurve(key);
@@ -4971,7 +5005,7 @@ void MainWindow::onRebuildToolboxMenu() {
     const auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
     // Skip toolboxes that opt out of this menu: "cloud" ones are reached from the
     // Sources panel; "hidden" ones are launched elsewhere (e.g. the Transform
-    // Editor, opened from the "+" in Custom Series).
+    // Editor, opened from the "+" in Custom Topics).
     bool skip = false;
     if (manifest.is_object()) {
       if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
@@ -6870,34 +6904,267 @@ bool MainWindow::applyDataProcessors(DerivedSnapshot snapshot) {
   // An empty snapshot reaches here with every recipe cleared and nothing replayed,
   // so this empties the panel — which is what the teardown pass of a progressive
   // restore wants.
-  syncCustomSeriesPanel();
+  syncCustomTopicsPanel();
   return report.restored_all;
 }
 
-void MainWindow::syncCustomSeriesPanel() {
+void MainWindow::syncCustomTopicsPanel() {
+  custom_topic_transform_rows_stale_ = true;
+  refreshCustomTopicsPanel();
+}
+
+void MainWindow::refreshCustomTopicsPanel() {
+  custom_topics_sync_pending_ = false;
+  ++custom_topics_syncs_;
   if (session_ == nullptr) {
     return;
   }
-  // One pass over the catalog, then O(1) per output. First key wins for a
-  // repeated topic name, matching how a plotted curve resolves one.
-  QHash<QString, QString> key_by_topic;
-  for (const auto& item : session_->catalogModel().items()) {
-    if (!key_by_topic.contains(item.topic_name)) {
-      key_by_topic.insert(item.topic_name, item.key);
-    }
-  }
-  QStringList keys;
-  // Deliberately unfiltered by owner: a restored transform's plugin may not be
-  // loaded at all, which is exactly why the layout carries the script by value.
-  for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
-    for (const auto& output_name : recipe.outputs) {
-      if (const auto found = key_by_topic.constFind(QString::fromStdString(output_name));
-          found != key_by_topic.constEnd()) {
-        keys.push_back(found.value());
+  const CatalogModel& catalog = session_->catalogModel();
+  if (custom_topic_transform_rows_stale_) {
+    custom_topic_transform_rows_stale_ = false;
+    ++custom_topics_transform_scans_;
+    custom_topic_transform_rows_.clear();
+    // Deliberately unfiltered by owner: a restored transform's plugin may not be
+    // loaded at all, which is exactly why the layout carries the script by value.
+    const auto transforms = session_->sessionManager().dataProcessorService().transformRecipes();
+    if (!transforms.empty()) {
+      // One pass over the catalog, then O(1) per output. First key wins for a
+      // repeated topic name, matching how a plotted curve resolves one.
+      QHash<QString, QString> key_by_topic;
+      for (const auto& item : catalog.items()) {
+        if (!key_by_topic.contains(item.topic_name)) {
+          key_by_topic.insert(item.topic_name, item.key);
+        }
+      }
+      for (const auto& recipe : transforms) {
+        for (const auto& output_name : recipe.outputs) {
+          if (const auto found = key_by_topic.constFind(QString::fromStdString(output_name));
+              found != key_by_topic.constEnd()) {
+            custom_topic_transform_rows_.push_back(
+                {.key = found.value(), .owner = QString::fromStdString(recipe.owner_plugin)});
+          }
+        }
       }
     }
   }
-  ui_->curveListPanel->setCustomCurves(keys);
+  std::vector<CurveListPanel::CustomTopicRow> rows;
+  for (const TransformTopicRow& transform_row : custom_topic_transform_rows_) {
+    rows.push_back({.key = transform_row.key, .owner = transform_row.owner});
+  }
+  // Persistent on-demand recipes, findings included; a preview is never a row. One flat
+  // row per object output, named by the recipe id, or `id/output` when it has several.
+  // Each output's key is a catalog lookup, so a refresh costs nothing per catalog row.
+  const OnDemandService& on_demand = session_->sessionManager().onDemandService();
+  for (const DatasetId dataset : session_->sessionManager().dataEngine().listDatasets()) {
+    for (const std::string& key : on_demand.graph().keysOf(dataset)) {
+      const RecipeGraph::Node* node = on_demand.graph().find(key);
+      if (node == nullptr || node->recipe.ephemeral) {
+        continue;
+      }
+      const std::vector<ObjectTopicId> topics = on_demand.history().topicsOf(key);
+      const std::optional<NodeScheduler::NodeState> state = on_demand.state(key);
+      size_t object_output = 0;
+      for (const scripting::OutputSpec& output : node->recipe.outputs) {
+        if (output.type != scripting::OutputType::kObject || object_output >= topics.size()) {
+          continue;
+        }
+        const std::optional<QString> catalog_key = catalog.objectTopicKey(dataset, topics[object_output++]);
+        if (!catalog_key.has_value()) {
+          continue;
+        }
+        QString name = QString::fromStdString(node->recipe.user_id);
+        if (topics.size() > 1) {
+          name += u'/' + QString::fromStdString(output.name);
+        }
+        rows.push_back(
+            {.key = *catalog_key,
+             .owner = QString::fromStdString(node->recipe.owner_plugin),
+             .name = std::move(name),
+             .pinned_t = node->recipe.pinned_t,
+             .state = state});
+      }
+      // A series writes one engine topic with a column per number output, in declaration order: a flat row each,
+      // always `id/output`, since a recipe with an object output already lists the bare id.
+      if (const std::optional<SeriesRunner::State> series = on_demand.series().state(key)) {
+        size_t column = 0;
+        for (const scripting::OutputSpec& output : node->recipe.outputs) {
+          if (output.type != scripting::OutputType::kNumber) {
+            continue;
+          }
+          if (const std::optional<QString> catalog_key = catalog.scalarColumnKey(dataset, series->topic, column++)) {
+            rows.push_back(
+                {.key = *catalog_key,
+                 .owner = QString::fromStdString(node->recipe.owner_plugin),
+                 .name = QString::fromStdString(node->recipe.user_id) + u'/' + QString::fromStdString(output.name)});
+          }
+        }
+      }
+    }
+  }
+  ui_->curveListPanel->setCustomTopics(rows);
+}
+
+void MainWindow::scheduleCustomTopicsSync() {
+  if (custom_topics_sync_pending_) {
+    return;
+  }
+  custom_topics_sync_pending_ = true;
+  QTimer::singleShot(0, this, [this]() { refreshCustomTopicsPanel(); });
+}
+
+void MainWindow::syncCustomTopicsEditor() {
+  ui_->curveListPanel->setEditorPluginId(session_->extensionCatalog().customTopicsEditorId());
+}
+
+void MainWindow::reportDeleteRefusal(const CustomTopicDeleteRefusal& refusal) {
+  using Reason = CustomTopicDeleteRefusal::Reason;
+  const QString user_id = QString::fromStdString(refusal.user_id);
+  const auto owner_name = [this, &refusal]() {
+    return session_->extensionCatalog().toolboxDisplayName(QString::fromStdString(refusal.owner_plugin));
+  };
+  switch (refusal.reason) {
+    case Reason::kGone:
+      syncCustomTopicsPanel();  // the row outlived its recipe: clearing it is all there is to do
+      return;
+    case Reason::kReadOnly:
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "CustomTopics", "delete-read-only",
+          refusal.owner_plugin.empty()
+              ? tr("'%1' has no owner and cannot be deleted from here").arg(user_id)
+              : tr("'%1' was created by %2 and cannot be deleted from here").arg(user_id, owner_name()));
+      return;
+    case Reason::kForeignReader:
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "CustomTopics", "delete-cascade-read-only",
+          tr("'%1' cannot be deleted: '%2' of %3 reads its output")
+              .arg(user_id, QString::fromStdString(refusal.reader), owner_name()));
+      return;
+    case Reason::kExemptReader:
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "CustomTopics", "delete-exempt-reader",
+          tr("'%1' cannot be deleted: the protected '%2' reads its output")
+              .arg(user_id, QString::fromStdString(refusal.reader)));
+      return;
+  }
+}
+
+void MainWindow::deleteCustomTopic(const QString& catalog_key) {
+  deleteCustomTopics({catalog_key});
+}
+
+void MainWindow::deleteCustomTopics(const QStringList& catalog_keys) {
+  // Resolved before anything goes: a delete relists the catalog, and a prompt the user
+  // cancels must not come back for the recipe's next row.
+  std::vector<std::string> recipes;
+  QStringList outputs;
+  for (const QString& catalog_key : catalog_keys) {
+    if (const RecipeGraph::Node* node = onDemandNodeOfCatalogKey(*session_, catalog_key)) {
+      if (std::find(recipes.begin(), recipes.end(), node->recipe.key()) == recipes.end()) {
+        recipes.push_back(node->recipe.key());
+      }
+    } else {
+      outputs.push_back(catalog_key);
+    }
+  }
+  for (const std::string& key : recipes) {
+    deleteOnDemandRecipe(key);
+  }
+  for (const QString& output : outputs) {
+    deleteTransformOutput(output);
+  }
+}
+
+void MainWindow::deleteOnDemandRecipe(const std::string& key) {
+  // Asked again once a prompt is answered: the editor may have been unloaded, or a reader installed, meanwhile.
+  const auto refused = [this, key]() {
+    const std::optional<CustomTopicDeleteRefusal> refusal = onDemandDeleteRefusal(
+        session_->sessionManager().onDemandService().graph(), key, session_->extensionCatalog().customTopicsEditorId());
+    if (refusal.has_value()) {
+      reportDeleteRefusal(*refusal);
+    }
+    return refusal.has_value();
+  };
+  if (refused()) {
+    return;
+  }
+  const auto remove = [this, key, refused]() {
+    if (refused()) {
+      return;
+    }
+    OnDemandService& on_demand = session_->sessionManager().onDemandService();
+    // A history-exempt recipe is outside undo and redo: removed directly. An ordinary
+    // one is an undo step, the baseline refreshed first because an install pushes no
+    // snapshot of its own.
+    const bool history_exempt = on_demand.graph().find(key)->recipe.history_exempt;
+    if (!history_exempt) {
+      hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+    }
+    // The announcement relists the catalog, which drops the rows and any view bound to the topics.
+    if (!on_demand.remove(key).empty()) {
+      session_->sessionManager().notifyObjectTopicsChanged();
+    }
+    if (!history_exempt) {
+      onUndoableChange(/*force_new_state=*/true);
+    }
+  };
+  const std::vector<std::string> dependents = session_->sessionManager().onDemandService().graph().dependentsOf({key});
+  if (dependents.empty()) {
+    remove();
+    return;
+  }
+  QStringList names;
+  for (const std::string& dependent : dependents) {
+    names << QString::fromStdString(dependent);
+  }
+  MessageBox::questionAsync(
+      this, tr("Delete derived topic?"),
+      tr("These derived topics read what you are deleting. They stay, but report a missing input:\n\n• %1")
+          .arg(names.join(u"\n• "_s)),
+      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      [remove](int choice, bool) {
+        if (choice == 0) {
+          remove();
+        }
+      });
+}
+
+bool MainWindow::mayDeleteTransformWriting(TopicId output_topic) {
+  SessionManager& session_manager = session_->sessionManager();
+  const std::optional<CustomTopicDeleteRefusal> refusal = transformDeleteRefusal(
+      session_manager.dataProcessorService(), session_manager.onDemandService().graph(), session_manager.batchEngine(),
+      output_topic, session_->extensionCatalog().customTopicsEditorId());
+  if (refusal.has_value()) {
+    reportDeleteRefusal(*refusal);
+  }
+  return !refusal.has_value();
+}
+
+void MainWindow::deleteTransformOutput(const QString& catalog_key) {
+  const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+  if (!output.has_value()) {
+    syncCustomTopicsPanel();  // the row outlived its catalog item: clearing it is all there is to do
+    return;
+  }
+  const TopicId output_topic = output->topic_id;
+  if (!mayDeleteTransformWriting(output_topic)) {
+    return;
+  }
+  confirmAndRemoveDependentTransforms(
+      {output_topic},
+      [this, output_topic]() {
+        // Looked up again: the confirmation may have removed transforms.
+        DataProcessorService& live = session_->sessionManager().dataProcessorService();
+        const auto transform = live.transformOwning(output_topic);
+        if (!transform.has_value() || !live.removeTransform(transform->key).has_value()) {
+          syncCustomTopicsPanel();
+          return;
+        }
+        // The rebuild retires the output topic, so itemsRemoved fires synchronously and
+        // the panel drops the row on its own.
+        session_->catalogModel().rebuildFromDatastore();
+      },
+      // The editor may have been unloaded, or a foreign reader added, while the prompt was open.
+      [this, output_topic]() { return mayDeleteTransformWriting(output_topic); });
 }
 
 void MainWindow::recordRecentLayout(const QString& path) {
@@ -9234,11 +9501,11 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
     // A toolbox write may have added/removed markers; repaint plot overlays.
     session_->sessionManager().notifyMarkersChanged();
     // A toolbox write may also have created or withdrawn transforms; re-derive the
-    // Custom Series list (flat, not in the main data tree) from what the service
+    // Custom Topics list (flat, not in the main data tree) from what the service
     // holds now. Deriving rather than announcing is what makes a withdrawal drop
     // its row: an announce-only pass has nothing to say about a recipe that is
     // gone.
-    syncCustomSeriesPanel();
+    syncCustomTopicsPanel();
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
     auto& dps = session_->sessionManager().dataProcessorService();
     qInfo(

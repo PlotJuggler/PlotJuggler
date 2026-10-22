@@ -241,6 +241,9 @@ TEST(DataProcessorServiceTest, SourceTopicsForOutputTraversesMixedProcessorChain
   EXPECT_EQ(
       service.sourceTopicsForOutput(transform->output_topic_ids.front()),
       (std::vector<std::pair<DatasetId, std::string>>{{dataset, "speed"}}));
+  ASSERT_TRUE(service.transformOwning(transform->output_topic_ids.front()).has_value());
+  EXPECT_EQ(service.transformOwning(transform->output_topic_ids.front())->key, transform->key);
+  EXPECT_FALSE(service.transformOwning(filter->output_topic_id).has_value()) << "a filter output is no transform's";
 
   const auto transform_first =
       service.upsertTransform("pluginB", "negate", {"speed"}, {"speed/negated"}, kNegateTransformSrc, "{}");

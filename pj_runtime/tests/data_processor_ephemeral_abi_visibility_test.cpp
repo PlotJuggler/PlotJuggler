@@ -129,6 +129,8 @@ TEST(EphemeralTransformAbiVisibilityTest, EphemeralTransformVisibleToAbiNotToGui
     return recipe.key == created->key;
   }));
 
+  EXPECT_FALSE(service.transformOwning(created->output_topic_ids.front()).has_value());
+
   // (5) after remove, the ABI snapshot no longer lists it.
   ASSERT_TRUE(service.removeTransform(created->key).has_value());
   EXPECT_EQ(catalog_mutations, 0);

@@ -712,9 +712,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
   auto* panel = main_window->findChild<QWidget*>(u"TransformEditorDialog"_s);
   const bool open = panel != nullptr && panel->isVisibleTo(main_window);
   auto* sources = open ? panel->findChild<QTableWidget*>(u"tableSources"_s) : nullptr;
-  auto* name = open ? panel->findChild<QLineEdit*>(u"nameLineEdit"_s) : nullptr;
+  // The name is asked by the editor's "Create..." prompt, a sub-dialog outside the panel.
+  QLineEdit* name = nullptr;
+  for (QWidget* widget : QApplication::allWidgets()) {
+    auto* line_edit = qobject_cast<QLineEdit*>(widget);
+    if (line_edit != nullptr && line_edit->objectName() == u"createRecipeName"_s && line_edit->isVisible()) {
+      name = line_edit;
+      break;
+    }
+  }
   auto* function = open ? panel->findChild<QPlainTextEdit*>(u"functionText"_s) : nullptr;
-  auto* terminal = open ? panel->findChild<QPlainTextEdit*>(u"terminalPlainText"_s) : nullptr;
+  auto* terminal = open ? panel->findChild<QLabel*>(u"statusLabel"_s) : nullptr;
   auto* create = open ? panel->findChild<QPushButton*>(u"pushButtonCreate"_s) : nullptr;
   const QPoint add_center = center(add);
   const QPoint drop_center = sources != nullptr ? center(sources->viewport()) : QPoint(-1, -1);
@@ -737,7 +745,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
       preview_curves);
   const QByteArray name_b64 = name != nullptr ? name->text().toUtf8().toBase64() : QByteArray();
   const QByteArray function_b64 = function != nullptr ? function->toPlainText().toUtf8().toBase64() : QByteArray();
-  const QByteArray terminal_b64 = terminal != nullptr ? terminal->toPlainText().toUtf8().toBase64() : QByteArray();
+  const QByteArray terminal_b64 = terminal != nullptr ? terminal->text().toUtf8().toBase64() : QByteArray();
   auto* panel_engine = main_window->findChild<PJ::PanelEngine*>();
   const PJ::PanelEngine::Stats stats = panel_engine != nullptr ? panel_engine->stats() : PJ::PanelEngine::Stats{};
   auto* panel_timer = panel_engine != nullptr ? panel_engine->findChild<QTimer*>() : nullptr;

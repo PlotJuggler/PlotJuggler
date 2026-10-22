@@ -14,6 +14,7 @@ add_library(pj_runtime STATIC
     src/AppSession.cpp
     src/CatalogModel.cpp
     src/CurveColorRegistry.cpp
+    src/CustomTopicsPolicy.cpp
     src/DataProcessorService.cpp
     src/DatasetQualifiedName.cpp
     src/DerivedObjects.cpp
@@ -185,6 +186,8 @@ if(PJ_BUILD_TESTS)
         tests/derived_objects_on_demand_test.cpp
         # A plugin binding's derived hosts: previews belong to the instance that made them.
         tests/derived_runtime_hosts_test.cpp
+        # Who may delete a Custom Topics row: the editor's own recipes, never reaching another plugin's work.
+        tests/custom_topics_policy_test.cpp
         # The on-demand recipe graph: bindings, the DAG, ownership, the protocol verbs, pins.
         tests/recipe_graph_test.cpp
         # On-demand results: the ring in the ObjectStore and the compute cache, one eviction rule.

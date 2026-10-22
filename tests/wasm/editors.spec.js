@@ -476,9 +476,7 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     return editor.sourceRows;
   }, { timeout: 60000 }).toBe(1);
 
-  // Name and program the transform through the actual Qt text editors.
-  await page.mouse.click(screen.x + editor.name.x, screen.y + editor.name.y);
-  await page.keyboard.type('toolbox-square');
+  // Program the transform through the actual Qt text editor; its name is asked by Create.
   await page.mouse.click(screen.x + editor.function.x, screen.y + editor.function.y);
   await page.keyboard.press('Control+A');
   await page.keyboard.type('return value * value + 3');
@@ -517,7 +515,8 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     `Transform Editor never became ready: ${JSON.stringify(observedEditorStates)}`,
   ).toBe(true);
   const ghost = editor.previews.find(preview => preview.title === 'toolbox-values/temp');
-  const transformed = editor.previews.find(preview => preview.title === 'toolbox-square');
+  // The transformed preview is named after the output the trial inferred, not yet the recipe.
+  const transformed = editor.previews.find(preview => preview.title !== 'toolbox-values/temp');
   // The input "ghost" and the transformed preview are told apart by colour,
   // not dash style, so only their data is asserted here.
   expect(ghost).toBeDefined();
@@ -526,8 +525,18 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   expect(transformed.samples).toBe(2000);
   expect(transformed.first).toBe(12);
 
+  // Create asks for the name in the editor's prompt; its OK installs the recipe.
+  await page.mouse.click(screen.x + editor.create.x, screen.y + editor.create.y);
+  await expect.poll(async () => {
+    editor = await requestTransformEditorState(page, consoleMessages);
+    return editor.name.x >= 0 && editor.name.y >= 0;
+  }, { timeout: 15000 }).toBe(true);
+  await page.mouse.click(screen.x + editor.name.x, screen.y + editor.name.y);
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('toolbox-square');
+
   // The Qt app and its Luau replay share the page's main thread. A page
-  // heartbeat must keep ticking from the physical Create click until the replay
+  // heartbeat must keep ticking from the physical OK click until the replay
   // has materialized every row: no single slice of that work may hold the
   // thread for 100 ms. Production announces the transform after the first
   // slice; the series then grows until complete.
@@ -539,7 +548,7 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   const readyMessages = consoleMessages.filter(
     message => message.includes('PJ_WASM_TOOLBOX_TRANSFORM_READY plugin=toolbox-transform-editor'),
   ).length;
-  await page.mouse.click(screen.x + editor.create.x, screen.y + editor.create.y);
+  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
     () => consoleMessages.filter(
       message => message.includes('PJ_WASM_TOOLBOX_TRANSFORM_READY plugin=toolbox-transform-editor'),

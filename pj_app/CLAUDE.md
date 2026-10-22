@@ -225,8 +225,8 @@ key) and keeps the unchanged ones live under their TopicIds. Everything else —
 changed entries, and kept ones cascaded out by a replaced input — is re-created
 in rounds (filters with their inputs re-resolved through a rebuilt catalog, then
 transforms) until a round creates nothing; apply failures are reported once,
-after the last round. The watermark is the owning toolbox's display name
-(`toolboxBadge`); a tab whose owner is not in the catalog says so instead.
+after the last round. The watermark is the owning toolbox's badge
+(`toolboxBadge`: its manifest `badge`, else its name); a tab whose owner is not in the catalog says so instead.
 
 `displayTimeForSource` validates a live catalog source handle and uses its current
 `SessionManager::displayOffset`. Topic conversion first requires a unique
@@ -245,7 +245,7 @@ the restore — `restoreDataProcessors` = `derivedObjects().parse(root, intent)`
 the snapshot carrying its intent — and owns what is UI: each diagnostic (the parse's
 and the restore's, in one report) is reported (`reportDerived`) under source
 "Layout" (so `layout_issue_capture_` sees it), and the
-Custom Series panel is re-derived after every restore. `applyWorkspace` parses
+Custom Topics panel is re-derived after every restore. `applyWorkspace` parses
 once and uses that snapshot for the preflight (before the timeline offsets
 move) and for the restore; the progressive drain's teardown applies an empty
 snapshot. An undo leaves a marker rule it does not change as it is drawn, and
@@ -253,6 +253,25 @@ runs a changed one to completion (a layout load creates it with the bounded crea
 layouts written by a release-4.1 build (`MainWindowRelease41LayoutTest`), and those in
 `tests/fixtures/layouts/prototype/` on-demand recipes written by the derived-objects
 prototype (`MainWindowPrototypeLayoutTest`).
+
+## Custom Topics panel
+
+`CurveListPanel`'s bottom tree lists what the session derived: transform outputs and one flat
+row per object output of a persistent on-demand recipe, named by the recipe, badged by an owner
+other than the editor, with its node's state as the glyph and tooltip (the lag while computing,
+a finding's pin on the display axis). `MainWindow::syncCustomTopicsPanel` derives the whole row
+set (`CurveListPanel::setCustomTopics`) on every install and after a restore or a toolbox write
+(an announced removal relists the catalog, and the panel prunes the rows); a node's state change
+or an offset schedules one `refreshCustomTopicsPanel` per event-loop turn, which rebuilds the
+on-demand rows and reuses the transform rows of the last sync until the catalog changes. The
+"+", the pencil and Delete belong to the toolbox whose manifest declares `custom_topics_editor`.
+`deleteCustomTopic` asks `pj_runtime`'s `CustomTopicsPolicy.h` who may delete what, and asks again
+once a prompt is answered, before removing a recipe (one undo step unless it is history-exempt)
+or a transform; this shell only words the refusals and runs the prompts. A series is one flat row
+per number column (`id/output`), deleted with its recipe; `SeriesProgressController`
+(`src/SeriesProgressController.{h,cpp}`, wired by `wireSeriesProgress`) turns `SeriesRunner::State` into a
+stoppable bar on those rows (`CurveListPanel::setSeriesProgress`), lingering as completed or cancelled, and a row's
+stop (`seriesStopRequested`) stops the replay keeping its rows. See `docs/derived_objects/ARCHITECTURE.md` §8.
 
 ## Toolbox presentation
 

@@ -419,6 +419,11 @@ class DataProcessorService {
   /// generator's dependency on a removed transform output is not tracked here.
   [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<NodeId>& nodes) const;
 
+  /// Materialized output topic names (sorted, unique) that `removeTransform(transform_key)` would retire: the
+  /// transform's own and those of every processor its removal cascades into, the view name-bound readers (marker
+  /// generators, on-demand recipes) match against. Empty for an unknown key.
+  [[nodiscard]] std::vector<std::string> removedOutputNames(std::string_view transform_key) const;
+
   /// Remove a transform by its namespaced key, cascading through every exact
   /// downstream processor and retiring all affected outputs. Unknown key = error.
   Status removeTransform(std::string_view namespaced_key);
@@ -452,6 +457,10 @@ class DataProcessorService {
 
   /// Snapshot of every live transform recipe (unspecified order) — for layout save.
   [[nodiscard]] std::vector<TransformRecipe> transformRecipes() const;
+
+  /// The live transform (a preview excluded, as in `transformRecipes()`) one of whose outputs is `output_topic`;
+  /// nullopt when no transform writes it.
+  [[nodiscard]] std::optional<TransformRecipe> transformOwning(TopicId output_topic) const;
 
   /// Resolved SOURCE topics of a displayed Data Processor output: `output_topic_id`
   /// is looked up first as a filter output, then as a transform output, and each
@@ -567,6 +576,8 @@ class DataProcessorService {
   /// cascades into and returns the output names of the history-exempt
   /// transforms among them (sorted, unique).
   [[nodiscard]] std::vector<std::string> exemptTransformsDependingOn(std::unordered_set<TopicId>& affected) const;
+  /// Names of the materialized topics among `topics`, sorted and unique (a retired or unknown id is skipped).
+  [[nodiscard]] std::vector<std::string> topicNames(const std::unordered_set<TopicId>& topics) const;
 
   /// Fixpoint walk of every processor transitively depending on a topic in
   /// `affected` (which grows with each visited processor's outputs). Visits

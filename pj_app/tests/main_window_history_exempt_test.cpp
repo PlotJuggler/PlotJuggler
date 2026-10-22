@@ -151,7 +151,7 @@ QString catalogKeyForTopic(const PJ::CatalogModel& catalog, const QString& topic
   return item != items.end() ? item->key : QString{};
 }
 
-PJ::CurveTreeView* customSeriesView(PJ::MainWindow& window) {
+PJ::CurveTreeView* customTopicsView(PJ::MainWindow& window) {
   return window.findChild<PJ::CurveTreeView*>(u"customView"_s);
 }
 
@@ -371,10 +371,10 @@ TEST_F(MainWindowHistoryExemptFixture, ExemptTransformRoundTripsThroughFullNotHi
   app_session.catalogModel().rebuildFromDatastore();
   const QString initial_output_key = catalogKeyForTopic(app_session.catalogModel(), u"E_out"_s);
   ASSERT_FALSE(initial_output_key.isEmpty());
-  PJ::CurveTreeView* custom_view = customSeriesView(window);
+  PJ::CurveTreeView* custom_view = customTopicsView(window);
   ASSERT_NE(custom_view, nullptr);
   EXPECT_EQ(findRowByCatalogKey(custom_view->invisibleRootItem(), initial_output_key), nullptr)
-      << "a direct service install has not registered a Custom Series row";
+      << "a direct service install has not registered a Custom Topics row";
 
   const QDomDocument full_doc = PJ::MainWindowHistoryExemptTestPeer::xmlSaveState(
       window, PJ::MainWindowHistoryExemptTestPeer::SnapshotScope::kFull);
@@ -407,7 +407,7 @@ TEST_F(MainWindowHistoryExemptFixture, ExemptTransformRoundTripsThroughFullNotHi
   const QString restored_output_key = catalogKeyForTopic(app_session.catalogModel(), u"E_out"_s);
   ASSERT_FALSE(restored_output_key.isEmpty());
   EXPECT_NE(findRowByCatalogKey(custom_view->invisibleRootItem(), restored_output_key), nullptr)
-      << "full restore must register the persisted transform in Custom Series";
+      << "full restore must register the persisted transform in Custom Topics";
 }
 
 TEST_F(MainWindowHistoryExemptFixture, FullReplaceDropsReplacedTransformFromCustomSeries) {
@@ -429,10 +429,10 @@ TEST_F(MainWindowHistoryExemptFixture, FullReplaceDropsReplacedTransformFromCust
   const QString output_key = catalogKeyForTopic(app_session.catalogModel(), u"obsolete_output"_s);
   ASSERT_FALSE(output_key.isEmpty());
   auto* panel = window.findChild<PJ::CurveListPanel*>();
-  PJ::CurveTreeView* custom_view = customSeriesView(window);
+  PJ::CurveTreeView* custom_view = customTopicsView(window);
   ASSERT_NE(panel, nullptr);
   ASSERT_NE(custom_view, nullptr);
-  panel->setCustomCurves({output_key});
+  panel->setCustomTopics({{.key = output_key}});
   ASSERT_NE(findRowByCatalogKey(custom_view->invisibleRootItem(), output_key), nullptr);
 
   QDomDocument reload_doc = without_transform;
@@ -444,7 +444,7 @@ TEST_F(MainWindowHistoryExemptFixture, FullReplaceDropsReplacedTransformFromCust
 
   EXPECT_TRUE(service.transformRecipes().empty());
   EXPECT_EQ(findRowByCatalogKey(custom_view->invisibleRootItem(), output_key), nullptr)
-      << "full replacement must remove the replaced transform's Custom Series row";
+      << "full replacement must remove the replaced transform's Custom Topics row";
 }
 
 // (d) A history restore that would strand an exempt dependent is rejected

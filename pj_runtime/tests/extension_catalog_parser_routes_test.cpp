@@ -20,6 +20,7 @@
 
 #include "hermetic_catalog.h"
 #include "mock_message_parser_vtable.h"
+#include "mock_toolbox_vtable.h"
 #include "pj_base/builtin_object_abi.h"
 #include "pj_base/parser_route_claims_protocol.h"
 #include "pj_base/sdk/service_registry.hpp"
@@ -33,6 +34,7 @@
 namespace {
 
 using namespace PJ;
+using namespace Qt::StringLiterals;
 
 constexpr std::string_view kExactType = "test/PointCloud";
 constexpr std::string_view kLegacyType = "legacy/Cloud";
@@ -799,6 +801,88 @@ TEST_F(ParserRouteBindingTest, ScalarOnlyTypeBindsWithoutObjectTopic) {
 
   EXPECT_TRUE(registrar_calls_.empty());
   EXPECT_FALSE(object_store_.findTopic(dataset_id_, "/route_topic").has_value());
+}
+
+// What names a plugin on a Custom Topics row or a tab watermark: the badge is the manifest `badge`, else the toolbox
+// name, else its id, and empty for one not loaded; the display name is the name, falling back to the id, loaded or
+// not.
+TEST(ExtensionCatalogToolboxLabels, BadgeFallsBackToNameThenId) {
+  static const PJ_toolbox_vtable_t kNamed =
+      pj_mock::makeMockToolboxVtable(R"({"id":"named","name":"Named Tool","version":"1.0.0"})");
+  static const PJ_toolbox_vtable_t kBadged =
+      pj_mock::makeMockToolboxVtable(R"({"id":"badged","name":"Badged Tool","version":"1.0.0","badge":"AI"})");
+  StaticPluginSet static_plugins;
+  static_plugins.toolboxes.emplace_back(&kNamed);
+  static_plugins.toolboxes.emplace_back(&kBadged);
+  PJ::test::HermeticCatalog catalog(std::move(static_plugins));
+
+  EXPECT_EQ(catalog.service.toolboxBadge(u"badged"), u"AI") << "the manifest badge first";
+  EXPECT_EQ(catalog.service.toolboxDisplayName(u"badged"), u"Badged Tool") << "the display name stays the name";
+  EXPECT_EQ(catalog.service.toolboxBadge(u"named"), u"Named Tool");
+  EXPECT_TRUE(catalog.service.toolboxBadge(u"absent").isEmpty());
+  EXPECT_EQ(catalog.service.toolboxDisplayName(u"named"), u"Named Tool");
+  EXPECT_EQ(catalog.service.toolboxDisplayName(u"absent"), u"absent");
+}
+
+// The Custom Topics editor is the toolbox whose manifest lists `custom_topics_editor` among its
+// `capabilities`, not a hard-coded id and not a top-level key; none declaring it leaves it empty, and the
+// ownership predicate is false for everyone then.
+TEST(ExtensionCatalogToolboxLabels, CustomTopicsEditorIsTheCapabilitiesTag) {
+  static const PJ_toolbox_vtable_t kPlain =
+      pj_mock::makeMockToolboxVtable(R"({"id":"plain","name":"Plain","version":"1.0.0","capabilities":["other_tag"]})");
+  static const PJ_toolbox_vtable_t kTopLevelKey = pj_mock::makeMockToolboxVtable(
+      R"({"id":"top-level","name":"Top","version":"1.0.0","custom_topics_editor":true})");
+  static const PJ_toolbox_vtable_t kEditor = pj_mock::makeMockToolboxVtable(
+      R"({"id":"my-editor","name":"Editor","version":"1.0.0","capabilities":["custom_topics_editor"]})");
+  {
+    StaticPluginSet static_plugins;
+    static_plugins.toolboxes.emplace_back(&kPlain);
+    static_plugins.toolboxes.emplace_back(&kTopLevelKey);
+    PJ::test::HermeticCatalog catalog(std::move(static_plugins));
+    EXPECT_TRUE(catalog.service.customTopicsEditorId().isEmpty()) << "a top-level key is not the tag";
+    EXPECT_FALSE(catalog.service.isCustomTopicsEditor(QString{})) << "no editor owns the empty owner either";
+    EXPECT_FALSE(catalog.service.isCustomTopicsEditor(u"top-level"_s));
+  }
+  {
+    StaticPluginSet static_plugins;
+    static_plugins.toolboxes.emplace_back(&kPlain);
+    static_plugins.toolboxes.emplace_back(&kEditor);
+    PJ::test::HermeticCatalog catalog(std::move(static_plugins));
+    EXPECT_EQ(catalog.service.customTopicsEditorId(), u"my-editor");
+    EXPECT_TRUE(catalog.service.isCustomTopicsEditor(u"my-editor"_s));
+    EXPECT_FALSE(catalog.service.isCustomTopicsEditor(u"plain"_s));
+  }
+}
+
+// Two toolboxes declaring the tag: the first scanned wins, and one warning names the one ignored.
+TEST(ExtensionCatalogToolboxLabels, TwoDeclaringToolboxesPickTheFirstScannedAndWarnOnce) {
+  static const PJ_toolbox_vtable_t kFirst = pj_mock::makeMockToolboxVtable(
+      R"({"id":"first-editor","name":"First","version":"1.0.0","capabilities":["custom_topics_editor"]})");
+  static const PJ_toolbox_vtable_t kSecond = pj_mock::makeMockToolboxVtable(
+      R"({"id":"second-editor","name":"Second","version":"1.0.0","capabilities":["custom_topics_editor"]})");
+  StaticPluginSet static_plugins;
+  static_plugins.toolboxes.emplace_back(&kFirst);
+  static_plugins.toolboxes.emplace_back(&kSecond);
+  std::vector<std::string> warnings;
+  PJ::test::HermeticCatalog catalog(std::move(static_plugins), [&warnings](const Diagnostic& diagnostic) {
+    if (diagnostic.level == DiagnosticLevel::kWarning &&
+        diagnostic.message.find("custom_topics_editor") != std::string::npos) {
+      warnings.push_back(diagnostic.message);
+    }
+  });
+
+  EXPECT_EQ(catalog.service.customTopicsEditorId(), u"first-editor");
+  ASSERT_EQ(warnings.size(), 1U);
+  EXPECT_NE(warnings.front().find("second-editor"), std::string::npos) << warnings.front();
+}
+
+// A reload re-scans the declarers in a new order (an updated plugin is appended after the others): the editor in use
+// stays while it still declares the tag; only one that no longer does hands over to the first declarer.
+TEST(ExtensionCatalogToolboxLabels, ReloadKeepsTheEditorInUseWhileItStillDeclares) {
+  EXPECT_EQ(ExtensionCatalogService::pickCustomTopicsEditor(u"a"_s, {u"b"_s, u"a"_s}), u"a"_s);
+  EXPECT_EQ(ExtensionCatalogService::pickCustomTopicsEditor(u"gone"_s, {u"b"_s, u"a"_s}), u"b"_s);
+  EXPECT_EQ(ExtensionCatalogService::pickCustomTopicsEditor(QString{}, {u"b"_s, u"a"_s}), u"b"_s);
+  EXPECT_TRUE(ExtensionCatalogService::pickCustomTopicsEditor(u"a"_s, {}).isEmpty());
 }
 
 }  // namespace

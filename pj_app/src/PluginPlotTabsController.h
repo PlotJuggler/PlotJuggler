@@ -105,7 +105,6 @@ class PluginPlotTabsController {
   }
 
  private:
-  [[nodiscard]] QString toolboxBadge(const QString& plugin_id) const;
   /// A fresh owned tab: namespaced stateId, owner metadata, history exemption and
   /// badge. Null when the workspace refuses a new tab.
   [[nodiscard]] PlotDocker* newOwnedTab(const QString& plugin_id, const QString& tab_id, const QString& title);

@@ -34,6 +34,7 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DatasetQualifiedName.h"  // markerSeriesField
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 using namespace Qt::StringLiterals;
@@ -309,11 +310,37 @@ CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>(session)) {
   if (impl_->session != nullptr) {
     connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildIfChanged);
+    // An on-demand install registers its output topics, a removal retires them; neither is an ingest.
+    connect(impl_->session, &SessionManager::objectTopicsChanged, this, &CatalogModel::rebuildIfChanged);
+    connect(impl_->session, &SessionManager::onDemandRecipeInstalled, this, &CatalogModel::rebuildIfChanged);
     connect(this, &CatalogModel::itemsAdded, impl_->session, &SessionManager::publishSharedMarkersToNewDatasets);
   }
 }
 
 CatalogModel::~CatalogModel() = default;
+
+QSet<QString> CatalogModel::ephemeralPreviewKeys() const {
+  QSet<QString> keys;
+  if (impl_->session == nullptr) {
+    return keys;
+  }
+  // From the previews to their topics, then one hash lookup each: no walk of the catalog's items.
+  const OnDemandService& on_demand = impl_->session->onDemandService();
+  for (const DatasetId dataset : impl_->session->dataEngine().listDatasets()) {
+    for (const std::string& node_key : on_demand.graph().keysOf(dataset)) {
+      const RecipeGraph::Node* node = on_demand.graph().find(node_key);
+      if (node == nullptr || !node->recipe.ephemeral) {
+        continue;
+      }
+      for (const ObjectTopicId topic : on_demand.history().topicsOf(node_key)) {
+        if (std::optional<QString> key = objectTopicKey(dataset, topic)) {
+          keys.insert(*std::move(key));
+        }
+      }
+    }
+  }
+  return keys;
+}
 
 std::vector<CatalogItem> CatalogModel::items() const {
   impl_->whole_catalog_walks.fetch_add(1, std::memory_order_relaxed);
@@ -416,6 +443,22 @@ std::optional<CatalogItem> CatalogModel::itemDescriptor(const QString& key) cons
     return std::nullopt;
   }
   return it->second;
+}
+
+std::optional<QString> CatalogModel::objectTopicKey(DatasetId dataset, ObjectTopicId topic) const {
+  QString key = makeObjectTopicKey(dataset, topic);
+  if (impl_->items.find(key) == impl_->items.end()) {
+    return std::nullopt;
+  }
+  return key;
+}
+
+std::optional<QString> CatalogModel::scalarColumnKey(DatasetId dataset, TopicId topic, std::size_t column) const {
+  QString key = makeCurveKey(dataset, topic, column);
+  if (impl_->items.find(key) == impl_->items.end()) {
+    return std::nullopt;
+  }
+  return key;
 }
 
 std::optional<double> CatalogModel::scalarValueAt(const QString& key, double display_seconds) const {

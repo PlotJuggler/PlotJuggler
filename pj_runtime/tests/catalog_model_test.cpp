@@ -6,18 +6,24 @@
 #include <QSignalSpy>
 #include <QString>
 #include <QStringList>
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "on_demand_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
+#include "pj_base/sdk/platform.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 using namespace Qt::StringLiterals;
@@ -422,6 +428,98 @@ TEST(CatalogModelTest, MarkerTopicsAreHiddenByMetadataNotByName) {
   const auto items = catalog.items();
   ASSERT_EQ(items.size(), 1U);
   EXPECT_EQ(items[0].topic_name, u"__markers__/camera"_s);
+}
+
+// An on-demand install registers its output topics and the catalog lists them without a caller rebuild; a
+// preview's topic stays in the catalog (its panel attaches it through the catalog) but is reported, so the user
+// facing trees can leave it out; a removal announced through the session drops it.
+TEST(CatalogModelTest, OnDemandTopicsAreListedOnInstallAndPreviewsAreReported) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_TRUE(session.objectStore()
+                  .registerTopic(
+                      {.dataset_id = *dataset,
+                       .topic_name = "cloud",
+                       .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                  .has_value());
+  catalog.rebuildFromDatastore();
+  const PJ::scripting::OutputSpec cropped{
+      "cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud};
+  PJ::RecipeGraph::Recipe preview = PJ::test::onDemandRecipe("preview", {"cloud"}, {cropped});
+  preview.ephemeral = true;
+  ASSERT_TRUE(session.onDemandService().install(PJ::test::onDemandRecipe("crop", {"cloud"}, {cropped})).has_value());
+  ASSERT_TRUE(session.onDemandService().install(preview).has_value());
+
+  const auto key_of = [&catalog](const QString& topic) {
+    for (const PJ::CatalogItem& item : catalog.items()) {
+      if (item.topic_name == topic) {
+        return item.key;
+      }
+    }
+    return QString{};
+  };
+  const QString persistent_key = key_of(u"owner/crop/cropped"_s);
+  const QString preview_key = key_of(u"owner/preview/cropped"_s);
+  ASSERT_FALSE(persistent_key.isEmpty()) << "an install relists the catalog";
+  ASSERT_FALSE(preview_key.isEmpty()) << "a preview stays resolvable in the catalog";
+  EXPECT_EQ(catalog.ephemeralPreviewKeys(), QSet<QString>{preview_key});
+
+  const std::vector<PJ::ObjectTopicId> crop_topics = session.onDemandService().history().topicsOf("owner/crop");
+  ASSERT_EQ(crop_topics.size(), 1U);
+  EXPECT_EQ(catalog.objectTopicKey(*dataset, crop_topics.front()), persistent_key);
+  EXPECT_FALSE(catalog.objectTopicKey(*dataset + 1, crop_topics.front()).has_value())
+      << "a dataset lists only its own topics";
+
+  ASSERT_FALSE(session.onDemandService().remove(preview.key()).empty());
+  session.notifyObjectTopicsChanged();
+  EXPECT_TRUE(key_of(u"owner/preview/cropped"_s).isEmpty());
+  EXPECT_TRUE(catalog.ephemeralPreviewKeys().isEmpty());
+  EXPECT_FALSE(key_of(u"owner/crop/cropped"_s).isEmpty());
+}
+
+// PJ_BENCH=1: what classifying the previews costs each Datasets-tree rebuild and catalog addition, at 10,000 raw
+// object topics and 1,000 persistent recipes (no preview: the common case).
+TEST(CatalogModelTest, EphemeralPreviewKeysBench) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kTopics = 10'000;
+  constexpr int kRecipes = 1'000;
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  for (int i = 0; i < kTopics; ++i) {
+    ASSERT_TRUE(session.objectStore()
+                    .registerTopic(
+                        {.dataset_id = *dataset,
+                         .topic_name = "cloud" + std::to_string(i),
+                         .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                    .has_value());
+  }
+  const PJ::scripting::OutputSpec cropped{
+      "cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud};
+  for (int i = 0; i < kRecipes; ++i) {
+    ASSERT_TRUE(session.onDemandService()
+                    .install(PJ::test::onDemandRecipe("crop" + std::to_string(i), {"cloud0"}, {cropped}))
+                    .has_value());
+  }
+  PJ::CatalogModel catalog(&session);  // made after the installs, so they do not relist it one by one
+  catalog.rebuildFromDatastore();
+  ASSERT_EQ(catalog.items().size(), static_cast<size_t>(kTopics + kRecipes));
+
+  std::vector<double> samples;
+  for (int run = 0; run < 21; ++run) {
+    const auto start = std::chrono::steady_clock::now();
+    const QSet<QString> previews = catalog.ephemeralPreviewKeys();
+    samples.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
+    ASSERT_TRUE(previews.isEmpty());
+  }
+  std::sort(samples.begin(), samples.end());
+  std::printf(
+      "[PJ_BENCH] ephemeralPreviewKeys, %d object topics x %d recipes: %.0f us\n", kTopics + kRecipes, kRecipes,
+      samples[samples.size() / 2]);
 }
 
 TEST(CatalogModelTest, RemovedObjectTopicStaysHiddenAcrossRebuild) {

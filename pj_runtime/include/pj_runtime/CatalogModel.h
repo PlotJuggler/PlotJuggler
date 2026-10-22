@@ -253,6 +253,11 @@ class CatalogModel : public QObject {
   /// Walks the catalog in place, without the copy and sort of `items()`.
   [[nodiscard]] std::optional<CatalogItem> objectTopicItem(ObjectTopicId topic_id) const;
 
+  /// Catalog keys of the object topics a preview (an ephemeral on-demand recipe) materializes. items() keeps
+  /// them, since the panel that made a preview resolves and attaches its topic through the catalog; only the
+  /// user-facing trees leave them out, by asking here.
+  [[nodiscard]] QSet<QString> ephemeralPreviewKeys() const;
+
   /// The scalar field `key` names in `dataset` (`markerSeriesField`'s naming), or
   /// nullopt: a plottable one, or with `strings_too` a string one as well (an
   /// on-demand input reads strings, a marker rule never). Walks the catalog in place,
@@ -269,6 +274,11 @@ class CatalogModel : public QObject {
   // Fast alternative to items().empty(), which copies and sorts entries.
   [[nodiscard]] bool isEmpty() const noexcept;
   [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
+  /// The key under which `dataset` lists the object topic `topic`, or nullopt when the catalog does not list it. A
+  /// hash lookup: how a caller holding topic ids finds their rows without walking `items()`.
+  [[nodiscard]] std::optional<QString> objectTopicKey(DatasetId dataset, ObjectTopicId topic) const;
+  /// The same lookup for column `column` of the DataEngine topic `topic`.
+  [[nodiscard]] std::optional<QString> scalarColumnKey(DatasetId dataset, TopicId topic, std::size_t column) const;
 
   // Latest scalar value at or before display-axis time `display_seconds` for the
   // curve identified by catalog `key` (zero-order hold). Returns nullopt when the

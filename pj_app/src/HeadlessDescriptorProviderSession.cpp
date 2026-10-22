@@ -68,7 +68,7 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
   // MainWindow-owned surfaces this session has no business reaching:
   // 3D-scene TF bridging (transform_service_), playback focus/seeding
   // (AppSession::focusPlaybackOnDatasets / seedPlaybackFromSession), and the
-  // Custom Series panel rows. MainWindow (the batch owner) supplies that
+  // Custom Topics panel rows. MainWindow (the batch owner) supplies that
   // presentation from outside: its batch-scoped SessionManager observers
   // (installLayoutBatchObservers) drive the title-bar ingest strip
   // mid-import, and the progressive-restore drain settles the rest.
