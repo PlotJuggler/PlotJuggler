@@ -222,11 +222,11 @@ struct YuvCase {
 }
 
 // The CPU matrix the shader receives, applied to the same samples.
-[[nodiscard]] QColor expectedRgb(const YuvCase& yuv) {
+[[nodiscard]] QColor expectedRgb(const YuvCase& yuv, uint8_t cb_sample = kCb, uint8_t cr_sample = kCr) {
   const std::array<float, 16> matrix = PJ::buildYuvMatrix(yuv.space, yuv.range);
   const float luma = kLuma / 255.0F;
-  const float cb = kCb / 255.0F - 0.5F;
-  const float cr = kCr / 255.0F - 0.5F;
+  const float cb = cb_sample / 255.0F - 0.5F;
+  const float cr = cr_sample / 255.0F - 0.5F;
   // Column-major: element (row, column) is matrix[column * 4 + row].
   const auto channel = [&](std::size_t row) {
     return std::clamp(matrix[row] * luma + matrix[4 + row] * cb + matrix[8 + row] * cr + matrix[12 + row], 0.0F, 1.0F);
@@ -257,6 +257,81 @@ INSTANTIATE_TEST_SUITE_P(
         YuvCase{PJ::PixelFormat::kNV12, PJ::YuvColorSpace::kBt601, PJ::YuvColorRange::kFull, "Nv12Bt601Full"},
         YuvCase{PJ::PixelFormat::kNV12, PJ::YuvColorSpace::kBt709, PJ::YuvColorRange::kLimited, "Nv12Bt709Limited"},
         YuvCase{PJ::PixelFormat::kNV12, PJ::YuvColorSpace::kBt709, PJ::YuvColorRange::kFull, "Nv12Bt709Full"}),
+    [](const ::testing::TestParamInfo<YuvCase>& case_info) { return std::string(case_info.param.name); });
+
+// An odd-sized 4:2:0 frame (AV1 allows one; H.264 and HEVC crop to even). Luma
+// pixel (column, row) must take chroma sample (column / 2, row / 2), not the
+// (n + 1) / 2-sample chroma plane stretched over the frame. Cb steps per chroma
+// column and Cr per chroma row, 8 levels each, so a neighbouring sample is at
+// least 12 RGB levels off. Nearest filtering makes every luma pixel one flat block.
+constexpr int kOddSize = 17;
+constexpr int kOddChroma = (kOddSize + 1) / 2;
+
+[[nodiscard]] uint8_t oddCb(int chroma_column) {
+  return static_cast<uint8_t>(96 + 8 * chroma_column);
+}
+
+[[nodiscard]] uint8_t oddCr(int chroma_row) {
+  return static_cast<uint8_t>(96 + 8 * chroma_row);
+}
+
+[[nodiscard]] PJ::DecodedFrame oddSizedYuv(const YuvCase& yuv) {
+  auto bytes = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(kOddSize * kOddSize), kLuma);
+  if (yuv.format == PJ::PixelFormat::kYUV420P) {
+    for (int row = 0; row < kOddChroma; ++row) {
+      for (int column = 0; column < kOddChroma; ++column) {
+        bytes->push_back(oddCb(column));
+      }
+    }
+    for (int row = 0; row < kOddChroma; ++row) {
+      bytes->insert(bytes->end(), kOddChroma, oddCr(row));
+    }
+  } else {
+    for (int row = 0; row < kOddChroma; ++row) {
+      for (int column = 0; column < kOddChroma; ++column) {
+        bytes->push_back(oddCb(column));
+        bytes->push_back(oddCr(row));
+      }
+    }
+  }
+  PJ::DecodedFrame frame;
+  frame.width = kOddSize;
+  frame.height = kOddSize;
+  frame.format = yuv.format;
+  frame.pixels = std::move(bytes);
+  frame.color_space = yuv.space;
+  frame.color_range = yuv.range;
+  frame.mag_filter = PJ::MagFilter::kNearest;
+  return frame;
+}
+
+class MediaViewerOddSizeTest : public MediaViewerRenderTest, public ::testing::WithParamInterface<YuvCase> {};
+
+TEST_P(MediaViewerOddSizeTest, ChromaSampleIsHalfTheLumaIndex) {
+  RENDER_OR_SKIP(image, frameOf(oddSizedYuv(GetParam())));
+  int mismatches = 0;
+  std::string first_mismatches;
+  for (int row = 0; row < kOddSize; ++row) {
+    for (int column = 0; column < kOddSize; ++column) {
+      const int x = (2 * column + 1) * image.width() / (2 * kOddSize);
+      const int y = (2 * row + 1) * image.height() / (2 * kOddSize);
+      const QRgb pixel = image.pixel(x, y);
+      const QColor expected = expectedRgb(GetParam(), oddCb(column / 2), oddCr(row / 2));
+      if (!colourNear(pixel, expected) && ++mismatches <= 6) {
+        first_mismatches += " (" + std::to_string(column) + "," + std::to_string(row) + "): got " + describe(pixel) +
+                            " expected " + describe(expected.rgb()) + ";";
+      }
+    }
+  }
+  EXPECT_EQ(mismatches, 0) << "luma pixels (column,row) off their chroma sample on " << backend()
+                           << ", first:" << first_mismatches;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Layouts, MediaViewerOddSizeTest,
+    ::testing::Values(
+        YuvCase{PJ::PixelFormat::kYUV420P, PJ::YuvColorSpace::kBt601, PJ::YuvColorRange::kLimited, "Yuv420p"},
+        YuvCase{PJ::PixelFormat::kNV12, PJ::YuvColorSpace::kBt601, PJ::YuvColorRange::kLimited, "Nv12"}),
     [](const ::testing::TestParamInfo<YuvCase>& case_info) { return std::string(case_info.param.name); });
 
 // BGRA bytes are uploaded as RGBA and swizzled in the shader.

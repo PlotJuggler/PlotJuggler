@@ -55,8 +55,16 @@ FFmpeg frames go straight into the viewer's own QRhi textures.
   fixed. A deprecated YUVJ pixel format counts as full range, and the decoder's
   swscale repack keeps the source range (`keepRange`): by default swscale squeezes
   a full-range YUVJ frame to limited range while the frame stays tagged full.
+- **4:2:0 chroma siting**: chroma sample (x/2, y/2) belongs to luma pixel (x, y).
+  `yuv_to_rgb.frag` samples chroma at `uv` scaled per axis by n / (2 * chroma_n),
+  from the `textureSize` of `y_tex` and `u_tex` (both layouts), so at an odd size
+  (AV1 allows one; H.264 and HEVC crop 4:2:0 to even) the ceil(n/2)-sample chroma
+  plane is not stretched over the frame; even sizes select `uv` unchanged. The
+  chroma sampler follows the frame's `mag_filter` like luma: nearest for images
+  (one chroma sample per 2x2 block), bilinear for video. `MediaViewerOddSizeTest`
+  in `media_viewer_render_test` checks a 17x17 frame in both layouts.
 - **CPU rgb24 for on-demand scripts** (`convertToRgb24`, `ffmpeg_decoder.h`): the same
-  matrix and nearest-chroma sampling as the shader, through swscale, **within 3 levels
+  matrix and chroma siting as the shader, with nearest chroma, through swscale, **within 3 levels
   per channel** of it (2 at full range; about 0.5 % of limited-range samples are off by
   3). At a width that is a multiple of 16 and an even height it takes `SWS_POINT` alone:
   swscale's unscaled converter for YUV420P (0.65 ms per 1080p frame), its generic scaler
