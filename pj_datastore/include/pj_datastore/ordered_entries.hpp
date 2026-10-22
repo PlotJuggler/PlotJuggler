@@ -13,6 +13,7 @@
 // latestAt cache, retention/memory accounting, and payload resolution all stay in
 // ObjectStore/ObjectSeries. The caller holds the series lock across every call.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -36,14 +37,19 @@ using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
 /// caller's lock, once per entry: keep it cheap and never call back into the ObjectStore.
 using EntryPredicate = std::function<bool(Timestamp, SequentialUID)>;
 
-/// Room for one more element, grown geometrically as push_back would (appends stay
-/// amortized O(1)), so the push_back that follows cannot allocate: how the store takes
-/// every allocation of a mutation before it unlinks anything.
+/// Room for `count` more elements, grown geometrically as push_back would (appends stay
+/// amortized O(1) across calls), so the push_backs that follow cannot allocate: how the store
+/// takes every allocation of a mutation before it unlinks anything.
+template <typename T>
+void reserveMore(std::vector<T>& values, size_t count) {
+  if (values.capacity() - values.size() < count) {
+    values.reserve(std::max({values.size() + count, values.capacity() < 4 ? size_t{8} : 2 * values.capacity()}));
+  }
+}
+
 template <typename T>
 void reserveOneMore(std::vector<T>& values) {
-  if (values.size() == values.capacity()) {
-    values.reserve(values.capacity() < 4 ? 8 : 2 * values.capacity());
-  }
+  reserveMore(values, 1);
 }
 
 /// Lazy payload: idempotent, thread-safe fetcher returning bytes + anchor.
@@ -205,11 +211,13 @@ class OrderedEntries {
   // caller inserting a non-max UID must rebuildUidOrder() instead. An allocation
   // failure throws before anything changes and leaves `entry` with the caller.
   PushOrder push(ObjectEntry&& entry);
-  // Remove the oldest entry (front position) and return it, so the caller decides
-  // where it is destroyed (ObjectStore drops it after releasing its locks).
-  // Precondition: !empty(). Triple only — the caller drops the warm cache and
-  // adjusts memory accounting around it.
-  ObjectEntry evictFront();
+  // Move the oldest `count` entries (front positions) into `removed`, in array order, so the
+  // caller decides where they are destroyed (ObjectStore drops them after releasing its locks).
+  // O(size) whatever `count`: a retention jump expiring most of a series costs one pass, not one
+  // pass per entry. The only allocation is room in `removed`, taken first, so a failure changes
+  // nothing. Precondition: count <= size(). Triple only: the caller drops the warm cache and
+  // adjusts memory accounting around it. Not a rewrite (see ContentIdentity).
+  void evictFront(size_t count, std::vector<ObjectEntry>& removed);
   // A removal of entries at any position (not only the oldest prefix), decided before
   // anything changes so a transaction can validate every topic first.
   struct Removal {

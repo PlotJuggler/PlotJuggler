@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <deque>
 #include <optional>
+#include <random>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -146,7 +148,10 @@ TEST(OrderedEntriesTest, EvictFrontKeepsCursorConsistentAcrossInversion) {
   oe.push(makeEntry(30, &b));
   oe.push(makeEntry(20, &c));  // out of order -> array: 10(a),20(c),30(b)
 
-  oe.evictFront();  // drops the ts-10 entry (uid a)
+  std::vector<ObjectEntry> removed;
+  oe.evictFront(1, removed);  // drops the ts-10 entry (uid a)
+  ASSERT_EQ(removed.size(), 1u);
+  EXPECT_EQ(removed[0].sequential_uid, a);
   EXPECT_EQ(oe.size(), 2u);
   EXPECT_EQ(stamps(oe), (std::vector<Timestamp>{20, 30}));
   EXPECT_EQ(oe.firstUid(), b);  // smallest RETAINED uid is b (c arrived later)
@@ -461,6 +466,74 @@ TEST(OrderedEntriesTest, RemoveNothingOrEverything) {
   EXPECT_TRUE(oe.empty());
   EXPECT_FALSE(oe.firstUid().valid());
   EXPECT_EQ(removed.size(), 2u);
+}
+
+// The bulk front eviction a retention jump takes equals the same entries evicted one at a time and the same prefix
+// removed through planRemoval/remove: same survivors, timestamps, UID cursor, positions and removed entries.
+TEST(OrderedEntriesTest, BulkEvictFrontMatchesOneByOneAndRemove) {
+  std::mt19937 random(42);
+  for (int round = 0; round < 200; ++round) {
+    OrderedEntries bulk;
+    const int size = std::uniform_int_distribution<int>(0, 60)(random);
+    Timestamp newest = 0;
+    for (int index = 0; index < size; ++index) {
+      // One in four lands out of order, some on an equal stamp.
+      const bool late = std::uniform_int_distribution<int>(0, 3)(random) == 0;
+      newest += std::uniform_int_distribution<Timestamp>(0, 3)(random);
+      bulk.push(makeEntry(late ? std::uniform_int_distribution<Timestamp>(0, newest)(random) : newest));
+    }
+    OrderedEntries one_by_one = bulk;
+    OrderedEntries reference = bulk;
+    const auto count = static_cast<size_t>(std::uniform_int_distribution<int>(0, size)(random));
+
+    std::vector<ObjectEntry> bulk_removed;
+    bulk.evictFront(count, bulk_removed);
+    std::vector<ObjectEntry> one_removed;
+    for (size_t index = 0; index < count; ++index) {
+      one_by_one.evictFront(1, one_removed);
+    }
+    std::set<SequentialUID> front;
+    for (size_t index = 0; index < count; ++index) {
+      front.insert(reference.entryAt(index).sequential_uid);
+    }
+    std::vector<ObjectEntry> reference_removed;
+    reference.remove(
+        reference.planRemoval([&front](Timestamp, SequentialUID uid) { return front.count(uid) != 0; }),
+        reference_removed);
+
+    for (const OrderedEntries* other : {&one_by_one, &reference}) {
+      ASSERT_EQ(bulk.size(), other->size()) << "round " << round;
+      EXPECT_EQ(stamps(bulk), stamps(*other));
+      EXPECT_EQ(uidWalk(bulk), uidWalk(*other));
+      for (size_t index = 0; index < bulk.size(); ++index) {
+        EXPECT_EQ(bulk.entryAt(index).sequential_uid, other->entryAt(index).sequential_uid);
+        EXPECT_EQ(bulk.indexOfUid(bulk.entryAt(index).sequential_uid), index);
+      }
+    }
+    for (const std::vector<ObjectEntry>* other : {&one_removed, &reference_removed}) {
+      ASSERT_EQ(bulk_removed.size(), other->size());
+      for (size_t index = 0; index < bulk_removed.size(); ++index) {
+        EXPECT_EQ(bulk_removed[index].sequential_uid, (*other)[index].sequential_uid);
+        EXPECT_EQ(bulk_removed[index].timestamp, (*other)[index].timestamp);
+      }
+    }
+  }
+}
+
+// A front eviction is not a rewrite: a reader following the UID cursor and a timestamp floor keeps its place.
+TEST(OrderedEntriesTest, BulkEvictFrontMovesOnlyTheContentRevision) {
+  OrderedEntries oe;
+  oe.push(makeEntry(10));
+  oe.push(makeEntry(20));
+  oe.push(makeEntry(30));
+  std::vector<ObjectEntry> removed;
+  const auto before = oe.contentIdentity();
+  oe.evictFront(0, removed);
+  EXPECT_EQ(oe.contentIdentity(), before) << "evicting nothing changes nothing";
+  oe.evictFront(2, removed);
+  EXPECT_NE(oe.contentIdentity().content, before.content);
+  EXPECT_EQ(oe.contentIdentity().rewrite, before.rewrite);
+  EXPECT_EQ(stamps(oe), (std::vector<Timestamp>{30}));
 }
 
 }  // namespace

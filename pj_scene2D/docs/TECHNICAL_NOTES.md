@@ -55,6 +55,15 @@ FFmpeg frames go straight into the viewer's own QRhi textures.
   fixed. A deprecated YUVJ pixel format counts as full range, and the decoder's
   swscale repack keeps the source range (`keepRange`): by default swscale squeezes
   a full-range YUVJ frame to limited range while the frame stays tagged full.
+- **CPU rgb24 for on-demand scripts** (`convertToRgb24`, `ffmpeg_decoder.h`): the same
+  matrix and nearest-chroma sampling as the shader, through swscale, **within 3 levels
+  per channel** of it (2 at full range; about 0.5 % of limited-range samples are off by
+  3). At a width that is a multiple of 16 and an even height it takes `SWS_POINT` alone:
+  swscale's unscaled converter for YUV420P (0.65 ms per 1080p frame), its generic scaler
+  for NV12 (2.6 ms); any other frame takes the exact rounding (within 1, about 11 ms),
+  because the unscaled converter's x86 kernel writes 16 pixels at a time and there left
+  a row's last pixels unwritten or wrote past the frame, and swscale uses it only at an
+  even height (NV12 follows the same gate, its bound being measured on those frames) (`VideoRgbConversion` tests in `streaming_video_decoder_test.cpp`).
 - RGB/BGR, Mono8 and depth frames take their own texture paths through the
   same pipeline (`TexturePathFormat` in `media_viewer_widget.cpp`)
 - Zoom (mouse wheel) and pan (mouse drag) via view transform matrix in

@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -1682,6 +1683,129 @@ TEST(ObjectScriptBench, SetupAndListIteration) {
         "100k-element list iteration: %.2f ms (%.0f ns per element)\n%s\n", elapsed / 1000.0,
         elapsed * 1000.0 / 100'000.0, script);
   }
+}
+
+// PJ_BENCH=1 prints the binder's per-element cost on the hot paths a script walks every frame (median of 5 runs, ns per
+// element): `xyz_points()` over a 100k-point cloud, and a 10k-element list of FrameTransforms read ten times over,
+// split into what each step adds (the element's view, the nested view, the field lookup). An empty numeric loop is
+// the interpreter's floor.
+TEST(ObjectScriptBench, BinderPerElementCost) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kPoints = 100'000;
+  constexpr int kListSize = 10'000;
+  constexpr int kPasses = 10;
+  sdk::FrameTransforms transforms;
+  transforms.transforms.resize(kListSize);
+  for (auto& transform : transforms.transforms) {
+    transform.translation.x = 1.0;
+    transform.rotation.w = 1.0;
+  }
+  const std::vector<NamedValue> inputs{
+      object("tf", sdk::BuiltinObject(std::move(transforms))), object("cloud", makeLineCloud(kPoints))};
+  struct Case {
+    const char* name;
+    const char* body;  ///< the loop; `list` holds the list, `s` the sum
+    double elements;
+  };
+  const std::vector<Case> cases{
+      {"empty numeric loop", "for p = 1, 100000 do s = s + p end", 100'000.0},
+      {"xyz_points()", "for i, x, y, z in inputs.cloud:xyz_points() do s = s + x end", kPoints},
+      {"list[i] (element view)", "for p = 1, 10 do for i = 1, #list do local e = list[i] end end", kListSize * kPasses},
+      {"list[i].parent_frame_id (view + scalar)",
+       "for p = 1, 10 do for i = 1, #list do local e = list[i].parent_frame_id end end", kListSize * kPasses},
+      {"list[i].translation (two views)", "for p = 1, 10 do for i = 1, #list do local e = list[i].translation end end",
+       kListSize * kPasses},
+      {"list[i].translation.x", "for p = 1, 10 do for i = 1, #list do s = s + list[i].translation.x end end",
+       kListSize * kPasses},
+      {"list[i].rotation.w (last field, last member)",
+       "for p = 1, 10 do for i = 1, #list do s = s + list[i].rotation.w end end", kListSize * kPasses},
+  };
+  for (const Case& bench : cases) {
+    const std::string source =
+        std::string("local inputs = ...\nlocal list, s = inputs.tf.transforms, 0\n") + bench.body + "\nreturn s";
+    auto compiled = compileOnDemandScript(source);
+    ASSERT_TRUE(compiled.has_value()) << compiled.error();
+    std::vector<double> nanos;
+    for (int sample = 0; sample < 5; ++sample) {
+      const auto begin = std::chrono::steady_clock::now();
+      auto result = runOnDemandScript(*compiled, inputs, "{}", {});
+      nanos.push_back(std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - begin).count());
+      ASSERT_TRUE(result.has_value()) << result.error();
+    }
+    std::sort(nanos.begin(), nanos.end());
+    std::printf("[ObjectScriptBench] %-46s %6.1f ns per element\n", bench.name, nanos[2] / bench.elements);
+  }
+}
+
+// PJ_BENCH=1 prints a trivial run's cost (median of 2001 calls, us) against its sandboxed state's creation and close
+// alone: the part one state per worker would save (F8, Luau VM reuse).
+TEST(ObjectScriptBench, SandboxedStateShareOfATrivialRun) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  const auto median_micros = [](auto&& call) {
+    std::vector<double> micros;
+    for (int sample = 0; sample < 2001; ++sample) {
+      const auto begin = std::chrono::steady_clock::now();
+      call();
+      micros.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count());
+    }
+    std::nth_element(micros.begin(), micros.begin() + 1000, micros.end());
+    return micros[1000];
+  };
+  auto compiled = compileOnDemandScript("local inputs = ...\nreturn { n = 1 }");
+  ASSERT_TRUE(compiled.has_value());
+  const std::vector<NamedValue> inputs{object("cloud", makeLineCloud(4))};
+  const double run = median_micros([&] { ASSERT_TRUE(runOnDemandScript(*compiled, inputs, "{}", {}).has_value()); });
+  const double state = median_micros([] {
+    detail::BudgetState budget;
+    lua_State* L = detail::newSandboxedState(&budget, BudgetLimits{});
+    ASSERT_NE(L, nullptr);
+    lua_close(L);
+  });
+  std::printf(
+      "[ObjectScriptBench] trivial run over a 4-point cloud: %.1f us; sandboxed state create + close alone: %.1f us "
+      "(%.0f%%)\n",
+      run, state, 100.0 * state / run);
+}
+
+// PJ_BENCH=1 prints `estimateBytes` (the GUI thread runs it on every result it caches) over large lists, median of 21:
+// a threshold's ImageAnnotations of 100k and 1M points (fixed-size elements), and 100k FrameTransforms (strings).
+TEST(ObjectScriptBench, EstimateBytesOfLargeLists) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  const auto median_micros = [](const ScriptValue& value) {
+    std::vector<double> micros;
+    std::size_t bytes = 0;
+    for (int sample = 0; sample < 21; ++sample) {
+      const auto begin = std::chrono::steady_clock::now();
+      bytes += estimateBytes(value);
+      micros.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count());
+    }
+    EXPECT_GT(bytes, 0u);
+    std::sort(micros.begin(), micros.end());
+    return micros[10];
+  };
+  for (const std::size_t points : {std::size_t{100'000}, std::size_t{1'000'000}}) {
+    sdk::ImageAnnotations annotations;
+    annotations.points.resize(1);
+    annotations.points[0].points.resize(points);
+    const ScriptValue value{sdk::BuiltinObject(std::move(annotations))};
+    const double micros = median_micros(value);
+    std::printf(
+        "[ObjectScriptBench] estimateBytes, ImageAnnotations of %7zu points: %8.1f us (%.2f ns per element)\n", points,
+        micros, micros * 1000.0 / static_cast<double>(points));
+  }
+  sdk::FrameTransforms transforms;
+  transforms.transforms.resize(100'000);
+  const ScriptValue value{sdk::BuiltinObject(std::move(transforms))};
+  const double micros = median_micros(value);
+  std::printf(
+      "[ObjectScriptBench] estimateBytes, FrameTransforms of  100000 transforms: %8.1f us (%.2f ns per element)\n",
+      micros, micros * 1000.0 / 100'000.0);
 }
 
 // ---- images: decode, decoded pixels, depth, pairing (MED-01, MED-02, MED-03, MED-08, MED-15, MED-17) -----------

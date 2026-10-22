@@ -115,9 +115,25 @@ struct Boxed {
   PyObject_HEAD Value value;
 };
 
+/// Freed struct-view blocks, reused by the next ones: a list walk frees and allocates one per element, and the
+/// allocator round trip is about a third of a list-element read. Only a view freed inside a run is kept; a kept block
+/// stays charged to the allocation budget of the run that allocated it and keeps that budget alive, so every run
+/// empties the list at its end (`releaseRecycledViews`), and a block holds no value while kept. Guarded by the GIL.
+constexpr std::size_t kMaxRecycledViews = 64;
+std::array<PyObject*, kMaxRecycledViews> g_recycled_views{};
+std::size_t g_recycled_count = 0;
+
 template <class Value>
 py::object newBoxed(PyTypeObject* type, Value value) {
-  auto* self = PyObject_New(Boxed<Value>, type);
+  Boxed<Value>* self = nullptr;
+  if constexpr (std::is_same_v<Value, StructView>) {
+    if (type == g_struct_type && g_recycled_count > 0) {
+      self = reinterpret_cast<Boxed<Value>*>(PyObject_Init(g_recycled_views[--g_recycled_count], type));
+    }
+  }
+  if (self == nullptr) {
+    self = PyObject_New(Boxed<Value>, type);
+  }
   if (self == nullptr) {
     throw py::error_already_set();
   }
@@ -134,7 +150,16 @@ template <class Value>
 void destroyBoxed(PyObject* self) {
   PyTypeObject* type = Py_TYPE(self);
   unboxed<Value>(self).~Value();
-  PyObject_Free(self);
+  bool recycled = false;
+  if constexpr (std::is_same_v<Value, StructView>) {
+    recycled = type == g_struct_type && t_run != nullptr && g_recycled_count < kMaxRecycledViews;
+    if (recycled) {
+      g_recycled_views[g_recycled_count++] = self;
+    }
+  }
+  if (!recycled) {
+    PyObject_Free(self);
+  }
   Py_DECREF(type);
 }
 
@@ -1344,6 +1369,16 @@ const PjNamespaces& pjNamespaces() {
     });
   }
   return *g_namespaces;
+}
+
+void releaseRecycledViews() {
+  while (g_recycled_count > 0) {
+    PyObject_Free(g_recycled_views[--g_recycled_count]);
+  }
+}
+
+std::size_t recycledViewCount() {
+  return g_recycled_count;
 }
 
 py::object newObject(sdk::BuiltinObject object, std::shared_ptr<const void> keepalive) {

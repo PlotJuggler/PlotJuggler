@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <iterator>
 #include <numeric>
 
 #include "pj_datastore/saturating_time.hpp"
@@ -177,27 +178,29 @@ OrderedEntries::PushOrder OrderedEntries::indexBack() {
   return PushOrder::kOutOfOrderInsert;
 }
 
-ObjectEntry OrderedEntries::evictFront() {
-  assert(!entries_.empty());
+void OrderedEntries::evictFront(size_t count, std::vector<ObjectEntry>& removed) {
+  assert(count <= entries_.size());
+  if (count == 0) {
+    return;
+  }
+  reserveMore(removed, count);
   changed(false);
-  ObjectEntry front = std::move(entries_.front());
-  entries_.pop_front();
-  entry_timestamps_.erase(entry_timestamps_.begin());
-  // Front entry (position 0) is gone: drop its slot from uid_order (exactly one
-  // slot holds 0 for a non-empty series), then shift every remaining position down
-  // by one. Independent of the pop above — it only renumbers integer positions.
-  const auto z = std::find(uid_order_.begin(), uid_order_.end(), 0u);
-  assert(z != uid_order_.end() && "evictFront: uid_order lost the front slot (desynced from entries)");
-  if (z != uid_order_.end()) {
-    uid_order_.erase(z);
+  const auto end = entries_.begin() + static_cast<std::ptrdiff_t>(count);
+  std::move(entries_.begin(), end, std::back_inserter(removed));
+  entries_.erase(entries_.begin(), end);
+  entry_timestamps_.erase(entry_timestamps_.begin(), entry_timestamps_.begin() + static_cast<std::ptrdiff_t>(count));
+  // Positions below `count` are gone; the rest slide down by `count`, keeping their UID order.
+  const auto first = static_cast<uint32_t>(count);
+  size_t next = 0;
+  for (const uint32_t position : uid_order_) {
+    if (position >= first) {
+      uid_order_[next++] = position - first;
+    }
   }
-  for (auto& p : uid_order_) {
-    --p;
-  }
+  uid_order_.resize(next);
 #ifndef NDEBUG
   checkInvariant();
 #endif
-  return front;
 }
 
 OrderedEntries::Removal OrderedEntries::planRemoval(const EntryPredicate& drop) const {

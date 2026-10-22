@@ -19,6 +19,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1291,6 +1292,111 @@ TEST(ObjectStoreTest, RetentionEvictsOutOfOrderPushBelowFloorKeepsCursorConsiste
   EXPECT_FALSE(store.latestAt(id, 500).has_value()) << "self-evicted OOO entry must not resolve";
 }
 
+// A retention jump or an explicit eviction that expires many entries at once keeps exactly what evicting the oldest
+// one at a time kept: the same survivors at the same positions, the memory accounting, and a warm cache that names an
+// evicted entry released. The model below is the one-at-a-time loop.
+TEST(ObjectStoreTest, RetentionJumpKeepsWhatOneAtATimeEvictionKept) {
+  struct Kept {
+    SequentialUID uid;
+    Timestamp timestamp = 0;
+    size_t bytes = 0;
+  };
+  std::mt19937 random(11);
+  const auto draw = [&random](int64_t lo, int64_t hi) {
+    return std::uniform_int_distribution<int64_t>(lo, hi)(random);
+  };
+  for (int round = 0; round < 250; ++round) {
+    ObjectStore store;
+    const auto id = registerTestTopic(store);
+    Timestamp newest = 0;
+    const int size = static_cast<int>(draw(1, 80));
+    for (int index = 0; index < size; ++index) {
+      newest += draw(0, 3);
+      const Timestamp stamp = draw(0, 3) == 0 ? draw(0, newest) : newest;  // some out of order, some equal
+      ASSERT_TRUE(store.pushOwned(id, stamp, makePayload(static_cast<size_t>(draw(0, 64)))).has_value());
+    }
+    std::vector<Kept> model;
+    for (const auto& entry : store.rangeByTime(id, -1, std::numeric_limits<Timestamp>::max())) {
+      model.push_back({entry.uid, entry.timestamp, store.at(id, entry.uid)->payload.bytes.size()});
+    }
+    ASSERT_EQ(model.size(), static_cast<size_t>(size));
+    // Warm the cache on an entry the jump may expire.
+    const Timestamp probe = model[static_cast<size_t>(draw(0, size - 1))].timestamp;
+    ASSERT_TRUE(store.latestAt(id, probe).has_value());
+
+    const auto evict_while = [&model](const auto& expired) {
+      while (!model.empty() && expired()) {
+        model.erase(model.begin());
+      }
+    };
+    const auto model_bytes = [&model] {
+      size_t total = 0;
+      for (const Kept& kept : model) {
+        total += kept.bytes;
+      }
+      return total;
+    };
+    if (round % 5 == 4) {
+      const Timestamp threshold = draw(0, newest + 1);
+      store.evictBefore(id, threshold);
+      evict_while([&] { return model.front().timestamp < threshold; });
+    } else {
+      RetentionBudget budget;
+      const int kind = round % 5;
+      const auto bytes = static_cast<size_t>(draw(0, 64));
+      if (kind == 0 || kind == 3) {
+        budget.time_window_ns = draw(1, newest + 10);
+      }
+      if (kind == 1 || kind == 3) {
+        // At least the new entry's size, so the new entry itself stays and names its UID below.
+        budget.max_memory_bytes = static_cast<size_t>(
+            draw(std::max<int64_t>(1, static_cast<int64_t>(bytes)), static_cast<int64_t>(model_bytes()) + 64));
+      }
+      if (kind == 2 || kind == 3) {
+        budget.max_entries = static_cast<size_t>(draw(1, size + 1));
+      }
+      store.setRetentionBudget(id, budget);
+      const Timestamp jump = newest + draw(1, 10);
+      ASSERT_TRUE(store.pushOwned(id, jump, makePayload(bytes)).has_value());
+      model.push_back({store.rangeByTime(id, jump - 1, jump).back().uid, jump, bytes});
+      if (budget.time_window_ns > 0) {
+        evict_while([&] { return model.front().timestamp < jump - budget.time_window_ns; });
+      }
+      if (budget.max_memory_bytes > 0) {
+        evict_while([&] { return model_bytes() > budget.max_memory_bytes; });
+      }
+      if (budget.max_entries > 0) {
+        evict_while([&] { return model.size() > budget.max_entries; });
+      }
+    }
+
+    const auto kept = store.rangeByTime(id, -1, std::numeric_limits<Timestamp>::max());
+    ASSERT_EQ(kept.size(), model.size()) << "round " << round;
+    for (size_t index = 0; index < kept.size(); ++index) {
+      EXPECT_EQ(kept[index].uid, model[index].uid) << "round " << round << " position " << index;
+      EXPECT_EQ(store.indexOf(id, model[index].uid), index);
+    }
+    EXPECT_EQ(store.memoryUsage(id), model_bytes()) << "round " << round;
+    EXPECT_EQ(
+        store.firstSequentialUID(id),
+        model.empty() ? SequentialUID{}
+                      : std::min_element(model.begin(), model.end(), [](const Kept& lhs, const Kept& rhs) {
+                          return lhs.uid < rhs.uid;
+                        })->uid);
+    std::optional<SequentialUID> expected_latest;
+    for (const Kept& entry : model) {
+      if (entry.timestamp <= probe) {
+        expected_latest = entry.uid;
+      }
+    }
+    const auto latest = store.latestAt(id, probe);
+    ASSERT_EQ(latest.has_value(), expected_latest.has_value()) << "round " << round;
+    if (latest) {
+      EXPECT_EQ(latest->sequential_uid, *expected_latest);
+    }
+  }
+}
+
 TEST(ObjectStoreTest, LazyEntriesZeroMemory) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -2500,6 +2606,39 @@ TEST(ObjectStoreBundleBench, PublishCost) {
     std::printf(
         "pushOwnedBundle %7zu B + 2 x 64 B, window %4d entries: median %.1f us, p95 %.1f us\n", bench.first_payload,
         window, micros[micros.size() / 2], micros[micros.size() * 95 / 100]);
+  }
+}
+
+// PJ_BENCH=1 prints the push that carries a retention jump (a shrunk time window, or a resume far past a paused tail):
+// one push expiring N of N retained entries, and N of 2N, 64 B each, median of 3 (one for the 100k cases). Eviction
+// runs under the series' write lock, on the pushing (ingest) thread.
+TEST(ObjectStoreBundleBench, RetentionJump) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  for (const size_t expired : {size_t{1'000}, size_t{10'000}, size_t{100'000}}) {
+    for (const size_t retained : {expired, 2 * expired}) {
+      std::vector<double> millis;
+      for (int sample = 0; sample < (expired >= 100'000 ? 1 : 3); ++sample) {
+        ObjectStore store;
+        const auto topic = registerTestTopic(store);
+        for (size_t index = 0; index < retained; ++index) {
+          ASSERT_TRUE(store.pushOwned(topic, static_cast<Timestamp>(index), makePayload(64)).has_value());
+        }
+        // The jump keeps the entries at or after `expired` (and the new one).
+        const Timestamp newest = static_cast<Timestamp>(retained) + 1'000'000;
+        store.setRetentionBudget(topic, RetentionBudget{.time_window_ns = newest - static_cast<Timestamp>(expired)});
+        const auto begin = std::chrono::steady_clock::now();
+        ASSERT_TRUE(store.pushOwned(topic, newest, makePayload(64)).has_value());
+        millis.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count());
+        ASSERT_EQ(store.entryCount(topic), retained - expired + 1);
+      }
+      std::sort(millis.begin(), millis.end());
+      std::printf(
+          "[ObjectStoreBundleBench] retention jump expiring %6zu of %6zu entries: %9.2f ms (%.1f ns per expired "
+          "entry)\n",
+          expired, retained, millis[millis.size() / 2], millis[millis.size() / 2] * 1e6 / static_cast<double>(expired));
+    }
   }
 }
 

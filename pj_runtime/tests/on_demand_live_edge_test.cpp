@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <QVector>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -705,6 +706,74 @@ TEST(OnDemandLiveEdgeBench, LiveEdgeAmongTenThousandTopics) {
   std::printf(
       "[OnDemandLiveEdgeBench] among 10k object topics: liveEdgeOf %.0f ns, an unchanged followLiveEdge %.0f ns\n",
       edge * 1000.0, follow * 1000.0);
+}
+
+// F10 (TF R5), PJ_BENCH=1: a simulated live session of 30 s, streaming ticks every 50 ms (the poll's period), a cloud
+// input at 20, 10, 5 and 1 Hz, and live TF at 100 Hz on frames the recipe does not read (`odom` <- `imu`), the recipe's
+// own `map` <- `base_link` written once. Prints the runs past the necessary ones (one per new cloud), over every phase
+// of the clouds against the TF snapshot brake (500 ms): each was caused by a TF revision bump alone, which R5
+// (recording the edges and samples a run used) would avoid.
+TEST(OnDemandLiveEdgeBench, TfOnlyRerunsOnALiveSession) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  // One session: TF-only runs within 30 s, the cloud arriving `phase` ticks after the brake's first snapshot.
+  const auto session = [](bool reads_tf, int ticks_per_cloud, int phase, int& clouds) {
+    auto now = std::chrono::steady_clock::now();  // outlives the fixture, whose manager reads it through the clock
+    LiveFixture fx;
+    TransformService transforms(fx.manager);
+    fx.manager.setTransformService(&transforms);
+    fx.manager.setTfClock([&now] { return now; });
+    const auto write = [&](const char* parent, const char* child, Timestamp t, double x) {
+      pj::tf::StampedTransform tf;
+      tf.stamp = fromRaw(t);
+      tf.parent_frame = parent;
+      tf.child_frame = child;
+      tf.transform.t.x = x;
+      EXPECT_TRUE(transforms.transformBuffer(fx.ds)->setTransform(tf).has_value());
+    };
+    constexpr Timestamp kStart = 30 * kSec;
+    write("map", "base_link", kStart, 1.0);
+    fx.fake.observe_tf = reads_tf;
+    fx.install(recipe("crop"));
+    fx.display("owner/crop/cropped");
+    fx.tick();  // the live edge at the fixture's newest cloud, before the counted session
+    const int before = fx.fake.finished();
+    clouds = 0;
+    for (int tick = 1; tick <= 600; ++tick) {
+      const Timestamp t = kStart + tick * 50 * kMs;
+      for (Timestamp tf_t = t - 40 * kMs; tf_t <= t; tf_t += 10 * kMs) {
+        write("odom", "imu", tf_t, static_cast<double>(tf_t));
+      }
+      if ((tick + phase) % ticks_per_cloud == 0) {
+        fx.push(fx.cloud, t);
+        ++clouds;
+      }
+      now += std::chrono::milliseconds(50);
+      fx.tick();
+    }
+    const int runs = fx.fake.finished() - before;
+    fx.manager.setTransformService(nullptr);
+    return runs - clouds;
+  };
+  for (const bool reads_tf : {false, true}) {
+    for (const int cloud_hz : {20, 10, 5, 1}) {
+      const int ticks_per_cloud = 20 / cloud_hz;
+      int least = 1 << 30;
+      int most = 0;
+      int clouds = 0;
+      for (int phase = 0; phase < ticks_per_cloud; ++phase) {
+        const int extra = session(reads_tf, ticks_per_cloud, phase, clouds);
+        least = std::min(least, extra);
+        most = std::max(most, extra);
+      }
+      std::printf(
+          "[OnDemandLiveEdgeBench] recipe %s TF, cloud %2d Hz, TF 100 Hz elsewhere, 30 s: %3d necessary runs, %2d-%2d "
+          "TF-only over %2d phases (%.0f-%.0f%% of the runs)\n",
+          reads_tf ? "reads  " : "ignores", cloud_hz, clouds, least, most, ticks_per_cloud,
+          100.0 * least / (clouds + least), 100.0 * most / (clouds + most));
+    }
+  }
 }
 
 // PERF-02 (PJ_STREAM_BENCH=1): 5 minutes of a 10 Hz stream of 2048-point clouds kept 5 s, one demanded recipe at the

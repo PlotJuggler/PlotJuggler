@@ -569,10 +569,18 @@ bool convertToRgb24(const DecodedFrame& frame, uint8_t* out) {
   }
   const int width = frame.width;
   const int height = frame.height;
-  // Nearest chroma (each pixel reads its 2x2 block) and exact rounding: the shader's sampling, within 1 of its matrix.
+  // Nearest chroma (each pixel reads its 2x2 block): the shader's sampling. SWS_POINT alone is swscale's unscaled
+  // converter, within 3 levels per channel of the shader's matrix (2 at full range) at 0.6 ms per 1080p YUV420P frame
+  // (2.6 ms NV12, which swscale converts with its generic scaler); the exact rounding is within 1 at 11-13 ms. The
+  // unscaled converter's x86 kernel writes 16 pixels at a time, so at any other width it leaves a row's last pixels
+  // unwritten or writes past the frame, and swscale takes it only at an even height: any other frame takes the exact
+  // path, NV12 included, whose bound was measured on the same frames. (Without SWS_POINT, NV12's chroma is
+  // interpolated.)
+  const bool fast = width % 16 == 0 && height % 2 == 0;
+  const int flags = fast ? SWS_POINT : SWS_POINT | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP;
   SwsContext* context = sws_getContext(
-      width, height, nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P, width, height, AV_PIX_FMT_RGB24,
-      SWS_POINT | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, nullptr, nullptr, nullptr);
+      width, height, nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P, width, height, AV_PIX_FMT_RGB24, flags, nullptr,
+      nullptr, nullptr);
   if (context == nullptr) {
     return false;
   }

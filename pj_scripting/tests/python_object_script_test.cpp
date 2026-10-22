@@ -43,6 +43,7 @@
 #include "python_sandbox.h"
 #include "python_test_helpers.h"
 #include "python_test_probe.h"
+#include "script_media.h"
 
 namespace py = pybind11;
 
@@ -1816,6 +1817,85 @@ TEST(PythonObjectScript, AnObjectKeptPastItsRunKeepsItsLibraryLoaded) {
   EXPECT_TRUE(loaded.expired()) << "the proxies released the keepalive with the object";
 }
 
+// F1b: a list walk reuses its element views, but a run leaves none behind: the free list is empty after it, so no
+// recycled block keeps the run's allocation budget alive past it, and nothing keeps the input's keepalive.
+TEST(PythonObjectScript, ARunLeavesNoRecycledViewBehind) {
+  auto library = std::make_shared<int>(1);
+  const std::weak_ptr<int> loaded = library;
+  {
+    sdk::FrameTransforms transforms;
+    transforms.transforms.resize(200);
+    for (auto& transform : transforms.transforms) {
+      transform.translation.x = 1.0;
+    }
+    NamedValue input = objectInput("tf", sdk::BuiltinObject(std::move(transforms)));
+    input.keepalive = library;
+    EXPECT_DOUBLE_EQ(
+        numberOf(runSource(
+            "def evaluate(inputs, params):\n    s = 0.0\n    for t in inputs['tf'].transforms:\n"
+            "        s += t.translation.x\n    return s\n",
+            {input})),
+        200.0);
+  }
+  {
+    py::gil_scoped_acquire gil;
+    EXPECT_EQ(detail::recycledViewCount(), 0u) << "the run emptied the free list at its end";
+  }
+  library.reset();
+  EXPECT_TRUE(loaded.expired());
+}
+
+// A view freed in a run is kept for reuse with nothing of its own: not its object's keepalive, and once the run ends
+// not its block, which stays charged to the budget of the run that allocated it until it is freed. Outside a run a
+// view is freed.
+TEST(PythonObjectBinder, ARecycledViewCarriesNothingOfTheRunThatMadeIt) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  (void)detail::pjNamespaces();  // registers the binder's types
+  const auto list_of = [](const char* parent, std::shared_ptr<const void> keepalive) -> py::object {
+    sdk::FrameTransforms transforms;
+    transforms.transforms.resize(2);
+    transforms.transforms[0].parent_frame_id = parent;
+    return detail::newObject(sdk::BuiltinObject(std::move(transforms)), std::move(keepalive)).attr("transforms");
+  };
+  const auto element = [](const py::object& list) { return detail::checked(PySequence_GetItem(list.ptr(), 0)); };
+  auto library = std::make_shared<int>(1);
+  const std::weak_ptr<int> loaded = library;
+  py::object first = list_of("first", std::move(library));
+  const py::object second = list_of("second", nullptr);
+  const RunOptions options;
+  ScriptMedia media(nullptr, native::NativeLimits{}, 0);
+
+  auto budget = std::make_shared<native::MemoryBudget>(std::size_t{1} << 20);
+  const std::weak_ptr<native::MemoryBudget> spent = budget;
+  {
+    detail::ScopedAllocationCap cap(std::move(budget));
+    detail::PythonRun run(options, media);
+    PyObject* const block = element(first).ptr();  // allocated under this run's cap, then freed
+    EXPECT_EQ(detail::recycledViewCount(), 1u) << "a view freed in a run is kept for reuse";
+    first = py::none();
+    EXPECT_TRUE(loaded.expired()) << "a recycled view keeps no keepalive";
+    const py::object reused = element(second);
+    EXPECT_EQ(reused.ptr(), block);
+    EXPECT_EQ(detail::recycledViewCount(), 0u);
+    EXPECT_EQ(reused.attr("parent_frame_id").cast<std::string>(), "second");
+  }
+  ASSERT_FALSE(spent.expired()) << "a recycled block keeps the budget of the run that allocated it";
+  EXPECT_GT(spent.lock()->used(), 0u) << "and stays charged to it until it is freed";
+  {
+    detail::PythonRun run(options, media);
+    (void)element(second);
+    EXPECT_EQ(detail::recycledViewCount(), 1u);
+    detail::releaseRecycledViews();  // what a run does at its end
+    EXPECT_EQ(detail::recycledViewCount(), 0u);
+  }
+  if (const auto budget_left = spent.lock()) {  // a budget with nothing charged goes at a later sweep
+    EXPECT_EQ(budget_left->used(), 0u) << "the freed block gave its charge back";
+  }
+  (void)element(second);
+  EXPECT_EQ(detail::recycledViewCount(), 0u) << "outside a run a view is freed, not recycled";
+}
+
 // A result that returns an input holds the input's keepalive in its output, and releases the value first: the payload's
 // deleter, plugin code, runs while the library is still loaded.
 TEST(PythonObjectScript, AReturnedInputReleasesItsValueBeforeItsKeepalive) {
@@ -2425,6 +2505,54 @@ TEST(PythonObjectScriptBench, ListIterationAndXyzPoints) {
     }
     std::sort(nanos.begin(), nanos.end());
     std::printf("%s: %.0f ns per element\n", name, nanos[2] / kElements);
+  }
+}
+
+// PJ_BENCH=1 prints what each step of a list-element read costs in the Python binder (median of 5 runs, ns per
+// element): a 10k-element list of FrameTransforms walked ten times, from an empty loop over the list (the element's
+// view only) to a nested field read, against an empty `range` loop (the interpreter's floor). The Luau twin is
+// `ObjectScriptBench.BinderPerElementCost`.
+TEST(PythonObjectScriptBench, ListElementStepCost) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kListSize = 10'000;
+  constexpr double kElements = 10.0 * kListSize;
+  sdk::FrameTransforms transforms;
+  transforms.transforms.resize(kListSize);
+  for (auto& transform : transforms.transforms) {
+    transform.translation.x = 1.0;
+    transform.rotation.w = 1.0;
+  }
+  const std::vector<NamedValue> inputs{objectInput("tf", sdk::BuiltinObject(std::move(transforms)))};
+  RunOptions options;
+  options.limits.python_watchdog_millis = 60'000;
+  const std::vector<std::pair<const char*, const char*>> cases{
+      {"empty range loop", "    for i in range(100000):\n        s += 1.0\n"},
+      {"for t in list (element view)", "    for p in range(10):\n        for t in items:\n            pass\n"},
+      {"t.parent_frame_id (view + scalar)",
+       "    for p in range(10):\n        for t in items:\n            e = t.parent_frame_id\n"},
+      {"t.translation (two views)",
+       "    for p in range(10):\n        for t in items:\n            e = t.translation\n"},
+      {"t.translation.x", "    for p in range(10):\n        for t in items:\n            s += t.translation.x\n"},
+      {"t.rotation.w (last field, last member)",
+       "    for p in range(10):\n        for t in items:\n            s += t.rotation.w\n"},
+  };
+  for (const auto& [name, body] : cases) {
+    const std::string source =
+        std::string("def evaluate(inputs, params):\n    s = 0.0\n    items = inputs['tf'].transforms\n") + body +
+        "    return s\n";
+    auto compiled = compile(source);
+    ASSERT_TRUE(compiled) << compiled.error();
+    std::vector<double> nanos;
+    for (int sample = 0; sample < 5; ++sample) {
+      const auto begin = std::chrono::steady_clock::now();
+      auto result = run(*compiled, inputs, {}, "{}", options);
+      nanos.push_back(std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - begin).count());
+      ASSERT_TRUE(result.has_value()) << result.error().message;
+    }
+    std::sort(nanos.begin(), nanos.end());
+    std::printf("[PythonObjectScriptBench] %-40s %6.1f ns per element\n", name, nanos[2] / kElements);
   }
 }
 

@@ -5,6 +5,7 @@
 #include <Python.h>
 #include <pybind11/pybind11.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -70,6 +71,13 @@ struct PjNamespaces {
   PyObject* voxels = nullptr;
   PyObject* tf = nullptr;
 };
+
+/// Frees the struct-view blocks the runs on any thread recycled (each stays charged to, and keeps alive, the budget of
+/// the run that allocated it). Every run calls it at its end, inside its ScriptCallScope. GIL held.
+void releaseRecycledViews();
+
+/// How many freed struct-view blocks wait for reuse: 0 once a run has ended. For tests. GIL held.
+[[nodiscard]] std::size_t recycledViewCount();
 
 /// Registers the binder's types on the first call, which must hold the GIL outside any ScriptCallScope (registering is
 /// host work the armed hook could refuse); later calls only read.

@@ -1064,5 +1064,54 @@ TEST(SeriesRunnerBench, ReplayOver400Clouds) {
   benchReplay(20 * kSec);
 }
 
+// A one-hour 10 Hz replay (36,000 rows over 4-point clouds) through AppSession, from the display to the last row, wall
+// time: the fake run (instant), then the real Luau run of `script` (a fresh sandboxed VM per row). Their difference is
+// what the Luau runs cost; with a trivial script it is the per-call setup.
+double replay36kMillis(const char* script) {
+  SeriesFixture fx;
+  fx.fake.real = script != nullptr;
+  const ObjectTopicId big = fx.addCloudTopic(fx.ds, "big", {});
+  for (int index = 0; index < 36'000; ++index) {
+    fx.push(big, index * kSec / 10);
+  }
+  RecipeGraph::Recipe recipe = seriesRecipe("ser", {"big"});
+  if (script != nullptr) {
+    recipe.script = script;
+  }
+  fx.install(std::move(recipe));
+  QElapsedTimer timer;
+  timer.start();
+  fx.display("owner/ser");
+  while (timer.elapsed() < 120'000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    const auto state = fx.seriesState("owner/ser");
+    if (state && state->complete && !state->replaying) {
+      break;
+    }
+  }
+  const double millis = static_cast<double>(timer.nsecsElapsed()) / 1e6;
+  EXPECT_EQ(fx.rows("owner/ser").size(), 36'000u);
+  return millis;
+}
+
+// F8 (Luau VM reuse): the share of a 36,000-row series replay that the per-row Luau runs take, over a trivial script
+// (the per-call setup alone) and one that reads its cloud.
+TEST(SeriesRunnerBench, Replay36kRowsLuauRunShare) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  const double fake = replay36kMillis(nullptr);
+  std::printf("[SeriesRunnerBench] 36k rows, fake instant run: %.0f ms\n", fake);
+  for (const char* script :
+       {"local inputs = ...\nreturn { n = 1 }\n",
+        "local inputs = ...\nlocal b = inputs.big:bounds()\nreturn { n = b and b.max[1] - b.min[1] or 0 }\n"}) {
+    const double real = replay36kMillis(script);
+    std::printf(
+        "[SeriesRunnerBench] 36k rows, real Luau run: %.0f ms; the runs take %.0f ms (%.1f us per row, %.0f%% of the "
+        "replay)\n%s",
+        real, real - fake, (real - fake) * 1000.0 / 36'000.0, 100.0 * (real - fake) / real, script);
+  }
+}
+
 }  // namespace
 }  // namespace PJ

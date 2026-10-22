@@ -19,6 +19,12 @@ namespace PJ {
 
 namespace {
 
+// How many of the oldest entries are stamped before `threshold`: the prefix an eviction before it removes.
+size_t countBefore(const OrderedEntries& ordered, Timestamp threshold) {
+  const auto& stamps = ordered.timestamps();
+  return static_cast<size_t>(std::lower_bound(stamps.begin(), stamps.end(), threshold) - stamps.begin());
+}
+
 // Bytes an entry counts against its series' memory budget: an owned payload's
 // size, or what a lazy closure itself pins (LazyPayload::resident_bytes).
 size_t chargedBytes(const ObjectEntry& entry) {
@@ -621,9 +627,7 @@ void ObjectStore::evictBefore(ObjectTopicId id, Timestamp threshold) {
     return;
   }
   std::unique_lock lock(series->mutex);
-  while (!series->ordered.empty() && series->ordered.frontTimestamp() < threshold) {
-    evictFront(*series, graveyard);
-  }
+  evictFront(*series, countBefore(series->ordered, threshold), graveyard);
 }
 
 void ObjectStore::evictAllBefore(Timestamp threshold) {
@@ -631,9 +635,7 @@ void ObjectStore::evictAllBefore(Timestamp threshold) {
   std::shared_lock store_lock(store_mutex_);
   for (auto& [tid, series] : topics_) {
     std::unique_lock lock(series->mutex);
-    while (!series->ordered.empty() && series->ordered.frontTimestamp() < threshold) {
-      evictFront(*series, graveyard);
-    }
+    evictFront(*series, countBefore(series->ordered, threshold), graveyard);
   }
 }
 
@@ -1206,39 +1208,43 @@ void ObjectStore::accountRemoved(ObjectSeries& series, Graveyard& graveyard, siz
   }
 }
 
-void ObjectStore::evictFront(ObjectSeries& series, Graveyard& graveyard) {
-  if (series.ordered.empty()) {
+void ObjectStore::evictFront(ObjectSeries& series, size_t count, Graveyard& graveyard) {
+  if (count == 0) {
     return;
   }
-  // Room for the entry and, when the warm cache holds it, the displaced cache value before
-  // anything is unlinked, so an allocation failure leaves the series whole.
-  reserveOneMore(graveyard.entries);
+  // Room for the entries and, when the warm cache holds one of them, the displaced cache value
+  // before anything is unlinked, so an allocation failure leaves the series whole.
+  reserveMore(graveyard.entries, count);
   {
     std::lock_guard cache_guard(series.cache_mutex);
-    if (series.cached_latest && series.cached_latest->sequential_uid == series.ordered.entryAt(0).sequential_uid) {
-      reserveOneMore(graveyard.cached);
+    if (series.cached_latest) {
+      const auto position = series.ordered.indexOfUid(series.cached_latest->sequential_uid);
+      if (position && *position < count) {
+        reserveOneMore(graveyard.cached);
+      }
     }
   }
-  graveyard.entries.push_back(series.ordered.evictFront());
-  accountRemoved(series, graveyard, graveyard.entries.size() - 1);
+  const size_t first = graveyard.entries.size();
+  series.ordered.evictFront(count, graveyard.entries);
+  accountRemoved(series, graveyard, first);
 }
 
 void ObjectStore::applyRetention(ObjectSeries& series, Timestamp newest_ts, Graveyard& graveyard) {
+  // Each limit counts the oldest entries it expires and evicts them in one pass, so a jump that expires most of a
+  // series is linear, not quadratic.
   if (series.budget.time_window_ns > 0) {
-    const Timestamp threshold = saturatingSub(newest_ts, series.budget.time_window_ns);
-    while (!series.ordered.empty() && series.ordered.frontTimestamp() < threshold) {
-      evictFront(series, graveyard);
-    }
+    evictFront(series, countBefore(series.ordered, saturatingSub(newest_ts, series.budget.time_window_ns)), graveyard);
   }
   if (series.budget.max_memory_bytes > 0) {
-    while (!series.ordered.empty() && series.memory_bytes > series.budget.max_memory_bytes) {
-      evictFront(series, graveyard);
+    size_t count = 0;
+    for (size_t bytes = series.memory_bytes; count < series.ordered.size() && bytes > series.budget.max_memory_bytes;
+         ++count) {
+      bytes -= chargedBytes(series.ordered.entryAt(count));
     }
+    evictFront(series, count, graveyard);
   }
-  if (series.budget.max_entries > 0) {
-    while (series.ordered.size() > series.budget.max_entries) {
-      evictFront(series, graveyard);
-    }
+  if (series.budget.max_entries > 0 && series.ordered.size() > series.budget.max_entries) {
+    evictFront(series, series.ordered.size() - series.budget.max_entries, graveyard);
   }
 }
 

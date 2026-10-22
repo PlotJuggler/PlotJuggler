@@ -49,7 +49,8 @@ Licensed MPL-2.0.
   objects, lazy lists and the point iterator, the point-cloud and image methods with the decoded pixels, a video's
   `frame_at` (a fallible call such as `decode()` or `frame_at` returns `(value, None)` or `(None, reason)`), the
   builders and `pj.tf`, all plain CPython types
-  (pybind11 dereferences an allocation the cap refuses, and a list element costs about 195 ns, not 1.5 µs). Every operation
+  (pybind11 dereferences an allocation the cap refuses, and a list element costs about 77 ns, not 1.5 µs: a free list of
+  at most 64 struct-view blocks, emptied at every run's end because a block stays charged to the run that allocated it). Every operation
   that walks the data runs without the GIL; a call that needs the run's limits, media or observations (the thread's
   `PythonRun`) raises outside its run, a builder outside the run that made it, and an object kept past its run keeps
   its input's keepalive. Every proxy exposes only its documented names, no

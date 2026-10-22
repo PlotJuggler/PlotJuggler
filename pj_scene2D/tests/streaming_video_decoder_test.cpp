@@ -397,20 +397,40 @@ DecodedFrame randomFrame(int width, int height, PixelFormat format, YuvColorSpac
   return frame;
 }
 
-TEST(VideoRgbConversion, MatchesTheShaderMatrixWithinOne) {
+/// The largest difference, per channel, between `convertToRgb24` of `frame` and the shader's matrix; -1 when the
+/// conversion fails or writes past the frame's `width * height * 3` bytes.
+int worstDifference(const DecodedFrame& frame) {
+  constexpr uint8_t kGuard = 0xCD;
+  constexpr size_t kGuardBytes = 256;
+  const size_t size = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 3;
+  std::vector<uint8_t> rgb(size + kGuardBytes, kGuard);
+  if (!convertToRgb24(frame, rgb.data())) {
+    return -1;
+  }
+  if (std::any_of(
+          rgb.begin() + static_cast<std::ptrdiff_t>(size), rgb.end(), [](uint8_t byte) { return byte != kGuard; })) {
+    return -1;
+  }
+  const std::vector<uint8_t> expected = referenceRgb(frame);
+  int worst = 0;
+  for (size_t i = 0; i < size; ++i) {
+    worst = std::max(worst, std::abs(int(rgb[i]) - int(expected[i])));
+  }
+  return worst;
+}
+
+// Within 3 levels per channel of the shader's matrix (swscale's unscaled converter at a width that is a multiple of 16,
+// its exact rounding at any other), for both 4:2:0 layouts, both colour spaces and both ranges.
+TEST(VideoRgbConversion, MatchesTheShaderMatrixWithinThree) {
   for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
     for (const YuvColorSpace space : {YuvColorSpace::kBt601, YuvColorSpace::kBt709}) {
       for (const YuvColorRange range : {YuvColorRange::kLimited, YuvColorRange::kFull}) {
-        SCOPED_TRACE(::testing::Message() << int(format) << "/" << int(space) << "/" << int(range));
-        const DecodedFrame frame = randomFrame(34, 18, format, space, range);
-        std::vector<uint8_t> rgb(34u * 18u * 3u);
-        ASSERT_TRUE(convertToRgb24(frame, rgb.data()));
-        const std::vector<uint8_t> expected = referenceRgb(frame);
-        int worst = 0;
-        for (size_t i = 0; i < rgb.size(); ++i) {
-          worst = std::max(worst, std::abs(int(rgb[i]) - int(expected[i])));
+        for (const int width : {48, 34}) {
+          SCOPED_TRACE(::testing::Message() << int(format) << "/" << int(space) << "/" << int(range) << " " << width);
+          const int worst = worstDifference(randomFrame(width, 18, format, space, range));
+          EXPECT_GE(worst, 0);
+          EXPECT_LE(worst, 3);
         }
-        EXPECT_LE(worst, 1);
       }
     }
   }
@@ -419,14 +439,39 @@ TEST(VideoRgbConversion, MatchesTheShaderMatrixWithinOne) {
   EXPECT_FALSE(convertToRgb24(mono, rgb.data())) << "only 4:2:0 YUV converts";
 }
 
-// PJ_BENCH=1: rgb24 of one 1920 x 1080 BT.709 limited-range YUV420P frame, median of 20, the per-pixel reference loop
-// against swscale.
+// swscale's x86 converter writes 16 pixels at a time: at other widths it left the last pixels of each row unwritten
+// (34, 854: 480p) or wrote past the frame's last row (40, 1278). Every pixel converts, and nothing past the frame.
+TEST(VideoRgbConversion, AnyEvenWidthConvertsEveryPixelAndNothingPastTheFrame) {
+  for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
+    for (const int width : {34, 36, 40, 66, 854, 1278, 1280}) {
+      SCOPED_TRACE(::testing::Message() << int(format) << " " << width);
+      const int worst = worstDifference(randomFrame(width, 18, format, YuvColorSpace::kBt709, YuvColorRange::kLimited));
+      EXPECT_GE(worst, 0) << "wrote past the frame";
+      EXPECT_LE(worst, 3);
+    }
+  }
+}
+
+// swscale takes its unscaled converter only at an even height, so an odd one takes the exact path, which should be
+// within 1. Disabled: at an odd height even the exact path is off by up to 255 (follow-up F22; AV1 allows odd 4:2:0
+// heights, H.264 and HEVC crop 4:2:0 to even ones).
+TEST(VideoRgbConversion, DISABLED_AnOddHeightTakesTheExactPath) {
+  for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
+    for (const YuvColorRange range : {YuvColorRange::kLimited, YuvColorRange::kFull}) {
+      SCOPED_TRACE(::testing::Message() << int(format) << "/" << int(range));
+      const int worst = worstDifference(randomFrame(32, 17, format, YuvColorSpace::kBt709, range));
+      EXPECT_GE(worst, 0) << "wrote past the frame";
+      EXPECT_LE(worst, 1);
+    }
+  }
+}
+
+// PJ_BENCH=1: rgb24 of one 1920 x 1080 BT.709 limited-range frame, YUV420P and NV12, median of 20, the per-pixel
+// reference loop against swscale.
 TEST(VideoRgbConversionBench, Rgb24At1080p) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";
   }
-  const DecodedFrame frame =
-      randomFrame(1920, 1080, PixelFormat::kYUV420P, YuvColorSpace::kBt709, YuvColorRange::kLimited);
   std::vector<uint8_t> rgb(1920u * 1080u * 3u);
   const auto median_ms = [](auto&& call) {
     std::vector<double> ms;
@@ -438,9 +483,14 @@ TEST(VideoRgbConversionBench, Rgb24At1080p) {
     std::sort(ms.begin(), ms.end());
     return ms[10];
   };
-  const double reference = median_ms([&] { (void)referenceRgb(frame); });
-  const double swscale = median_ms([&] { ASSERT_TRUE(convertToRgb24(frame, rgb.data())); });
-  std::printf("[bench] rgb24 at 1080p: per-pixel loop %.2f ms, swscale %.2f ms\n", reference, swscale);
+  for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
+    const DecodedFrame frame = randomFrame(1920, 1080, format, YuvColorSpace::kBt709, YuvColorRange::kLimited);
+    const double reference = median_ms([&] { (void)referenceRgb(frame); });
+    const double swscale = median_ms([&] { ASSERT_TRUE(convertToRgb24(frame, rgb.data())); });
+    std::printf(
+        "[bench] rgb24 at 1080p, %s: per-pixel loop %.2f ms, swscale %.2f ms\n",
+        format == PixelFormat::kNV12 ? "NV12" : "YUV420P", reference, swscale);
+  }
 }
 
 class StreamingVideoDecoderTest : public ::testing::Test {

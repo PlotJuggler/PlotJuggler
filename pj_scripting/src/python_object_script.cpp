@@ -561,6 +561,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
       PyErr_Clear();
       returned = unexpected("Python error: " + std::string(error.what()));
     }
+    detail::releaseRecycledViews();  // their blocks keep this run's budget alive
     const bool timed_out = scope.timedOut();
     if (scope.overBudget()) {  // even when the script caught the MemoryError, and first: it may also be out of time
       returned = unexpected(detail::vmLimitMessage(options.limits.mem_bytes));

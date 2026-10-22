@@ -345,6 +345,13 @@ eviction is available through `evictBefore(id, threshold)` and
 `evictAllBefore(threshold)`, which trim the oldest prefix. Removing entries anywhere in
 a topic is a bundle with `append = false` and a `drop` predicate (above).
 
+Each limit, and each explicit eviction, counts the oldest entries it expires (a binary
+search for a time floor, a forward byte sum for the memory cap, the excess for the entry
+cap) and evicts them in one pass (`OrderedEntries::evictFront(count, removed)`), so a
+retention jump (a shrunk window, a resume far past a paused tail) costs O(size), not one
+pass per entry: 100k expired entries take about 8 ms instead of 1.3 s under the series
+write lock (`ObjectStoreBundleBench.RetentionJump`).
+
 Memory accounting includes owned payloads and each lazy entry's `resident_bytes`.
 Seeded bytes are charged to the ResidentPayloadPool instead, never to the series.
 

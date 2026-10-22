@@ -525,9 +525,10 @@ class ObjectStore {
   // Allocates nothing when graveyard.cached has room for one more (a caller that may
   // displace the cache reserves it before unlinking).
   static void accountRemoved(ObjectSeries& series, Graveyard& graveyard, size_t first);
-  // Drop the oldest entry, with its accounting (accountRemoved). Takes its graveyard room
-  // first, so an allocation failure leaves the series whole.
-  void evictFront(ObjectSeries& series, Graveyard& graveyard);
+  // Drop the oldest `count` entries (count <= size) in one pass, with their accounting
+  // (accountRemoved). Takes their graveyard room first, so an allocation failure leaves the
+  // series whole.
+  void evictFront(ObjectSeries& series, size_t count, Graveyard& graveyard);
   void applyRetention(ObjectSeries& series, Timestamp newest_ts, Graveyard& graveyard);
 
   // See setResidentPayloadPool. Read without synchronization on the push path;
