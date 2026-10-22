@@ -578,27 +578,38 @@ bool convertToRgb24(const DecodedFrame& frame, uint8_t* out) {
   // interpolated.)
   const bool fast = width % 16 == 0 && height % 2 == 0;
   const int flags = fast ? SWS_POINT : SWS_POINT | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP;
-  SwsContext* context = sws_getContext(
-      width, height, nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P, width, height, AV_PIX_FMT_RGB24, flags, nullptr,
-      nullptr, nullptr);
-  if (context == nullptr) {
-    return false;
-  }
   const int* coefficients =
       sws_getCoefficients(frame.color_space == YuvColorSpace::kBt709 ? SWS_CS_ITU709 : SWS_CS_ITU601);
   const int source_range = frame.color_range == YuvColorRange::kFull ? 1 : 0;
-  sws_setColorspaceDetails(context, coefficients, source_range, coefficients, 1, 0, 1 << 16, 1 << 16);
   const int chroma_width = (width + 1) / 2;
   const size_t luma_size = static_cast<size_t>(width) * static_cast<size_t>(height);
   const size_t chroma_size = static_cast<size_t>(chroma_width) * static_cast<size_t>((height + 1) / 2);
   const uint8_t* base = frame.pixels->data();
-  const uint8_t* planes[3] = {base, base + luma_size, nv12 ? nullptr : base + luma_size + chroma_size};
   const int strides[3] = {width, nv12 ? chroma_width * 2 : chroma_width, nv12 ? 0 : chroma_width};
-  uint8_t* destination[1] = {out};
   const int destination_stride[1] = {width * 3};
-  const int rows = sws_scale(context, planes, strides, 0, height, destination, destination_stride);
-  sws_freeContext(context);
-  return rows == height;
+  // Converts `rows` rows from `first_row` (even) as a frame of their own.
+  const auto convertRows = [&](int first_row, int rows) {
+    SwsContext* context = sws_getContext(
+        width, rows, nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P, width, rows, AV_PIX_FMT_RGB24, flags, nullptr,
+        nullptr, nullptr);
+    if (context == nullptr) {
+      return false;
+    }
+    sws_setColorspaceDetails(context, coefficients, source_range, coefficients, 1, 0, 1 << 16, 1 << 16);
+    const size_t chroma_offset = static_cast<size_t>(first_row / 2) * static_cast<size_t>(strides[1]);
+    const uint8_t* planes[3] = {
+        base + static_cast<size_t>(first_row) * static_cast<size_t>(width), base + luma_size + chroma_offset,
+        nv12 ? nullptr : base + luma_size + chroma_size + chroma_offset};
+    uint8_t* destination[1] = {out + static_cast<size_t>(first_row) * static_cast<size_t>(destination_stride[0])};
+    const int converted = sws_scale(context, planes, strides, 0, rows, destination, destination_stride);
+    sws_freeContext(context);
+    return converted == rows;
+  };
+  // swscale stretches an odd height's ceil(h/2) chroma rows over its h rows, where each chroma row belongs to two
+  // luma rows (the last one cropped), so from about mid-frame odd rows read the next chroma row. The even part
+  // converts as is; the last row converts alone, reading its own chroma row.
+  const int even_rows = height - height % 2;
+  return (even_rows == 0 || convertRows(0, even_rows)) && (even_rows == height || convertRows(even_rows, 1));
 }
 
 }  // namespace PJ

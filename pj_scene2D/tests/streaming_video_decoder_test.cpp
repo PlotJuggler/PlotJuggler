@@ -452,16 +452,19 @@ TEST(VideoRgbConversion, AnyEvenWidthConvertsEveryPixelAndNothingPastTheFrame) {
   }
 }
 
-// swscale takes its unscaled converter only at an even height, so an odd one takes the exact path, which should be
-// within 1. Disabled: at an odd height even the exact path is off by up to 255 (follow-up F22; AV1 allows odd 4:2:0
-// heights, H.264 and HEVC crop 4:2:0 to even ones).
-TEST(VideoRgbConversion, DISABLED_AnOddHeightTakesTheExactPath) {
+// swscale takes its unscaled converter only at an even height, so an odd one takes the exact path, within 1. Every
+// row reads the chroma row of its 2x2 block, which swscale alone misses at an odd height: it stretches the ceil(h/2)
+// chroma rows over the h rows, so odd rows from mid-frame read the next chroma row (off by up to 255). AV1 allows odd
+// 4:2:0 heights; H.264 and HEVC crop 4:2:0 to even ones.
+TEST(VideoRgbConversion, AnOddHeightTakesTheExactPath) {
   for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
     for (const YuvColorRange range : {YuvColorRange::kLimited, YuvColorRange::kFull}) {
-      SCOPED_TRACE(::testing::Message() << int(format) << "/" << int(range));
-      const int worst = worstDifference(randomFrame(32, 17, format, YuvColorSpace::kBt709, range));
-      EXPECT_GE(worst, 0) << "wrote past the frame";
-      EXPECT_LE(worst, 1);
+      for (const auto& [width, height] : {std::pair{32, 17}, std::pair{34, 17}, std::pair{32, 1}}) {
+        SCOPED_TRACE(::testing::Message() << int(format) << "/" << int(range) << " " << width << "x" << height);
+        const int worst = worstDifference(randomFrame(width, height, format, YuvColorSpace::kBt709, range));
+        EXPECT_GE(worst, 0) << "wrote past the frame";
+        EXPECT_LE(worst, 1);
+      }
     }
   }
 }
