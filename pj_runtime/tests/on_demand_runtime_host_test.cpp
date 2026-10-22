@@ -1292,12 +1292,17 @@ TEST(OnDemandRuntimeHostTest, APlayheadRequestWaitsForAtMostTheRunningEvaluation
     ASSERT_TRUE(fx.view.submitEvaluation(scriptedOver("probe", 20 * kSec, 20 * kSec)).has_value());
   }
   ASSERT_TRUE(fx.waitStarted(before + 1));
+  // The request is made inside this call: on a lane of several threads its run starts beside the running evaluation,
+  // on a lane of one it waits in the budget's line ahead of the queued evaluations.
   playback.setCurrentTime(rawToDisplaySeconds(10 * kSec, DisplayOffset{}));
-  test::pumpFor(50);
+  if (fx.manager.enginePool().sharedLaneThreads() > 1) {
+    ASSERT_TRUE(fx.waitStarted(before + 2));
+  }
   fx.fake.allow(1 << 20);
   test::pumpUntil([&] { return fx.fake.finished() >= before + kQueued + 1; }, 5000);
-  const std::vector<Timestamp> times = queryTimes(fx.fake);
-  ASSERT_EQ(times.size(), static_cast<std::size_t>(before + kQueued + 1));
+  ASSERT_EQ(fx.fake.finished(), before + kQueued + 1);
+  // The start order: one `allow` lets the playhead's run and the running evaluation through together, in either order.
+  const std::vector<Timestamp> times = fx.fake.startedQueryTimes();
   const auto playhead = std::ranges::find(times.begin() + before, times.end(), 10 * kSec);
   ASSERT_NE(playhead, times.end());
   EXPECT_LE(playhead - (times.begin() + before), 1) << "the playhead waited for queued evaluations";

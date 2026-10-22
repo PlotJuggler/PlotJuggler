@@ -285,6 +285,12 @@ class FakeRun {
     const std::lock_guard<std::mutex> lock(mutex_);
     return records_;
   }
+  /// The query times of the runs, in the order they started; `records` keeps the order they finished, which two runs
+  /// let through by one `allow` take in any order.
+  [[nodiscard]] std::vector<Timestamp> startedQueryTimes() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return started_query_times_;
+  }
 
  private:
   Expected<scripting::ScriptBundle, scripting::ScriptError> run(
@@ -294,6 +300,7 @@ class FakeRun {
     {
       std::unique_lock<std::mutex> lock(mutex_);
       ++started_;
+      started_query_times_.push_back(options.query_time);
       cv_.notify_all();
       // A test that forgets to let a run through fails instead of hanging.
       if (gated && cv_.wait_for(lock, std::chrono::seconds(5), [this] { return permits_ > 0; })) {
@@ -368,6 +375,7 @@ class FakeRun {
   std::condition_variable cv_;
   int permits_ = 0;
   int started_ = 0;
+  std::vector<Timestamp> started_query_times_;
   std::vector<Record> records_;
 };
 

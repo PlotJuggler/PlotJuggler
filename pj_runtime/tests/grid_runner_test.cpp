@@ -346,6 +346,10 @@ struct Fixture {
       ADD_FAILURE() << "submit failed: " << job.error();
       return {};
     }
+    // Each run's publication submits the next, so waitIdle carries the job to its end. `pumpUntil` sleeps once per
+    // run, and a Windows sleep can last a timer tick: the 2000 runs of a capped job would take most of its timeout.
+    QCoreApplication::processEvents();  // the job's room, which submits its first run
+    pool.waitIdle();
     test::pumpUntil([&done] { return done.has_value(); }, 20000);
     if (!done) {
       ADD_FAILURE() << "no report";
