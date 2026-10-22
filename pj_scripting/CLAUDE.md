@@ -134,7 +134,7 @@ Licensed MPL-2.0.
     must fit a float32, and a cloud is capped so its byte size fits a uint32.
   - `voxel_grid_ops.h`: `VoxelGridBuilder`, a dense float32 VoxelGrid (D16), its dimensions capped at 2^24 cells
     before anything is charged or allocated. A VoxelGrid, built or an input, reads through its SDK field table (SDK
-    0.38.0-dev.2) like any object; its cells are a raw buffer, as a cloud's points are.
+    0.38) like any object; its cells are a raw buffer, as a cloud's points are.
   - `image_annotations_ops.h`: `ImageAnnotationsBuilder`, the same shape for pixel-space annotations
     (`image_topic` required, no text background; the binder pairs a finished set through `ScriptMedia`).
     `field_checks.h`: the argument checks both builders share.
