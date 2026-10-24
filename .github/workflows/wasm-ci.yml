@@ -11,8 +11,9 @@
 #   2. Acceptance — the same defaults with the ingress probe ON: the retained
 #      QRhi capability probe and functional browser suite (with python.spec.js
 #      and python_layout.spec.js) run against the same source graph used by the
-#      packaged application, in Chromium (wasm-chromium job) and Firefox
-#      (wasm-firefox job), which run in parallel on this job's package.
+#      packaged application, in Chromium (wasm-chromium job, three Playwright
+#      workers) and Firefox (wasm-firefox, two shards of one worker), which run
+#      in parallel on this job's package.
 #
 # The deterministic release archive and performance budgets remain part of
 # the release tranche.
@@ -354,25 +355,35 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Functional browser suite (acceptance package)
-        shell: bash
+      - name: Serve acceptance package
+        # The background server outlives this step; the runner reaps it at job end.
         run: |
-          set -euo pipefail
-          node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port 6931 &
-          server_pid=$!
-          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+          node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port 6931 > /dev/null 2>&1 &
           for _ in $(seq 1 50); do
             curl -fsS -o /dev/null "${PJ_WASM_URL}" && break
             sleep 0.2
           done
           curl -fsS -o /dev/null "${PJ_WASM_URL}" || { echo "wasm server failed to start"; exit 1; }
-          npm --prefix tests/wasm run test
+
+      - name: Functional browser suite (acceptance package)
+        # Three workers (playwright.config.js); the @serial cases run alone below.
+        run: npm --prefix tests/wasm run test
+
+      - name: Serial cases (acceptance package)
+        if: ${{ !cancelled() }}
+        run: npm --prefix tests/wasm run test:serial
 
   wasm-firefox:
     # The acceptance package of the wasm job, in Firefox. Firefox has no
     # SwiftShader: WebGL comes from Mesa's llvmpipe on the GPU-less runner,
     # and headless Firefox gets no WebGL at all without a display (Xvfb).
+    # One Playwright worker (playwright.config.js), so the suite is split
+    # across two jobs instead.
     needs: wasm
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # Explicit result check: the implicit success() also fails on the skipped
     # `changed` gate two levels up, which would skip this job on every PR run.
     if: >-
@@ -437,14 +448,18 @@ jobs:
           done
 
       - name: Retained Scene3D capability probe (Firefox)
+        if: matrix.shard == 1
         run: xvfb-run -a npm --prefix tests/wasm run test:scene3d-capability:firefox
 
       - name: Functional browser suite (Firefox)
-        run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep-invert editors.spec.js
+        run: >-
+          xvfb-run -a npm --prefix tests/wasm run test:firefox --
+          --grep-invert editors.spec.js --shard=${{ matrix.shard }}/2
 
       - name: Editors suite (Firefox, non-blocking)
         # Non-blocking until the time-sliced first Luau materialization is
         # proven to hold the 100 ms main-thread heartbeat budget in Firefox
         # on CI runners.
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         continue-on-error: true
         run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep editors.spec.js

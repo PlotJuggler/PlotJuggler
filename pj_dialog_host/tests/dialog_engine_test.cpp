@@ -732,11 +732,11 @@ TEST_F(DialogEngineTest, CancelActiveDialogRejectsOnceAndStopsTicking) {
   ASSERT_TRUE(engine.isDialogOpen());
   ASSERT_NE(visibleDialog(), nullptr);
 
-  // Let the tick timer fire a few times so "zero ticks AFTER cancel" is a real
-  // assertion, not just a never-started timer.
-  QTest::qWait(20);
-  const int ticks_before_cancel = dialogCallCounters().ticks;
-  EXPECT_GT(ticks_before_cancel, 0) << "tick timer must have run while the dialog was open";
+  // Wait for the tick timer to fire so "zero ticks AFTER cancel" is a real
+  // assertion, not just a never-started timer. Wait for the tick itself, not a
+  // fixed delay: the first show's polish (font population) can outlast one.
+  EXPECT_TRUE(QTest::qWaitFor([] { return dialogCallCounters().ticks > 0; }, 5000))
+      << "tick timer must have run while the dialog was open";
 
   engine.cancelActiveDialog();
 

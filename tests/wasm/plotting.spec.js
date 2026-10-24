@@ -1558,7 +1558,8 @@ test.describe('sub-1 DPR QRhi cosmetics', () => {
   });
 });
 
-test('mouse hover selects a curve point and renders its QRhi inspector', async ({ page }) => {
+// @serial: the hover probe misses its point on a loaded runner (playwright.config.js).
+test('mouse hover selects a curve point and renders its QRhi inspector', { tag: '@serial' }, async ({ page }) => {
   test.setTimeout(120000);
   const errors = [];
   const consoleMessages = [];

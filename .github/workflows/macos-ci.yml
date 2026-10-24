@@ -2,17 +2,19 @@
 #
 # macOS arm64 lane (pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes).
 # Probes Metal first (device, then a presented drawable), builds everything
-# through Conan, runs the QRhi display tests on Metal and then on OpenGL (the
-# Metal fallback, a 4.1 core context) with the native `cocoa` QPA, failing
-# unless every view reports the backend of its pass, then the rest of the unit
-# tests.
+# through Conan, runs the QRhi display tests on Metal with the native `cocoa`
+# QPA, failing unless every view reports Metal, then the rest of the unit tests.
+# Scheduled and manual runs also run the QRhi tests on OpenGL (the Metal
+# fallback, a 4.1 core context, on Apple's software renderer: up to 24 min).
 name: macOS CI
 
 # Nightly on the default branch (skipped when it has not moved), on every PR into
 # a release-* branch (none while the repo variable PJ_CI_RELEASE_PR_LITE is
 # 'true'), on PRs into other branches that touch what can break the
-# Metal/QRhi lane (see the `gate` job), and on demand. A run takes ~32 min on a
-# GitHub-hosted macOS runner at about $2. Start it by hand
+# Metal/QRhi lane (see the `gate` job), and on demand. On depot-macos-14 with warm
+# caches a PR run takes ~6 min (build 1.3 min at 99% sccache hits, Metal 2 min,
+# unit 1.6 min); scheduled and manual runs add ~16 min of OpenGL. A fully cold
+# run (Conan closure 7 min, compile 8 min) takes ~36 min. Start it by hand
 # (`gh workflow run "macOS CI" --ref <branch>`) before merging a change to the
 # QRhi/Metal paths the gate does not list.
 on:
@@ -23,13 +25,13 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Runner label (depot-macos-14 is faster, but its capacity is limited)
+        description: Runner label (macos-14 when Depot's macOS capacity is queued)
         type: choice
-        options: [macos-14, depot-macos-14]
-        default: macos-14
+        options: [depot-macos-14, macos-14]
+        default: depot-macos-14
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.runner || 'macos-14' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.runner || 'depot-macos-14' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -82,12 +84,12 @@ jobs:
       ${{ !cancelled()
       && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true')
       && (github.event_name != 'pull_request' || needs.gate.outputs.build == 'true') }}
-    # GitHub-hosted Apple silicon (M1, 3 cores, 7 GB, paravirtual Metal GPU).
-    # depot-macos-14 (M2, 8 cores) waited 40 min in the queue for a runner
-    # (Depot macOS capacity is not elastic), so it is a manual choice only.
-    # The Conan closure has no prebuilt macOS binaries; the cache below keeps it.
-    runs-on: ${{ inputs.runner || 'macos-14' }}
-    # A cold Conan closure plus a cold compile takes about 45 min.
+    # Depot macOS (7 cores, paravirtual Metal GPU that presents). Its capacity is
+    # not elastic (one job once queued 40 min): when it queues, dispatch with
+    # runner=macos-14 (GitHub-hosted M1, 3 cores). The Conan closure has no
+    # prebuilt macOS binaries; the cache below keeps it.
+    runs-on: ${{ inputs.runner || 'depot-macos-14' }}
+    # A cold Conan closure plus a cold compile: ~15 min on Depot, ~45 on macos-14.
     timeout-minutes: 120
     permissions:
       contents: read
@@ -99,6 +101,10 @@ jobs:
         shell: bash
         run: |
           sw_vers
+          echo "cores: $(sysctl -n hw.ncpu)"
+          for var in SCCACHE_WEBDAV_ENDPOINT SCCACHE_WEBDAV_TOKEN; do
+            echo "${var}: $([[ -n "${!var:-}" ]] && echo preset || echo unset)"
+          done
           system_profiler SPDisplaysDataType
           cat > "${RUNNER_TEMP}/metal_probe.swift" <<'SWIFT'
           import AppKit
@@ -158,11 +164,24 @@ jobs:
           echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Install build tools
+        # Homebrew builds no bottles for macOS 14 any more, so a `brew install`
+        # there compiles from source: use the image's ninja when it has one.
         shell: bash
         run: |
-          brew install ccache ninja
+          command -v ninja || HOMEBREW_NO_AUTO_UPDATE=1 brew install ninja
           xcodebuild -version
           clang --version
+
+      - name: Install sccache
+        # Same as windows-ci.yml: a speedup, never load-bearing. On Depot runners
+        # the backend is Depot Cache through the preset SCCACHE_WEBDAV_* variables
+        # (every build, PRs included, reads and writes it); on macos-14 it is a
+        # local disk cache, cold every run.
+        id: setup_sccache
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: "v0.16.0"
 
       - uses: conan-io/setup-conan@v1
         with:
@@ -238,29 +257,6 @@ jobs:
           path: .qt/${{ steps.versions.outputs.qt_version }}/macos
           key: qt-sdk-${{ steps.versions.outputs.qt_version }}-macos-v1
 
-      - name: Restore ccache
-        id: ccache_restore
-        uses: actions/cache/restore@v5
-        with:
-          path: ~/.cache/ccache
-          key: ccache-macos-arm64-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            ccache-macos-arm64-${{ github.ref_name }}-
-            ccache-macos-arm64-${{ github.base_ref }}-
-            ccache-macos-arm64-main-
-
-      - name: Set ccache limits
-        shell: bash
-        run: |
-          echo "CCACHE_DIR=${HOME}/.cache/ccache" >> "$GITHUB_ENV"
-          export CCACHE_DIR="${HOME}/.cache/ccache"
-          ccache --set-config=max_size=2G
-          ccache --set-config=compression=true
-          ccache --set-config=compiler_check=content
-          ccache --set-config=hash_dir=false
-          ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
-          ccache -z
-
       - name: Conan install
         shell: bash
         run: |
@@ -294,29 +290,24 @@ jobs:
       - name: Build (QRhi)
         id: build
         shell: bash
+        env:
+          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
+          launcher_args=()
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
+          else
+            echo "::warning::sccache unavailable; building without a compiler cache"
+          fi
           cmake -S . -B build -G Ninja \
             "-DCMAKE_TOOLCHAIN_FILE=${PWD}/build/conan_toolchain.cmake" \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/macos" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            "${launcher_args[@]}" \
             -DPJ_BUILD_DEMOS=OFF
           # -k 0: one run lists every compile error.
           cmake --build build --parallel -- -k 0
-
-      - name: Save ccache
-        # always(): a failed build's objects are still valid. Not from PR runs
-        # (each save is a new SHA-keyed blob); PRs restore their base branch's or main's.
-        if: always() && github.event_name != 'pull_request' && steps.ccache_restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.cache/ccache
-          key: ccache-macos-arm64-${{ github.ref_name }}-${{ github.sha }}
-
-      - name: ccache stats
-        if: always()
-        shell: bash
-        run: ccache -s || true
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then sccache --show-stats; fi
 
       - name: Test the QRhi renderer (Metal)
         if: always() && steps.build.outcome == 'success'
@@ -349,11 +340,10 @@ jobs:
         # (its 1 px analytic line loses the same coverage), no frame-identity check
         # across a shadow toggle (not reproducible frame to frame there), and no DPR 2 mixed-dock
         # pass (every float recompiles the whole pipeline set at 4x the pixels;
-        # Linux runs it). Pull requests also skip the DPR 2 render variants, the frame
-        # benchmarks and three slow cases that check renderer logic rather than the
-        # backend (Linux runs all of them); the scheduled and manual runs run them.
+        # Linux runs it). Scheduled and manual runs only: up to 24 min on the
+        # software renderer, so pull requests gate on Metal alone.
         # pj_scene3D/docs/TECHNICAL_NOTES.md, "macOS OpenGL fallback".
-        if: always() && steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success' && github.event_name != 'pull_request'
         shell: bash
         env:
           QT_QPA_PLATFORM: cocoa
@@ -366,10 +356,6 @@ jobs:
           mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
           log="${RUNNER_TEMP}/qrhi-opengl-ctest.log"
           exclude='^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|FilledGridLinesFollowOddCellEdges|ShadowToggleRebindsKeptMeshes|^rhi_mixed_dock_test\.opengl_dpr2\.'
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            # Pull requests run a lighter pass; nightly and manual runs run it all.
-            exclude+='|\.opengl_dpr2\.|^scene3d_frame_benchmark\.|PresentationRenderScaleSupersamples|MeshesArrivingOneByOneBuildOnce|CachedFramesMatchUncachedPixelForPixel'
-          fi
           ctest --test-dir build -V --timeout 120 -L qrhi-opengl -E "${exclude}" \
             2>&1 | tee "$log" || status=$?
           bash scripts/ci/check_qrhi_backend.sh "$log" 'OpenGL, ' OpenGL
@@ -417,8 +403,8 @@ jobs:
         run: ctest --test-dir build --output-on-failure --timeout 120 -LE qrhi -j "$(sysctl -n hw.ncpu)"
 
       - name: Slowest QRhi cases
-        # The OpenGL fallback runs on Apple's software renderer and dominates the
-        # lane: list where its time goes (job summary and log). Last in the job so
+        # Where the QRhi time goes (job summary and log); on scheduled and manual
+        # runs the OpenGL fallback, on Apple's software renderer, dominates. Last in the job so
         # the listing is in the tail of the log, after the long unit-test output.
         if: always() && steps.build.outcome == 'success'
         shell: bash

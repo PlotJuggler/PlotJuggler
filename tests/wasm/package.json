@@ -2,7 +2,8 @@
   "name": "plotjuggler-wasm-browser-tests",
   "private": true,
   "scripts": {
-    "test": "playwright test --project=chromium --reporter=line --workers=1",
+    "test": "playwright test --project=chromium --reporter=line --grep-invert @serial",
+    "test:serial": "playwright test --project=chromium --reporter=line --workers=1 --grep @serial",
     "test:firefox": "playwright test --project=firefox --reporter=line --workers=1",
     "test:deployment": "playwright test -c deployment.playwright.config.js",
     "test:package": "node --test package_wasm.test.mjs wasm_notices.test.mjs wasm_source_offer.test.mjs",

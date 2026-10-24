@@ -94,7 +94,7 @@ Linux CI floor step caps Mesa at 3.3 (`MESA_GL_VERSION_OVERRIDE=3.3`,
   without `<vulkan/vulkan.h>`, which CMake warns about; OpenGL without a current
   context) gets `kGuaranteedMax3dTextureSize`, 256, logged once. The D3D and
   Metal constants are documented, not measured on hardware.
-- **Metal on GitHub-hosted `macos-14`** (Apple silicon VM):
+- **Metal on GitHub-hosted `macos-14` and on `depot-macos-14`** (Apple silicon VMs):
   `MTLCreateSystemDefaultDevice` returns "Apple Paravirtual device" (not
   headless), a `CAMetalLayer` drawable presents, and QRhi reports `Metal,
   deviceType=Integrated`.
@@ -475,7 +475,7 @@ and diffs.
 | | OpenGL floor step | `scene3d_rhi_render_test.opengl` and `rhi_dock_lifecycle_test.opengl` with Mesa capped at GL 3.3 | blocking |
 | | mixed-DPR step | the two `*AnotherPixelRatio` cases, `.opengl` and `.vulkan`, on a headless mutter's Xwayland with two virtual monitors, `QT_SCREEN_SCALE_FACTORS="1;2"`, `PJ_REQUIRE_MIXED_DPR=1` | non-blocking (`continue-on-error`) until it has run green on the runner's mutter 42 |
 | `windows-ci.yml` | `build` (QRhi) | the unit suite (`-LE qrhi`), then `-L qrhi-d3d11` with the `windows` QPA, `QSG_RHI_PREFER_SOFTWARE_RENDERER=1`; `scripts/ci/check_qrhi_backend.sh` fails unless every view and plot canvas logs `D3D11` on a `Cpu` (WARP) adapter | compile and display step blocking; unit step non-blocking |
-| `macos-ci.yml` | `qrhi-metal` (`macos-14`) | a Metal device and presentation probe, then `-L qrhi-metal` and `-L qrhi-opengl` with the `cocoa` QPA, each requiring every view and plot canvas on its backend, then `-LE qrhi`; on a failure it reruns up to three failed QRhi cases under lldb (their backend from the ctest name) for every thread's backtrace | nightly when the default branch moved, and on demand |
+| `macos-ci.yml` | `qrhi-metal` (`depot-macos-14`) | a Metal device and presentation probe, then `-L qrhi-metal` (and, on scheduled and manual runs only, `-L qrhi-opengl`) with the `cocoa` QPA, each requiring every view and plot canvas on its backend, then `-LE qrhi`; on a failure it reruns up to three failed QRhi cases under lldb (their backend from the ctest name) for every thread's backtrace | nightly when the default branch moved, and on demand |
 | `pixi-ci.yml` | linux-64, win-64 | the QRhi build against conda Qt; win-64 runs the whole suite with the display passes skipped (its runner exposes no window) | — |
 | `sanitizers.yml` | asan, msan, tsan | the Clang 22 + libstdc++ build, offscreen (`test.sh`), so every display case skips; `tsan.supp` carries audited entries for `LatestWinsWorker`'s Qt hand-offs | nightly, on push to main, on dispatch |
 | `wasm-ci.yml` | | build, Playwright suites, the Scene3D capability probe | — |
@@ -496,14 +496,12 @@ it leaves out what measures Apple's software renderer rather than ours, namely t
 point-cloud goldens, the sub-pixel sprite colour check (1 px sprites resolve to
 ~15% coverage there), the odd-cell-edge grid line check (its 1 px analytic line
 loses the same coverage there) and the DPR 2 mixed-dock pass (every float
-recompiles the pipeline set at 4x the pixels; Linux runs it). Pull requests also
-skip the `opengl_dpr2` render variants, the `scene3d_frame_benchmark` cases and three
-slow renderer-logic cases (`PresentationRenderScaleSupersamples`,
-`MeshesArrivingOneByOneBuildOnce`, `CachedFramesMatchUncachedPixelForPixel`); the
-nightly and manual runs run the whole step, and Linux runs all of them on every PR.
-The PR lane runs on
-GitHub's `macos-14`, because Depot's macOS capacity is not elastic (a job queued
-40 min); Depot stays a `workflow_dispatch` choice.
+recompiles the pipeline set at 4x the pixels; Linux runs it). It runs only on the
+nightly and manual runs (up to 24 min on the software renderer); pull requests gate
+on Metal, and Linux runs every OpenGL case on every PR.
+The lane runs on Depot's `depot-macos-14` (7 cores, the same paravirtual Metal
+device, presents). Depot's macOS capacity is not elastic (a job once queued 40 min),
+so GitHub's `macos-14` stays a `workflow_dispatch` choice for when it queues.
 
 ## 9. Performance (Gate A)
 

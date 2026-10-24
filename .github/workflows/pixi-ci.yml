@@ -37,14 +37,14 @@ jobs:
   build:
     needs: changed
     # !cancelled(): on PR and manual runs the gate is skipped, which would
-    # otherwise skip this job too. Also skipped on PRs into release-* while the
-    # repo variable PJ_CI_RELEASE_PR_LITE is 'true'.
+    # otherwise skip this job too. Drafts wait: marking one ready runs it (recipe
+    # work that only CI can validate, like the MSVC ffmpeg, dispatches by hand).
+    # Also skipped on PRs into release-* while the repo variable
+    # PJ_CI_RELEASE_PR_LITE is 'true'.
     if: >-
       ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') &&
+      !github.event.pull_request.draft &&
       !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
-    # No draft gate: the paths filter above already limits PR runs to
-    # packaging-relevant changes, and recipe work (the MSVC ffmpeg above all)
-    # can only be validated in CI — drafts included.
     name: pixi-build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:

@@ -12,9 +12,10 @@ const WATCHDOG_BOUND_MS = 2200;
 // 100 ms bound (kPythonValidateWaitMillis): that, one 20 ms tick and a loaded runner's scheduling.
 const BUSY_COMPILE_GAP_BOUND_MS = 250;
 
-test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, no main-thread wait', async ({
-  page,
-}) => {
+// @serial: its time bounds fail on a loaded runner (playwright.config.js).
+test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, no main-thread wait', {
+  tag: '@serial',
+}, async ({ page }) => {
   test.setTimeout(300_000);
   const consoleMessages = [];
   const errors = [];

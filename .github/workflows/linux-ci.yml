@@ -160,8 +160,10 @@ jobs:
         # and produced 0/810 hits because sanitizer objects are incompatible.
         # On Depot runners actions/cache is backed by Depot Cache storage (not
         # GitHub's shared 10 GB quota). Only pushes save (see Save ccache); a pull
-        # request restores its target branch's newest cache before main's, since
-        # a release-* PR restoring main's cache hits under 5%.
+        # request restores its head branch's newest cache (there is one when the
+        # head is itself a pushed branch, e.g. a release-* merged into main: main's
+        # cache hit 3.5% there), then its target branch's, then main's, since a
+        # release-* PR restoring main's cache hits under 5%.
         id: ccache_restore
         uses: actions/cache/restore@v5
         with:
@@ -171,6 +173,7 @@ jobs:
           # builds explicitly by ref and cannot match ccache-linux-tsan-*.
           restore-keys: |
             ccache-linux-build-${{ github.ref_name }}-
+            ccache-linux-build-${{ github.head_ref }}-
             ccache-linux-build-${{ github.base_ref }}-
             ccache-linux-build-main-
             ccache-linux-${{ github.ref_name }}-

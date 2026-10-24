@@ -412,7 +412,10 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
   expect(errors).toEqual([]);
 });
 
-test('Transform Editor creates a large exact Luau series while the browser main thread stays responsive', async ({ page }) => {
+// @serial: its heartbeat bound fails on a loaded runner (playwright.config.js).
+test('Transform Editor creates a large exact Luau series while the browser main thread stays responsive', {
+  tag: '@serial',
+}, async ({ page }) => {
   test.setTimeout(240000);
   const errors = [];
   const consoleMessages = [];
