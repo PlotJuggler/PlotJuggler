@@ -20,6 +20,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_scene3d_widgets/layers/trail_layer.h"  // TrailSource: a slot argument, so moc needs it complete
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
@@ -36,7 +37,6 @@ class FixedFrameMemory;
 class Scene3DLayer;
 class SceneViewWidget;
 class UrdfPackageResolver;
-struct TrailSource;
 class TrailLayer;
 }  // namespace pj::scene3d
 
