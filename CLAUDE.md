@@ -15,7 +15,7 @@ header. The `plotjuggler_sdk` Conan package is a separate repo with its own lice
 
 ## Architecture
 
-Current module boundaries and dependency rules are documented below; each module's `CLAUDE.md` and `docs/` describe its implementation. The original [master plan](./docs/archive/PJ4_PLAN.md) and the completed [QRhi migration plan](./docs/archive/QRHI_MIGRATION.md) are retired and retained only as historical context; the renderer's remaining work is in [QRHI_NEXT.md](./pj_scene3D/docs/QRHI_NEXT.md). Ongoing recording and source-cache work is tracked in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md).
+Current module boundaries and dependency rules are documented below; each module's `CLAUDE.md` and `docs/` describe its implementation. The original [master plan](./docs/archive/PJ4_PLAN.md) and the completed [QRhi migration plan](./docs/archive/QRHI_MIGRATION.md) are retired and retained only as historical context; the renderer's remaining work is in [QRHI_NEXT.md](./pj_scene3D/docs/QRHI_NEXT.md). Ongoing recording and source-cache work is tracked in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md). The design of scripts → derived series and objects → plots and scene layers spans several modules and lives in [docs/derived_objects/ARCHITECTURE.md](./docs/derived_objects/ARCHITECTURE.md), with its requirements in [REQUIREMENTS.md](./docs/derived_objects/REQUIREMENTS.md).
 
 Top-level layout:
 
@@ -29,7 +29,7 @@ PJ4/
 ├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; QRhi renderer (HDR/SSAO/EDL, shadows) + widgets, benchmarks
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
-├── pj_scripting/            # Luau filter engine: self-describing filter classes for Data Processors
+├── pj_scripting/            # Luau and embedded-Python engines: filters, marker rules, on-demand object scripts
 ├── pj_runtime/              # services layer (Qt allowed, no Qt6::Widgets link)
 ├── pj_widgets/              # reusable Qt widgets and UI helpers
 ├── pj_plotting/             # Qwt plotting widget family: core adapters, Qt widgets, tests
@@ -58,7 +58,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_scene2D/`: 2D media/scene feature family. Put independent media logic in `core/`, Qt viewer widgets in `widgets/`, tests in `tests/`, and opt-in standalone dev utilities in `tools/` (gated by `PJ_BUILD_TOOLS`, off by default).
 - `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
 - `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
-- `pj_scripting/`: Luau filter engine for Data Processors — self-describing `.luau` filter classes behind a language-agnostic `ScriptEngine` seam (Python out-of-process is a future drop-in). It layers Luau onto the `PJ::proc::DataProcessor` base owned by `pj_datastore`. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
+- `pj_scripting/`: Luau and embedded-Python engines (behind a language-agnostic `ScriptEngine` seam) for filters, marker rules and on-demand object scripts. Filters are self-describing classes (`.luau`, or a Python module headed `# pj-script: python`); marker rules are Luau only. It layers the engines onto the `PJ::proc::DataProcessor` base owned by `pj_datastore`. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
 - `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, the QRhi view, its passes and the layers in `widgets/`, tests in `tests/`, standalone benchmarks in `demos/` (with `PJ_BUILD_DEMOS`). Do not add 3D rendering code elsewhere.
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`, plus `3rdparty/retro/` — the GPLv2/shareware license + source-offer compliance artifacts shipped alongside the separately-licensed `pj-raster-helper` (the root `CMakeLists.txt` installs these next to the helper binary). Conan/system dependencies do not belong here.
@@ -69,6 +69,8 @@ When adding files, use the owning module rather than creating new top-level fold
 ## Documentation
 
 Each PJ4 module owns its intent docs. An agent landing in the repo reads root `CLAUDE.md` → per-module `CLAUDE.md` → per-module `docs/` → code. If any link in that chain is missing or stale, treat it as a documentation bug, not a code bug.
+
+Record hard-won lessons in the owning module's `docs/TECHNICAL_NOTES.md`, written as the current state of the code (no history); prune them when the code changes.
 
 ### Code doc-comments
 
@@ -99,7 +101,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | Module | Entry point | Docs |
 |---|---|---|
 | `pj_app` | [pj_app/CLAUDE.md](./pj_app/CLAUDE.md) | — |
-| `pj_runtime` | [pj_runtime/CLAUDE.md](./pj_runtime/CLAUDE.md) | — |
+| `pj_runtime` | [pj_runtime/CLAUDE.md](./pj_runtime/CLAUDE.md) | [derived_objects/ARCHITECTURE](./docs/derived_objects/ARCHITECTURE.md) (on-demand, batch and series engines, scheduling, TF) |
 | `pj_tf` | [pj_tf/CLAUDE.md](./pj_tf/CLAUDE.md) | — |
 | `pj_widgets` | [pj_widgets/CLAUDE.md](./pj_widgets/CLAUDE.md) | — |
 | `pj_plotting` | [pj_plotting/CLAUDE.md](./pj_plotting/CLAUDE.md) | — |
@@ -107,9 +109,10 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_scene_common` | [pj_scene_common/CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
 | `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES |
 | `pj_marketplace` | [pj_marketplace/CLAUDE.md](./pj_marketplace/CLAUDE.md) | [docs/](./pj_marketplace/docs) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
-| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (QRhi renderer, layers, cameras, URDF/mesh), [TECHNICAL_NOTES](./pj_scene3D/docs/TECHNICAL_NOTES.md) (backend quirks, Qt bugs, limits, goldens, CI lanes), [QRHI_NEXT](./pj_scene3D/docs/QRHI_NEXT.md) (GL deletion, P6 performance, Qt 6.12) |
-| `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
-| `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs) — FILTER_CLASS |
+| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (QRhi renderer, layers, cameras, URDF/mesh), [TECHNICAL_NOTES](./pj_scene3D/docs/TECHNICAL_NOTES.md) (backend quirks, Qt bugs, limits, goldens, CI lanes), [QRHI_NEXT](./pj_scene3D/docs/QRHI_NEXT.md) (GL deletion, P6 performance, pinned-Qt follow-ups) |
+| `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN; [derived_objects/ARCHITECTURE](./docs/derived_objects/ARCHITECTURE.md) (the `IncrementalEngine` and the derived-topic ring) |
+| `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs) — FILTER_CLASS; [derived_objects/ARCHITECTURE](./docs/derived_objects/ARCHITECTURE.md) (scripts and outputs, Python sandbox) |
+| Derived objects (cross-module: `pj_datastore`, `pj_runtime`, `pj_scripting`, `pj_scene*`, `pj_app`) | [docs/derived_objects/ARCHITECTURE.md](./docs/derived_objects/ARCHITECTURE.md) | [REQUIREMENTS](./docs/derived_objects/REQUIREMENTS.md) |
 | `plotjuggler_sdk` (Conan package) | [github.com/PlotJuggler/plotjuggler_sdk](https://github.com/PlotJuggler/plotjuggler_sdk) | the SDK repo owns its own `CLAUDE.md` + `docs/` tree |
 
 ### Freshness discipline
@@ -140,7 +143,7 @@ The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) mea
 
 ## Build
 
-- **Qt 6.12.0** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
+- **Qt** (required; the version pinned by `PJ_QT_VERSION` in [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
 - **Renderer: QRhi.** Scene3D, the plot canvas (`PlotRhiCanvas`) and the Scene2D media viewer render through QRhi on the platform's native API; `PJ_GRAPHICS_API` overrides it at run time. There is no other GPU renderer to select at configure time.
@@ -198,7 +201,7 @@ still installs Qt inline because the Linux installer uses the `gcc_64` build.
 > **Versioning rule — never hardcode a version.** `PJ_APP_VERSION` (app version),
 > `PJ_QT_VERSION` (Qt), and `PJ_APPIMAGE_ARCH` (AppImage arch) live **only** in
 > [`versions.env`](./versions.env); always read them from there rather than
-> writing a literal (`3.999.0`, `6.12.0`, `x86_64`) anywhere. How each consumer
+> writing a version or architecture literal anywhere. How each consumer
 > reads it: bash scripts `source "<anchor>/versions.env"` by absolute path; the
 > Windows PowerShell scripts under `scripts/windows/` parse its `KEY=VALUE` lines
 > themselves (`PjWindowsCommon.ps1`); CMake
@@ -299,8 +302,7 @@ Pass `--with-tests` to the container wrapper to build the full suite and demos
 required for a ctest tree. Per-module gtest runners are registered with
 `gtest_discover_tests` in [`cmake/PjTests.cmake`](./cmake/PjTests.cmake), keeping
 one process per case; filter a module with `ctest -R '^pj_runtime_tests\.' --test-dir build`
-inside the builder image. For the tests-on tree size, see workspace findings
-`2026-09-08-build-size-reduction-results.md`.
+inside the builder image.
 
 Linux builds with GNU/Clang compilers use thin archives to reference object files
 without copying them, and `resources.qrc` is compiled once as `pj_resources`.
@@ -342,7 +344,7 @@ resolve the primary checkout themselves, so they work from any worktree.
 
 ## v1 scope
 
-Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes, session recording of streaming sources to MCAP.
+Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua and Python via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes, session recording of streaming sources to MCAP.
 
 Session recording is a **runtime capability**, not a build flag: `RecordingService::isSupported()` says whether this build has a sink to record into, and every Record affordance follows it. Only the sink is platform-bound — the MCAP file writer is compiled on desktop only, while `Recorder`/`RecordingService` build everywhere (a browser sink is a later milestone, see the design doc). Each Record press creates one batch folder in the Preferences → Recording folder, `pj_<UTC timestamp>/`, holding ONE MCAP file per recorded source, named after that source and written straight into its final name; every file of one press shares a `capture_id`. A recording without a summary section is one that was not stopped cleanly, and it still opens (readers scan it linearly, `mcap recover` rebuilds its index). The write-queue budget is per source, so recording N sources may hold N times it in flight. See [`docs/session_recorder_design.md`](./docs/session_recorder_design.md).
 
@@ -412,6 +414,6 @@ Don't just assert a change works and hand it back ("I don't see any difference" 
 
 - **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check the PJ3 tree at `${PJ3_SOURCE_DIR}` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
 - **Style changes are expected; widget names are not.** When porting, adapt file/class names and member conventions to plotjuggler_sdk style (`PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col). But **preserve the `objectName` of widgets inside `.ui` files verbatim** (e.g. `buttonLoadDatafile`, `frameFile`, `checkBoxAddPrefix`, `displayTime`, `playbackLoop`, `streamingSpinBox`) so existing layout files, stylesheet selectors, and user muscle memory keep working — unless I explicitly ask you to rename one.
-- **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_runtime` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `TransformRegistry`). That's the one systematic rewrite.
+- **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_runtime` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `DataProcessorService`). That's the one systematic rewrite.
 - **Proactively surface improvement opportunities.** If you see a chance to improve separation of concerns, reusability, testability, or remove duplication while you're porting — flag it and **ask for approval before changing**. Don't silently refactor, and don't silently skip obvious wins. The bar is: "is there a cleaner shape that we'd regret not taking?" If yes, ask.
 - **Don't fix what isn't broken.** Code that already reads cleanly and does the right thing gets ported close to verbatim (modulo style). Save the refactor energy for real problems.

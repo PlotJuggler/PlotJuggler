@@ -209,8 +209,9 @@ caller-supplied raw timestamp shifts.
   delta in `ObjectEntry::payload_stamp_shift` (carried through `resolveEntry` to
   `ResolvedObjectEntry`). A consumer that keys off payload-embedded stamps adds
   it; one that keys off the store `timestamp` ignores it. It is 0 for unmerged
-  data and accumulates across chained merges. The one consumer today is the 3D TF
-  buffer, which indexes history by each transform's own inner stamp.
+  data and accumulates across chained merges. Consumers that key off payload
+  stamps add it: `TransformService` (TF history is indexed by each transform's own
+  inner stamp), the marker `BatchEngine` and the script `InputStager`.
 
 ## Read Paths
 
@@ -337,8 +338,7 @@ Retention is configured per topic:
   payloads plus lazy `resident_bytes`) is at or below the cap.
 - `max_entries > 0`: keep at most that many of the most recent entries.
 
-Either axis can be zero to disable that axis. Both zero disables automatic
-retention.
+Each axis is disabled by zero. All three zero disables automatic retention.
 
 Automatic retention runs on push and after `flushTo()` / `mergeDatasets()`. Explicit
 eviction is available through `evictBefore(id, threshold)` and
@@ -360,7 +360,9 @@ Seeded bytes are charged to the ResidentPayloadPool instead, never to the series
 The store has one global shared mutex for topic lookup and one shared mutex per
 topic series. Reads can proceed concurrently with reads on the same or different
 topics. Writes take the target topic's exclusive lock. Topic registration,
-removal, and `clear()` take the global exclusive lock.
+removal, `clear()` and `pushOwnedBundle()` take the global exclusive lock; a bundle
+holds it through both of its phases, so it blocks every reader and writer of every
+topic while it runs.
 
 The per-series `uid_order` side index (inside `OrderedEntries`) is maintained
 under that same per-series mutex as `entries`, written exclusively in lockstep
@@ -473,7 +475,7 @@ a drain never reports past what it returns.
 
 Waiting for the series lock is acceptable here because no drain runs on a
 latency-critical thread: FrameTransforms are decoded by the worker-side ingest
-tap (see `pj_scene3D`), and the remaining drains are cold rebuilds. A writer's
+tap (`ObjectIngestTap.h`, claimed by `pj_runtime`'s `TransformService`), and the remaining drains are cold rebuilds. A writer's
 exclusive hold does have a real worst case — `OrderedEntries::push`'s
 out-of-order branch is O(n) under the exclusive series lock (~1.1 ms/push at
 200k entries) — so a future GUI-thread consumer would need a non-blocking

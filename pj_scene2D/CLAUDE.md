@@ -64,8 +64,8 @@ Read in this order:
 
 - [`docs/REQUIREMENTS.md`](./docs/REQUIREMENTS.md) — the WHAT: scope, use cases, functional requirements, module contract.
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the HOW: module structure, data flow, scrub architecture, codec pipeline, threading model, key invariants.
-- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — domain background: Qt 6.12.0/QRhi specifics, codec caveats, HW-accel matrices, lessons learned.
-- [`../plotjuggler_sdk/docs/builtin_type.md`](../plotjuggler_sdk/docs/builtin_type.md) — canonical builtin-type catalog (the SDK owns all canonical scene/object schemas: Image, DepthImage, VideoFrame, PointCloud, OccupancyGrid, SceneEntities, FrameTransforms, ImageAnnotations, etc.).
+- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — domain background: the pinned Qt's QRhi specifics, codec caveats, HW-accel matrices, lessons learned.
+- [`docs/builtin_type.md` in the SDK repo](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — canonical builtin-type catalog (the SDK owns all canonical scene/object schemas: Image, DepthImage, VideoFrame, PointCloud, OccupancyGrid, SceneEntities, FrameTransforms, ImageAnnotations, etc.).
 
 ## Key headers
 
@@ -73,7 +73,7 @@ Read in this order:
 - `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations. The composite also pairs the annotations of a derived topic, which name their image, with the delivered frame (`setLayerPairing`, ARCHITECTURE §8.3a); a parser's are shown as they are.
 - `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec) and its stamp on the dataset clock (the payload's plus the entry's merge shift, carried as `DecodedFrame::stamp` for annotation pairing); shared by the image and depth pipeline sources.
 - `core/include/pj_scene2d_core/streaming_video_decoder.h`, `ffmpeg_decoder.h` — GOP-aware streaming video decode on top of FFmpeg. `FfmpegDecoder` carries the codec's colorimetry onto each frame and emits native NV12 on the hardware-decode path.
-- `core/include/pj_scene2d_core/video_color.h` — `buildYuvMatrix(space, range)`: the per-frame YUV→RGB matrix (BT.601/709 + limited/full range) the media shader uploads, replacing the old hardcoded BT.709. `depth_range.h` — `depthPercentileRange` backing the depth Auto-fit.
+- `core/include/pj_scene2d_core/video_color.h` — `buildYuvMatrix(space, range)`: the per-frame YUV→RGB matrix (BT.601/709 + limited/full range) the media shader uploads. `depth_range.h` — `depthPercentileRange` backing the depth Auto-fit.
 - `core/include/pj_scene2d_core/overlay_geometry.h` — backend-agnostic tessellation of annotation overlays (lines/points/fills/circles) into GPU vertex data; stroke width scales with zoom but is **floored at 1px on screen** so edges never go sub-pixel and vanish.
 - `widgets/include/pj_scene2d_widgets/media_viewer_widget.h` — the `QRhiWidget` renderer (YUV/RGB pipelines + annotation overlays).
 - `widgets/include/pj_scene2d_widgets/Scene2DDockWidget.h` — the dock widget wiring layers into `pj_scene_common`'s `SceneDockWidget`.
@@ -82,7 +82,11 @@ Read in this order:
 
 - Run the module tests and make sure they pass before any commit.
 - Keep the markdown files in `docs/` in sync with the code you change (see the
-  root `CLAUDE.md` freshness discipline); record hard-won lessons in
-  `TECHNICAL_NOTES.md`, especially after long debugging sessions.
+  root `CLAUDE.md` freshness discipline); hard-won lessons go in `TECHNICAL_NOTES.md`
+  (root `CLAUDE.md` rule).
+- Editing a shader means re-baking its `.qsb` with the pinned `qsb` (`widgets/shaders/bake.sh`) and committing both,
+  or the WASM configure hash check fails.
+- Derived topics (script outputs) reach this module as ordinary store topics, through `pj_scene_common` and the
+  catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline) and §17 (scene integration).
 - Think test-first: prefer automated reproduction over asking the user to run
   the app. When an issue is reported, reproduce it in a test before fixing it.

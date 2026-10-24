@@ -88,7 +88,7 @@ The `pj_marketplace` link is conditional: `$<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_mar
 
 ## When porting from PJ3
 
-PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into the services above — primarily `CatalogModel`, `SessionManager`, `PlaybackEngine`, and (future) `TransformRegistry`. This is the **one systematic rewrite** during a PJ3 port; everything else should be lifted close to verbatim.
+PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into the services above — primarily `CatalogModel`, `SessionManager`, `PlaybackEngine`, and `DataProcessorService` (the per-curve transforms that PJ3 kept in `TransformsMap`). This is the **one systematic rewrite** during a PJ3 port; everything else should be lifted close to verbatim.
 
 ## Tests
 

@@ -23,7 +23,7 @@ pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      │                  ├──►  turbojpeg
      │                  └──►  libpng
      │
-     ├──►  Qt 6.12.0 (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
+     ├──►  Qt (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
      ├──►  pj_runtime           (IDataWidget contract, PlaybackEngine driver)
      ├──►  pj_scene_common      (SceneDockWidget/ISceneLayer base; backend-agnostic layered scene dock framework)
      ├──►  pj_widgets           (shared Colormap.h LUT/enum for the GPU depth colormap)
@@ -295,7 +295,7 @@ design rationale only.
 ## 4. Codec Pipeline
 
 > For the wire-format type catalog that the codec pipeline decodes, see
-> [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — the canonical SDK builtin-type catalog.
+> [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — the canonical SDK builtin-type catalog.
 
 Each ObjectStore topic produces raw bytes in a wire format. To reach
 display-ready pixels, those bytes pass through a **codec pipeline** —
@@ -823,7 +823,7 @@ and 4.
 
 ### 7.1 QRhiWidget — five pipelines
 
-`MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.12.0), which abstracts
+`MediaViewerWidget` subclasses `QRhiWidget`, which abstracts
 over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
 QRhi graphics pipelines that share the same `viewTransform` UBO so
 zoom/pan/rotation apply uniformly:

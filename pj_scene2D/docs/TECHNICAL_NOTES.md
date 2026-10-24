@@ -3,7 +3,7 @@
 Implementation-relevant technical knowledge for the pj_scene2D module — a
 supplementary knowledge base sitting alongside `ARCHITECTURE.md`. Where
 `ARCHITECTURE.md` defines HOW the module is built today, this file captures the
-**domain background** that informed those decisions: Qt 6.8 specifics, codec
+**domain background** that informed those decisions: Qt specifics, codec
 caveats, platform HW-accel matrices, debugging notes, and lessons brought over
 from the standalone experiment.
 
@@ -17,7 +17,7 @@ integrated module.
 
 ---
 
-## 1. Qt 6.8 Video Rendering
+## 1. Qt Video Rendering
 
 ### QMediaPlayer Limitations
 
@@ -112,7 +112,7 @@ each backend of the platform (and at the OpenGL 3.3 floor in Linux CI). A genera
 
 A top-level first shown with no `QRhiWidget` gets a raster backing store. When a
 `QRhiWidget` joins it later (a media or Scene3D dock added to a window whose
-plots use the raster canvas), Qt 6.11 switches the window to QRhi composition,
+plots use the raster canvas), Qt switches the window to QRhi composition (found on 6.11.1; re-test on the pinned Qt),
 on desktop and in the browser; no zero-size bootstrap widget is needed.
 `rhi_mixed_dock_test`'s `RhiMixedLateDockFixture` covers it: every GPU dock
 added after a raster-only first show renders.
@@ -215,7 +215,7 @@ frame whose bindings fail is dropped with its uploads.
 Qt's static JPEG image plugin and Scene2D's static TurboJPEG archive occupy one
 WASM symbol namespace. Both export process-global `jpeg_*` symbols, so a normal
 successful static link can bind a caller from one archive to the implementation
-from the other. Qt 6.11's kit declares `JPEG_LIB_VERSION 80`; libjpeg-turbo's
+from the other. Qt's kit declares `JPEG_LIB_VERSION 80` (found on 6.11.1; re-check on the pinned Qt); libjpeg-turbo's
 default build emulates v6b (`62`). That mismatch crashed during splash pixmap
 construction before `MainWindow`.
 
@@ -269,7 +269,7 @@ and every hwaccel. The archives are imported as `ffmpeg::avcodec` / `avutil` /
 | VP9 | Medium | ~35% better | Moderate | Not on the streaming path |
 
 The streaming `VideoFrame` decode path supports **h264 / h265 / av1** only.
-`vp9` stays an accepted `VideoFrame.format` wire value (see `VideoFrame` in [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) and `pj_base/builtin/video_frame.hpp`) but has
+`vp9` stays an accepted `VideoFrame.format` wire value (see `VideoFrame` in [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) and `pj_base/builtin/video_frame.hpp`) but has
 no renderer: it has an FFmpeg decoder yet no keyframe oracle (it cannot be
 sought), so `videoCodecIdFromFormat()` returns `AV_CODEC_ID_NONE` and the
 decoder rejects it with an explicit "unsupported video codec" error rather than
@@ -705,7 +705,7 @@ modes.
 
 ## 8. Reference Documents
 
-- [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — canonical builtin-type catalog: Image,
+- [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — canonical builtin-type catalog: Image,
   VideoFrame, CameraCalibration, ImageAnnotations, PointCloud, SceneEntities,
   OccupancyGrid, FrameTransforms (the SDK owns all canonical schemas)
 - [`docs/research/dataset_format_comparison.md`](../../docs/research/dataset_format_comparison.md)
@@ -874,7 +874,7 @@ chosen at runtime, because the float CPU resample was ~63–68% of process CPU
   and attaches the cached `shared_ptr<const UndistortMap>` to
   `DecodedFrame::rectify_map`. `MediaViewerWidget` rectifies in the image
   fragment shader via a remap LUT (`undistortMapToNormalizedRG`, +0.5
-  half-texel). Qt 6.11's QRhi has no `RG32F`, so the two float UVs go up as their
+  half-texel). Qt's QRhi has no `RG32F` (found on 6.11.1; re-check on the pinned Qt), so the two float UVs go up as their
   bits in an `RG32UI` texture (8 B/px) and the
   shader reads them texel-exact (`texelFetch`, then `uintBitsToFloat`) — one extra texture lookup per pixel, and the upload
   shrinks to the raw frame size. Works for YUV420P too (the shader remaps the UV,

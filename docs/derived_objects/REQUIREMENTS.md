@@ -3,10 +3,9 @@
 **Status.** These are the agreed requirements (decisions D1-D30). They were revised
 on 2026-10-10 with evidence from the functional prototype (pull requests #697, #698 and
 #699). A decision changes when evidence shows a better approach; the change is recorded
-here explicitly, with its reason. [ARCHITECTURE.md](ARCHITECTURE.md) describes the target
+here explicitly, with its reason. [ARCHITECTURE.md](ARCHITECTURE.md) describes the delivered
 design. [SCENARIOS.md](SCENARIOS.md) lists the behaviours and corner cases that every
-implementation step must keep. [CARVING.md](CARVING.md) tracks the delivery. The
-discovery material (user stories US1-US12, candidate requirements C1-C12, the planning
+change must keep. The discovery material (user stories US1-US12, candidate requirements C1-C12, the planning
 notebook and the review notes) lives on the `planning/lua-derived-object-dag` branch, in
 `docs/`.
 
@@ -191,16 +190,13 @@ discussion. The planning notebook and the review notes, on the planning branch, 
 |---|---|
 | Story validation and success criteria — partly settled | D28 settles v1's minimum scope: US1 + US5 as the required walkthrough, US2-US4/US6-US11 as prioritized extensions, US12 deferred entirely. Essential outcomes and responsiveness expectations for that walkthrough remain open. |
 | Inspector presentation — partly settled | D26 settles session lifetime and computation-time labelling. Define moving-frame behavior, exact time-label presentation, replacement/ownership and layout persistence; do not reopen retention through scrubbing or automatic cursor movement. |
-| Unavailable-output representation | D25 settles per-output absence and downstream gating. The exact Lua syntax, SDK status/reason representation and presentation remain to be specified. |
 | Function authoring | Exact function signature, declared aliases/types, instance bindings, parameter representation and reusable script/library packaging. No dedicated Filters-style UI is required. |
 | Python specifics | D29 settles that Python is wanted, and D18 applies to it: Python in the browser is a goal, gated on feasibility. The candidate path is CPython 3.14's tier-3 Emscripten target, statically linked into the threaded WebAssembly build (static linking is the only supported embedding; a pthreads build is possible and the deployment already serves the required isolation headers). A spike proved it (2026-10-21): the browser build links CPython 3.14.8 behind `PJ_WASM_WITH_PYTHON`, on by default in every browser build since slice P-d, production included (since slice P-c a GUI-thread compile no longer waits on a busy interpreter; what remains is in ARCHITECTURE §14). The trust model is decided (2026-10-18): Python runs in-process with cooperative limits, documented as not a security boundary; isolation would need a separate process. In the one long-lived interpreter, D2 is to hold for on-demand scripts through a fresh namespace per call and read-only module copies (ARCHITECTURE §14); filters keep their real modules and builtins (the compatible profile, decided 2026-10-20). Still to decide: acceptable throughput while the GIL serializes Python functions, and Windows packaging. |
 | Cloud details | Index convention, supported coordinate/attribute encodings, organized-cloud filtering, preset conversion and heterogeneous merge policy. |
-| Voxel details | Builder/access API, supported cell presets, dimensions/origin convention and allocation limits. |
 | Timing details | Sample timestamp exposure, output timestamp policy, optional staleness limits, TF lookup time and display/raw-time conversion boundary. The TF clock question (header stamps against the dataset's entry clock) is settled by two timestamps per sample (ARCHITECTURE.md, TF R6). |
 | API coverage | Exact initial builtin binding set, compressed-cloud normalization and zero-source functions. Required examples do not imply complete bindings for every builtin in the first release. D24 requires incremental Scene2D extension, not full 2D coverage in v1. |
 | Future 2D semantics | Pixel representations and access presets, raw/rectified coordinates, annotation/image pairing, calibration updates and video presentation-time selection. Record constraints now; defer detailed APIs until the corresponding stories enter scope. |
-| User/AI presentation | The prototype implements attach, remove and focus as scene tabs in `pj.plot_tabs.v1` (SDK 0.36.0). Still open: result ownership and replacement, provenance, persistence and undo behaviour. |
-| Implementation/performance | D30 settles scheduling and cancellation. Results stay in the ObjectStore, and each derived topic's window is a ring that evicts and never refuses (decided 2026-10-14; ARCHITECTURE.md §9). One global byte budget bounds all on-demand results (ARCHITECTURE.md §9). Still open: native allocation accounting and representative workload targets. |
+| Implementation/performance | D30 settles scheduling and cancellation. Results stay in the ObjectStore, and each derived topic's window is a ring that evicts and never refuses (decided 2026-10-14; ARCHITECTURE.md §9). One global byte budget bounds all on-demand results (ARCHITECTURE.md §9). Still open: representative workload targets. |
 
 The prototype's measurements (GUI-thread freeze, evaluation cost, streaming plateau) are
 summarized in ARCHITECTURE.md. No delivery-time estimate exists.

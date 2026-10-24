@@ -1,7 +1,7 @@
 # Qt version notes (for AI agents and humans)
 
 **PJ4 builds against the Qt version pinned in [`../versions.env`](../versions.env)
-(currently 6.12.0).** Install it with [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh).
+(`PJ_QT_VERSION`).** Install it with [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh).
 
 > **Read this if your training data predates ~2025.** Qt 6.9, 6.10, 6.11 and 6.12
 > shipped *after* the knowledge cutoff of most current models. If you "know" PJ4

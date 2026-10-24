@@ -62,7 +62,7 @@ work and swap 25 ms. Candidates:
   (`removeDockWidget()` → `setDockArea(nullptr)` unparents it first): the same
   kind of ADS fork change as the dock-area tab switch (TECHNICAL_NOTES §5), so a
   drag within the window rebuilds nothing;
-- pipeline-cache persistence, if Qt 6.12 lets a `QRhiWidget` set it (see below);
+- pipeline-cache persistence, if the pinned Qt lets a `QRhiWidget` set it (see below);
 - precompiled packs (`qsb -c`), which need fxc and the Metal toolchain in a
   per-platform bake.
 
@@ -173,28 +173,28 @@ Deferred with a trigger, not failing any row:
 - *Runtime HDR refusal* draws without MSAA: revisit if users hit the HDR byte
   limits.
 
-## P6: Qt 6.12
+## P6: the pinned Qt
 
-Qt 6.12 is the pinned LTS (`docs/QT_NOTES.md`). QRhi has no cross-minor
+The pinned Qt (`PJ_QT_VERSION` in `versions.env`; `docs/QT_NOTES.md`) is an LTS. QRhi has no cross-minor
 compatibility guarantee, so the upgrade is one change across every channel:
 
 - [x] `PJ_QT_VERSION` in `versions.env`, the `qt6-main` pin in `pixi.toml` (Windows,
   macOS and WASM CI read `versions.env`), and `PJ_EMSCRIPTEN_VERSION`.
-- [x] Every `.qsb` pack re-baked with 6.12.0's `qsb`: the bytes are identical to the
-  6.11.1 packs, so none changed. The WASM configure still hash-checks them; re-bake
+- [x] Every `.qsb` pack re-baked with the pinned Qt's `qsb`, which reproduces the committed
+  bytes. The WASM configure hash-checks them; re-bake
   with `pj_scene3D/widgets/rhi/shaders/bake.sh`, `pj_plotting/widget/shaders/bake.sh`,
   the Scene2D packs (`pj_scene2D/docs/TECHNICAL_NOTES.md`, "Shader Toolchain") and
   the capability probe whenever a shader changes.
 - [ ] Re-test the two grab workarounds before removing either: the never-shown
   `grabFramebuffer()` that works once, and the OpenGL stale uniforms in grab-only
   frames (`grabPresentedFrame()` presents a real frame first). Keep each until a
-  test shows 6.12 fixed it.
-- [ ] Re-check the other 6.11 workarounds (TECHNICAL_NOTES §3): the OpenGL depth
+  test shows the pinned Qt fixed it.
+- [ ] Re-check the other workarounds of TECHNICAL_NOTES §3: the OpenGL depth
   resolve on D32F, the `MultisampleTexture` GL 4.3 gate, the Metal probe
   fallback, the synchronous Show re-render, and whether a `QRhiWidget` can now
   enable pipeline-cache persistence.
 - [ ] Re-run the golden corpus, the harness and Gate A on every lane.
-- Not needed now: 6.12's indirect draws and device-fault reporting. Revisit with a
+- Not needed now: the pinned Qt's indirect draws and device-fault reporting. Revisit with a
   use (the voxel compaction path, a device-lost recovery).
 
 ## Deferred (with triggers)

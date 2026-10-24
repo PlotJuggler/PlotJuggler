@@ -1,24 +1,21 @@
-# Derived objects: target architecture
+# Derived objects: architecture
 
-**What this is.** This is the design the derived-objects work is being delivered toward,
-on `release-4.1`, as a stack of small pull requests (see [CARVING.md](CARVING.md)). It
-folds in the decisions taken on 2026-10-10, the prototype author's review of them on
-2026-10-13, and the ring decision of 2026-10-14 (§9). A functional prototype exists: pull
-requests #697, #698 and #699, the reference implementation, at branch
-`feat/derived-objects-editor-host`. Where the prototype and this document differ, **this
-document is the target**.
+**What this is.** The delivered design of derived objects: scripts, the derived series and
+objects they produce, and the plots and scene layers that show them. It describes the code as
+it is; anything not delivered says so in its section (**Skipped**, **Not built**, **Known
+limit**).
 
 **How to read it.**
 - Requirements and decision IDs (D1-D30) are in [REQUIREMENTS.md](REQUIREMENTS.md). The
-  behaviours each step must keep are in [SCENARIOS.md](SCENARIOS.md).
+  behaviours a change must keep are in [SCENARIOS.md](SCENARIOS.md).
 - The rationale for each change against the prototype is in the review notes (N1-N10,
   `derived_objects_critical_review.md` on the `planning/lua-derived-object-dag` branch).
 - Every section carries a status:
-  - **Decided:** agreed, to be built as written;
-  - **Proposed:** recommended, not yet agreed;
-  - **Spike:** to be validated by an experiment before deciding;
-  - **Built:** present in the prototype and kept as is;
-  - **Pending SDK:** depends on the host-contract decisions (the minor after 0.36.0).
+  - **Built:** delivered as described;
+  - **Decided:** the rule is agreed and the code follows it;
+  - **Skipped:** measured or judged and not built, with the trigger that would reopen it;
+  - **Not built:** not delivered, with its trigger or the reason it waits;
+  - **Known limit:** a ceiling the code accepts, with its upgrade path.
 
 ## 1. Goal
 
@@ -99,18 +96,27 @@ REQUIREMENTS.md or here.
    per output (D25), separately from an empty result, a missing input and an execution
    error.
 6. **Threading.**
-   - Scripts never run on the GUI thread.
+   - On-demand runs, series runs and scheduled marker runs never run on the GUI thread: they
+     compute on an `EnginePool` lane, over inputs the GUI thread resolved.
+   - The exceptions run a script on the GUI thread:
+     - filters and transforms: `IncrementalEngine` runs each node's `calculate` on the GUI
+       thread, under the `DataEngine` lock (`runNodeLocked`), for Luau and Python alike; a
+       Python filter takes the GIL there, unbounded (`python_engine.cpp`);
+     - a marker rule's create with `BatchEngine::CreateWait::kToCompletion` (a plugin's
+       create, an undo, a redo) and the whole-dataset recomputes (reload, rollback,
+       removal), which run on the calling thread;
+     - marker runs of a session built without a pool, which run inline.
    - The GUI thread resolves inputs and applies results, in bounded passes.
-   - No script runs while a store lock is held.
-   - Python runs on its own single-thread lane.
+   - No on-demand, series or marker script runs while a store lock is held.
+   - Python on-demand and series runs use their own single-thread lane.
 7. **The cursor stays independent.** Evaluating or showing a result never moves the cursor
    (D22). An explicit-time evaluation is independent of the cursor (D19).
 8. **Domain-neutral host.** Mechanisms are generic; plugins supply the domain meaning.
 
 ## 5. Recipe and bundle
 
-**Status: Built.** The contract details are decided and land with the host-contract release;
-the host serves them through the on-demand bridge (slice 8a-2b, §18).
+**Status: Built.** The contract is part of the pinned SDK; the host serves it through the
+on-demand bridge (§18).
 
 - Outputs are declared with fixed types (D8, D9): number, string, or a canonical object
   type.
@@ -121,12 +127,10 @@ the host serves them through the on-demand bridge (slice 8a-2b, §18).
 - A preview evaluation that only wants values returns them as a JSON report. Nothing is
   published.
 
-**Decided for the host contract** (SDK #202; agreed with the prototype's author on
-2026-10-13). They are applied before the host-contract release, the minor after the
-header-only 0.36.0:
+**The host contract** in the pinned SDK:
 - **Poll report:** only what clients act on: `coverage.{candidates, evaluated, stopped,
   error, gaps}`, and per bundle the requested time, the resolved input times as a map, and
-  the outputs. The SDK gains `parseEvaluationReport()`, which also derives the bundle stamp
+  the outputs. The SDK provides `parseEvaluationReport()`, which also derives the bundle stamp
   (the latest resolved input time), so the editor and the assistant parse it one way.
 - **One error shape:** `FAILED` carries the report with `stopped:"error"`. `CANCELLED` is
   reserved and never emitted; a client treats it as not-success. The host reports `FAILED` when
@@ -135,7 +139,7 @@ header-only 0.36.0:
 - **`INFER_OUTPUTS` is folded.** A scripted submit with no declared outputs infers them,
   and lenient binding is the only on-demand binding. It still rejects an undeclared key
   and a missing declared output. The flag bit, its floor entry and the persisted
-  `infer_outputs` layout attribute go.
+  `infer_outputs` layout attribute are gone.
 - **A nonzero evaluation-budget `reserved`** is rejected.
 - **WINDOW and INSTANT** are mutually exclusive.
 - **An optional typed dataset id on the v2 request** (D7). Empty means today's resolution:
@@ -151,7 +155,7 @@ fixes below, and so has the Python binder (slices 10b and 10b-2,
 
 - **SDK field tables** describe each builtin struct's members: name, kind, accessors. They
   drive generic binders in Luau and Python, so a script and an agent see the same fields.
-- **Heavy operations are native C++ per type,** in `pj_scripting/native/`: filter, crop,
+- **Heavy operations are native C++ per type,** in `pj_scripting/src/native/`: filter, crop,
   transform, bounds, builders, presets. They serve both languages.
 - **Lazy lists (built, slice 5c-1):** binders read list elements one at a time through
   `list_at`, instead of materializing whole lists on every field access (the prototype's
@@ -170,9 +174,9 @@ fixes below, and so has the Python binder (slices 10b and 10b-2,
   xyz cloud. `pj.voxels.new{frame_id, origin, cell_size, dims}` builds a dense grid of one float32 `value` channel,
   at most 2^24 cells, checked before anything is charged or allocated. Both follow the scene builder: charged before
   they allocate, spent by `finish()`, twinned in Python over the same native code
-  (`native/point_cloud_builder.h`, `native/voxel_grid_ops.h`).
+  (`pj_scripting/src/native/point_cloud_builder.h`, `pj_scripting/src/native/voxel_grid_ops.h`).
 - **Images and depth (built, slices 9a-1 and 9a-2):** an image or depth image decodes, on the
-  run's worker, through a headless codec the shell injects (`pj_scripting/image_decoder.h`;
+  run's worker, through a headless codec the shell injects (`pj_scripting/include/pj_scripting/image_decoder.h`;
   `pj_app`'s `SceneImageDecoder` over Scene2D's JPEG/PNG codecs and the raw encodings, handed to
   `SessionManager::setImageDecoder`, so `pj_runtime` links no codec), into its original samples
   as floats: a uint16 depth keeps its millimetres, nothing is normalized for display. Without
@@ -183,7 +187,7 @@ fixes below, and so has the Python binder (slices 10b and 10b-2,
   Decoded pixels are copies charged to the run's native budget,
   which the in-flight reservation already covers; a run decodes each input once (a per-run
   memo, not a cache across nodes: MED-01 changed). The native operations
-  (`native/image_ops.h`, `native/depth_ops.h`) crop, threshold (against the script's number as
+  (`pj_scripting/src/native/image_ops.h`, `pj_scripting/src/native/depth_ops.h`) crop, threshold (against the script's number as
   a double), convert to gray, measure and unproject a depth image through a `CameraInfo` into
   an organized metric cloud; an image method called on another object is a script error.
   Annotations made from an image input pair with it: its bare store topic (a qualified input
@@ -195,7 +199,7 @@ fixes below, and so has the Python binder (slices 10b and 10b-2,
   a 16-bit one keeps its single channel). Python scripts read them the same way (slice 10b-2).
 - **Video (built, slice 9b):** a video input is the packet at or before the requested time (decode order);
   `video:frame_at(t)` returns the full frame presented at `t` (B-frames reordered), as an rgb8 image charged to the
-  run's native budget, through a source the shell injects (`pj_scripting/video_frame_source.h`; `pj_app`'s
+  run's native budget, through a source the shell injects (`pj_scripting/include/pj_scripting/video_frame_source.h`; `pj_app`'s
   `SceneVideoFrameSource`, one Scene2D streaming decoder per topic, handed to `SessionManager::setVideoFrameSource`).
   The decoder addresses packets by UID (`ObjectStore::indexOf`), so equal and late DTS never alias, walks a GOP by
   following its packets through a front eviction, keeps every retained packet of a PTS (the newest presents it, an
@@ -206,7 +210,7 @@ fixes below, and so has the Python binder (slices 10b and 10b-2,
   video's topic at its presentation time; a builder naming the topic pairs with the frames decoded so far when they
   agree, else with the packet's stamp (0 is a stamp, which a merge's shift moves). The run's cancel check reaches the
   decoder, so a cancelled run stops inside a long GOP walk instead of holding the topic, and a frame converts to rgb24
-  through swscale (`convertToRgb24`, the shader's matrix within 3) outside the topic's lock. A frame is its image only while an
+  through swscale (`convertToRgb24`, the shader's matrix within 3 levels per channel on the fast path, a width that is a multiple of 16 and an even height, within 1 otherwise) outside the topic's lock. A frame is its image only while an
   anchor only that image holds lives, so a collected frame never lends its address to another image. A topic's decoder
   is made again when its parser changes, and the session retires a dataset's decoders before its storage changes
   (`suspendOnDemand`); a call in flight on a replaced or retired decoder fails "video source generation changed".
@@ -404,7 +408,7 @@ not.
 
 ## 10. Cache identity
 
-**Status: Built**, with a change proposed.
+**Status: Built.**
 
 - A result is cached under everything that determined it: the script and parameter
   revision; each resolved input's identity (UID and source generation); upstream
@@ -422,16 +426,18 @@ not.
 - **The dataset epoch** is the session's (slice 6a-5): it moves before every change of a
   dataset's storage that changes what its inputs mean (§13), so a run staged before is
   never published.
-- **Proposed:** one observed-dependency list per result, with clock and TF as
-  entries, instead of key variants (video joins the staged key, above). The TF entry records the edges walked and the sample
-  chosen on each (§12, R5), so unrelated live TF traffic no longer invalidates results.
+- **Skipped (measured):** one observed-dependency list per result, with clock and TF as
+  entries, instead of key variants (video joins the staged key, above). The TF entry would
+  record the edges walked and the sample chosen on each (§12, R5), so unrelated live TF
+  traffic would stop invalidating results. Measured on a live session: no TF-only rerun for
+  a recipe that reads no TF, at most two per second (the snapshot brake's rate) for one that
+  does (§19). Upgrade trigger: a measured session where TF-only reruns of an expensive
+  recipe exceed the brake's rate.
 
 ## 11. Scheduling and execution
 
-**Status: Built (slice 2)** (the pool), **Built (slice 3)** (the batch queue per node),
-**Built (slice 6a-4a)** (the on-demand queue, worker decoding, the in-flight budget),
-**In review (slice 6a-4b)** (batch runs join the in-flight budget: one line for both
-engines) and **Decided** (GIL release).
+**Status: Built:** the pool, the batch queue per node, the on-demand queue with worker
+decoding, one in-flight budget for both engines, and the GIL release of native operations.
 
 - **`EnginePool`** (`pj_runtime/include/pj_runtime/EnginePool.h`) runs ready tasks. It keeps
   no per-node state: no mailboxes, no coalescing, no supersede by generation.
@@ -487,8 +493,7 @@ engines) and **Decided** (GIL release).
     dropped and it is idle, its running run completes into the history, and nothing starts
     after it; its upstreams follow unless demanded themselves or read by another reader that
     still has a request.
-- **The in-flight memory budget** (`InFlightBudget.h`; on-demand runs since slice 6a-4a,
-  batch runs since 6a-4b) bounds what the runs of both engines on the pool hold at once. A
+- **The in-flight memory budget** (`InFlightBudget.h`) bounds what the runs of both engines on the pool hold at once. A
   run holds a reservation from its submission to its publication (a cancelled one until the
   pool lets it go):
   - an on-demand run, its VM cap plus its native budget (128 MiB at the defaults); its
@@ -535,15 +540,16 @@ engines) and **Decided** (GIL release).
 - **Incremental engine.** Its per-ingest cycle runs on the GUI thread under `lockEngine`,
   and the first replay runs in 8 ms slices. Moving it to the pool is later work, after
   measurement.
-- **Native operations release the GIL** while they work on C++ data (decided). Without
-  this, a native call on the Python lane blocks any GUI-thread Python work. The run
-  machinery allows it (slice 10a-1: the audit guard and the allocation cap are per thread, no
-  lock is held across a call); each binding releasing it is slice 10b's.
+- **Native operations release the GIL** while they work on C++ data. Without this, a
+  native call on the Python lane blocks any GUI-thread Python work. The run machinery
+  allows it (the audit guard and the allocation cap are per thread, no lock is held across
+  a call), and the Python binder releases it around its native work
+  (`pj_scripting/src/python_object_binder.cpp`).
 
 ## 12. TF
 
-**Status: Built** (the per-dataset service). R1 and R4 are built (slice 5a), R2 and R3
-(slice 1t), R6 (slice 1b) and R10 (slice T); the rest are proposed or conditional.
+**Status: Built** (the per-dataset service). R1-R4, R6 and R10 are built; R5 was measured
+and skipped; R7-R9 are not built.
 
 - **`pj_tf`** (Built, slice 1t) is a Qt-free leaf library. `TransformBuffer` keeps a forest of edges with a
   timestamped sample history per edge and zero-order-hold lookups.
@@ -576,7 +582,7 @@ engines) and **Decided** (GIL release).
 | R2 | Move the fixed-frame memory (a 3D-view preference) out of `TransformService` to the scene side (`FixedFrameMemory` in `pj_scene3d_widgets`) | Built (slice 1t) |
 | R3 | A 3D dock refuses a topic from another dataset, instead of warning | Built (slice 1t; follows D7) |
 | R4 | Replace a buffer as a whole object instead of rewriting it in place; seal complete file buffers, so snapshots share them without copying | Built (slice 5a), as copy-on-write of the buffer's state: a write copies a state a snapshot shares, so no seal is needed (the robot model's bridges write into file buffers, which a seal would have refused); the replaced object is the state, behind a buffer that keeps its identity, a reload commit included |
-| R5 | Report which edges and samples a lookup used, for the cache dependency | Proposed; measure after R10, which already removes most spurious revision bumps |
+| R5 | Report which edges and samples a lookup used, for the cache dependency | Skipped (measured, §10, §19): a live session reruns a TF-reading recipe on unrelated TF traffic at most twice per second, the snapshot brake's rate, and a recipe that reads no TF never. Upgrade trigger: a measured session where those reruns of an expensive recipe exceed the brake's rate |
 | R6 | TF clock contract. The buffer was keyed by header stamps, while lookups used the dataset's entry clock. Fix: two timestamps per sample (header and entry). The cursor and the query time use the entry clock; placing an object uses its own stamp in the header clock. On the nuScenes recording (log time), log time minus header stamp is 0 ms on the lidar, 0-40 ms on the front camera and -37 to +48 ms on `/tf`: the lidar hid the mismatch. See [the two clocks](#the-two-clocks-r6) below. | Built (slice 1b). Decided 2026-10-13. Visual confirmation on the nuScenes cameras pending. |
 | R7 | Frames published once are valid before their first stamp | Verify first |
 | R8 | Chunked copy-on-write edge storage | Only if measured |
@@ -603,7 +609,7 @@ that carried it, already on the dataset clock after a merge. Every lookup names 
 - **Eviction** drops a sample only when neither clock's live window (newest stamp or entry
   time minus the window) still needs it. `latestCommonTime` and `chainSampleTimes` take a
   clock too; `getLatestSample` reports the header stamp.
-- **Object placement** is one rule, `placeObject()` (`pj_scene3d_core/tf/object_placement.h`),
+- **Object placement** is one rule, `placeObject()` (`pj_scene3D/core/include/pj_scene3d_core/tf/object_placement.h`),
   composed through the root of the tree that holds both frames:
   `fixed <- source = (fixed <- root, entry clock, at the cursor) * (root <- source, header
   clock, at the object's stamp)`. The stamp is the object's own stamp plus its entry's
@@ -647,8 +653,7 @@ Every consumer and its clock:
 
 With header-stamp placement a stamped object in a moving frame stays where it was measured
 until its next sample, instead of moving with the frame at the cursor. This holds even when
-the two clocks coincide, and it replaces the "all layers are frame-locked at the tracker
-time" rule of `pj_scene3D/docs/REQUIREMENTS.md` §4 for the layers in the second row.
+the two clocks coincide.
 
 ## 13. Life cycle of recipes and results
 
@@ -917,10 +922,9 @@ join it (slice 6b). The rest is **Built**.
 
 ## 14. Scripting languages
 
-**Status: Built** for Luau; for Python the core and the binder are built (slice 10a-1: the shared
-interpreter, its limits and the hook; slice 10a-2: the strict profile and compile once; slice 10b:
-objects, builders and `pj.tf`; slice 10b-2: images and depth) and its runtime wiring is in review (slice 10c). Luau
-VM reuse is built (F8).
+**Status: Built** for Luau and for Python: the shared interpreter with its limits and the
+hook, the strict profile with compile once, objects, builders, `pj.tf`, images and depth, and the
+runtime wiring. Luau VM reuse is built (F8).
 
 - **Luau** runs on one sandboxed state per pool worker thread, made on its first run, from bytecode compiled once
   per recipe (built, F8; `runOnDemandScript`, `pj_scripting/src/object_script.cpp`; slice 5c-1 made a fresh VM per
@@ -1030,7 +1034,7 @@ VM reuse is built (F8).
   - The interpreter boots at the first compile, on the thread that makes it (the Python lane, or the helper for
     a validate), so a session without Python pays nothing. A compiled script's last release is posted to the
     same Python helper thread (a thread and a queue, `python_object_script.cpp`), never waited for. In the
-    browser `main.cpp` starts the helper at startup (`prestartPythonHelper()`), because a thread created while
+    browser `pj_app/src/main.cpp` starts the helper at startup (`prestartPythonHelper()`), because a thread created while
     the main thread waits on it never starts.
   - Rejected: compiling on the helper with a completion posted back to the GUI, which needs a compiling state
     and an install path and still defers the error; a zero-wait bound with a retry in the browser, which keeps
@@ -1049,9 +1053,9 @@ VM reuse is built (F8).
   (2026-10-21, after P-b: 20.1 against 44.2 µs in Chromium, 87.0 against 303.7 µs in Firefox,
   which runs the whole build 2.5-7 times slower). The build, the stdlib zip policy, the symbol
   audit and the bundle's third-party notices are in `docs/WASM_DEPLOYMENT.md`.
-  `python_layout.spec.js` restores a layout's Python recipes into a 3D scene in both browsers:
+  `tests/wasm/python_layout.spec.js` restores a layout's Python recipes into a 3D scene in both browsers:
   the derived cloud draws, and a recipe that does not compile shows its error on its layer.
-  - *Allocation-heavy code* (re-measured after P-b, `PJ_WASM_PY_ALLOC` in `python.spec.js`:
+  - *Allocation-heavy code* (re-measured after P-b, `PJ_WASM_PY_ALLOC` in `tests/wasm/python.spec.js`:
     `sum(range(10**6))` in a capped strict run, best of three): 121.6 ns per element in Chromium,
     against the spike's 257, and 519.6 in Firefox. Native, P-b's bench gives 30.1 ns capped and
     20.4 bare on this machine (§19), so Chromium is about 4x the capped native and Firefox about
@@ -1064,7 +1068,7 @@ VM reuse is built (F8).
     (slice P-c), and a validate then waits its 100 ms bound: the longest main-thread gap is
     103.4 ms in Chromium and 103.2 ms in Firefox (the validate's bound; a compile alone gives
     20.1 and 20.5 ms, one 20 ms tick; a validate with the interpreter free returns its error in
-    2-3 ms), against 2002 ms in both before, and `python.spec.js` holds it under 250 ms.
+    2-3 ms), against 2002 ms in both before, and `tests/wasm/python.spec.js` holds it under 250 ms.
 - **F-lane verdicts (2026-10-22, numbers in §19):** skipped: F1a (`xyz_points()` 32 ns per point in Luau, three times its empty loop), F1b in Luau (a list element's view 43 ns, `translation.x` 119 ns), F1c (`estimateBytes` 4.0 ns per fixed-size element, 4 ms for a 1M-point result) and F10 (TF-only reruns: none for a recipe that reads no TF, at most two per second, the brake's rate, for one that does); built: F1b in Python (recycled struct views, `translation.x` 115 → 76 ns), F5 (bulk eviction), F16 (rgb24 at 1080p 10.8 → 0.65 ms) and F8 (Luau VM reuse: the runs are 78-82 % of a 36,000-row replay, the sandboxed state 62 % of a trivial run; adopted, §14: a trivial run 49.6 → 7.3 µs, the replay 1090 → 402 ms).
 
 ## 15. Series
@@ -1276,7 +1280,7 @@ written. A live append of a complete series shows no bar.
   - The dock's time-range clamp and the live-edge fold use the inputs' range and skip
     findings (§9).
 - **What the dock shows beside the geometry** comes from the node's state
-  (`derivedTopicPresentation` in `pj_scene_common/scene_layer.h` owns the wording), re-read
+  (`derivedTopicPresentation` in `pj_scene_common/include/pj_scene_common/scene_layer.h` owns the wording), re-read
   on `derivedStateChanged`, never per frame:
   - The row warning says why a layer is empty (the missing input, the error): the layer's
     derived warning part (`SceneWarningParts`).
@@ -1366,11 +1370,10 @@ written. A live append of a complete series shows no bar.
 
 ## 18. Plugin surfaces (SDK host contract)
 
-**Status: Built in the SDK (#202).** It ships in the minor after the header-only 0.36.0. Its
-contract decisions were settled on 2026-10-13 (§5 and below). In the host, the router's typed
-slots and the v2 create on the transform and marker kinds are built (slice 8a-2a,
-`DataProcessorsKindRouter.h`), and so is the on-demand bridge (slice 8a-2b,
-`OnDemandRuntimeHost.h`, the router's third backend in every plugin binding): the typed create
+**Status: Built.** The contract ships in the pinned SDK (§5 and below). In the host, the router's
+typed slots and the v2 create on the transform and marker kinds are built
+(`DataProcessorsKindRouter.h`), and so is the on-demand bridge (`OnDemandRuntimeHost.h`, the
+router's third backend in every plugin binding): the typed create
 (INSTANT pins a finding), list, config with the contract's state keys, remove, validate, and
 the evaluations over the session's `GridRunner` with bounded per-bridge handles, one of them in
 the runner at a time (the others wait PENDING, §11), each report serialized on a worker (§19). A plugin's preview lives under `<plugin>/~preview/<n>/<id>`, `n`
@@ -1386,7 +1389,7 @@ rules.
   plugin sets `struct_size`, under the read-prefix rule. The host writes back how much it
   filled, and rejects a size below the v2 minimum. A flag to skip the scalar half is added
   only if measuring the editor's once-a-second refresh shows that it matters. Built in the
-  host (slice 8b-1, `DatastoreToolboxHost` in `pj_datastore/plugin_data_host.hpp`, which
+  host (slice 8b-1, `DatastoreToolboxHost` in `pj_datastore/include/pj_datastore/plugin_data_host.hpp`, which
   owns the rules): a derived topic's count and range are what its ring retains now, and
   the snapshot costs about 0.9 µs per object topic at 10k (§19).
 - Data processors v2: a typed request with typed outputs, an optional dataset id, and INSTANT or
@@ -1417,7 +1420,7 @@ rules.
   by a host data processor", the value names the kind); the marker keys of §13.
 - Marker generators on the v2 request take a typed `scope`, instead of `"__global__"` and
   `{"scope":"all"}`. v1 keeps accepting those.
-- Capability detection, in the DATA PROCESSORS section of `plugin_data_api.h`, by three rules,
+- Capability detection, in the DATA PROCESSORS section of the SDK's `pj_base/plugin_data_api.h`, by three rules,
   never by version: the typed tail slots by `hasTypedRequests()`, a flag bit by its refusal on a
   host that does not know it, a build-dependent backend (Python) by doing it.
 
@@ -1495,13 +1498,6 @@ Linux, RelWithDebInfo.
 
 ## 20. Open items and spikes
 
-- **Python in the browser** (§14), after the Python slice.
-- **TF:** verify static frames on a real bag (R7). R6 is decided.
-- **SDK:** decided to split.
-  - 0.36.0, header-only, was released first (2026-10-17). `unprojectPixel` uses the full
-    inverse of K (no exactness checks; it rejects only non-finite values, a singular K or a
-    ray with z <= 0), and `pj_derived` is an open value set.
-  - The host contract (#202) is tagged just before slice 8. Its decisions are settled (§5,
-    §18).
+- **TF:** verify static frames on a real bag (R7).
 - **Later:** move the incremental engine onto the pool; split TF ingest; an explicit series
   clock input if a strong case appears.

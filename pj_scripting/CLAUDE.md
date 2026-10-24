@@ -20,8 +20,20 @@ Two backends sit behind the **`ScriptEngine`** seam
 
 The data-processor base (`PJ::proc::DataProcessor`, owned by `pj_datastore`) stays
 Qt-free, Luau-free **and Python-free**: only `pj_scripting` links either runtime.
-Depends on `pj_base` + `pj_datastore` + `pj_tf` (public) + Luau + CPython/pybind11 (private).
 Licensed MPL-2.0.
+
+## Targets
+
+- **`pj_scripting_core`** (`src/luau_engine.cpp`, `src/marker_engine.cpp`) is the Luau engine plus the whole-series
+  marker analysis. It depends only on `pj_base`, `nlohmann_json` (public: `filter_class.h` exposes it), Luau and kissfft
+  (private). It is also packaged on its own for the SDK-only headless runner, which links the same engine so a rule
+  runs identically in the GUI and headless; `marker_engine_test` links only it (plus gtest) and guards that.
+- **`pj_scripting`** adds everything that needs the host: the data-processor adapters (`lua_siso_transform.cpp`,
+  `lua_mimo_transform.cpp`), the filter catalogue, the object-script engines (Luau and Python) and `src/native/`. It
+  links `pj_scripting_core`, `pj_datastore` and `pj_tf` publicly; Luau, tsl-robin-map and (desktop, and the browser
+  with `PJ_WASM_WITH_PYTHON`) CPython/pybind11 privately.
+- **Rule:** never include `pj_datastore`, `pj_tf` or Qt from a `pj_scripting_core` source, or the standalone package
+  stops building. Only `pj_scripting` links `pj_datastore` and `pj_tf`.
 
 ## Key headers
 
@@ -32,7 +44,7 @@ Licensed MPL-2.0.
 - `python_object_script.h` — the on-demand Python lane: an opaque `CompiledPythonScript` per revision (holders need no
   CPython include), checked and compiled once, and `runOnDemandScriptPython` (`evaluate(inputs, params)` in a fresh
   namespace, the binding of `object_script.h`). On desktop, and in the browser when built with `PJ_WASM_WITH_PYTHON`
-  (`pythonAvailable()`; see the browser gotcha below). **No GUI-thread compile** (slice P-c):
+  (`pythonAvailable()`; see the browser gotcha below). **No GUI-thread compile:**
   `deferOnDemandScriptPython`, what `compileOnDemand` gives the runtime, touches no interpreter, and the script's first
   run compiles it on the Python lane (booting the interpreter on first use), keeping the code object or the compile
   error for every later run; `compileOnDemandScriptPython` compiles on the calling thread and may wait for the GIL, so
@@ -77,6 +89,9 @@ Licensed MPL-2.0.
 - `lua_siso_transform.h` — `LuaSisoTransform`, a `PJ::proc::DataProcessor` whose
   `calculateNextPoint` runs a Luau filter class via the `ProcessorSisoAdapter` as an
   eager `pj_datastore::IncrementalEngine` node.
+- `lua_mimo_transform.h` — `LuaMimoTransform`, the N-input to M-output twin of `LuaSisoTransform`: a
+  `PJ::IMIMOTransform` node in the `IncrementalEngine` whose `calculate` returns one value per declared output, with the
+  same time contract and sticky failure.
 - `sandbox.h` — `BudgetLimits` (the per-VM sandbox/watchdog budget).
 - `src/luau_sandbox_state.h` (private) — the sandbox state every Luau engine shares: `BudgetState` (memory cap, fuel,
   optional `cancelled` poll, sticky `trip` reason), the allocator and interrupt, `tripRun`, `newFrozenState` (the
@@ -133,8 +148,8 @@ Licensed MPL-2.0.
     (D14); its buffer's capacity is charged before it grows (the old buffer beside the new until freed), every value
     must fit a float32, and a cloud is capped so its byte size fits a uint32.
   - `voxel_grid_ops.h`: `VoxelGridBuilder`, a dense float32 VoxelGrid (D16), its dimensions capped at 2^24 cells
-    before anything is charged or allocated. A VoxelGrid, built or an input, reads through its SDK field table (SDK
-    0.38) like any object; its cells are a raw buffer, as a cloud's points are.
+    before anything is charged or allocated. A VoxelGrid, built or an input, reads through its SDK field table like
+    any object; its cells are a raw buffer, as a cloud's points are.
   - `image_annotations_ops.h`: `ImageAnnotationsBuilder`, the same shape for pixel-space annotations
     (`image_topic` required, no text background; the binder pairs a finished set through `ScriptMedia`).
     `field_checks.h`: the argument checks both builders share.
@@ -172,10 +187,10 @@ Licensed MPL-2.0.
   sticky even when the script catches the error; and the process-global audit hook armed on that thread). The cap's
   bookkeeping is one hash table per allocator domain keyed by block address, whose records point at their budget (a live
   block keeps it alive; the GIL serializes MEM and OBJ, only RAW locks; about 10 ns per block, 1.4-1.5x on an
-  allocation-heavy loop, `PythonSandboxBench.AllocationCapOverhead`). Two profiles (decided 2026-10-20): filters keep
+  allocation-heavy loop, `PythonSandboxBench.AllocationCapOverhead`). Two profiles: filters keep
   their builtins, syntax and real modules behind the `math`/`cmath`/`statistics` allowlist, so existing filters run
-  unchanged and stay as escapable as before; on-demand scripts add the strict profile. The trust model (decided
-  2026-10-18) is in-process with cooperative limits: scripts are trusted input. Compile on the host and run the code
+  unchanged and stay as escapable as before; on-demand scripts add the strict profile. The trust model is
+  in-process with cooperative limits: scripts are trusted input. Compile on the host and run the code
   object inside the scope (`runCode`). An armed run cannot import a module that is not loaded yet (the hook refuses
   its file open), and a C-level import from a strict run goes through the gate, so the boot also loads what the
   allowed modules import lazily on a reachable path (`kLazyDependencies`: `heapq` behind `statistics.Counter`) and
@@ -222,9 +237,22 @@ Licensed MPL-2.0.
   resource and hands the source string to `addBundledSource` — `pj_scripting` never
   touches Qt. v1 loads only this bundled resource.
 
+## Tests
+
+Per-module runners are registered by `pj_add_test_runner` (`cmake/PjTests.cmake`), one ctest entry per case:
+
+- `pj_scripting_tests` (ctest prefix `pj_scripting.`): the Luau and Python filter engines, `LuaSisoTransform`, time
+  precision, the Luau sandbox and watchdog.
+- `pj_scripting_object_tests`, `pj_scripting_native_tests`: the object-script engine and its summaries; the native
+  operations (their headers are private to `src/`).
+- `pj_scripting_python_tests` (desktop only): the on-demand Python lane and its sandbox.
+- `marker_engine_test` (links `pj_scripting_core` only), `builtin_golden_test` (ctest `BuiltinGoldenTest`: the bundled
+  filters' golden behaviour) and `filter_catalogue_test`: standalone executables.
+
 ## Read deeper
 
 | For | Read |
 |---|---|
 | The filter-class + ParameterForm schema contract, sandbox, time rebasing | [`docs/FILTER_CLASS.md`](./docs/FILTER_CLASS.md) |
+| Scripts and their outputs: recipe and bundle, types and bindings, time and alignment (§5-7); TF (§12); the scripting languages, Luau VM reuse and the Python sandbox (§14) | [`../docs/derived_objects/ARCHITECTURE.md`](../docs/derived_objects/ARCHITECTURE.md) |
 | The processor base this implements | `../pj_datastore/include/pj_datastore/data_processor.hpp` |

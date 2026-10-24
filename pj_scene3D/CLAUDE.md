@@ -60,12 +60,12 @@ A one-click "Open in 3D view" curve-list action is a planned convenience.
   contract, the camera system, the URDF/mesh subsystem, `package://` asset
   resolution, the live-streaming data path and the scene-controls panel.
 - [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — what the design works
-  around: backend conventions, Qt 6.12.0 bugs and workarounds, ADS/Wayland quirks,
+  around: backend conventions, Qt workarounds (found on 6.11.1; re-test on the pinned Qt), ADS/Wayland quirks,
   limits and budgets, the measurements behind specific choices, golden-image rules
   and per-backend allowances, test registration and CI lanes, the performance
   baseline and the known gaps.
 - [`docs/QRHI_NEXT.md`](./docs/QRHI_NEXT.md) — the work that remains: the golden
-  writer transition, the P6 performance follow-ups, the Qt 6.12 upgrade, and the
+  writer transition, the P6 performance follow-ups, the follow-ups the pinned Qt unlocks, and the
   release notes of the release that made QRhi the default. The migration
   itself is archived in [`docs/archive/QRHI_MIGRATION.md`](../docs/archive/QRHI_MIGRATION.md).
 
@@ -74,6 +74,12 @@ frame contract in `rhi_scene_pass.h`, one class per family under `rhi/passes/`,
 shaders and their committed `.qsb` packs under `rhi/shaders/`), on the desktop
 and in the browser. The dock (`widgets/src/Scene3DDockWidget.cpp`) and every
 layer (`widgets/src/layers/`) serve it; the layers own no GPU resource.
+
+Editing a shader means re-baking its `.qsb` with the pinned `qsb` (`widgets/rhi/shaders/bake.sh`) and committing both,
+or the WASM configure hash check fails.
+
+Derived topics (script outputs) reach this module as ordinary store topics, through `pj_scene_common` and the
+catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline) and §17 (scene integration).
 
 ## Decoding boundary (important)
 
@@ -278,9 +284,7 @@ build --output-on-failure`. With `PJ_BUILD_DEMOS` the build compiles
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 
-Save lessons learned to memory, not to these docs (they describe the current
-state only), in particular after long debugging sessions where the correct
-solution was hard to find.
+Hard-won lessons go in `docs/TECHNICAL_NOTES.md` (root `CLAUDE.md` rule).
 
 # Test-driven verification
 

@@ -248,7 +248,10 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 `DataEngine` is guarded by one `std::recursive_mutex` (`Impl::mutex_`). The store
 has exactly one reader thread (the Qt GUI: plot/catalog reads + `IncrementalEngine`
 recompute) and one-or-more ingest worker threads, so an exclusive lock is
-equivalent to a reader-writer lock here and simpler. EVERY engine access — read or
+equivalent to a reader-writer lock here and simpler.
+The derived engines' pool workers (`BatchEngine`, `OnDemandService`) keep the one-reader-thread rule by never
+touching the `DataEngine`: they work only on copies the GUI thread staged before the run
+(`docs/derived_objects/ARCHITECTURE.md` §11). EVERY engine access — read or
 write, on any thread — holds the lock via `lockEngine()`. `DataWriter` accumulates
 in-memory and is not itself shared; `TopicChunkBuilder::next_chunk_id_` remains a
 `std::atomic`.
@@ -336,39 +339,24 @@ ThreadSanitizer (`./build.sh --tsan`, and the Linux CI `tsan` job).
 
 ## 7. Testing
 
-24 core test executables covering all layers (the authoritative live set is the
-`PJ_DATASTORE_TESTS` list plus the explicitly-added targets in `CMakeLists.txt`):
+The tests in `tests/` are built into these runners (the authoritative live set is in `CMakeLists.txt`):
 
-| Test | Coverage |
-|---|---|
-| `buffer_test` | `RawBuffer`, `BitVector` |
-| `column_buffer_test` | `TypedColumnBuffer` per-type append/read, validity |
-| `type_registry_test` | Schema registration, lookup, evolution |
-| `encoding_test` | All 5 encoding types: constant, FOR, dictionary, packed bool, raw |
-| `chunk_test` | `TopicChunkBuilder` row/bulk paths, seal, read-back |
-| `topic_storage_test` | Commit ordering, eviction, metadata |
-| `out_of_order_ingest_test` | out-of-order ingest (overlapping chunks, retention floor) |
-| `query_test` | `RangeCursor`, `latestAt`, edge cases |
-| `series_reader_test` | `SeriesReader`, `SeriesCursor`, series sample bounds/lookups |
-| `engine_integration_test` | Full `DataEngine` + `DataWriter` + `DataReader` round-trip |
-| `incremental_engine_test` | SISO/MIMO transforms, topological order, incremental + batch recompute |
-| `array_expansion_test` | `expandArray`, clamping, cross-builder expansion |
-| `regression_test` | Bug-specific regression cases |
-| `sequential_uid_test` | `SequentialUID` allocation |
-| `object_store_test` | `ObjectStore` owned/lazy push, latest-at, retention, `flushTo` |
-| `plugin_data_host_object_test` | Object-write host bridges (`pj.source_object_write` / `pj.parser_object_write`) onto `ObjectStore` |
-| `plugin_data_host_object_read_test` | Toolbox object-read host (`pj.toolbox_object_read`) queries |
-| `plugin_parser_object_write_test` | Parser plugin writing canonical builtin objects through the object-write host |
-| `streaming_mirror_test` | streaming two-engine `flushTo`/`setTarget` mirror |
-| `sample_test` | `Sample` value type |
-| `data_processor_test` | `PJ::proc::DataProcessor` base |
-| `processor_siso_adapter_test` | `ProcessorSisoAdapter` (processor as IncrementalEngine node) |
-| `arrow_import_test` | Arrow IPC schema parsing and batch import |
-| `arrow_stream_round_trip_test` | v4 Arrow C Data Interface round-trip (Phase 1b); `read_series_arrow` exports through the merged `RangeCursor`, in time order when chunks were committed out of order |
+- `pj_datastore_tests`: one gtest runner for the whole module, registered with `gtest_discover_tests`, so ctest
+  names are `<runner>.<Suite>.<Case>` and each case runs in its own process. Filter one suite with
+  `ctest --test-dir build -R '^pj_datastore_tests\.ObjectStoreTest\.'`.
+- `chunk_test`: a separate executable, because it holds death tests.
+- `engine_concurrency_test`, `engine_thread_safety_test`: separate executables with a 90-second timeout; they are the
+  ThreadSanitizer entry points used by `build.sh` and CI.
 
-Disabled pending the Phase 1b v4-ABI rewrite (commented out in `CMakeLists.txt`,
-`.cpp` files still on disk): `plugin_host_write_test` (v3 `appendArrowIpc`/`readSeries`
-write path) and `plugin_host_read_test` (v3 toolbox read path; rewrite for
-`read_series_arrow`).
+Sanitizer self-tests (`sanitizer_selftest` and the MSan and TSan variants) are registered only in their lane.
 
-Build and run from the PJ4 repo root: `./build.sh`, then `ctest --test-dir build` (e.g. `ctest --test-dir build -R object_store_test`).
+The suites are grouped by layer: buffers and encoding, schema evolution and topic storage, queries and series
+readers, the engine round-trip and out-of-order ingest, `IncrementalEngine` and the data-processor substrate,
+`ObjectStore` (owned and lazy payloads, retention, bundles, merge), the plugin host bridges, and the Arrow import
+and round-trip.
+
+`plugin_host_write_test.cpp` and `plugin_host_read_test.cpp` exercise the removed v3 write and read ABI. They are not
+built (commented out in `CMakeLists.txt`) and have not been rewritten against the v4 Arrow-stream path
+(`read_series_arrow`); `arrow_stream_round_trip_test` covers that path.
+
+Build and run from the PJ4 repo root: `./build.sh`, then `ctest --test-dir build -R '^pj_datastore_tests\.'` (the separate executables run by their own names, e.g. `-R chunk_test`).

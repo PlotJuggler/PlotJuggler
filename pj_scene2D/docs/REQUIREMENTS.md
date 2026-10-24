@@ -140,7 +140,7 @@ explicitly a viewer concern. Video keyframe indexing is owned by
 ### 4.1 Data Types
 
 All data type schemas are defined in the SDK builtin-type catalog:
-[`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md).
+[`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md).
 This document does not duplicate field-level definitions.
 
 **Types pj_scene2D RENDERS (image-pixel space only):**
@@ -163,7 +163,7 @@ which is the machinery `pj_scene3D` owns. Duplicating that inside
 pj_scene2D would create two TF resolvers and two projection paths for the
 same primitive — exactly the mistake the independent-widget-families design avoids.
 
-**Note on Grid**: `sdk::OccupancyGrid` (see [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — `## OccupancyGrid`) carries world-space metadata (`pose`, `resolution`, `frame_id`), which makes it a "2D/3D" type in nature. pj_scene2D
+**Note on Grid**: `sdk::OccupancyGrid` (see [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — `## OccupancyGrid`) carries world-space metadata (`pose`, `resolution`, `frame_id`), which makes it a "2D/3D" type in nature. pj_scene2D
 nevertheless defers Grid to `pj_scene3D` because Grid carries world-space
 metadata (`pose`, `cell_size`, `frame_id`) and its natural display is a
 **world-space** top-down tile — a different viewer class from pj_scene2D's
@@ -343,7 +343,7 @@ Prerequisites note on protocol v4 + service-registry bindings.)
 | Retention budget / eviction trigger | Application (budget) + ObjectStore (enforcement) |
 
 **Frame granularity**: following the `VideoFrame` schema convention in
-[`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) (and matching
+[`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) (and matching
 Foxglove and Rerun), each ObjectStore entry represents **exactly one
 frame**. VideoFrame messages contain exactly enough data to decode one
 frame, with SPS/VPS/PPS prepended on keyframes. DataSources that receive
@@ -628,7 +628,7 @@ informational.
 exact pairing over nearest-timestamp matching. This is an optional
 feature for layers that publish correlation metadata; layers without
 `frame_id` fall back to timestamp-based pairing. See the per-type `frame_id` field
-definitions in [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) for `frame_id` semantics.
+definitions in [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) for `frame_id` semantics.
 
 **Layer ordering and blending modes** (direct color, colormap, false-color,
 alpha blending) are widget configuration, not part of the data model.
@@ -698,7 +698,7 @@ direction:
   Contains `QRhiWidget`-based viewers, GLSL shaders, widget-level
   configuration, and any Qt-specific integration. Depends on
   `pj_scene2d_core`, `pj_scene_common`, `pj_runtime`, `pj_widgets`, plus
-  Qt 6.12.0 (the build's `find_package(Qt6 6.12.0 …)` floor).
+  Qt (the version pinned by `PJ_QT_VERSION` in `versions.env`, which sets the build's `find_package(Qt6 …)` floor).
 
 **Consumer contract:**
 

@@ -2,10 +2,10 @@
 
 How the 3D scene is built and how its data gets on screen. The WHAT lives in
 [REQUIREMENTS.md](./REQUIREMENTS.md). The facts this design works around
-(backend conventions, Qt 6.11.1 bugs, limits and budgets, the rationale behind
+(backend conventions, Qt workarounds, limits and budgets, the rationale behind
 specific choices, golden-image rules, test registration and CI lanes, known gaps)
 are in [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md). Planned work (performance
-follow-ups, Qt 6.12) is in [QRHI_NEXT.md](./QRHI_NEXT.md).
+follow-ups, the pinned Qt's opportunities) is in [QRHI_NEXT.md](./QRHI_NEXT.md).
 
 ## Overview
 
@@ -781,7 +781,7 @@ Test builds inject failures (TECHNICAL_NOTES, "Test hooks").
 - **Grabs.** `grabPresentedFrame()` (in `pj_widgets`) grabs after the next
   presented frame, never inside `render()`, and never blocks (no nested event
   loop, which the browser cannot run). A never-shown view is grabbed at once, and
-  only once (TECHNICAL_NOTES, "Qt 6.11.1 bugs and workarounds").
+  only once (TECHNICAL_NOTES, "Qt workarounds").
 - **Idle.** The view renders only on `invalidateContent()` or a new target: a settled view presents no frame
   (`scene3d_frame_benchmark` counts `frameSubmitted` and requires none), and the dock's repaint coalescing ("Repaint coalescing & autoplay") decides
   when playback needs one.

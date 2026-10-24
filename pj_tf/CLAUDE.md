@@ -35,6 +35,20 @@ Consumers: `pj_scene3d_core` (geometry/frame-picking math) and `pj_runtime`'s
 `pj_runtime/CLAUDE.md`). `TransformService` itself — and everything Qt or
 session-lifecycle related — stays in `pj_runtime`, not here.
 
+## Gotchas
+
+- **The default `cache_window` is 10 s** (`TransformBuffer(Duration = 10 s)`), which trims every dynamic edge to its tail.
+  A buffer fed a whole loaded file must be constructed with `kKeepAll`, or lookups earlier in the timeline fail;
+  `TransformService` keeps `kKeepAll` for file loads and sets a finite window (`setLiveCacheWindow`) only for live streaming.
+- **Locking differs by object.** A `TransformBuffer` is internally locked (`std::shared_mutex`): every read and write is
+  safe from any thread. A `TransformSnapshot` is immutable and read lock-free; hold the `shared_ptr` for as long as the
+  reads must agree with each other.
+- **`setTransform` returns `SetTransformError`; it never throws.** A malformed edge in a bulk feed drops that one edge
+  (`kInvalidFrameName`, `kInvalidRotation`, `kNonFiniteTranslation`, `kSelfLoop`, `kReparentConflict`), so callers count
+  and continue. `kReparentConflict` is permanent: a child already parented to another frame drops every later edge,
+  and the frame freezes at its last pre-reparent pose (tf2 would let the newest parent win). Only the throwing
+  `lookupTransform` wrapper raises; `tryLookupTransform` returns a `LookupError`.
+
 ## Tests
 
 `tests/` — gtest, runner `pj_tf_tests` (plain main: no Qt). `tf_buffer_test.cpp` covers

@@ -1,7 +1,7 @@
 # pj_scene3D — Technical Notes
 
-The facts the renderer's design works around: backend conventions, Qt 6.11.1
-bugs and their workarounds, window-system quirks, limits and budgets, the
+The facts the renderer's design works around: backend conventions, Qt
+workarounds, window-system quirks, limits and budgets, the
 measurements behind specific choices, the golden-image rules, test registration
 and CI lanes, and the known gaps. The design itself is in
 [ARCHITECTURE.md](./ARCHITECTURE.md); planned work is in [QRHI_NEXT.md](./QRHI_NEXT.md).
@@ -18,8 +18,8 @@ archived in [`docs/archive/QRHI_MIGRATION.md`](../../docs/archive/QRHI_MIGRATION
 | WebAssembly | WebGL2 | — | Chromium's SwiftShader; Firefox on llvmpipe (Playwright) |
 
 **Startup.** `pj_app` resolves the API right after constructing `QApplication`,
-before any GPU widget exists; a top-level picks its API only once. From the
-Qt 6.11.1 sources (`qbackingstorerhisupport.cpp`, `qrhiwidget.cpp`):
+before any GPU widget exists; a top-level picks its API only once. From Qt's
+sources (`qbackingstorerhisupport.cpp`, `qrhiwidget.cpp`; read on 6.11.1, re-check on the pinned Qt):
 
 - **D3D11:** when the default device fails, the backing store retries with
   `QRhi::PreferSoftwareRenderer`, i.e. WARP; PJ adds no fallback (WARP beats the
@@ -88,7 +88,7 @@ Linux CI floor step caps Mesa at 3.3 (`MESA_GL_VERSION_OVERRIDE=3.3`,
   backend once per QRhi: OpenGL/WebGL `GL_MAX_3D_TEXTURE_SIZE`, Vulkan
   `maxImageDimension3D` (through `QRhiVulkanNativeHandles`), D3D11 by the
   device's feature level (`d3d11Max3dTextureSize()`: 2048 from 10_0, 256 on 9_x;
-  Qt 6.11.1's `qrhid3d11.cpp` fills `featureLevel` from the created device),
+  Qt's `qrhid3d11.cpp` fills `featureLevel` from the created device),
   D3D12 and Metal the documented 2048 (QRhi's D3D12 minimum is feature level
   11_0; every Apple GPU family). A backend that cannot be asked (a Vulkan build
   without `<vulkan/vulkan.h>`, which CMake warns about; OpenGL without a current
@@ -99,7 +99,7 @@ Linux CI floor step caps Mesa at 3.3 (`MESA_GL_VERSION_OVERRIDE=3.3`,
   headless), a `CAMetalLayer` drawable presents, and QRhi reports `Metal,
   deviceType=Integrated`.
 
-## 3. Qt 6.11.1 bugs and workarounds
+## 3. Qt workarounds (found on 6.11.1; re-test on the pinned Qt)
 
 | Behaviour | Workaround |
 |---|---|
@@ -197,7 +197,7 @@ shader's correctly rounded float add equals the float of the double subtraction.
 
 ## 5. ADS and window-system quirks
 
-- **ADS floating turns the docked area native** (Qt 6.11.1, our ADS fork):
+- **ADS floating turns the docked area native** (found on 6.11.1, our ADS fork):
   `CFloatingDockContainer::show()` calls `winId()` to set X11 properties (on every
   platform), and Qt then marks every child of the dock manager native. The docked
   area becomes a native child window; under Vulkan on Wayland that child surface
