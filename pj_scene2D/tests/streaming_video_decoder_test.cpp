@@ -8,15 +8,21 @@
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_scene2d_core/ffmpeg_decoder.h"
+#include "pj_scene2d_core/video_color.h"
 #include "test_mp4_demux.h"
 
 namespace PJ {
@@ -36,6 +42,458 @@ ObjectTopicId pushPackets(ObjectStore& store, const std::vector<AnnexBPacket>& p
     EXPECT_TRUE(result.has_value()) << "push failed at i=" << i;
   }
   return topic;
+}
+
+// ---- packet identity: equal and late DTS, replacement (MED-25) ---------------------------------------------------
+
+// The B-frame fixture's keyframes: each decodes on its own, so a test can store them at any DTS and PTS.
+std::vector<AnnexBPacket> fixtureKeyframes() {
+  std::vector<AnnexBPacket> keyframes;
+  for (const auto& packet : test::extractAnnexBPackets("pj_scene2D/testdata/test_h264_bframes.mp4")) {
+    if (packet.keyframe) {
+      keyframes.push_back(packet);
+    }
+  }
+  return keyframes;
+}
+
+// A packet at an equal DTS or below the newest one is indexed, and each packet keeps its own PTS: the store keys by
+// DTS, so a stamp cursor would alias the equal pair and skip the late one.
+TEST(StreamingVideoIdentity, LateAndEqualDtsPacketsEnterPresentationIndex) {
+  const auto keyframes = fixtureKeyframes();
+  ASSERT_GE(keyframes.size(), 3u);
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/identity", "{}"});
+  std::map<uint64_t, Timestamp> pts_of_uid;
+  size_t inspections = 0;
+  StreamingVideoDecoder decoder;
+  decoder.attach(
+      &store, topic, [&](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        ++inspections;
+        return StreamingVideoDecoder::ExtractedFrame{
+            entry.payload.bytes, "h264", pts_of_uid.at(entry.sequential_uid.value)};
+      });
+  SequentialUID cursor;
+  const auto push = [&](Timestamp dts, const AnnexBPacket& packet, Timestamp pts) {
+    ASSERT_TRUE(store.pushOwned(topic, dts, packet.data).has_value());
+    for (const auto& entry : store.drainNewSince(topic, cursor)) {
+      pts_of_uid[entry.sequential_uid.value] = pts;
+    }
+  };
+  push(100, keyframes[0], 100);
+  const auto first = decoder.decodeAt(100);
+  ASSERT_TRUE(first.has_value()) << first.error();
+  push(100, keyframes[1], 150);  // equal DTS
+  push(90, keyframes[2], 125);   // late DTS
+  for (const auto& [target, keyframe] : std::vector<std::pair<Timestamp, size_t>>{{150, 1}, {125, 2}, {100, 0}}) {
+    const auto frame = decoder.decodeAt(target);
+    ASSERT_TRUE(frame.has_value()) << target << ": " << frame.error();
+    EXPECT_EQ(frame->pts, target);
+    if (keyframe == 0) {
+      EXPECT_EQ(*frame->pixels, *first->pixels) << "the equal-DTS packet does not shadow the first one";
+    }
+  }
+  (void)decoder.keyframeTimestamps();
+  const size_t inspected = inspections;
+  EXPECT_EQ(decoder.keyframeTimestamps().size(), 3u);
+  EXPECT_EQ(inspections, inspected) << "an unchanged poll rescans no packet";
+}
+
+TEST(StreamingVideoIdentity, ReplacementAndEvictionInvalidateContentWithoutNewTimestamp) {
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/identity", "{}"});
+  ASSERT_TRUE(store.pushOwned(topic, 100, {1}).has_value());
+  const auto before = store.contentIdentity(topic);
+  ASSERT_TRUE(store.pushOwned(topic, 100, {2}).has_value());
+  const auto replaced = store.contentIdentity(topic);
+  EXPECT_NE(before.content, replaced.content);
+  EXPECT_EQ(before.rewrite, replaced.rewrite) << "an equal stamp lands after the newest entry: an append";
+  OwnedObjectWrite prune;
+  prune.topic = topic;
+  prune.append = false;
+  prune.drop = [](Timestamp, SequentialUID) { return true; };
+  ASSERT_TRUE(store.pushOwnedBundle({prune}).has_value());
+  EXPECT_NE(replaced.content, store.contentIdentity(topic).content);
+}
+
+// A packet replacing the one at the same DTS and PTS is decoded, never served from the decoder's previous state.
+TEST(StreamingVideoIdentity, SameDtsAndPtsReplacementReturnsNewPixels) {
+  const auto keyframes = fixtureKeyframes();
+  ASSERT_GE(keyframes.size(), 2u);
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/replacement", "{}"});
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic);
+  ASSERT_TRUE(store.pushOwned(topic, 100, keyframes[0].data).has_value());
+  const auto first = decoder.decodeAt(100);
+  ASSERT_TRUE(first.has_value()) << first.error();
+  ASSERT_FALSE(first->isNull());
+  OwnedObjectWrite replace;
+  replace.topic = topic;
+  replace.timestamp = 100;
+  replace.payload = keyframes[1].data;
+  replace.drop = [](Timestamp, SequentialUID) { return true; };
+  ASSERT_TRUE(store.pushOwnedBundle({replace}).has_value());
+  const auto replaced = decoder.decodeAt(100);
+  ASSERT_TRUE(replaced.has_value()) << replaced.error();
+  ASSERT_FALSE(replaced->isNull());
+  EXPECT_NE(*first->pixels, *replaced->pixels);
+  const auto repeated = decoder.decodeAt(100);
+  ASSERT_TRUE(repeated.has_value()) << repeated.error();
+  EXPECT_EQ(*replaced->pixels, *repeated->pixels);
+
+  // An append (no rewrite) whose packet presents at a PTS already shown replaces that frame too.
+  StreamingVideoDecoder by_pts;
+  by_pts.attach(
+      &store, topic, [&](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", 100};
+      });
+  const auto before = by_pts.decodeAt(100);
+  ASSERT_TRUE(before.has_value()) << before.error();
+  ASSERT_TRUE(store.pushOwned(topic, 200, keyframes[0].data).has_value());
+  const auto appended = by_pts.decodeAt(100);
+  ASSERT_TRUE(appended.has_value()) << appended.error();
+  EXPECT_EQ(*appended->pixels, *first->pixels) << "the newest packet at a repeated PTS is the one shown";
+}
+
+// A rewrite while a decode runs fails that decode instead of returning a frame of packets that are gone; the next one
+// decodes what the store holds.
+TEST(StreamingVideoIdentity, ARewriteDuringADecodeFailsItAndTheNextOneSeesTheNewPackets) {
+  const auto keyframes = fixtureKeyframes();
+  ASSERT_GE(keyframes.size(), 2u);
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/rewrite", "{}"});
+  ASSERT_TRUE(store.pushOwned(topic, 100, keyframes[0].data).has_value());
+  bool armed = false;
+  StreamingVideoDecoder decoder;
+  decoder.attach(
+      &store, topic, [&](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        if (std::exchange(armed, false)) {  // inside the decode: replace the packet being fed
+          OwnedObjectWrite replace;
+          replace.topic = topic;
+          replace.timestamp = 100;
+          replace.payload = keyframes[1].data;
+          replace.drop = [](Timestamp, SequentialUID) { return true; };
+          EXPECT_TRUE(store.pushOwnedBundle({replace}).has_value());
+        }
+        return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", entry.timestamp};
+      });
+  const auto indexed = decoder.keyframeTimestamps();  // the scan reads the packet before the decode is armed
+  ASSERT_EQ(indexed.size(), 1u);
+  armed = true;
+  const auto torn = decoder.decodeAt(100);
+  ASSERT_FALSE(torn.has_value());
+  EXPECT_EQ(torn.error(), "video content changed during decode");
+  const auto fresh = decoder.decodeAt(100);
+  ASSERT_TRUE(fresh.has_value()) << fresh.error();
+  StreamingVideoDecoder reference;
+  reference.attach(&store, topic);
+  const auto expected = reference.decodeAt(100);
+  ASSERT_TRUE(expected.has_value()) << expected.error();
+  EXPECT_EQ(*fresh->pixels, *expected->pixels);
+}
+
+/// The pixels `packet` decodes to on its own (a keyframe).
+std::vector<uint8_t> pixelsOf(const AnnexBPacket& packet) {
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/alone", "{}"});
+  EXPECT_TRUE(store.pushOwned(topic, 0, packet.data).has_value());
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic);
+  const auto frame = decoder.decodeAt(0);
+  EXPECT_TRUE(frame.has_value()) << (frame ? "" : frame.error());
+  return frame ? *frame->pixels : std::vector<uint8_t>{};
+}
+
+// Two datasets' same-name topics merged with different shifts: each packet presents at its payload PTS plus its
+// entry's shift (the dataset clock), so the two packets that both carry PTS 10 stay apart.
+TEST(StreamingVideoIdentity, MergedTopicsIndexEachPacketOnItsDatasetClock) {
+  const auto keyframes = fixtureKeyframes();
+  ASSERT_GE(keyframes.size(), 2u);
+  ObjectStore store;
+  const auto anchor_topic = *store.registerTopic({1, "/video", "{}"});
+  const auto other_topic = *store.registerTopic({2, "/video", "{}"});
+  ASSERT_TRUE(store.pushOwned(anchor_topic, 10, keyframes[0].data).has_value());
+  ASSERT_TRUE(store.pushOwned(other_topic, 10, keyframes[1].data).has_value());
+  ASSERT_TRUE(store.mergeDatasets(1, {DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 100}}).has_value());
+  StreamingVideoDecoder decoder;
+  decoder.attach(
+      &store, anchor_topic, [](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", 10};  // both payloads say PTS 10
+      });
+  const auto own = decoder.decodeAt(50);
+  ASSERT_TRUE(own.has_value()) << own.error();
+  EXPECT_EQ(own->pts, 10);
+  EXPECT_EQ(*own->pixels, pixelsOf(keyframes[0]));
+  const auto merged = decoder.decodeAt(110);
+  ASSERT_TRUE(merged.has_value()) << merged.error();
+  EXPECT_EQ(merged->pts, 110);
+  EXPECT_EQ(*merged->pixels, pixelsOf(keyframes[1]));
+
+  // The raw-bytes path takes its PTS from the store key, already on the dataset clock: shifted once, not twice.
+  StreamingVideoDecoder raw;
+  raw.attach(&store, anchor_topic);
+  const auto raw_merged = raw.decodeAt(110);
+  ASSERT_TRUE(raw_merged.has_value()) << raw_merged.error();
+  EXPECT_EQ(raw_merged->pts, 110);
+  EXPECT_EQ(*raw_merged->pixels, pixelsOf(keyframes[1]));
+}
+
+// A front eviction while a GOP is fed shifts every position: the walk follows the packets, not their old indices.
+TEST(StreamingVideoIdentity, AFrontEvictionDuringADecodeFeedsTheRetainedPackets) {
+  const auto packets = test::extractAnnexBPackets("pj_scene2D/testdata/test_h264_bframes.mp4");
+  ASSERT_GT(packets.size(), 10u);
+  std::vector<size_t> keyframe_indices;
+  for (size_t i = 0; i < packets.size(); ++i) {
+    if (packets[i].keyframe) {
+      keyframe_indices.push_back(i);
+    }
+  }
+  ASSERT_GE(keyframe_indices.size(), 2u);
+  const size_t second_gop = keyframe_indices[1];
+  ASSERT_GT(packets.size(), second_gop + 4);
+  const Timestamp target = packets[second_gop + 3].timestamp;  // a frame of the second GOP, past its keyframe
+  const auto fill = [&](ObjectStore& store, ObjectTopicId topic, std::map<uint64_t, Timestamp>& pts_of_uid) {
+    SequentialUID cursor;
+    for (const auto& packet : packets) {
+      ASSERT_TRUE(store.pushOwned(topic, packet.dts, packet.data).has_value());
+      for (const auto& entry : store.drainNewSince(topic, cursor)) {
+        pts_of_uid[entry.sequential_uid.value] = packet.timestamp;
+      }
+    }
+  };
+  ObjectStore reference_store;
+  const auto reference_topic = *reference_store.registerTopic({1, "video/reference", "{}"});
+  std::map<uint64_t, Timestamp> reference_pts;
+  fill(reference_store, reference_topic, reference_pts);
+  StreamingVideoDecoder reference;
+  reference.attach(
+      &reference_store, reference_topic,
+      [&](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        return StreamingVideoDecoder::ExtractedFrame{
+            entry.payload.bytes, "h264", reference_pts.at(entry.sequential_uid.value)};
+      });
+  const auto expected = reference.decodeAt(target);
+  ASSERT_TRUE(expected.has_value()) << expected.error();
+
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/evicting", "{}"});
+  std::map<uint64_t, Timestamp> pts_of_uid;
+  fill(store, topic, pts_of_uid);
+  bool armed = false;
+  StreamingVideoDecoder decoder;
+  decoder.attach(
+      &store, topic, [&](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        if (std::exchange(armed, false)) {
+          store.evictBefore(topic, packets[second_gop].dts);  // the first GOP goes while the second is fed
+        }
+        return StreamingVideoDecoder::ExtractedFrame{
+            entry.payload.bytes, "h264", pts_of_uid.at(entry.sequential_uid.value)};
+      });
+  (void)decoder.keyframeTimestamps();
+  armed = true;
+  const auto frame = decoder.decodeAt(target);
+  ASSERT_TRUE(frame.has_value()) << frame.error();
+  EXPECT_EQ(frame->pts, target);
+  EXPECT_EQ(*frame->pixels, *expected->pixels);
+}
+
+// A packet that replaced another at one PTS, once evicted, leaves the retained one shown at that PTS.
+TEST(StreamingVideoIdentity, EvictingAReplacementFallsBackToItsRetainedPredecessor) {
+  const auto keyframes = fixtureKeyframes();
+  ASSERT_GE(keyframes.size(), 2u);
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/fallback", "{}"});
+  StreamingVideoDecoder decoder;
+  decoder.attach(
+      &store, topic, [](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", 100};
+      });
+  ASSERT_TRUE(store.pushOwned(topic, 200, keyframes[0].data).has_value());  // A: DTS 200, PTS 100
+  ASSERT_TRUE(store.pushOwned(topic, 100, keyframes[1].data).has_value());  // B, newer: DTS 100, PTS 100
+  const auto replaced = decoder.decodeAt(100);                              // indexes both, B winning PTS 100
+  ASSERT_TRUE(replaced.has_value()) << replaced.error();
+  EXPECT_EQ(*replaced->pixels, pixelsOf(keyframes[1])) << "A, fed after B, does not overwrite the frame B presents";
+  store.evictBefore(topic, 150);  // B goes, A stays
+  const auto fallback = decoder.decodeAt(100);
+  ASSERT_TRUE(fallback.has_value()) << fallback.error();
+  EXPECT_EQ(*fallback->pixels, pixelsOf(keyframes[0]));
+}
+
+// Evicting a packet a newer one already replaced at its PTS changes nothing shown: the frame stays served as it is.
+TEST(StreamingVideoIdentity, EvictingASupersededPacketKeepsTheFrameShown) {
+  const auto keyframes = fixtureKeyframes();
+  ASSERT_GE(keyframes.size(), 2u);
+  ObjectStore store;
+  const auto topic = *store.registerTopic({1, "video/superseded", "{}"});
+  int extracted = 0;
+  StreamingVideoDecoder decoder;
+  decoder.attach(
+      &store, topic, [&](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+        ++extracted;
+        return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", 100};
+      });
+  ASSERT_TRUE(store.pushOwned(topic, 100, keyframes[0].data).has_value());  // A: DTS 100, PTS 100
+  ASSERT_TRUE(store.pushOwned(topic, 200, keyframes[1].data).has_value());  // B, newer: DTS 200, PTS 100
+  const auto shown = decoder.decodeAt(100);
+  ASSERT_TRUE(shown.has_value()) << shown.error();
+  EXPECT_EQ(*shown->pixels, pixelsOf(keyframes[1]));
+  store.evictBefore(topic, 150);  // A goes: it presented nothing
+  const int before = extracted;
+  const auto again = decoder.decodeAt(100);
+  ASSERT_TRUE(again.has_value()) << again.error();
+  EXPECT_EQ(*again->pixels, pixelsOf(keyframes[1]));
+  EXPECT_EQ(extracted, before) << "served as shown, no seek";
+}
+
+// ---- YUV to rgb24 for on-demand frames ----------------------------------------------------------------------------
+
+/// The per-pixel conversion swscale replaces, kept as the reference: the media shader's matrix (buildYuvMatrix), each
+/// pixel's chroma read from its 2x2 block.
+std::vector<uint8_t> referenceRgb(const DecodedFrame& frame) {
+  const auto width = static_cast<size_t>(frame.width);
+  const auto height = static_cast<size_t>(frame.height);
+  const auto m = buildYuvMatrix(frame.color_space, frame.color_range);
+  const uint8_t* luma = frame.pixels->data();
+  const uint8_t* chroma = luma + width * height;
+  const size_t chroma_width = (width + 1) / 2;
+  const bool nv12 = frame.format == PixelFormat::kNV12;
+  const uint8_t* u = chroma;
+  const uint8_t* v = nv12 ? chroma + 1 : chroma + chroma_width * ((height + 1) / 2);
+  const size_t row = nv12 ? chroma_width * 2 : chroma_width;
+  const size_t step = nv12 ? 2 : 1;
+  std::vector<uint8_t> out(width * height * 3);
+  uint8_t* dst = out.data();
+  for (size_t y = 0; y < height; ++y) {
+    for (size_t x = 0; x < width; ++x) {
+      const float l = luma[y * width + x] / 255.0f;
+      const float cu = u[(y / 2) * row + (x / 2) * step] / 255.0f - 0.5f;
+      const float cv = v[(y / 2) * row + (x / 2) * step] / 255.0f - 0.5f;
+      for (size_t c = 0; c < 3; ++c) {
+        const float value = m[c] * l + m[4 + c] * cu + m[8 + c] * cv + m[12 + c];
+        *dst++ = static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+      }
+    }
+  }
+  return out;
+}
+
+/// A `width` x `height` frame of random samples (luma 16..235, chroma 16..240: what an encoder produces).
+DecodedFrame randomFrame(int width, int height, PixelFormat format, YuvColorSpace space, YuvColorRange range) {
+  std::mt19937 random(7);
+  std::uniform_int_distribution<int> luma(16, 235);
+  std::uniform_int_distribution<int> chroma(16, 240);
+  DecodedFrame frame;
+  frame.width = width;
+  frame.height = height;
+  frame.format = format;
+  frame.color_space = space;
+  frame.color_range = range;
+  frame.pixels = std::make_shared<std::vector<uint8_t>>(expectedBufferSize(width, height, format));
+  const size_t luma_size = static_cast<size_t>(width) * static_cast<size_t>(height);
+  for (size_t i = 0; i < frame.pixels->size(); ++i) {
+    (*frame.pixels)[i] = static_cast<uint8_t>(i < luma_size ? luma(random) : chroma(random));
+  }
+  return frame;
+}
+
+/// The largest difference, per channel, between `convertToRgb24` of `frame` and the shader's matrix; -1 when the
+/// conversion fails or writes past the frame's `width * height * 3` bytes.
+int worstDifference(const DecodedFrame& frame) {
+  constexpr uint8_t kGuard = 0xCD;
+  constexpr size_t kGuardBytes = 256;
+  const size_t size = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 3;
+  std::vector<uint8_t> rgb(size + kGuardBytes, kGuard);
+  if (!convertToRgb24(frame, rgb.data())) {
+    return -1;
+  }
+  if (std::any_of(
+          rgb.begin() + static_cast<std::ptrdiff_t>(size), rgb.end(), [](uint8_t byte) { return byte != kGuard; })) {
+    return -1;
+  }
+  const std::vector<uint8_t> expected = referenceRgb(frame);
+  int worst = 0;
+  for (size_t i = 0; i < size; ++i) {
+    worst = std::max(worst, std::abs(int(rgb[i]) - int(expected[i])));
+  }
+  return worst;
+}
+
+// Within 3 levels per channel of the shader's matrix (swscale's unscaled converter at a width that is a multiple of 16,
+// its exact rounding at any other), for both 4:2:0 layouts, both colour spaces and both ranges.
+TEST(VideoRgbConversion, MatchesTheShaderMatrixWithinThree) {
+  for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
+    for (const YuvColorSpace space : {YuvColorSpace::kBt601, YuvColorSpace::kBt709}) {
+      for (const YuvColorRange range : {YuvColorRange::kLimited, YuvColorRange::kFull}) {
+        for (const int width : {48, 34}) {
+          SCOPED_TRACE(::testing::Message() << int(format) << "/" << int(space) << "/" << int(range) << " " << width);
+          const int worst = worstDifference(randomFrame(width, 18, format, space, range));
+          EXPECT_GE(worst, 0);
+          EXPECT_LE(worst, 3);
+        }
+      }
+    }
+  }
+  DecodedFrame mono = randomFrame(4, 4, PixelFormat::kMono8, YuvColorSpace::kBt709, YuvColorRange::kLimited);
+  std::vector<uint8_t> rgb(4u * 4u * 3u);
+  EXPECT_FALSE(convertToRgb24(mono, rgb.data())) << "only 4:2:0 YUV converts";
+}
+
+// swscale's x86 converter writes 16 pixels at a time: at other widths it left the last pixels of each row unwritten
+// (34, 854: 480p) or wrote past the frame's last row (40, 1278). Every pixel converts, and nothing past the frame.
+TEST(VideoRgbConversion, AnyEvenWidthConvertsEveryPixelAndNothingPastTheFrame) {
+  for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
+    for (const int width : {34, 36, 40, 66, 854, 1278, 1280}) {
+      SCOPED_TRACE(::testing::Message() << int(format) << " " << width);
+      const int worst = worstDifference(randomFrame(width, 18, format, YuvColorSpace::kBt709, YuvColorRange::kLimited));
+      EXPECT_GE(worst, 0) << "wrote past the frame";
+      EXPECT_LE(worst, 3);
+    }
+  }
+}
+
+// swscale takes its unscaled converter only at an even height, so an odd one takes the exact path, within 1. Every
+// row reads the chroma row of its 2x2 block, which swscale alone misses at an odd height: it stretches the ceil(h/2)
+// chroma rows over the h rows, so odd rows from mid-frame read the next chroma row (off by up to 255). AV1 allows odd
+// 4:2:0 heights; H.264 and HEVC crop 4:2:0 to even ones.
+TEST(VideoRgbConversion, AnOddHeightTakesTheExactPath) {
+  for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
+    for (const YuvColorRange range : {YuvColorRange::kLimited, YuvColorRange::kFull}) {
+      for (const auto& [width, height] : {std::pair{32, 17}, std::pair{34, 17}, std::pair{32, 1}}) {
+        SCOPED_TRACE(::testing::Message() << int(format) << "/" << int(range) << " " << width << "x" << height);
+        const int worst = worstDifference(randomFrame(width, height, format, YuvColorSpace::kBt709, range));
+        EXPECT_GE(worst, 0) << "wrote past the frame";
+        EXPECT_LE(worst, 1);
+      }
+    }
+  }
+}
+
+// PJ_BENCH=1: rgb24 of one 1920 x 1080 BT.709 limited-range frame, YUV420P and NV12, median of 20, the per-pixel
+// reference loop against swscale.
+TEST(VideoRgbConversionBench, Rgb24At1080p) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  std::vector<uint8_t> rgb(1920u * 1080u * 3u);
+  const auto median_ms = [](auto&& call) {
+    std::vector<double> ms;
+    for (int run = 0; run < 20; ++run) {
+      const auto begin = std::chrono::steady_clock::now();
+      call();
+      ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count());
+    }
+    std::sort(ms.begin(), ms.end());
+    return ms[10];
+  };
+  for (const PixelFormat format : {PixelFormat::kYUV420P, PixelFormat::kNV12}) {
+    const DecodedFrame frame = randomFrame(1920, 1080, format, YuvColorSpace::kBt709, YuvColorRange::kLimited);
+    const double reference = median_ms([&] { (void)referenceRgb(frame); });
+    const double swscale = median_ms([&] { ASSERT_TRUE(convertToRgb24(frame, rgb.data())); });
+    std::printf(
+        "[bench] rgb24 at 1080p, %s: per-pixel loop %.2f ms, swscale %.2f ms\n",
+        format == PixelFormat::kNV12 ? "NV12" : "YUV420P", reference, swscale);
+  }
 }
 
 class StreamingVideoDecoderTest : public ::testing::Test {

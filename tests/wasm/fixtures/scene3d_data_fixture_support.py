@@ -166,7 +166,7 @@ def pointcloud_cdr(sequence: int) -> bytes:
     return bytes(cdr.data)
 
 
-def pose_array_cdr(sequence: int) -> bytes:
+def pose_array_cdr(sequence: int, x_offset: float = 0.0) -> bytes:
     cdr = CdrWriter()
     timestamp(cdr, sequence * STEP_NS)
     cdr.string("particles")
@@ -174,7 +174,7 @@ def pose_array_cdr(sequence: int) -> bytes:
     for index in range(POSE_COUNT):
         row, column = divmod(index, 16)
         values = (
-            (column - 7.5) * 0.35,
+            (column - 7.5) * 0.35 + x_offset,
             (row - 7.5) * 0.35,
             0.25 * math.sin(column * 0.55) * math.cos(row * 0.45),
         ) + quaternion_from_yaw((row + column) * 0.09)

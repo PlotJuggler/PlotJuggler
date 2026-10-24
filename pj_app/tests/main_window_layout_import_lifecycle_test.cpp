@@ -30,6 +30,7 @@
 #include <QWidget>
 
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/XmlCdata.h"
 #include "support/layout_import_gui_support.h"
 #include "support/loader_test_support.h"
 
@@ -98,7 +99,7 @@ void appendPlainFileInfo(QDomDocument& doc, const QString& path, const QString& 
   QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
   plugin.setAttribute(QStringLiteral("ID"), QStringLiteral("Mock File Source"));
   plugin.setAttribute(QStringLiteral("manifest_id"), QStringLiteral("mock-file-source"));
-  PJ::layout_xml::appendJsonAsCdata(doc, plugin, preset_json);
+  PJ::appendJsonAsCdata(doc, plugin, preset_json);
   file_info.appendChild(plugin);
   wrapper.appendChild(file_info);
 }

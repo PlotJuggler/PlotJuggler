@@ -172,4 +172,18 @@ const char* colormapName(Colormap colormap) noexcept {
   return "Turbo";
 }
 
+QString colormapToken(Colormap colormap) {
+  return QString::fromLatin1(colormapName(colormap)).toLower();
+}
+
+std::optional<Colormap> parseColormap(QStringView token) {
+  for (int id = 0; id < kColormapCount; ++id) {
+    const auto colormap = static_cast<Colormap>(id);
+    if (token == colormapToken(colormap)) {
+      return colormap;
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace PJ

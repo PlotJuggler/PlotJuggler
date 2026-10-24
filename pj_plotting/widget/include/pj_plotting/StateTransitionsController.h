@@ -82,6 +82,10 @@ class StateTransitionsController : public QObject {
   [[nodiscard]] int rowCount() const noexcept {
     return static_cast<int>(rows_.size());
   }
+  /// No coalesced refresh is still to come.
+  [[nodiscard]] bool refreshIdleForTesting() const noexcept {
+    return refresh_trigger_.idleForTesting();
+  }
 
  signals:
   /// A row was added or removed (user drop/chip-close, catalog removal, or a

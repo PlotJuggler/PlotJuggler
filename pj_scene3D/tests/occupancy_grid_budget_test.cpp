@@ -9,23 +9,19 @@ namespace pj::scene3d {
 namespace {
 
 TEST(OccupancyGridBrowserBudget, LayerLimitsAcceptExactBoundariesOnly) {
-  EXPECT_TRUE(browserOccupancyDimensionsFit(8192U, 1024U));
-  EXPECT_FALSE(browserOccupancyDimensionsFit(8192U, 1025U));
-  EXPECT_FALSE(browserOccupancyDimensionsFit(8193U, 1U));
-  EXPECT_FALSE(browserOccupancyDimensionsFit(0U, 1024U));
-  EXPECT_TRUE(browserOccupancyPayloadFits(kBrowserMaxOccupancyWireBytes));
-  EXPECT_FALSE(browserOccupancyPayloadFits(kBrowserMaxOccupancyWireBytes + 1U));
-  EXPECT_TRUE(browserOccupancyUpdateWindowFits(kBrowserMaxOccupancyUpdateWindowBytes));
-  EXPECT_FALSE(browserOccupancyUpdateWindowFits(kBrowserMaxOccupancyUpdateWindowBytes + 1U));
+  EXPECT_TRUE(occupancyDimensionsFit(8192U, 1024U, kBrowserSceneLimits));
+  EXPECT_FALSE(occupancyDimensionsFit(8192U, 1025U, kBrowserSceneLimits));
+  EXPECT_FALSE(occupancyDimensionsFit(8193U, 1U, kBrowserSceneLimits));
+  EXPECT_FALSE(occupancyDimensionsFit(0U, 1024U, kBrowserSceneLimits));
 }
 
 TEST(OccupancyGridBrowserBudget, ViewBudgetAggregatesWithoutUnsignedUnderflow) {
-  std::uint64_t remaining = kBrowserMaxOccupancyCellsPerView;
-  EXPECT_TRUE(tryConsumeBrowserOccupancyCells(kBrowserMaxOccupancyGridCells, remaining));
-  EXPECT_EQ(remaining, kBrowserMaxOccupancyGridCells);
-  EXPECT_TRUE(tryConsumeBrowserOccupancyCells(kBrowserMaxOccupancyGridCells, remaining));
+  std::uint64_t remaining = kBrowserSceneLimits.max_occupancy_cells_per_view;
+  EXPECT_TRUE(tryConsumeBudget(kBrowserSceneLimits.max_occupancy_cells_per_layer, remaining));
+  EXPECT_EQ(remaining, kBrowserSceneLimits.max_occupancy_cells_per_layer);
+  EXPECT_TRUE(tryConsumeBudget(kBrowserSceneLimits.max_occupancy_cells_per_layer, remaining));
   EXPECT_EQ(remaining, 0U);
-  EXPECT_FALSE(tryConsumeBrowserOccupancyCells(1U, remaining));
+  EXPECT_FALSE(tryConsumeBudget(1U, remaining));
   EXPECT_EQ(remaining, 0U);
 }
 

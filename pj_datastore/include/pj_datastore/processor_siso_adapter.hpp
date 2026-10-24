@@ -5,13 +5,13 @@
 #include <memory>
 
 #include "pj_datastore/data_processor.hpp"
-#include "pj_datastore/derived_engine.hpp"  // PJ::ISISOTransform, PJ::VarValue
+#include "pj_datastore/incremental_engine.hpp"  // PJ::ISISOTransform, PJ::VarValue
 
 namespace PJ::proc {
 
 /// Adapts a host-internal `DataProcessor` to the engine's `ISISOTransform`, so a
-/// processor can be installed as a `DerivedEngine` node
-/// (`DerivedEngine::addSisoTransform`) and run EAGERLY at commit time. Bridges
+/// processor can be installed as a `IncrementalEngine` node
+/// (`IncrementalEngine::addSisoTransform`) and run EAGERLY at commit time. Bridges
 /// the two per-sample forms: the engine's `(Timestamp, VarValue)` out-param style
 /// and the processor's `Sample` value style.
 ///

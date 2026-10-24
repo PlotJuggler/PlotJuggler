@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <utility>
 
-#include "pj_base/types.hpp"                // PJ::Timestamp
-#include "pj_datastore/derived_engine.hpp"  // PJ::VarValue
+#include "pj_base/types.hpp"                    // PJ::Timestamp
+#include "pj_datastore/incremental_engine.hpp"  // PJ::VarValue
 
 namespace PJ::proc {
 

@@ -5,17 +5,24 @@
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QFuture>
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 #include <array>
 #include <cmath>
 #include <glm/glm.hpp>
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#include "mesh_import.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -112,6 +119,31 @@ TEST(MeshLoaderTest, LoadsStlFromPath) {
 // --- Path load: Collada (DAE) -----------------------------------------------
 // Proves the assimp Conan `with_collada=True` option name is correct: a wrong
 // name silently disables the importer and this would return empty geometry.
+
+// MeshLoader caches a path's future and hands it to every caller: taking the
+// result for one import must leave it intact for the next.
+TEST(MeshLoaderTest, CachedLoadServesEveryImport) {
+  MeshLoader loader;
+  QObject context;
+  const QString path = fixturePath("cube.stl");
+  const auto import_once = [&]() -> MeshData {
+    bool done = false;
+    MeshImport job(loader.load(path), &context, [&done] { done = true; });
+    // processEvents() returns at once when idle: bound the wait by time, since
+    // the import runs on a worker (slow under the sanitizers).
+    QElapsedTimer timer;
+    timer.start();
+    while (!done && timer.elapsed() < 10000) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+      QThread::msleep(1);
+    }
+    EXPECT_TRUE(done);
+    return job.take();
+  };
+  EXPECT_TRUE(import_once().ok);
+  ASSERT_TRUE(loader.load(path).isValid()) << "the first import consumed the cached result";
+  EXPECT_TRUE(import_once().ok);
+}
 
 TEST(MeshLoaderTest, LoadsColladaFromPath) {
   MeshLoader loader;
@@ -268,8 +300,8 @@ TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
 
 // The W19i fixture carries all five glTF metallic-roughness material maps in
 // one GLB. Each must remain an inline encoded capability with a stable content
-// key so both the native and QRhi renderers can apply their slot-specific color
-// space without reopening a path.
+// key so the renderer can apply its slot-specific color space without reopening
+// a path.
 TEST(MeshLoaderTest, EmbeddedPbrGlbExtractsAllFiveMaterialMaps) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_pbr.glb");
@@ -334,7 +366,7 @@ TEST(MeshLoaderTest, EmbeddedNeutralGlbIsAMapFreeOpaqueControl) {
 
 // The embedded-texture cache key is a content hash, so re-loading the same bytes
 // yields the same key — this is what lets the renderer's per-context texture
-// cache survive GL-context recreation and dedup identical embedded images.
+// cache survive a QRhi recreation and dedup identical embedded images.
 TEST(MeshLoaderTest, EmbeddedTextureKeyIsStableAcrossLoads) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");

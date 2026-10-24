@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -113,6 +114,12 @@ struct DecodedFrame {
   int height = 0;                                ///< Image height in pixels
   PixelFormat format = PixelFormat::kRGB888;     ///< Pixel layout in the buffer
   int64_t pts = -1;                              ///< Presentation timestamp (-1 if unknown)
+  /// The source image's own stamp (its payload's `timestamp_ns`) on the dataset clock: what annotations made from the
+  /// image carry, which may differ from `pts`, the store entry's time. Unset for a frame with no payload stamp (video).
+  std::optional<int64_t> stamp;
+  /// The time of the store entry the frame was decoded from, which a lookup among the topic's entries takes; `pts` can
+  /// be a parser's record stamp or the image's own. Unset for a frame that came from no single entry (video).
+  std::optional<int64_t> entry_ts;
   std::string frame_id;  ///< Source frame (from sdk::Image); lets a consumer find the CameraInfo.
 
   /// YUV→RGB conversion parameters (only meaningful for kYUV420P / kNV12). Set by

@@ -13,6 +13,7 @@
 
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/marker_topic_metadata.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 
@@ -440,6 +441,26 @@ TEST(PluginDataHostObjectTest, ToolboxRegistersObjectTopicOnExistingDatasetIdemp
 
   // An unknown dataset is rejected.
   EXPECT_FALSE(toolbox.registerObjectTopicOnDataset(DatasetId{999999}, "x", "{}").has_value());
+}
+
+// A released marker toolbox registers its set under the 0.35 name with whatever
+// metadata it chose; the host describes the topic on registration, so nothing else
+// has to read the name.
+TEST(PluginDataHostObjectTest, ToolboxMarkerWriteIsStampedOnRegistration) {
+  DataEngine engine;
+  ObjectStore store;
+  DatastoreToolboxHost toolbox_impl{engine, store};
+  sdk::ToolboxHostView toolbox{toolbox_impl.raw()};
+
+  const auto source = *toolbox.createDataSource("loaded_elsewhere");
+  const auto dataset = static_cast<DatasetId>(source.id);
+
+  const auto handle = toolbox.registerObjectTopicOnDataset(dataset, "__markers__//imu/x", "{}");
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+
+  const auto info = markerTopicInfo(store.descriptor(ObjectTopicId{handle->id}).metadata_json);
+  ASSERT_TRUE(info.has_value());
+  EXPECT_EQ(*info, (MarkerTopicInfo{MarkerScopeKind::kSeries, "/imu/x"}));
 }
 
 }  // namespace

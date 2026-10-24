@@ -17,6 +17,12 @@
 
 namespace pj::scene3d {
 
+// An http(s) URL: the only sources UrlFetcher reaches the network for.
+[[nodiscard]] inline bool isNetworkUrl(const QUrl& url) {
+  const QString scheme = url.scheme();
+  return scheme == QLatin1StringView("http") || scheme == QLatin1StringView("https");
+}
+
 // Outcome of one UrlFetcher::fetch. `bytes` is meaningful only when `ok`.
 struct FetchResult {
   bool ok{false};
@@ -61,13 +67,8 @@ struct FetchResult {
 class UrlFetcher : public QObject {
   Q_OBJECT
  public:
-  // Hard cap on accepted response bytes: 32 MiB in WASM, preserving the
-  // existing 64 MiB native contract.
-#ifdef PJ_TARGET_WASM
-  static constexpr qint64 kMaxFetchBytes = static_cast<qint64>(kBrowserMaxModelSourceBytes);
-#else
-  static constexpr qint64 kMaxFetchBytes = 64LL * 1024 * 1024;
-#endif
+  // Hard cap on accepted response bytes: the scene's model-source limit.
+  static constexpr qint64 kMaxFetchBytes = static_cast<qint64>(kSceneLimits.max_model_source_bytes);
 
   explicit UrlFetcher(QObject* parent = nullptr);
 

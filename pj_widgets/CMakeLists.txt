@@ -18,6 +18,7 @@ add_library(pj_widgets STATIC
     src/FileDialog.cpp
     src/FrameworkTokens.cpp
     src/GraphicsApi.cpp
+    src/RhiTestHooks.cpp
     src/FlowLayout.cpp
     src/HeaderDividerHighlight.cpp
     src/HeaderResizePolicy.cpp
@@ -26,12 +27,14 @@ add_library(pj_widgets STATIC
     src/LayerListView.cpp
     src/MarkerTimeline.cpp
     src/MessageBox.cpp
+    src/OwnedMenu.cpp
     src/Search.cpp
     src/ProgressBar.cpp
     src/ProgressDialog.cpp
     src/RangeSlider.cpp
     src/RasterFrame.cpp
     src/RecentFilesMenu.cpp
+    src/RenderingWarningLabel.cpp
     src/ScrubberBase.cpp
     src/SectionHeaderBand.cpp
     src/SideDrawer.cpp
@@ -46,6 +49,7 @@ add_library(pj_widgets STATIC
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/CheckButton.h
     include/pj_widgets/ChromeMetrics.h
+    include/pj_widgets/Fnv1a.h
     include/pj_widgets/SideDrawer.h
     include/pj_widgets/DualOptionsWidget.h
     include/pj_widgets/ColorPickerPopup.h
@@ -64,6 +68,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/FlowLayout.h
     include/pj_widgets/FrameworkTokens.h
     include/pj_widgets/GraphicsApi.h
+    include/pj_widgets/RhiTestHooks.h
     include/pj_widgets/HeaderDividerHighlight.h
     include/pj_widgets/HeaderResizePolicy.h
     include/pj_widgets/IngestProgressWidget.h
@@ -78,6 +83,8 @@ add_library(pj_widgets STATIC
     include/pj_widgets/RangeSlider.h
     include/pj_widgets/RasterFrame.h
     include/pj_widgets/RecentFilesMenu.h
+    include/pj_widgets/RenderingWarningLabel.h
+    include/pj_widgets/RhiBlend.h
     include/pj_widgets/ScrubberBase.h
     include/pj_widgets/SectionHeaderBand.h
     include/pj_widgets/StateColors.h

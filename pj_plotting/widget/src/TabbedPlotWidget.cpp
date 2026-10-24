@@ -449,6 +449,12 @@ void TabbedPlotWidget::addWidgetTab(const QString& tab_name, QWidget* content, s
   emit currentTabChanged(nullptr);
 }
 
+void TabbedPlotWidget::focusTab(PlotDocker* docker) {
+  if (const TabEntry* entry = findEntry(static_cast<QWidget*>(docker))) {
+    selectEntry(*entry);
+  }
+}
+
 void TabbedPlotWidget::focusWidgetTab(QWidget* content) {
   if (const TabEntry* entry = findWidgetEntry(content)) {
     selectEntry(*entry);
@@ -475,7 +481,6 @@ QWidget* TabbedPlotWidget::takeWidgetTab(QWidget* content) {
   tabs_bar_layout_->removeWidget(frame);
   frame->deleteLater();
   content->hide();
-  content->setParent(nullptr);
   content->setSizePolicy(original_policy);
   updateSelectionStyle();
   emit currentTabChanged(qobject_cast<PlotDocker*>(stack_->currentWidget()));

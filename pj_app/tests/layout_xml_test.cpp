@@ -14,6 +14,7 @@
 #include <cstdint>
 
 #include "LayoutXml.h"
+#include "pj_runtime/XmlCdata.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -25,7 +26,7 @@ using PJ::layout_xml::DataSourceRef;
 QString roundTripJson(const QString& input) {
   QDomDocument doc;
   QDomElement plugin = doc.createElement(u"plugin"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, plugin, input);
+  PJ::appendJsonAsCdata(doc, plugin, input);
   doc.appendChild(plugin);
 
   // Round-trip through serialize -> reparse to confirm the document
@@ -87,9 +88,9 @@ TEST(AppendJsonAsCdata, RoundTripsUnicodeAndAngleBrackets) {
 
 QDomElement buildProcessorWithSource(QDomDocument& doc, const QString& params, const QString& source) {
   QDomElement processor = doc.createElement(u"processor"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, processor, params);  // params: a direct CDATA child
+  PJ::appendJsonAsCdata(doc, processor, params);  // params: a direct CDATA child
   QDomElement src = doc.createElement(u"source_fallback"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, src, source);
+  PJ::appendJsonAsCdata(doc, src, source);
   processor.appendChild(src);  // source: nested inside a child element
   doc.appendChild(processor);
   return processor;
@@ -101,7 +102,7 @@ TEST(DirectCdataText, ReadsOwnPayloadIgnoringChildElement) {
   const QString source = u"return { id='scale', create=function(p) end }"_s;
   QDomElement processor = buildProcessorWithSource(doc, params, source);
 
-  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(PJ::directCdataText(processor), params);
   EXPECT_EQ(processor.firstChildElement(u"source_fallback"_s).text(), source);
   // Document the gotcha being guarded against: text() recurses and merges both.
   EXPECT_EQ(processor.text(), params + source);
@@ -116,7 +117,7 @@ TEST(DirectCdataText, SurvivesSerializeReparseWithClosingCdata) {
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
   const QDomElement processor = reparsed.documentElement();
-  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(PJ::directCdataText(processor), params);
   EXPECT_EQ(processor.firstChildElement(u"source_fallback"_s).text(), source);
 }
 
@@ -124,10 +125,10 @@ TEST(DirectCdataText, EmptyWhenNoDirectCdata) {
   QDomDocument doc;
   QDomElement processor = doc.createElement(u"processor"_s);
   QDomElement src = doc.createElement(u"source_fallback"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, src, u"source-only"_s);
+  PJ::appendJsonAsCdata(doc, src, u"source-only"_s);
   processor.appendChild(src);
   doc.appendChild(processor);
-  EXPECT_TRUE(PJ::layout_xml::directCdataText(processor).isEmpty());
+  EXPECT_TRUE(PJ::directCdataText(processor).isEmpty());
 }
 
 // ---------- extractDataSource ----------------------------------------------
@@ -148,7 +149,7 @@ QDomDocument buildDataSourceDoc(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, plugin_id);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -167,7 +168,7 @@ void appendFileInfo(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, plugin_id);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -330,7 +331,7 @@ void appendMaterialize(QDomDocument& doc, const QString& provider, const QString
   QDomElement materialize = doc.createElement(u"materialize"_s);
   materialize.setAttribute(u"provider"_s, provider);
   materialize.setAttribute(u"identity"_s, identity);
-  PJ::layout_xml::appendJsonAsCdata(doc, materialize, descriptor);
+  PJ::appendJsonAsCdata(doc, materialize, descriptor);
   file_info.appendChild(materialize);
 }
 
@@ -774,6 +775,20 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   transform_input.setAttribute(u"dataset_id"_s, u"7"_s);
   transform.appendChild(transform_input);
   processors.appendChild(transform);
+  // A dataset-bound marker generator saved with an absolute path (as DerivedObjects::save
+  // writes it), an unplaceable one, and an all_datasets one that names no dataset.
+  QDomElement generator = pd.doc.createElement(u"generator"_s);
+  generator.setAttribute(u"dataset_id"_s, u"7"_s);
+  generator.setAttribute(u"dataset_path"_s, u"/saved/elsewhere/run.mcap"_s);
+  processors.appendChild(generator);
+  QDomElement unplaced_generator = pd.doc.createElement(u"generator"_s);
+  unplaced_generator.setAttribute(u"dataset_id"_s, u"8"_s);
+  unplaced_generator.setAttribute(u"dataset_source"_s, u"stream"_s);
+  unplaced_generator.setAttribute(u"dataset_path"_s, QString());
+  processors.appendChild(unplaced_generator);
+  QDomElement global_generator = pd.doc.createElement(u"generator"_s);
+  global_generator.setAttribute(u"all_datasets"_s, u"1"_s);
+  processors.appendChild(global_generator);
 
   // Scene elements must be invisible to all three passes.
   QDomElement scene = pd.doc.createElement(u"scene3d"_s);
@@ -801,6 +816,9 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_FALSE(xy.hasAttribute(u"y_dataset_path"_s));  // id 8 unknown to the lookup
   EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), u"data/run.mcap"_s);
   EXPECT_EQ(transform_input.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(generator.attribute(u"dataset_path"_s), u"data/run.mcap"_s) << "the absolute save-time path is replaced";
+  EXPECT_TRUE(unplaced_generator.attribute(u"dataset_path"_s).isEmpty());
+  EXPECT_FALSE(global_generator.hasAttribute(u"dataset_path"_s));
   EXPECT_FALSE(layer.hasAttribute(u"dataset_path"_s)) << "scene layers are not stamped";
   EXPECT_FALSE(robot.hasAttribute(u"source_dataset_path"_s)) << "robot models are not stamped";
 
@@ -811,6 +829,9 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
       << "an unvalidated volatile id must not survive a file save";
   EXPECT_TRUE(processor.hasAttribute(u"input_dataset_id"_s));
   EXPECT_TRUE(transform_input.hasAttribute(u"dataset_id"_s));
+  EXPECT_TRUE(generator.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(unplaced_generator.hasAttribute(u"dataset_id"_s)) << "a path-less generator id is a volatile hint";
+  EXPECT_EQ(unplaced_generator.attribute(u"dataset_source"_s), u"stream"_s);
   // Scene ids survive untouched — restore requires them and the scene family owns
   // its own qualifier round-trip.
   EXPECT_TRUE(layer.hasAttribute(u"dataset_id"_s)) << "scene layer id must not be stripped";
@@ -826,6 +847,45 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_EQ(xy.attribute(u"x_dataset_path"_s), expected);
   EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), expected);
   EXPECT_EQ(transform_input.attribute(u"dataset_path"_s), expected);
+  EXPECT_EQ(generator.attribute(u"dataset_path"_s), expected);
+}
+
+// LAY-17: an <on_demand> recipe's inputs carry their dataset like a transform's: a known id gets its path at
+// file save, an unvalidated volatile id is stripped, and a generic layout keeps no qualifier.
+TEST(DatasetSourcePath, OnDemandInputsAreStampedAndStripped) {
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"root"_s);
+  doc.appendChild(root);
+  QDomElement processors = doc.createElement(u"data_processors"_s);
+  root.appendChild(processors);
+  QDomElement on_demand = doc.createElement(u"on_demand"_s);
+  processors.appendChild(on_demand);
+  QDomElement known = doc.createElement(u"input"_s);
+  known.setAttribute(u"name"_s, u"cloud"_s);
+  known.setAttribute(u"dataset_id"_s, u"7"_s);
+  known.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  on_demand.appendChild(known);
+  QDomElement unknown = doc.createElement(u"input"_s);
+  unknown.setAttribute(u"name"_s, u"threshold"_s);
+  unknown.setAttribute(u"dataset_id"_s, u"8"_s);
+  on_demand.appendChild(unknown);
+
+  PJ::layout_xml::stampDatasetSourcePaths(
+      doc, [](std::uint32_t id) { return id == 7 ? u"data/run.mcap"_s : QString{}; });
+  EXPECT_EQ(known.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_path"_s)) << "id 8 unknown to the lookup";
+
+  PJ::layout_xml::removeUnvalidatedDatasetIds(doc);
+  EXPECT_TRUE(known.hasAttribute(u"dataset_id"_s)) << "path-qualified: kept";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_id"_s)) << "an unvalidated volatile id must not survive a file save";
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+  for (const QDomElement& input : {known, unknown}) {
+    EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_path"_s));
+    EXPECT_FALSE(input.attribute(u"name"_s).isEmpty()) << "the name stays";
+  }
 }
 
 // A hidden <marker_scope> carries the same dataset identity as the curves beside it
@@ -940,6 +1000,16 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   input.setAttribute(u"column"_s, u"1"_s);
   transform.appendChild(input);
   processors.appendChild(transform);
+  QDomElement generator = pd.doc.createElement(u"generator"_s);
+  generator.setAttribute(u"id"_s, u"rule"_s);
+  generator.setAttribute(u"all_datasets"_s, u"0"_s);
+  generator.setAttribute(u"dataset_id"_s, u"7"_s);
+  generator.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  generator.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  QDomElement generator_input = pd.doc.createElement(u"input"_s);
+  generator_input.setAttribute(u"name"_s, u"/imu/x"_s);
+  generator.appendChild(generator_input);
+  processors.appendChild(generator);
   pd.doc.documentElement().appendChild(processors);
 
   QDomElement scene = pd.doc.createElement(u"scene3d"_s);
@@ -1000,6 +1070,14 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   EXPECT_EQ(input.attribute(u"topic"_s), u"/imu"_s);
   EXPECT_EQ(input.attribute(u"field"_s), u"x"_s);
   EXPECT_EQ(input.attribute(u"column"_s), u"1"_s);
+
+  // A marker generator keeps its input series, which binds it to the one dataset
+  // that carries them.
+  EXPECT_FALSE(generator.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(generator.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(generator.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(generator.attribute(u"id"_s), u"rule"_s);
+  EXPECT_EQ(generator_input.attribute(u"name"_s), u"/imu/x"_s);
 
   // Scene layers use the same unique-only structural rebind in generic layouts.
   // Removing all source qualifiers also prevents browser upload identities from

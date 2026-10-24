@@ -6,7 +6,7 @@ if(NOT DEFINED PJ_QT_REQUIRED_VERSION)
   if(DEFINED PJ_QT_VERSION)
     set(PJ_QT_REQUIRED_VERSION ${PJ_QT_VERSION})
   else()
-    set(PJ_QT_REQUIRED_VERSION 6.11.1)
+    set(PJ_QT_REQUIRED_VERSION 6.12.0)
   endif()
 endif()
 
@@ -24,59 +24,53 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 if(EMSCRIPTEN)
-  # The browser backend needs GLSL ES 300 inside every serialized shader pack.
-  # Re-bake to the build tree and compare hashes at configure time so CI catches
-  # both a missing WebGL2 dialect and a source/blob mismatch.
+  # The packs are committed (desktop kits ship no qsb). The browser configure has
+  # the host qsb: re-bake with shaders/bake.sh, the single source of the qsb
+  # targets, and require identical bytes. That catches both a missing WebGL2
+  # dialect and a source/blob mismatch.
   include(${CMAKE_SOURCE_DIR}/cmake/PjQsb.cmake)
   pj_find_host_qsb(_pj_scene2d_qsb "WASM Scene2D")
 
+  set(_pj_scene2d_shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
   set(_pj_scene2d_shader_verify_dir "${CMAKE_CURRENT_BINARY_DIR}/verified_shaders")
+  file(REMOVE_RECURSE "${_pj_scene2d_shader_verify_dir}")
   file(MAKE_DIRECTORY "${_pj_scene2d_shader_verify_dir}")
-  foreach(_pj_scene2d_shader IN ITEMS
-      scene_lines.vert scene_lines.frag
-      scene_quads.vert scene_quads.frag
-      scene_text.vert scene_text.frag
-      yuv_to_rgb.vert yuv_to_rgb.frag)
-    if(_pj_scene2d_shader MATCHES "^yuv_to_rgb\\.")
-      # Preserve the image pass's existing desktop GLSL 440 target while
-      # adding only the WebGL2 dialect needed by WASM.
-      set(_pj_scene2d_glsl_targets "300 es,440")
-    else()
-      # Preserve the overlay packs' existing targets and add WebGL2.
-      set(_pj_scene2d_glsl_targets "100 es,120,150,300 es")
-    endif()
-    set(_pj_scene2d_shader_source
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${_pj_scene2d_shader}")
-    set(_pj_scene2d_shader_pack "${_pj_scene2d_shader_source}.qsb")
-    set(_pj_scene2d_shader_rebuilt
-        "${_pj_scene2d_shader_verify_dir}/${_pj_scene2d_shader}.qsb")
-    execute_process(
-      COMMAND "${_pj_scene2d_qsb}"
-        --glsl "${_pj_scene2d_glsl_targets}" --hlsl 50 --msl 12
-        -o "${_pj_scene2d_shader_rebuilt}" "${_pj_scene2d_shader_source}"
-      RESULT_VARIABLE _pj_scene2d_qsb_result
-      ERROR_VARIABLE _pj_scene2d_qsb_error)
-    if(NOT _pj_scene2d_qsb_result EQUAL 0)
-      message(FATAL_ERROR
-        "Failed to bake ${_pj_scene2d_shader}: ${_pj_scene2d_qsb_error}")
-    endif()
-    file(SHA256 "${_pj_scene2d_shader_pack}" _pj_scene2d_committed_hash)
-    file(SHA256 "${_pj_scene2d_shader_rebuilt}" _pj_scene2d_rebuilt_hash)
+  execute_process(
+    COMMAND bash "${_pj_scene2d_shader_dir}/bake.sh" "${_pj_scene2d_qsb}" "${_pj_scene2d_shader_verify_dir}"
+    RESULT_VARIABLE _pj_scene2d_qsb_result
+    ERROR_VARIABLE _pj_scene2d_qsb_error)
+  if(NOT _pj_scene2d_qsb_result EQUAL 0)
+    message(FATAL_ERROR "Failed to bake the Scene2D shaders: ${_pj_scene2d_qsb_error}")
+  endif()
+  file(GLOB _pj_scene2d_rebuilt_packs RELATIVE "${_pj_scene2d_shader_verify_dir}"
+    "${_pj_scene2d_shader_verify_dir}/*.qsb")
+  file(GLOB _pj_scene2d_committed_packs RELATIVE "${_pj_scene2d_shader_dir}" "${_pj_scene2d_shader_dir}/*.qsb")
+  if(NOT _pj_scene2d_committed_packs STREQUAL _pj_scene2d_rebuilt_packs)
+    message(FATAL_ERROR "Scene2D shader packs out of sync with shaders/bake.sh: committed "
+      "[${_pj_scene2d_committed_packs}], baked [${_pj_scene2d_rebuilt_packs}]")
+  endif()
+  foreach(_pj_scene2d_pack IN LISTS _pj_scene2d_rebuilt_packs)
+    file(SHA256 "${_pj_scene2d_shader_dir}/${_pj_scene2d_pack}" _pj_scene2d_committed_hash)
+    file(SHA256 "${_pj_scene2d_shader_verify_dir}/${_pj_scene2d_pack}" _pj_scene2d_rebuilt_hash)
     if(NOT _pj_scene2d_committed_hash STREQUAL _pj_scene2d_rebuilt_hash)
-      message(FATAL_ERROR
-        "Stale Scene2D shader pack ${_pj_scene2d_shader_pack}; re-bake with the documented qsb command")
+      message(FATAL_ERROR "Stale Scene2D shader pack ${_pj_scene2d_pack}; re-bake with shaders/bake.sh")
     endif()
   endforeach()
+  # Re-check when bake.sh, a source or a committed pack changes, or one appears.
+  file(GLOB _pj_scene2d_shader_inputs CONFIGURE_DEPENDS
+    "${_pj_scene2d_shader_dir}/*.vert" "${_pj_scene2d_shader_dir}/*.frag" "${_pj_scene2d_shader_dir}/*.qsb")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_pj_scene2d_shader_dir}/bake.sh" ${_pj_scene2d_shader_inputs})
   unset(_pj_scene2d_committed_hash)
-  unset(_pj_scene2d_glsl_targets)
+  unset(_pj_scene2d_committed_packs)
+  unset(_pj_scene2d_pack)
   unset(_pj_scene2d_qsb)
   unset(_pj_scene2d_qsb_error)
   unset(_pj_scene2d_qsb_result)
   unset(_pj_scene2d_rebuilt_hash)
-  unset(_pj_scene2d_shader)
-  unset(_pj_scene2d_shader_pack)
-  unset(_pj_scene2d_shader_rebuilt)
-  unset(_pj_scene2d_shader_source)
+  unset(_pj_scene2d_rebuilt_packs)
+  unset(_pj_scene2d_shader_dir)
+  unset(_pj_scene2d_shader_inputs)
   unset(_pj_scene2d_shader_verify_dir)
 endif()
 
@@ -156,4 +150,17 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(scene2d_dock_widget_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME scene2d_dock_widget_test COMMAND scene2d_dock_widget_test)
+
+  # Pixel checks of the viewer, a QRhi display runner: it needs an RHI-capable QPA
+  # (never `offscreen`) and registers once per backend of the platform
+  # (RHI_BACKENDS, cmake/PjTests.cmake).
+  if(NOT EMSCRIPTEN)
+    find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Test)
+    pj_add_test_runner(media_viewer_render_test
+      MAIN gui WARNINGS RHI_BACKENDS
+      SOURCES ../tests/media_viewer_render_test.cpp
+      LIBS pj_scene2d_widgets Qt6::Test
+      TIMEOUT 60
+    )
+  endif()
 endif()

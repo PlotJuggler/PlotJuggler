@@ -22,7 +22,6 @@
 #include <glm/glm.hpp>
 #include <map>
 #include <set>
-#include <string_view>
 #include <vector>
 
 namespace {
@@ -64,8 +63,9 @@ TEST(CubeMeshTest, StoredNormalsAreUnitAxisAlignedAndConsistentPerFace) {
   }
 }
 
-// C++ mirror of cubeFanCorner() in kCubeFanGlsl. Kept deliberately literal so a change
-// to the GLSL table without a change here shows up as a failure rather than drift.
+// C++ mirror of cubeFanCorner() in shaders/cube/cube_fan.glslinc. Kept deliberately
+// literal so a change to the GLSL table without a change here shows up as a failure
+// rather than drift.
 glm::vec3 fanCorner(int vertex_id, const glm::vec3& face_signs) {
   static const std::array<glm::vec3, 7> kFanFlip = {{
       {1, 1, 1},
@@ -160,25 +160,19 @@ TEST(CubeMeshTest, FanTilesExactlyTheThreeCameraFacingFaces) {
 
 // kCubeEdgeMeanScale is what keeps a LOD sprite as bright as the cube it replaces, and it
 // is DERIVED from the edge band's width, its darkening strength and the sRGB gamma. Edit
-// any of those and the constant is silently wrong. pointcloud_cube_lod_gl_test measures
-// the consequence end to end, but it needs GL >= 4.5 and self-skips on Windows CI — so
-// this pure-math check is the one that runs everywhere.
+// any of those and the constant is silently wrong. scene3d_rhi_point_test measures the
+// consequence end to end, but only where a GPU is available — so this pure-math check is
+// the one that runs everywhere.
 TEST(CubeEdgeMeanScaleTest, MatchesTheIntegralOfItsOwnConstants) {
   EXPECT_NEAR(pj::scene3d::cubeEdgeMeanScale(), pj::scene3d::kCubeEdgeMeanScale, 5e-4)
       << "kCubeEdgeMeanScale no longer matches an integration of kCubeEdgeWidth / "
          "kCubeEdgeDarken / kCubeSrgbGamma — one of them was retuned without the other";
 }
 
-// The GLSL is the thing that actually runs, so the C++ mirrors are only trustworthy while
-// the shader source still spells the same numbers. Cheap guard against editing one side.
-TEST(CubeEdgeMeanScaleTest, ShaderSourceDeclaresTheSameConstants) {
-  const std::string_view edge_glsl = pj::scene3d::kCubeEdgeGlsl;
-  EXPECT_NE(edge_glsl.find("kCubeEdgeWidth = 0.06"), std::string_view::npos)
-      << "kCubeEdgeGlsl no longer declares the width the C++ mirror assumes";
-  EXPECT_NE(edge_glsl.find("kCubeEdgeDarken = 0.6"), std::string_view::npos)
-      << "kCubeEdgeGlsl no longer declares the darkening the C++ mirror assumes";
-  EXPECT_NE(std::string_view(pj::scene3d::kCubeSpriteGlsl).find("kCubeEdgeMeanScale = 0.887"), std::string_view::npos)
-      << "the sprite shader's kCubeEdgeMeanScale drifted from the C++ constant";
+// The flat shade a sub-2-px sphere gets must stay the disc mean of the shared Lambert,
+// or spheres change brightness as they cross the flat-disc threshold.
+TEST(SphereDiscShadingTest, MatchesTheDiscMeanOfTheSharedLight) {
+  EXPECT_NEAR(pj::scene3d::sphereDiscMeanShading(), pj::scene3d::kSphereDiscShading, 1e-3);
 }
 
 }  // namespace

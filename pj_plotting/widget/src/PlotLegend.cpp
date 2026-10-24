@@ -11,7 +11,6 @@
 #include <QByteArray>
 #include <QMarginsF>
 #include <QMouseEvent>
-#include <QOpenGLContext>
 #include <QPainter>
 #include <QString>
 #include <cmath>
@@ -28,7 +27,7 @@ namespace {
 // bug: set PJ_PLOT_TEXT_DEBUG=1 to have every legend entry report, on any
 // state change, which of the four failure modes (if any) is active. When the
 // text vanishes while this logs "EMPTY=0 CLIPPED=0 LOWCONTRAST=0" with a valid
-// title/colour, the cause is a pure GL text-rendering failure, not legend
+// title/colour, the cause is a canvas text-rendering failure, not legend
 // logic. Change-detected (not per-frame) so it does not spam the 60 Hz replot.
 bool plotTextDebugEnabled() {
   static const bool enabled = qEnvironmentVariableIsSet("PJ_PLOT_TEXT_DEBUG");
@@ -49,15 +48,12 @@ void logLegendEntry(
   const bool clipped = text_avail <= 2.0;
   const bool low_contrast =
       text_color.isValid() && std::abs(relativeLuminance(text_color) - relativeLuminance(canvas_bg)) < 0.12;
-  const auto* gl_ctx = QOpenGLContext::currentContext();
-  const char* gl_state = (gl_ctx == nullptr) ? "none" : (gl_ctx->isValid() ? "valid" : "INVALID");
 
-  const QString sig =
-      u"EMPTY=%1 CLIPPED=%2(avail=%3) LOWCONTRAST=%4 text=%5 bg=%6 gl=%7"_s.arg(empty)
-          .arg(clipped)
-          .arg(text_avail, 0, 'f', 1)
-          .arg(low_contrast)
-          .arg(text_color.isValid() ? text_color.name() : u"(none)"_s, canvas_bg.name(), QString::fromLatin1(gl_state));
+  const QString sig = u"EMPTY=%1 CLIPPED=%2(avail=%3) LOWCONTRAST=%4 text=%5 bg=%6"_s.arg(empty)
+                          .arg(clipped)
+                          .arg(text_avail, 0, 'f', 1)
+                          .arg(low_contrast)
+                          .arg(text_color.isValid() ? text_color.name() : u"(none)"_s, canvas_bg.name());
 
   static std::unordered_map<QString, QString> last_sig;
   const QString key = u"%1|%2"_s.arg(reinterpret_cast<quintptr>(plot)).arg(title);

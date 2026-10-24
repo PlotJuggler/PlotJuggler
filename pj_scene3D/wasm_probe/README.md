@@ -14,13 +14,18 @@ emrun --no-browser --serve-after-exit --port 6931 \
   build-wasm/pj_app/scene3d_capability_probe.html
 ```
 
-In another shell, install Chromium and run the probe:
+In another shell, install the browsers and run the probe:
 
 ```bash
 cd tests/wasm
-npx playwright install --with-deps chromium
+npx playwright install --with-deps chromium firefox
 npm run test:scene3d-capability
+npm run test:scene3d-capability:firefox
 ```
+
+Firefox's WebGL uses the system GL driver and, even headless, needs a display
+(a Wayland compositor, or Xvfb as in `wasm-ci.yml`); without a GPU the driver is
+Mesa's llvmpipe (`LIBGL_ALWAYS_SOFTWARE=1`).
 
 The server must supply the COOP/COEP headers required by the threaded Qt kit;
 the test also asserts `crossOriginIsolated` and `SharedArrayBuffer` directly.

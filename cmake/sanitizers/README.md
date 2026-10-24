@@ -38,7 +38,7 @@ coverage of the embedded interpreter.
 
 `lsan.supp` suppresses two leaks:
 
-- The deliberate interpreter lifetime in `pj_scripting/src/python_engine.cpp`.
+- The deliberate interpreter lifetime in `pj_scripting/src/python_sandbox.cpp`.
   `ensureInterpreter()` leaks its `py::scoped_interpreter` and
   `py::gil_scoped_release` guards and never finalizes Python. Finalization during
   static destruction is fragile, and the released GIL lets each caller acquire it

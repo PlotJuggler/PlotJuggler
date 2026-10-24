@@ -3,12 +3,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -1536,6 +1538,77 @@ TEST(EngineIntegrationTest, RetireTopicHidesFromListButKeepsStorage) {
   EXPECT_TRUE(engine.getTopicStorage(tid)->sealedChunks().empty());  // chunks reclaimed — no per-cycle leak
 }
 
+namespace {
+
+/// The (time, value) samples of column `column` of `topic`.
+std::vector<std::pair<Timestamp, double>> columnSamples(DataEngine& engine, TopicId topic, std::size_t column) {
+  std::vector<std::pair<Timestamp, double>> samples;
+  const DataReader reader(engine);
+  auto series = reader.series(topic, column);
+  if (series.has_value()) {
+    series->samples(Range<Timestamp>{std::numeric_limits<Timestamp>::min(), std::numeric_limits<Timestamp>::max()})
+        .forEach([&](const SeriesSample& sample) { samples.emplace_back(sample.timestamp, sample.value); });
+  }
+  return samples;
+}
+
+/// Writes one row of `values` at `t` into `topic` and commits it.
+void writeRow(DataEngine& engine, TopicId topic, Timestamp t, const std::vector<double>& values) {
+  DataWriter writer = engine.createWriter();
+  ASSERT_TRUE(writer.beginRow(topic, t).has_value());
+  for (std::size_t column = 0; column < values.size(); ++column) {
+    writer.set<double>(topic, column, values[column]);
+  }
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  engine.commitChunks(writer.flushAll());
+}
+
+}  // namespace
+
+// A column group topic (an on-demand series, ARCHITECTURE §15): one float64 column per name, each readable as a series;
+// a second topic of the same columns reuses the registered schema.
+TEST(EngineIntegrationTest, ColumnGroupTopicHasOneSeriesPerColumn) {
+  DataEngine engine;
+  const DatasetId ds = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0}).value();
+  const std::vector<DataEngine::GroupColumn> columns{
+      {"n", PrimitiveType::kFloat64}, {"max_z", PrimitiveType::kFloat64}};
+  const auto topic = engine.createColumnGroupTopic(ds, "owner/ser", "derived_on_demand_owner/ser{n,max_z,}", columns);
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  EXPECT_EQ(engine.getTopicStorage(*topic)->descriptor().name, "owner/ser");
+  writeRow(engine, *topic, 10, {1.0, 0.5});
+  writeRow(engine, *topic, 20, {2.0, 0.7});
+  EXPECT_EQ(columnSamples(engine, *topic, 0), (std::vector<std::pair<Timestamp, double>>{{10, 1.0}, {20, 2.0}}));
+  EXPECT_EQ(columnSamples(engine, *topic, 1), (std::vector<std::pair<Timestamp, double>>{{10, 0.5}, {20, 0.7}}));
+
+  const auto again = engine.createColumnGroupTopic(ds, "owner/other", "derived_on_demand_owner/ser{n,max_z,}", columns);
+  ASSERT_TRUE(again.has_value()) << again.error();
+  EXPECT_EQ(
+      engine.getTopicStorage(*again)->descriptor().schema_id, engine.getTopicStorage(*topic)->descriptor().schema_id);
+  EXPECT_FALSE(engine.createColumnGroupTopic(DatasetId{999}, "x", "derived_x{n,}", columns).has_value())
+      << "an unknown dataset is refused";
+}
+
+// clearTopicHistory empties a topic for a replay that rewrites the same stamps: unlike evictTopicHistory, whose floor
+// hides every write at or below the old newest stamp, the rewritten rows are read back; the topic stays listed.
+TEST(EngineIntegrationTest, ClearTopicHistoryLetsAReplayRewriteTheSameStamps) {
+  DataEngine engine;
+  const DatasetId ds = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0}).value();
+  const TopicId topic =
+      engine
+          .createColumnGroupTopic(ds, "owner/ser", "derived_on_demand_owner/ser{n,}", {{"n", PrimitiveType::kFloat64}})
+          .value();
+  writeRow(engine, topic, 10, {1.0});
+  writeRow(engine, topic, 20, {2.0});
+
+  engine.clearTopicHistory(topic);
+  EXPECT_TRUE(columnSamples(engine, topic, 0).empty());
+  writeRow(engine, topic, 10, {3.0});
+  EXPECT_EQ(columnSamples(engine, topic, 0), (std::vector<std::pair<Timestamp, double>>{{10, 3.0}}));
+  const std::vector<TopicId> listed = engine.listTopics(ds);
+  EXPECT_NE(std::find(listed.begin(), listed.end(), topic), listed.end());
+  engine.clearTopicHistory(TopicId{12345});  // an unknown id is a no-op
+}
+
 // removeDataset is a REAL delete (unlike retireTopic's hide-but-keep): it erases the
 // dataset and every one of its topics from the engine, so listDatasets/getDataset/
 // getTopicStorage all drop them. Precondition (same as replaceDatasetFrom): callers
@@ -1651,13 +1724,15 @@ TEST(EngineIntegrationTest, LatestStringAtReturnsZeroOrderHoldString) {
   auto mid = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 0);
   ASSERT_TRUE(mid.has_value()) << mid.error();
   ASSERT_TRUE(mid->has_value());
-  EXPECT_EQ(**mid, "running");
+  EXPECT_EQ((*mid)->value, "running");
+  EXPECT_EQ((*mid)->timestamp, 2000) << "the row's own time, not the query time";
 
   // Exactly on the last sample.
   auto on_last = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 3000}, 0);
   ASSERT_TRUE(on_last.has_value()) << on_last.error();
   ASSERT_TRUE(on_last->has_value());
-  EXPECT_EQ(**on_last, "done");
+  EXPECT_EQ((*on_last)->value, "done");
+  EXPECT_EQ((*on_last)->timestamp, 3000);
 
   // Before the first sample → no value.
   auto before = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 500}, 0);
@@ -1668,6 +1743,60 @@ TEST(EngineIntegrationTest, LatestStringAtReturnsZeroOrderHoldString) {
   auto oob = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 99);
   ASSERT_TRUE(oob.has_value()) << oob.error();
   EXPECT_FALSE(oob->has_value());
+}
+
+// columnType answers from the schema before any row is stored, and says "none" for a topic or column that is not there.
+TEST(EngineIntegrationTest, ColumnTypeReadsTheSchemaAndRefusesAMissingColumn) {
+  DataEngine engine;
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "types", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+  DataWriter writer = engine.createWriter();
+  auto schema_or = writer.registerSchema(
+      "rec",
+      makeStruct(
+          "rec", {makePrimitive("value", PrimitiveType::kFloat64), makePrimitive("label", PrimitiveType::kString)}));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  TopicDescriptor td;
+  td.name = "/rec";
+  td.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset_or, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+
+  const DataReader reader = engine.createReader();
+  EXPECT_EQ(reader.columnType(*topic_or, 0), PrimitiveType::kFloat64) << "no row stored yet";
+  EXPECT_EQ(reader.columnType(*topic_or, 1), PrimitiveType::kString);
+  EXPECT_EQ(reader.columnType(*topic_or, 2), std::nullopt) << "past the last column";
+  EXPECT_EQ(reader.columnType(*topic_or + 1000, 0), std::nullopt) << "no such topic";
+}
+
+// A column added mid-stream (ensureColumn after rows were stored and sealed) is known to columnType, the index just
+// past it is not: the answer comes from the live column layout, not from the schema or the first sealed chunk.
+TEST(EngineIntegrationTest, ColumnTypeSeesAColumnAddedAfterRowsAreStored) {
+  DataEngine engine;
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "types", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+  DataWriter writer = engine.createWriter();
+  TopicDescriptor td;
+  td.name = "/dynamic";
+  td.schema_id = 0;
+  auto topic_or = writer.registerTopic(*dataset_or, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  const TopicId topic = *topic_or;
+
+  ASSERT_TRUE(writer.ensureColumn(topic, "gain", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.beginRow(topic, 1000).has_value());
+  writer.set(topic, 0, 1.5);
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  engine.commitChunks(writer.flushAll());
+  const DataReader reader = engine.createReader();
+  EXPECT_EQ(reader.columnType(topic, 0), PrimitiveType::kFloat64);
+  EXPECT_EQ(reader.columnType(topic, 1), std::nullopt) << "no second column yet";
+
+  const auto label = writer.ensureColumn(topic, "label", PrimitiveType::kString);
+  ASSERT_TRUE(label.has_value()) << label.error();
+  EXPECT_EQ(reader.columnType(topic, *label), PrimitiveType::kString) << "added after the first chunk was sealed";
+  EXPECT_EQ(reader.columnType(topic, 0), PrimitiveType::kFloat64);
+  EXPECT_EQ(reader.columnType(topic, *label + 1), std::nullopt) << "just past the added column";
 }
 
 // Both null-aware reads must distinguish a NULL latest cell from a real value
@@ -1713,7 +1842,7 @@ TEST(EngineIntegrationTest, LatestNumericAndStringAtAreNullAware) {
   auto s_mid = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 1500}, 1);
   ASSERT_TRUE(s_mid.has_value()) << s_mid.error();
   ASSERT_TRUE(s_mid->has_value());
-  EXPECT_EQ(**s_mid, "a");
+  EXPECT_EQ((*s_mid)->value, "a");
 
   // Latest row at t=2500 is the null row1 → no value (NOT a fabricated 0).
   auto n_null = reader.latestNumericAt(QueryPoint{.topic_id = topic, .t = 2500}, 0);
@@ -1721,7 +1850,12 @@ TEST(EngineIntegrationTest, LatestNumericAndStringAtAreNullAware) {
   EXPECT_FALSE(n_null->has_value()) << "null numeric cell must read as no-value, not 0.0";
   auto s_null = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 1);
   ASSERT_TRUE(s_null.has_value()) << s_null.error();
-  EXPECT_FALSE(s_null->has_value());
+  ASSERT_TRUE(s_null->has_value()) << "a null cell is still the latest row";
+  EXPECT_FALSE((*s_null)->value.has_value());
+  EXPECT_EQ((*s_null)->timestamp, 2000);
+  EXPECT_EQ((*s_null)->chunk_id, (*s_mid)->chunk_id);
+  EXPECT_EQ((*s_null)->row_index, 1u) << "the row, which with the chunk names the cell";
+  EXPECT_EQ((*s_mid)->row_index, 0u);
 
   // latestStringAt on the NUMERIC column → nullopt (kString guard; no readString UB).
   auto s_on_numeric = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 1500}, 0);

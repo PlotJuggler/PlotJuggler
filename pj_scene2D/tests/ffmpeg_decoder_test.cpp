@@ -12,6 +12,7 @@ extern "C" {
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -179,6 +180,86 @@ TEST_F(FfmpegDecoderTest, CancelStopsEarly) {
     av_packet_unref(pkt);
   }
   av_packet_free(&pkt);
+}
+
+// Tracked: 128x96 H.264 tagged BT.709 and full range, black on the left half and
+// white on the right (pj_scene2D/testdata/README.md).
+const std::string kTaggedFullRangeVideo = "pj_scene2D/testdata/tagged_bt709_full_128x96.mp4";
+
+// The first frame FfmpegDecoder produces for `path`. Null, with the failure
+// recorded, when the file does not open or nothing decodes.
+DecodedFrame decodeFirstFrame(const std::string& path) {
+  AVFormatContext* raw_fmt_ctx = nullptr;
+  if (avformat_open_input(&raw_fmt_ctx, path.c_str(), nullptr, nullptr) < 0) {
+    ADD_FAILURE() << "cannot open " << path;
+    return {};
+  }
+  const std::unique_ptr<AVFormatContext, void (*)(AVFormatContext*)> fmt_ctx(
+      raw_fmt_ctx, [](AVFormatContext* ctx) { avformat_close_input(&ctx); });
+  const int video_idx = avformat_find_stream_info(fmt_ctx.get(), nullptr) >= 0
+                            ? av_find_best_stream(fmt_ctx.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0)
+                            : -1;
+  FfmpegDecoder decoder;
+  if (video_idx < 0 || !decoder.open(fmt_ctx->streams[video_idx]->codecpar)) {
+    ADD_FAILURE() << "no decodable video stream in " << path;
+    return {};
+  }
+  const std::unique_ptr<AVPacket, void (*)(AVPacket*)> pkt(
+      av_packet_alloc(), [](AVPacket* packet) { av_packet_free(&packet); });
+  DecodedFrame frame;
+  while (frame.isNull() && av_read_frame(fmt_ctx.get(), pkt.get()) >= 0) {
+    if (pkt->stream_index == video_idx) {
+      auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
+      if (result.has_value()) {
+        frame = std::move(*result);
+      }
+    }
+    av_packet_unref(pkt.get());
+  }
+  if (frame.isNull()) {
+    std::vector<DecodedFrame> drained = decoder.drain();
+    if (!drained.empty()) {
+      frame = std::move(drained.front());
+    }
+  }
+  if (frame.isNull()) {
+    ADD_FAILURE() << "no frame decoded from " << path;
+  }
+  return frame;
+}
+
+// NV12 means the frame came down from a hardware decoder; software yields YUV420P.
+const char* decodePath(const DecodedFrame& frame) {
+  return frame.format == PixelFormat::kNV12 ? "hardware decode" : "software decode";
+}
+
+// At this height untagged frames fall back to BT.601 and limited range, so a
+// decode that loses the tags fails both checks. A hardware download fills a
+// fresh frame without frame properties; CI runners have no hardware decoder, so
+// there this case covers the software path only.
+TEST(FfmpegDecoderColourTest, DecodedFrameKeepsTheSignalledColourTags) {
+  const DecodedFrame frame = decodeFirstFrame(kTaggedFullRangeVideo);
+  ASSERT_FALSE(frame.isNull());
+  SCOPED_TRACE(decodePath(frame));
+  EXPECT_EQ(frame.color_space, YuvColorSpace::kBt709);
+  EXPECT_EQ(frame.color_range, YuvColorRange::kFull);
+}
+
+// The luma keeps the full range the frame is tagged with: black 0 and white 255,
+// not the 16 and 235 a limited-range conversion would leave. Software decode
+// yields a YUVJ (full-range) frame, which swscale squeezes unless told otherwise.
+TEST(FfmpegDecoderColourTest, DecodedFrameKeepsTheSourceRange) {
+  const DecodedFrame frame = decodeFirstFrame(kTaggedFullRangeVideo);
+  ASSERT_FALSE(frame.isNull());
+  SCOPED_TRACE(decodePath(frame));
+  ASSERT_EQ(frame.width, 128);
+  ASSERT_EQ(frame.height, 96);
+  // YUV420P and NV12 both start with the full-resolution luma plane.
+  const auto luma_at = [&frame](int column, int row) {
+    return frame.pixels->at(static_cast<size_t>(row * frame.width + column));
+  };
+  EXPECT_LE(luma_at(16, 48), 4) << "the black half";
+  EXPECT_GE(luma_at(112, 48), 251) << "the white half";
 }
 
 }  // namespace

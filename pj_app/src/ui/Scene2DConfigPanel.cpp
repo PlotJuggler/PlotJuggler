@@ -28,6 +28,18 @@ namespace {
   tid.id = static_cast<uint32_t>(id);
   return tid;
 }
+
+/// The row of `layer`, its warning and the dock's status included.
+[[nodiscard]] LayerRow rowOf(const SceneDockWidget& dock, const ISceneLayer& layer) {
+  const auto info = layer.info();
+  return LayerRow{
+      .id = info.topic_id.id,
+      .name = info.display_name,
+      .visible = info.visible,
+      .warn = !layer.warning().isEmpty(),
+      .warning_reason = layer.warning(),
+      .status = dock.layerStatus(info.topic_id)};
+}
 }  // namespace
 
 Scene2DConfigPanel::Scene2DConfigPanel(QWidget* parent) : QWidget(parent) {
@@ -138,9 +150,8 @@ void Scene2DConfigPanel::bindDock(SceneDockWidget* dock) {
     if (dock_ == nullptr) {
       return;
     }
-    if (ISceneLayer* layer = dock_->layerFor(topic_id)) {
-      const auto info = layer->info();
-      list_->addRow(LayerRow{info.topic_id.id, info.display_name, info.visible});
+    if (const ISceneLayer* layer = dock_->layerFor(topic_id)) {
+      list_->addRow(rowOf(*dock_, *layer));
     }
     updateConfigPane();
   });
@@ -166,6 +177,9 @@ void Scene2DConfigPanel::bindDock(SceneDockWidget* dock) {
   connect(dock, &SceneDockWidget::layerWarningChanged, this, [this](ObjectTopicId topic_id, bool warn, QString reason) {
     list_->setRowWarning(topic_id.id, warn, reason);
   });
+  connect(dock, &SceneDockWidget::layerStatusChanged, this, [this](ObjectTopicId topic_id, const QString& status) {
+    list_->setRowStatus(topic_id.id, status);
+  });
 }
 
 void Scene2DConfigPanel::disconnectDock() {
@@ -179,7 +193,9 @@ void Scene2DConfigPanel::rebuildList() {
   std::vector<LayerRow> rows;
   if (dock_ != nullptr) {
     for (const auto& info : dock_->layers()) {
-      rows.push_back(LayerRow{info.topic_id.id, info.display_name, info.visible});
+      if (const ISceneLayer* layer = dock_->layerFor(info.topic_id)) {
+        rows.push_back(rowOf(*dock_, *layer));
+      }
     }
   }
   list_->setRows(rows);

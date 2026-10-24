@@ -40,12 +40,16 @@
 #include <utility>
 #include <vector>
 
+#include "host_info.hpp"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 DialogEngine::DialogEngine(PJ::DialogHandle handle, DialogEngineConfig config)
-    : handle_(std::move(handle)), config_(config) {}
+    : handle_(std::move(handle)), config_(config) {
+  // A modal dialog embeds no scene view (panels only), so it announces no capability.
+  detail::announceHostInfo(handle_, /*capabilities=*/0);
+}
 
 namespace {
 
@@ -321,6 +325,7 @@ struct DialogEngine::AsyncRunner {
     }
 
     auto clamp_to_browser_screen = [dialog]() {
+      Q_UNUSED(dialog);  // captured for the browser branch only
 #ifdef Q_OS_WASM
       // A browser canvas is the whole available desktop. Authored plugin
       // dialogs can be taller than it (MCAP is 732 px before its title bar),

@@ -9,20 +9,15 @@
 #include <qwt_scale_map.h>
 
 #include <QApplication>
-#ifdef PJ_TARGET_WASM
 #include <QImage>
-#include <QPixmap>
-#endif
 #include <QMouseEvent>
+#include <QPixmap>
 
-#ifdef PJ_TARGET_WASM
 #include "pj_plotting/PlotRhiCanvas.h"
-#endif
 #include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 
-#ifdef PJ_TARGET_WASM
 QPixmap PlotPanner::grab() const {
   const auto* rhi_canvas = qobject_cast<const PlotRhiCanvas*>(canvas());
   if (rhi_canvas != nullptr) {
@@ -35,7 +30,6 @@ QPixmap PlotPanner::grab() const {
   }
   return QwtPlotPanner::grab();
 }
-#endif
 
 void PlotPanner::moveCanvas(int dx, int dy) {
   if (dx == 0 && dy == 0) {

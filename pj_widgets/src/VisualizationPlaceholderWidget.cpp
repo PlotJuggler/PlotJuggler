@@ -20,6 +20,7 @@
 
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
@@ -212,14 +213,14 @@ void VisualizationPlaceholderWidget::showSplitContextMenu(const QPoint& global_p
   emit contextMenuAboutToShow();
   updateSplitActionIcons(currentTheme());
 
-  QMenu menu(this);
-  menu.setObjectName(u"PJMenu"_s);
-  menu.setProperty("categorySeparators", true);
-  menu.addAction(action_paste_);
-  menu.addSeparator();
-  menu.addAction(action_split_horizontal_);
-  menu.addAction(action_split_vertical_);
-  menu.exec(global_pos);
+  auto* menu = new QMenu(this);
+  menu->setObjectName(u"PJMenu"_s);
+  menu->setProperty("categorySeparators", true);
+  menu->addAction(action_paste_);
+  menu->addSeparator();
+  menu->addAction(action_split_horizontal_);
+  menu->addAction(action_split_vertical_);
+  showOwnedMenu(menu, global_pos);
 }
 
 void VisualizationPlaceholderWidget::updateSplitActionIcons(const QString& theme) {

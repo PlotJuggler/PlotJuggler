@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "pj_runtime/SavedSeriesPath.h"
+
 namespace PJ::layout_xml {
 
 // Canonical layout-file extension, leading dot included. Double extension
@@ -140,20 +142,6 @@ struct DataSourceRef {
          !ref.materialize_descriptor_json.isEmpty();
 }
 
-// CDATA sections cannot contain "]]>"; QDomDocument::createCDATASection
-// does not escape it. Splits the payload across adjacent CDATA sections
-// at each "]]>" boundary so QDomElement::text() concatenates them back
-// transparently on read.
-void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& json);
-
-// Concatenates ONLY the direct CDATA/text child nodes of `element`, skipping any
-// nested child *elements*. QDomElement::text() recurses the entire subtree, so an
-// element that holds its own CDATA payload alongside a child element with its own
-// CDATA (e.g. a <processor> carrying params-CDATA plus a <source_fallback> child
-// holding the filter's Luau source) cannot read its own payload via text()
-// without the child's leaking in. This reads the element's own payload only.
-[[nodiscard]] QString directCdataText(const QDomElement& element);
-
 // Reads every <previouslyLoaded_Datafiles>/<fileInfo> and its optional
 // <plugin> child, one DataSourceRef per file in document order. Each
 // serialized_path is the raw filename attribute. resolved_path is absolute for
@@ -205,34 +193,14 @@ struct SourceTimelineViewState {
 // (CurveDescriptor::name); topic and field stay separate because PJ4 field
 // paths can themselves contain '/'. The explicit constructor keeps existing
 // two-argument brace-initializations compiling.
-struct SeriesPath {
+struct SeriesPath : SavedSeriesPath {
   SeriesPath(
       QString topic_in = {}, QString field_in = {}, std::uint32_t dataset_id_in = 0, QString dataset_source_in = {},
       QString dataset_path_in = {})
-      : topic(std::move(topic_in)),
-        field(std::move(field_in)),
-        dataset_id(dataset_id_in),
-        dataset_source(std::move(dataset_source_in)),
-        dataset_path(std::move(dataset_path_in)) {}
+      : SavedSeriesPath{
+            std::move(topic_in), std::move(field_in), dataset_id_in, std::move(dataset_source_in),
+            std::move(dataset_path_in)} {}
 
-  QString topic;
-  QString field;
-  // Exact in-session hint for undo/redo (0 = unqualified). A resolver must
-  // reject ambiguity rather than silently pick the first dataset exposing the
-  // same topic/field.
-  std::uint32_t dataset_id = 0;
-  // Portable raw source label (DatasetInfo::source_name), usable for layout
-  // reload after ids are reminted.
-  QString dataset_source;
-  // Full file identity stamped by FileLoader at layout-file save. Unlike
-  // dataset_source (often a basename/display label), it distinguishes same-named
-  // files in different directories and guards a coincidentally reminted id.
-  QString dataset_path;
-
-  [[nodiscard]] bool operator==(const SeriesPath& other) const {
-    return topic == other.topic && field == other.field && dataset_id == other.dataset_id &&
-           dataset_source == other.dataset_source && dataset_path == other.dataset_path;
-  }
   // Human-readable form for missing-curve lists: "topic/field".
   [[nodiscard]] QString display() const;
 };
@@ -267,12 +235,13 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // Converts a saved workspace document into a portable generic layout by removing
 // the exact dataset hints: dataset_id / dataset_source / dataset_path (and their
 // x_/y_ XY variants) from plotted TS/XY curves, input_dataset_* from
-// data-processor <processor> inputs, dataset_* from scene-dock <layer> /
+// data-processor <processor> inputs, dataset_* from <transform> inputs, marker
+// <generator>s, hidden <marker_scope> rows and scene-dock <layer> /
 // <config_topic> elements, and source_dataset_* from <robot_model> / <trail>. The
-// topic+field (or topic+type) identity remains and binds at apply time only when
-// unique in the loaded data — the scene loaders implement the same unique-only
-// fallback as plots and processors. Undo snapshots and source-bound layouts keep
-// their qualifiers.
+// topic+field (or topic+type; a generator's input series) identity remains and
+// binds at apply time only when unique in the loaded data — the scene loaders
+// implement the same unique-only fallback as plots and processors. Undo
+// snapshots and source-bound layouts keep their qualifiers.
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
 
 // Maps a serialized DatasetId to its FileLoader-known full source path (empty for
@@ -281,10 +250,12 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
 using DatasetPathLookup = std::function<QString(std::uint32_t)>;
 
 // Adds the FileLoader-known full-path companion (`*_dataset_path`) next to every
-// persisted `*_dataset_id` on plotted TS/XY curves and data-processor <processor>
-// inputs. Scene docks are NOT visited — their xmlSaveState stamps the dataset_path
-// companion itself when the dataset has a source path. A dataset
-// the lookup can't place keeps its id/source qualifier unchanged.
+// persisted `*_dataset_id` on plotted TS/XY curves, data-processor <processor> and
+// <transform> inputs, marker <generator>s and hidden <marker_scope> rows. A path the
+// element already carries is overwritten. Scene docks are NOT visited — their
+// xmlSaveState stamps the dataset_path companion itself when the dataset has a
+// source path. A dataset the lookup can't place keeps its id/source qualifier
+// unchanged.
 void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup);
 
 // Makes a document safe to persist outside the live session. A non-zero numeric
@@ -292,8 +263,8 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
 // so a later session cannot accept a coincidentally reminted id merely because a
 // basename-like source label also matches. Path-qualified ids and zero-valued
 // local-scene ids are left intact; the retained source label may still rebind
-// when unique. Scoped to plot curves and <processor> inputs (same reason as
-// stampDatasetSourcePaths); scene ids survive so restored scene layers keep binding.
+// when unique. Scoped to the elements stampDatasetSourcePaths stamps; scene ids
+// survive so restored scene layers keep binding.
 void removeUnvalidatedDatasetIds(QDomDocument& doc);
 
 // Resolves relative `*_dataset_path` qualifiers against the layout file's

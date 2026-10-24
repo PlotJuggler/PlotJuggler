@@ -75,6 +75,12 @@ class IDataWidget {
   virtual bool xmlLoadState(const QDomElement& /*element*/) {
     return true;
   }
+
+  /// Host call once the data a just-loaded `xmlLoadState` refers to is final: the shell
+  /// after its whole load, or a dock after a paste/family switch into a session whose data
+  /// is already loaded. A widget that defers saved elements until their data arrives
+  /// settles whatever is still undecided and makes its last attempt here. Default no-op.
+  virtual void finishRestore() {}
 };
 
 }  // namespace PJ

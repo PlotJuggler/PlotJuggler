@@ -86,7 +86,7 @@ Requirements:
 - SISO transforms: single input to single output, point-at-a-time sequential contract
 - MIMO transforms: N inputs to M outputs, exact-timestamp inner join (all inputs must have matching timestamps)
 - Incremental scheduling: only process new data since last run (watermark tracking)
-- Batch recompute: clear output, reset transform state, replay full input history
+- Batch recompute: reset transform state and replay full input history; the current output is detached aside, replaced by the replay's output on success and restored on failure, so a failed recompute never leaves a node's output emptier than it was
 - Topological ordering: transforms scheduled in dependency order, cycle detection on registration
 
 ### 4.8 Retention
@@ -94,6 +94,7 @@ Requirements:
 - Configurable retention window (nanoseconds)
 - Old chunks evicted when their maximum timestamp falls outside the retention window
 - Eviction is per-topic, triggered externally (not automatic)
+- The retention floor is logical: rows below it inside a chunk that straddles the floor stay physically retained but are hidden from every read path
 
 ## 5. Non-Functional Requirements
 

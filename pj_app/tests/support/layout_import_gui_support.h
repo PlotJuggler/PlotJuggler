@@ -35,6 +35,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/XmlCdata.h"
 #include "pj_widgets/IngestProgressWidget.h"
 
 namespace PJ {
@@ -173,25 +174,25 @@ class MainWindowLayoutImportTestPeer {
   // binder suite can prove a headless batch job never reaches them). ---
 
   [[nodiscard]] static bool presentPanel(MainWindow& window, QWidget* panel) {
-    return window.presentPanel(panel);
+    window.presentPanel(panel);
+    return window.current_panel_ == panel;
   }
   // Presents `container` as the chart-area takeover through a bare presenter
   // (the fold's only target).
   [[nodiscard]] static bool dockBare(
       MainWindow& window, QWidget* container, const QString& plugin_id, const QString& title,
       ToolboxRuntimeHost* host) {
-    return window
-        .registerToolbox(
-            plugin_id,
-            ToolboxPresenter::Spec{
-                .container = container,
-                .engine = nullptr,
-                .session = {},
-                .host = host,
-                .title = title,
-                .save_config = []() { return QStringLiteral("{}"); },
-                .apply_chrome = {}})
-        .moveToDock();
+    ToolboxPresenter& presenter = window.registerToolbox(
+        plugin_id, ToolboxPresenter::Spec{
+                       .container = container,
+                       .engine = nullptr,
+                       .session = {},
+                       .host = host,
+                       .title = title,
+                       .save_config = []() { return QStringLiteral("{}"); },
+                       .apply_chrome = {}});
+    presenter.moveToDock();
+    return presenter.presentation() == ToolboxPresenter::Presentation::kTakeover;
   }
   [[nodiscard]] static bool isTakeover(const MainWindow& window, const QString& plugin_id) {
     const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
@@ -297,7 +298,7 @@ using pj_fake_import::kProviderId;
   QDomElement materialize = doc.createElement(QStringLiteral("materialize"));
   materialize.setAttribute(QStringLiteral("provider"), provider);
   materialize.setAttribute(QStringLiteral("identity"), QStringLiteral("id-1"));
-  PJ::layout_xml::appendJsonAsCdata(doc, materialize, descriptor);
+  PJ::appendJsonAsCdata(doc, materialize, descriptor);
   file_info.appendChild(materialize);
   wrapper.appendChild(file_info);
   root.appendChild(wrapper);

@@ -10,10 +10,12 @@ extern "C" {
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
 
+#include "pj_datastore/saturating_time.hpp"
 #include "pj_scene2d_core/ffmpeg_decoder.h"
 #include "pj_scene2d_core/video_codec_utils.h"
 
@@ -26,8 +28,10 @@ namespace {
 // Aliases the entry's own buffer — no copy.
 Expected<StreamingVideoDecoder::ExtractedFrame> identityNalExtractor(const ResolvedObjectEntry& entry) {
   // No wrapping message to read a PTS from, so presentation == decode order here
-  // (this path is the raw-bytes/round-trip case, which has no B-frame reorder).
-  return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", entry.timestamp};
+  // (this path is the raw-bytes/round-trip case, which has no B-frame reorder),
+  // reported on the payload clock like a message's own PTS.
+  return StreamingVideoDecoder::ExtractedFrame{
+      entry.payload.bytes, "h264", saturatingSub(entry.timestamp, entry.payload_stamp_shift)};
 }
 
 }  // namespace
@@ -35,6 +39,14 @@ Expected<StreamingVideoDecoder::ExtractedFrame> identityNalExtractor(const Resol
 StreamingVideoDecoder::StreamingVideoDecoder() : nal_extractor_(identityNalExtractor) {}
 
 StreamingVideoDecoder::~StreamingVideoDecoder() = default;
+
+Expected<StreamingVideoDecoder::ExtractedFrame> StreamingVideoDecoder::extract(const ResolvedObjectEntry& entry) const {
+  auto frame = nal_extractor_(entry);
+  if (frame) {
+    frame->pts = saturatingAdd(frame->pts, entry.payload_stamp_shift);
+  }
+  return frame;
+}
 
 void StreamingVideoDecoder::attach(ObjectStore* store, ObjectTopicId topic) {
   attach(store, topic, NalExtractor{});
@@ -51,7 +63,17 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeAt(Timestamp ts, const Cance
   if (store_ == nullptr) {
     return unexpected("not attached");
   }
+  // Appends and front evictions leave every fed packet where its UID finds it; only a rewrite can change one.
+  const uint64_t before = store_->contentIdentity(topic_).rewrite;
+  auto result = decodeCurrent(ts, cancel);
+  if (store_->contentIdentity(topic_).rewrite != before) {
+    reset();
+    return unexpected("video content changed during decode");
+  }
+  return result;
+}
 
+Expected<DecodedFrame> StreamingVideoDecoder::decodeCurrent(Timestamp ts, const CancelTokenPtr& cancel) {
   updateKeyframeIndex();
   if (codec_id_ == AV_CODEC_ID_NONE && !codec_format_.empty()) {
     return unexpected("unsupported video codec: '" + codec_format_ + "'");
@@ -64,9 +86,9 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeAt(Timestamp ts, const Cance
   if (!target.has_value()) {
     return unexpected("no entry at timestamp");
   }
-  const Timestamp target_ts = target->first;    // PTS — the presentation key we serve by
-  const Timestamp target_dts = target->second;  // DTS — the decode-order store key
-  auto target_idx_opt = store_->indexAt(topic_, target_dts);
+  const Timestamp target_ts = target->first;  // PTS — the presentation key we serve by
+  const PacketIdentity target_packet = target->second;
+  auto target_idx_opt = store_->indexOf(topic_, target_packet.uid);
   if (!target_idx_opt.has_value()) {
     return unexpected("entry not available");
   }
@@ -89,41 +111,47 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeAt(Timestamp ts, const Cance
   // at-or-before the target; otherwise seek to the nearest preceding keyframe.
   // last_served_ts_ is in PTS space, so during forward playback (PTS monotonic)
   // this stays a cheap continuation even with B-frames.
-  const bool can_forward = initialized_ && !ended_ && last_sent_ts_.has_value() && last_served_ts_.has_value() &&
-                           target_ts >= *last_served_ts_;
+  const bool can_forward =
+      initialized_ && !ended_ && last_sent_uid_.valid() && last_served_ts_.has_value() && target_ts >= *last_served_ts_;
   if (can_forward) {
-    // Resume after the last packet fed. last_sent_ts_ is the DTS feed cursor;
+    // Resume after the last packet fed. last_sent_uid_ is the DTS feed cursor;
     // re-resolve by timestamp (not a cached index) so front-eviction in live mode
     // cannot leave a stale cursor.
-    auto fed_idx = store_->indexAt(topic_, *last_sent_ts_);
+    auto fed_idx = store_->indexOf(topic_, last_sent_uid_);
     const size_t next_idx = fed_idx.has_value() ? *fed_idx + 1 : 0;
-    return serveForward(next_idx, target_idx, target_ts, cancel);
+    return serveForward(next_idx, target_idx, target_packet.uid, target_ts, cancel);
   }
 
   // --- Seek path: backward seek, first decode, or post-drain ---
   // Seeking is a decode-order operation: find the keyframe before the target's DTS.
-  if (keyframe_timestamps_.empty()) {
+  if (keyframes_.empty()) {
     return unexpected("no keyframe yet");
   }
-  auto kf_ts = findKeyframeBefore(target_dts);
+  auto kf_ts = findKeyframeBefore(target_packet);
   if (!kf_ts.has_value()) {
     return unexpected("no keyframe before target");
   }
-  auto kf_idx_opt = store_->indexAt(topic_, *kf_ts);
+  auto kf_idx_opt = store_->indexOf(topic_, kf_ts->uid);
   if (!kf_idx_opt.has_value()) {
     return unexpected("keyframe evicted — target undecodable");
   }
-  size_t kf_idx = *kf_idx_opt;
+  // Next to the keyframe's read, so a front eviction since the target's barely moves either: positions as packetAt
+  // counts them, relative to the target at `target_idx`.
+  const std::optional<size_t> target_now = store_->indexOf(topic_, target_packet.uid);
+  if (!target_now.has_value() || *kf_idx_opt + target_idx < *target_now) {
+    return unexpected("entry not available");
+  }
+  const size_t kf_idx = *kf_idx_opt + target_idx - *target_now;
 
   if (!initialized_) {
-    auto kf_entry = store_->at(topic_, kf_idx);
+    auto kf_entry = packetAt(kf_idx, target_packet.uid, target_idx);
     if (!kf_entry.has_value()) {
       return unexpected("keyframe entry not available");
     }
     // Open the decoder from the keyframe entry's codec (VideoFrame.format). The
     // bitstream parameter sets ride in-band on the keyframe, so init needs only
     // the codec id; the bytes are decoded below by serveForward.
-    auto nal = nal_extractor_(*kf_entry);
+    auto nal = extract(*kf_entry);
     if (!nal.has_value()) {
       return unexpected("keyframe extraction failed: " + nal.error());
     }
@@ -136,7 +164,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeAt(Timestamp ts, const Cance
   decoder_->flush();
   ready_frames_.clear();
   last_served_ts_.reset();
-  last_sent_ts_.reset();
+  last_sent_uid_ = {};
   ended_ = false;
 
   // Cheaply skip-decode the GOP frames strictly before the target — they are never
@@ -147,19 +175,19 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeAt(Timestamp ts, const Cance
     if (cancel != nullptr && cancel->isCancelled()) {
       return unexpected("cancelled");
     }
-    auto entry = store_->at(topic_, i);
+    auto entry = packetAt(i, target_packet.uid, target_idx);
     if (!entry.has_value()) {
       return unexpected(fmt::format("entry evicted mid-GOP (index {})", i));
     }
-    last_sent_ts_ = entry->timestamp;
-    auto nal = nal_extractor_(*entry);
+    last_sent_uid_ = entry->sequential_uid;
+    auto nal = extract(*entry);
     if (!nal.has_value()) {
       return unexpected(fmt::format("frame extraction failed (index {}): {}", i, nal.error()));
     }
-    decoder_->decodeSkip(nal->bytes.data(), nal->bytes.size(), nal->pts, entry->timestamp);
+    decoder_->decodeSkip(nal->bytes.data(), nal->bytes.size(), fedPts(*nal, entry->sequential_uid), entry->timestamp);
   }
 
-  return serveForward(target_idx, target_idx, target_ts, cancel);
+  return serveForward(target_idx, target_idx, target_packet.uid, target_ts, cancel);
 }
 
 std::optional<DecodedFrame> StreamingVideoDecoder::takeReadyFrame(Timestamp ts) {
@@ -176,19 +204,36 @@ std::optional<DecodedFrame> StreamingVideoDecoder::takeReadyFrame(Timestamp ts) 
   return frame;
 }
 
+Timestamp StreamingVideoDecoder::fedPts(const ExtractedFrame& frame, SequentialUID uid) const {
+  const auto candidates = presentation_index_.find(frame.pts);
+  if (candidates == presentation_index_.end() || candidates->second.back().uid == uid) {
+    return frame.pts;
+  }
+  return std::numeric_limits<Timestamp>::min();  // below every target: its frame is never kept
+}
+
+std::optional<ResolvedObjectEntry> StreamingVideoDecoder::packetAt(
+    size_t index, SequentialUID anchor, size_t anchor_index) const {
+  const std::optional<size_t> now = store_->indexOf(topic_, anchor);
+  if (!now || index + *now < anchor_index) {
+    return std::nullopt;
+  }
+  return store_->at(topic_, index + *now - anchor_index);
+}
+
 Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
-    size_t start_idx, size_t target_idx, Timestamp target_ts, const CancelTokenPtr& cancel) {
+    size_t start_idx, size_t target_idx, SequentialUID target_uid, Timestamp target_ts, const CancelTokenPtr& cancel) {
   const size_t count = store_->entryCount(topic_);
   // target_ts is the PTS we serve by; target_idx is the target's decode-order index
   // (passed in — it cannot be re-derived from a PTS against the DTS-keyed store).
 
   // A cancel may fire after the target packet has already been fed (its frame still
-  // buffered, un-received). Leaving last_sent_ts_ past the target would make the
+  // buffered, un-received). Leaving last_sent_uid_ past the target would make the
   // next forward request skip it ("forward decode produced no frame" for a valid
   // timestamp). Reset the forward-continuation state so the next decodeAt re-seeks
   // (which flushes the abandoned pipeline) and decodes the target cleanly.
   auto on_cancelled = [this]() -> Expected<DecodedFrame> {
-    last_sent_ts_.reset();
+    last_sent_uid_ = {};
     ready_frames_.clear();
     return unexpected("cancelled");
   };
@@ -219,14 +264,14 @@ Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
 
   for (size_t i = start_idx; i < count; ++i) {
     // Preempt a long forward (GOP) decode when a newer scrub target cancelled this
-    // token. Checked before each feed so last_sent_ts_ reflects only fed packets.
+    // token. Checked before each feed so last_sent_uid_ reflects only fed packets.
     if (cancel != nullptr && cancel->isCancelled()) {
       return on_cancelled();
     }
     if (auto served = pump(); served.has_value()) {
       return *served;
     }
-    auto entry = store_->at(topic_, i);
+    auto entry = packetAt(i, target_uid, target_idx);
     if (!entry.has_value()) {
       // A hole strictly before the target breaks the decode chain; past the target
       // we simply stop feeding and drain whatever the buffer already holds.
@@ -235,14 +280,14 @@ Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
       }
       break;
     }
-    last_sent_ts_ = entry->timestamp;
+    last_sent_uid_ = entry->sequential_uid;
     // `entry` outlives the send call, so the extractor's aliased Span (into the
     // entry bytes or an anchor) stays valid while FFmpeg copies it.
-    auto nal = nal_extractor_(*entry);
+    auto nal = extract(*entry);
     if (!nal.has_value()) {
       return unexpected(fmt::format("frame extraction failed (index {}): {}", i, nal.error()));
     }
-    decoder_->sendOnly(nal->bytes.data(), nal->bytes.size(), nal->pts, entry->timestamp);
+    decoder_->sendOnly(nal->bytes.data(), nal->bytes.size(), fedPts(*nal, entry->sequential_uid), entry->timestamp);
   }
 
   // Final pump: the target may have surfaced off the last sends.
@@ -267,7 +312,12 @@ Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
 
 std::vector<Timestamp> StreamingVideoDecoder::keyframeTimestamps() {
   updateKeyframeIndex();
-  return keyframe_timestamps_;
+  std::vector<Timestamp> stamps;
+  stamps.reserve(keyframes_.size());
+  for (const auto& packet : keyframes_) {
+    stamps.push_back(packet.dts);
+  }
+  return stamps;
 }
 
 bool StreamingVideoDecoder::sampledUsesKeyframeOnly(Timestamp interval_ns) {
@@ -277,7 +327,7 @@ bool StreamingVideoDecoder::sampledUsesKeyframeOnly(Timestamp interval_ns) {
   updateKeyframeIndex();
   // Need at least two keyframes to reason about spacing; a single keyframe over a
   // long span cannot cover a 1/interval cadence, so the forward pass wins.
-  if (keyframe_timestamps_.size() < 2) {
+  if (keyframes_.size() < 2) {
     return false;
   }
   // Keyframe-only is correct ONLY when every interval-wide window already holds a
@@ -285,14 +335,14 @@ bool StreamingVideoDecoder::sampledUsesKeyframeOnly(Timestamp interval_ns) {
   // of the work (each keyframe decodes in isolation). Guarantee that by requiring
   // the leading gap, every consecutive gap, and the trailing gap to be <= interval.
   const auto range = store_->timeRange(topic_);
-  if (keyframe_timestamps_.front() - range.first > interval_ns) {
+  if (keyframes_.front().dts - range.first > interval_ns) {
     return false;
   }
-  if (range.second - keyframe_timestamps_.back() > interval_ns) {
+  if (range.second - keyframes_.back().dts > interval_ns) {
     return false;
   }
-  for (size_t i = 1; i < keyframe_timestamps_.size(); ++i) {
-    if (keyframe_timestamps_[i] - keyframe_timestamps_[i - 1] > interval_ns) {
+  for (size_t i = 1; i < keyframes_.size(); ++i) {
+    if (keyframes_[i].dts - keyframes_[i - 1].dts > interval_ns) {
       return false;
     }
   }
@@ -315,15 +365,16 @@ void StreamingVideoDecoder::decodeSampled(Timestamp interval_ns, const std::func
 
 void StreamingVideoDecoder::decodeSampledKeyframes(
     Timestamp interval_ns, const std::function<bool(const DecodedFrame&)>& sink) {
-  // Precondition (sampledUsesKeyframeOnly): keyframe_timestamps_ is fresh and
+  // Precondition (sampledUsesKeyframeOnly): keyframes_ is fresh and
   // covers the cadence. Decode ~1 keyframe per interval; each is self-contained,
   // so we flush and decode a single packet per pick — no GOP walk.
   std::optional<Timestamp> next_sample;
-  for (Timestamp kf_ts : keyframe_timestamps_) {
+  for (const PacketIdentity& packet : keyframes_) {
+    const Timestamp kf_ts = packet.dts;
     if (next_sample.has_value() && kf_ts < *next_sample) {
       continue;  // this interval bucket already has a sample
     }
-    auto idx = store_->indexAt(topic_, kf_ts);
+    auto idx = store_->indexOf(topic_, packet.uid);
     if (!idx.has_value()) {
       continue;
     }
@@ -331,7 +382,7 @@ void StreamingVideoDecoder::decodeSampledKeyframes(
     if (!entry.has_value()) {
       continue;
     }
-    auto nal = nal_extractor_(*entry);
+    auto nal = extract(*entry);
     if (!nal.has_value()) {
       continue;
     }
@@ -382,7 +433,7 @@ void StreamingVideoDecoder::decodeSampledForward(
     if (!entry.has_value()) {
       break;  // gap — stop the pass
     }
-    auto nal = nal_extractor_(*entry);
+    auto nal = extract(*entry);
     if (!nal.has_value()) {
       continue;
     }
@@ -420,20 +471,26 @@ void StreamingVideoDecoder::decodeSampledForward(
   }
 }
 
-void StreamingVideoDecoder::reset() {
+void StreamingVideoDecoder::resetDecodeState() {
   decoder_.reset();
   initialized_ = false;
-  keyframe_timestamps_.clear();
-  pts_to_dts_.clear();
-  pruned_floor_.reset();
-  last_scanned_ts_.reset();
-  last_sent_ts_.reset();
+  last_sent_uid_ = {};
   ready_frames_.clear();
   last_served_ts_.reset();
   ended_ = false;
   last_frame_ = {};
   codec_id_ = 0;
   codec_format_.clear();
+}
+
+void StreamingVideoDecoder::reset() {
+  resetDecodeState();
+  keyframes_.clear();
+  presentation_index_.clear();
+  pruned_floor_.reset();
+  pruned_first_uid_ = {};
+  last_scanned_uid_ = {};
+  indexed_identity_ = {};
 }
 
 bool StreamingVideoDecoder::isInitialized() const {
@@ -444,95 +501,95 @@ void StreamingVideoDecoder::updateKeyframeIndex() {
   if (store_ == nullptr) {
     return;
   }
-
-  size_t count = store_->entryCount(topic_);
-  if (count == 0) {
+  const auto identity = store_->contentIdentity(topic_);
+  if (identity == indexed_identity_) {
+    return;
+  }
+  if (identity.rewrite != indexed_identity_.rewrite) {
+    reset();
+  }
+  if (store_->entryCount(topic_) == 0) {
+    reset();
+    indexed_identity_ = identity;
     return;
   }
 
-  // Prune keyframe + presentation entries that have been evicted. Only runs when
-  // the store's front (range.first, DTS) has actually advanced — so the O(n)
-  // pts_to_dts_ scan stays off the per-frame path for file-backed sources (no
-  // eviction), where decodeAt() calls this every frame.
-  const Timestamp evict_floor = store_->timeRange(topic_).first;
-  if (!pruned_floor_.has_value() || evict_floor > *pruned_floor_) {
-    pruned_floor_ = evict_floor;
-    auto kf_it = std::lower_bound(keyframe_timestamps_.begin(), keyframe_timestamps_.end(), evict_floor);
-    keyframe_timestamps_.erase(keyframe_timestamps_.begin(), kf_it);
-    // pts_to_dts_ is keyed by PTS, so prune by the evicted DTS value, not the key.
-    for (auto it = pts_to_dts_.begin(); it != pts_to_dts_.end();) {
-      if (it->second < evict_floor) {
-        it = pts_to_dts_.erase(it);
-      } else {
-        ++it;
+  const Timestamp floor = store_->timeRange(topic_).first;
+  const SequentialUID first = store_->firstSequentialUID(topic_);
+  if (pruned_floor_ != floor || pruned_first_uid_ != first) {
+    pruned_floor_ = floor;
+    pruned_first_uid_ = first;
+    const auto evicted = [this, floor](const PacketIdentity& packet) {
+      return packet.dts < floor || (packet.dts == floor && !store_->indexOf(topic_, packet.uid));
+    };
+    std::erase_if(keyframes_, evicted);
+    for (auto it = presentation_index_.begin(); it != presentation_index_.end();) {
+      const SequentialUID winner = it->second.back().uid;
+      std::erase_if(it->second, evicted);
+      if (it->second.empty()) {
+        it = presentation_index_.erase(it);
+        continue;
       }
+      if (it->second.back().uid != winner) {
+        resetDecodeState();  // a retained packet presents this PTS again: the frame shown was the evicted one's
+      }
+      ++it;
     }
   }
 
-  // Scan entries we haven't seen yet. Track by timestamp (not count)
-  // because retention can keep count constant while new entries replace old.
-  size_t start = 0;
-  if (last_scanned_ts_.has_value()) {
-    auto idx_opt = store_->indexAt(topic_, *last_scanned_ts_);
-    if (idx_opt.has_value()) {
-      start = *idx_opt + 1;
-    }
-  }
-
-  for (size_t i = start; i < count; ++i) {
-    auto entry = store_->at(topic_, i);
-    if (!entry.has_value()) {
+  // Only the packets that arrived since the last scan (a rewrite reset the cursor above, rescanning everything).
+  auto arrivals = store_->drainNewSince(topic_, last_scanned_uid_);
+  std::sort(arrivals.begin(), arrivals.end(), [](const auto& left, const auto& right) {
+    return left.timestamp < right.timestamp ||
+           (left.timestamp == right.timestamp && left.sequential_uid < right.sequential_uid);
+  });
+  for (const auto& entry : arrivals) {
+    auto nal = extract(entry);
+    if (!nal) {
       continue;
     }
-    // The keyframe scan inspects the raw NAL/OBU bytes just like the decode path,
-    // so it must see the extracted bitstream (not the wrapping message). `entry`
-    // is alive for the duration of the inspection. The first extracted frame also
-    // latches the topic's codec (from VideoFrame.format), which drives the
-    // codec-dispatched keyframe oracle.
-    auto nal = nal_extractor_(*entry);
-    if (nal.has_value()) {
-      resolveCodec(nal->format);
-      if (isVideoKeyframe(codec_id_, nal->bytes.data(), nal->bytes.size())) {
-        keyframe_timestamps_.push_back(entry->timestamp);
-      }
-      // Record the frame's real PTS -> its DTS store key for presentation lookup.
-      pts_to_dts_[nal->pts] = entry->timestamp;
+    const PacketIdentity packet{entry.timestamp, entry.sequential_uid};
+    std::vector<PacketIdentity>& candidates = presentation_index_[nal->pts];
+    if (!candidates.empty()) {
+      // A later packet replaces the frame at this PTS, even when its DTS is newer.
+      resetDecodeState();
     }
-    last_scanned_ts_ = entry->timestamp;
+    resolveCodec(nal->format);
+    if (isVideoKeyframe(codec_id_, nal->bytes.data(), nal->bytes.size())) {
+      keyframes_.push_back(packet);
+    }
+    candidates.insert(
+        std::upper_bound(
+            candidates.begin(), candidates.end(), packet,
+            [](const PacketIdentity& left, const PacketIdentity& right) { return left.uid < right.uid; }),
+        packet);
   }
+  indexed_identity_ = identity;
 }
 
-std::optional<Timestamp> StreamingVideoDecoder::findKeyframeBefore(Timestamp ts) const {
-  if (keyframe_timestamps_.empty()) {
-    return std::nullopt;
-  }
-  auto it = std::upper_bound(keyframe_timestamps_.begin(), keyframe_timestamps_.end(), ts);
-  if (it == keyframe_timestamps_.begin()) {
-    return std::nullopt;
-  }
-  --it;
-  return *it;
+std::optional<StreamingVideoDecoder::PacketIdentity> StreamingVideoDecoder::findKeyframeBefore(
+    PacketIdentity target) const {
+  const auto it = std::upper_bound(
+      keyframes_.begin(), keyframes_.end(), target, [](const PacketIdentity& left, const PacketIdentity& right) {
+        return left.dts < right.dts || (left.dts == right.dts && left.uid < right.uid);
+      });
+  return it == keyframes_.begin() ? std::nullopt : std::optional<PacketIdentity>(*std::prev(it));
 }
 
-std::optional<std::pair<Timestamp, Timestamp>> StreamingVideoDecoder::presentationTargetAt(Timestamp ts) const {
-  if (pts_to_dts_.empty()) {
+std::optional<std::pair<Timestamp, StreamingVideoDecoder::PacketIdentity>> StreamingVideoDecoder::presentationTargetAt(
+    Timestamp ts) const {
+  if (presentation_index_.empty()) {
     return std::nullopt;
   }
-  // Greatest PTS <= ts: the frame on screen at presentation time `ts`.
-  auto it = pts_to_dts_.upper_bound(ts);
-  if (it == pts_to_dts_.begin()) {
-    // No frame presents at-or-before `ts`. With B-frames the smallest PTS sits a
-    // reorder-depth AFTER the stream's first DTS (the IDR's negative encoder-delay
-    // DTS), so a request at the very start of the DTS-based timeline falls into
-    // that gap — clamp to the first presentable frame (it stays at begin()). Only a
-    // request genuinely before the stream's start returns nothing.
+  auto it = presentation_index_.upper_bound(ts);
+  if (it == presentation_index_.begin()) {
     if (store_ == nullptr || ts < store_->timeRange(topic_).first) {
       return std::nullopt;
     }
   } else {
     --it;
   }
-  return std::make_pair(it->first, it->second);
+  return std::make_pair(it->first, it->second.back());
 }
 
 void StreamingVideoDecoder::resolveCodec(std::string_view format) {
@@ -554,8 +611,8 @@ int StreamingVideoDecoder::computeReorderDelay() const {
   // what a container demuxer reports in AVCodecParameters::video_delay.
   int delay = 0;
   int presentation_rank = 0;
-  for (const auto& [pts, entry_ts] : pts_to_dts_) {
-    auto idx = store_->indexAt(topic_, entry_ts);
+  for (const auto& [pts, candidates] : presentation_index_) {
+    auto idx = store_->indexOf(topic_, candidates.back().uid);
     if (idx.has_value()) {
       delay = std::max(delay, static_cast<int>(*idx) - presentation_rank);
     }

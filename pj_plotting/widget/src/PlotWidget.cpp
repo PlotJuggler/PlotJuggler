@@ -8,6 +8,7 @@
 #include <qwt_plot_item.h>
 #include <qwt_plot_marker.h>
 #include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
 #include <qwt_symbol.h>
 #include <qwt_text.h>
 
@@ -17,6 +18,7 @@
 #include <QDropEvent>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QHelpEvent>
 #include <QIODevice>
 #include <QIcon>
 #include <QMenu>
@@ -27,6 +29,8 @@
 #include <QScopedValueRollback>
 #include <QSettings>
 #include <QStringView>
+#include <QTextDocument>
+#include <QToolTip>
 #include <QUuid>
 #include <QVector>
 #include <algorithm>
@@ -34,12 +38,14 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <set>
 
 #include "TimeAxisWidth.h"
 #include "WidgetClipboard.h"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DatastoreCurveAdapter.h"
+#include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotMarkersItem.h"
 #include "pj_plotting/PlotXml.h"
@@ -207,6 +213,10 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   show_point_text_->attach(qwtPlot());
 
   connect(this, &PlotWidgetBase::viewResized, this, &PlotWidget::onExternallyResized);
+  connect(this, &PlotWidgetBase::curveListChanged, this, &PlotWidget::applySeriesStatus);
+  connect(
+      qwtPlot()->axisWidget(QwtPlot::xBottom), &QwtScaleWidget::scaleDivChanged, this,
+      &PlotWidget::visibleXRangeChanged);
   gesture_undo_debounce_.setSingleShot(true);
   gesture_undo_debounce_.setInterval(kGestureUndoDebounceMs);
   connect(&gesture_undo_debounce_, &QTimer::timeout, this, [this]() {
@@ -219,6 +229,7 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     autoZoomPlotVertically();
     pruneHiddenMarkerScopes();
     (void)refreshMarkerScopeRowSet();  // curveListChanged itself is the rebuild trigger
+    emit markerTargetsChanged();
   });
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
   connect(this, &PlotWidgetBase::dragLeaveSignal, this, &PlotWidget::onDragLeaveEvent);
@@ -494,6 +505,35 @@ void PlotWidget::setVisibleXRange(double x0, double x1) {
   rect.setRight(x1);
   setZoomRectangle(rect, false);
   replot();
+}
+
+void PlotWidget::setSeriesStatus(std::vector<SeriesCurveStatus> statuses) {
+  if (statuses != series_status_) {
+    series_status_ = std::move(statuses);
+    applySeriesStatus();
+  }
+}
+
+void PlotWidget::applySeriesStatus() {
+  bool changed = false;
+  for (const CurveInfo& info : curveList()) {
+    auto* curve = dynamic_cast<PlotCurve*>(info.curve);
+    if (curve == nullptr) {
+      continue;
+    }
+    QString suffix;
+    const std::optional<CatalogItem> item =
+        series_status_.empty() || catalog_ == nullptr ? std::nullopt : catalog_->itemDescriptor(info.source_name);
+    for (const SeriesCurveStatus& status : series_status_) {
+      if (item && status.dataset_id == item->dataset_id && status.topic_name == item->topic_name) {
+        suffix = status.computing_percent ? tr("computing %1%").arg(*status.computing_percent) : tr("not computed");
+      }
+    }
+    changed = curve->setLegendSuffix(suffix) || changed;
+  }
+  if (changed) {
+    replot();
+  }
 }
 
 void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {
@@ -1156,25 +1196,17 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
         info.marker->setVisible(false);
       }
     }
-    replot();
+    replotOverlays();
     return;
   }
   tracker_->setPosition(QPointF(display_time_sec, 0.0));
-  replot();
+  replotOverlays();
 }
 
 void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color) {
   CurveInfo* info = curveFromTitle(curve_name);
   if (info != nullptr && info->curve != nullptr) {
     info->curve->setPen(new_color, info->curve->pen().widthF());
-    // A curve symbol (the WASM Lines-and-Dots path) snapshots its color at
-    // creation; recolor it too or the dots keep the old hue. The replacement
-    // keeps the original's cache policy rather than resetting to AutoCache.
-    if (const QwtSymbol* symbol = info->curve->symbol(); symbol != nullptr) {
-      auto* recolored = new QwtSymbol(symbol->style(), new_color, QPen(new_color), symbol->size());
-      recolored->setCachePolicy(symbol->cachePolicy());
-      info->curve->setSymbol(recolored);
-    }
     // Remember the override so the curve keeps this color when re-dragged into
     // another plot (issue #68). Keyed by source_name, the same key addCurve uses.
     // Time-series only: XY curves are keyed by a composed title and the registry
@@ -1232,6 +1264,7 @@ void PlotWidget::setCurveShowMarkers(const QString& curve_name, bool show) {
   // markers_item_'s targets are recomputed on each paint from show_markers,
   // so a replot is all that's needed to re-evaluate the overlay.
   replot();
+  emit markerTargetsChanged();
   emit undoableChange();
 }
 
@@ -1250,6 +1283,7 @@ void PlotWidget::setDatasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope 
   // hidden_marker_scopes_, so a replot is all that's needed to re-evaluate the
   // overlay.
   replot();
+  emit markerTargetsChanged();
   emit markerScopeVisibilityChanged(dataset_id, scope, visible);
   if (!loading_state_) {
     emit undoableChange();
@@ -1354,6 +1388,7 @@ void PlotWidget::loadHiddenMarkerScopes(const QDomElement& plot_element) {
   }
   if (new_hidden_scopes != hidden_marker_scopes_) {
     hidden_marker_scopes_ = std::move(new_hidden_scopes);
+    emit markerTargetsChanged();
     emit datasetMarkerScopesChanged();
   }
 }
@@ -1380,7 +1415,42 @@ void PlotWidget::resolvePendingMarkerScopes() {
   // existed, e.g. a generator replayed after the pending binder ran) — refresh
   // the row set too, not just the hidden flag.
   refreshMarkerScopeRowSet();
+  emit markerTargetsChanged();
   emit datasetMarkerScopesChanged();
+}
+
+void PlotWidget::setMarkerStatus(std::vector<MarkerRuleStatus> statuses) {
+  std::erase_if(statuses, [](const MarkerRuleStatus& status) { return !status.computing && status.error.isEmpty(); });
+  std::ranges::sort(statuses, {}, &MarkerRuleStatus::rule_id);
+  if (statuses == marker_status_) {
+    return;
+  }
+  marker_status_ = std::move(statuses);
+  const bool computing = std::ranges::any_of(marker_status_, &MarkerRuleStatus::computing);
+  const QString note = marker_status_.empty() ? QString()
+                       : computing            ? tr("Computing markers…")
+                                              : tr("Marker rule failed");
+  if (markers_item_->setStatusNote(note)) {
+    replot();
+  }
+}
+
+QString PlotWidget::markerStatusNote() const {
+  return markers_item_->statusNote();
+}
+
+QRectF PlotWidget::markerStatusNoteRect() const {
+  return markers_item_->statusNoteRect(qwtPlot()->canvas()->contentsRect());
+}
+
+QString PlotWidget::markerStatusToolTip() const {
+  QStringList lines;
+  for (const MarkerRuleStatus& status : marker_status_) {
+    if (!status.error.isEmpty()) {
+      lines.push_back(status.rule_id + u": "_s + status.error);
+    }
+  }
+  return lines.isEmpty() ? QString() : Qt::convertFromPlainText(lines.join(u'\n'));
 }
 
 std::vector<MarkerTarget> PlotWidget::markerTargets() const {
@@ -1407,15 +1477,14 @@ std::vector<MarkerTarget> PlotWidget::markerTargets() const {
     targets.push_back(
         MarkerTarget{
             src.dataset_id,
-            QString::fromStdString(sdk::markerSeriesKey(src.topic_name.toStdString(), src.field_name.toStdString()))});
+            markerInfoForKey(sdk::markerSeriesKey(src.topic_name.toStdString(), src.field_name.toStdString()))});
   }
   for (const DatasetId dataset : datasets) {
     for (const MarkerScope scope : {MarkerScope::kDataset, MarkerScope::kAllDatasets}) {
       if (hidden_marker_scopes_.contains(MarkerScopeKey{dataset, scope})) {
         continue;
       }
-      const std::string_view topic = markerScopeTopic(scope);
-      targets.push_back(MarkerTarget{dataset, QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size()))});
+      targets.push_back(MarkerTarget{dataset, markerInfoForScope(scope)});
     }
   }
   return targets;
@@ -1434,11 +1503,8 @@ void PlotWidget::pruneHiddenMarkerScopes() {
 bool PlotWidget::refreshMarkerScopeRowSet() {
   std::vector<MarkerScopeKey> current;
   if (session_ != nullptr) {
-    for (const DatasetId dataset_id : curveDatasets()) {
-      for (const MarkerScope scope : publishedMarkerScopes(session_->objectStore(), dataset_id)) {
-        current.emplace_back(dataset_id, scope);
-      }
-    }
+    const std::vector<DatasetId> datasets = curveDatasets();
+    current = publishedMarkerScopes(session_->objectStore(), datasets);
   }
   if (current == marker_scope_rows_) {
     return false;
@@ -1536,6 +1602,14 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
     // the hot path stays a single bool read when the toggle is off.
     if (show_points_) {
       showPointValues(mouse_event->pos());
+    }
+  }
+  if (event->type() == QEvent::ToolTip) {
+    const auto* help = static_cast<QHelpEvent*>(event);
+    const QString tip = markerStatusToolTip();
+    if (!tip.isEmpty() && markerStatusNoteRect().contains(help->pos())) {
+      QToolTip::showText(help->globalPos(), tip, qwtPlot()->canvas());
+      return true;
     }
   }
   if (event->type() == QEvent::Leave && obj == qwtPlot()->canvas()) {

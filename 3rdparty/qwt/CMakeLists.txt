@@ -16,36 +16,21 @@
 option(PJ_SYSTEM_QWT
     "Link the environment's prebuilt Qwt (conda/pixi) instead of downloading and building the pinned release" OFF)
 
-# The browser build excludes the QOpenGLWidget-based canvas: QOpenGLWidget
-# cannot provide its context contract on WebGL, so the wasm plot canvas is the
-# QRhi one in pj_plotting and Qwt is built without the OpenGL components.
-if(EMSCRIPTEN)
-    find_package(Qt6 REQUIRED COMPONENTS
-        Core Gui Widgets Concurrent Svg PrintSupport SvgWidgets)
-    set(PJ_QWT_QT_LIBS
-        Qt6::Core
-        Qt6::Gui
-        Qt6::Widgets
-        Qt6::Concurrent
-        Qt6::Svg
-        Qt6::PrintSupport
-        Qt6::SvgWidgets
-    )
-else()
-    find_package(Qt6 REQUIRED COMPONENTS
-        Core Gui Widgets Concurrent Svg OpenGL PrintSupport OpenGLWidgets SvgWidgets)
-    set(PJ_QWT_QT_LIBS
-        Qt6::Core
-        Qt6::Gui
-        Qt6::Widgets
-        Qt6::Concurrent
-        Qt6::Svg
-        Qt6::OpenGL
-        Qt6::PrintSupport
-        Qt6::OpenGLWidgets
-        Qt6::SvgWidgets
-    )
-endif()
+# The FetchContent build leaves out Qwt's QOpenGLWidget canvases
+# (QwtPlotOpenGLCanvas, QwtPlotGLCanvas): PJ4 plots on PlotRhiCanvas or the
+# raster QwtPlotCanvas, so this build links no Qt6::OpenGL/OpenGLWidgets. The
+# same subset builds for the browser.
+find_package(Qt6 REQUIRED COMPONENTS
+    Core Gui Widgets Concurrent Svg PrintSupport SvgWidgets)
+set(PJ_QWT_QT_LIBS
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Widgets
+    Qt6::Concurrent
+    Qt6::Svg
+    Qt6::PrintSupport
+    Qt6::SvgWidgets
+)
 
 if(PJ_SYSTEM_QWT)
     if(WIN32)
@@ -64,6 +49,11 @@ if(PJ_SYSTEM_QWT)
         message(FATAL_ERROR "PJ_SYSTEM_QWT: expected Qwt 6.3.x headers at ${PJ_QWT_INCLUDE_DIR}, found: ${pj_qwt_version_line}")
     endif()
     message(STATUS "PJ_SYSTEM_QWT: using ${PJ_QWT_LIBRARY} (headers: ${PJ_QWT_INCLUDE_DIR})")
+
+    # conda-forge's shared libqwt is the full upstream build: it carries
+    # QwtPlotOpenGLCanvas and so needs Qt's OpenGL modules at link and run time.
+    find_package(Qt6 REQUIRED COMPONENTS OpenGL OpenGLWidgets)
+    list(APPEND PJ_QWT_QT_LIBS Qt6::OpenGL Qt6::OpenGLWidgets)
 
     add_library(plotjuggler_qwt INTERFACE)
     # SYSTEM: same third-party-header treatment as the FetchContent path below.
@@ -274,11 +264,6 @@ set(QWT_SRC
     qwt_plot_abstract_canvas.h
     qwt_plot_abstract_canvas.cpp
     )
-if(NOT EMSCRIPTEN)
-    list(APPEND QWT_SRC
-        qwt_plot_opengl_canvas.h
-        qwt_plot_opengl_canvas.cpp)
-endif()
 list(TRANSFORM QWT_SRC PREPEND "${qwt_upstream_SOURCE_DIR}/src/")
 
 add_library(plotjuggler_qwt STATIC ${QWT_SRC})

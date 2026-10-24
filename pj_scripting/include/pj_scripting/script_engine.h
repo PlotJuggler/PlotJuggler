@@ -63,10 +63,9 @@ class FilterInstance {
   [[nodiscard]] virtual const std::string& error() const = 0;
 };
 
-/// Backend-agnostic seam for a scripting language. v1 ships a Luau backend
-/// (`makeLuauEngine`); a future Python backend implements the same interface
-/// behind the same seam (likely out-of-process). One engine is shared by many
-/// catalogues/instances; it holds no per-instance state.
+/// Backend-agnostic seam for a scripting language: Luau (`makeLuauEngine`) and
+/// embedded Python implement it. One engine is shared by many catalogues/instances;
+/// it holds no per-instance state.
 class ScriptEngine {
  public:
   virtual ~ScriptEngine() = default;

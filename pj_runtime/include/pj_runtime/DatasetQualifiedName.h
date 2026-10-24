@@ -18,11 +18,13 @@ using sdk::DatasetQualifierSplit;
 using sdk::splitDatasetQualifier;
 
 /// The scalar payload behind `item` when it is the plottable series a marker
-/// generator names `key` (markerSeriesKey naming), else nullptr. Shared by the
+/// generator names `key` (markerSeriesKey naming), else nullptr; with
+/// `strings_too`, a string field matches too (an on-demand input). Shared by the
 /// generator's series resolver and the dataset it binds to, which must agree:
 /// a generator bound to a dataset whose series the resolver cannot find runs
 /// against no data.
-[[nodiscard]] const ScalarFieldPayload* markerSeriesField(const CatalogItem& item, const std::string& key);
+[[nodiscard]] const ScalarFieldPayload* markerSeriesField(
+    const CatalogItem& item, const std::string& key, bool strings_too = false);
 
 /// Which loaded dataset a raw source name addresses.
 struct UniqueDatasetLookup {

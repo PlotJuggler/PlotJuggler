@@ -3,13 +3,18 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QDomDocument>
+#include <QFile>
 #include <QString>
+#include <QStringList>
+#include <QTemporaryDir>
 #include <QWidget>
 #include <QtGlobal>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -18,8 +23,13 @@
 #include <utility>
 #include <vector>
 
+#include "on_demand_test_utils.h"
+#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/sdk/platform.hpp"
 #include "pj_base/time.hpp"  // PJ::Timepoint, PJ::Range, fromRaw/toRaw
 #include "pj_datastore/engine.hpp"
+#include "pj_runtime/IDataWidget.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/layer_params.h"
@@ -607,6 +617,502 @@ TEST(SceneDockWidgetTest, RejectsCrossDatasetLayersUntilPerLayerTimeDomainsExist
   EXPECT_FALSE(dock.addTopic(*topic_b, PJ::sdk::BuiltinObjectType::kPointCloud, u"B"_s));
 }
 
+// A saved layout that mixed datasets still loads: the first dataset's element
+// restores, the foreign one is dropped with a visible reason, and the restore is
+// not marked as failed.
+TEST(SceneDockWidgetTest, RestoreDropsForeignDatasetLayerWithAVisibleReasonAndNoFailure) {
+  PJ::SessionManager session;
+  const auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  const auto dataset_b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  for (const PJ::DatasetId dataset : {*dataset_a, *dataset_b}) {
+    ASSERT_TRUE(session.objectStore()
+                    .registerTopic(
+                        PJ::ObjectTopicDescriptor{
+                            .dataset_id = dataset,
+                            .topic_name = "/cloud",
+                            .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+                        })
+                    .has_value());
+  }
+  QDomDocument document;
+  QDomElement state = document.createElement(u"scene"_s);
+  const auto append_layer = [&](PJ::DatasetId dataset, const QString& source) {
+    QDomElement layer = document.createElement(u"layer"_s);
+    layer.setAttribute(u"dataset_id"_s, QString::number(dataset));
+    layer.setAttribute(u"dataset_source"_s, source);
+    layer.setAttribute(u"topic_name"_s, u"/cloud"_s);
+    layer.setAttribute(u"object_type"_s, u"kPointCloud"_s);
+    state.appendChild(layer);
+  };
+  append_layer(*dataset_a, u"a.mcap"_s);
+  append_layer(*dataset_b, u"b.mcap"_s);
+
+  FakeSceneDock dock;
+  dock.setSessionManager(&session);
+  QStringList reasons;
+  QObject::connect(
+      &dock, &PJ::SceneDockWidget::topicRefused, [&reasons](const QString& reason) { reasons.push_back(reason); });
+
+  EXPECT_TRUE(dock.xmlLoadState(state)) << "a mixed-dataset layout must still load";
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_EQ(dock.layers().size(), 1U) << "only the first dataset's layer restores";
+  ASSERT_EQ(reasons.size(), 1) << "the dropped element is reported, never silently lost";
+  EXPECT_TRUE(reasons.front().contains(u"a.mcap"_s)) << reasons.front().toStdString();
+  EXPECT_TRUE(reasons.front().contains(u"b.mcap"_s)) << reasons.front().toStdString();
+}
+
+// Several refusals in one burst (a multi-select drop, a mixed layout) produce one
+// report; once the event loop has turned, the next refusal reports again.
+TEST(SceneDockWidgetTest, RefusalsInOneBurstEmitTopicRefusedOnce) {
+  PJ::SessionManager session;
+  const auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  const auto dataset_b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  const auto register_cloud = [&session](PJ::DatasetId dataset, const char* name) {
+    return session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = dataset,
+            .topic_name = name,
+            .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+        });
+  };
+  const auto topic_a = register_cloud(*dataset_a, "/cloud");
+  const auto foreign_1 = register_cloud(*dataset_b, "/cloud_1");
+  const auto foreign_2 = register_cloud(*dataset_b, "/cloud_2");
+  const auto foreign_3 = register_cloud(*dataset_b, "/cloud_3");
+  ASSERT_TRUE(topic_a.has_value() && foreign_1.has_value() && foreign_2.has_value() && foreign_3.has_value());
+
+  FakeSceneDock dock;
+  dock.setSessionManager(&session);
+  int refusals = 0;
+  QObject::connect(&dock, &PJ::SceneDockWidget::topicRefused, [&refusals](const QString&) { ++refusals; });
+  ASSERT_TRUE(dock.addTopic(*topic_a, PJ::sdk::BuiltinObjectType::kPointCloud, u"A"_s));
+
+  EXPECT_FALSE(dock.addTopic(*foreign_1, PJ::sdk::BuiltinObjectType::kPointCloud, u"B1"_s));
+  EXPECT_FALSE(dock.addTopic(*foreign_2, PJ::sdk::BuiltinObjectType::kPointCloud, u"B2"_s));
+  EXPECT_FALSE(dock.addTopic(*foreign_3, PJ::sdk::BuiltinObjectType::kPointCloud, u"B3"_s));
+  EXPECT_EQ(refusals, 1) << "one burst, one report";
+
+  QCoreApplication::processEvents();
+  EXPECT_FALSE(dock.addTopic(*foreign_1, PJ::sdk::BuiltinObjectType::kPointCloud, u"B1"_s));
+  EXPECT_EQ(refusals, 2) << "a refusal after the burst reports again";
+}
+
+namespace {
+
+// Two datasets, each with one point-cloud topic, that "arrive" only when the test
+// says so: the injected resolver stands in for the shell's progressive load, so a
+// saved mixed-dataset layout can be replayed in either load order.
+class LateDatasetsFixture {
+ public:
+  LateDatasetsFixture() {
+    dataset_a_ = createDataset("a.mcap");
+    dataset_b_ = createDataset("b.mcap");
+    topic_a_ = registerCloud(dataset_a_, "/cloud_a");
+    topic_b_ = registerCloud(dataset_b_, "/cloud_b");
+    dock_.setSessionManager(&session_);
+    dock_.setObjectDatasetResolver(
+        [this](PJ::DatasetId saved_id, const QString&, const QString&, const QString&) -> std::optional<PJ::DatasetId> {
+          if (std::find(loaded_.begin(), loaded_.end(), saved_id) == loaded_.end()) {
+            return std::nullopt;
+          }
+          return saved_id;
+        });
+    QObject::connect(
+        &dock_, &PJ::SceneDockWidget::topicRefused, [this](const QString& reason) { reasons_.push_back(reason); });
+  }
+
+  /// Saved layout whose FIRST element is dataset A's cloud, then dataset B's.
+  [[nodiscard]] QDomElement mixedLayout() {
+    QDomElement state = document_.createElement(u"scene"_s);
+    appendLayer(state, dataset_a_, u"a.mcap"_s, u"/cloud_a"_s);
+    appendLayer(state, dataset_b_, u"b.mcap"_s, u"/cloud_b"_s);
+    return state;
+  }
+
+  void load(PJ::DatasetId dataset) {
+    loaded_.push_back(dataset);
+  }
+
+  [[nodiscard]] std::vector<int64_t> layerIds() const {
+    return infoIds(dock_.layers());
+  }
+
+  FakeSceneDock& dock() {
+    return dock_;
+  }
+
+  [[nodiscard]] const QStringList& reasons() const {
+    return reasons_;
+  }
+
+  [[nodiscard]] PJ::DatasetId datasetA() const {
+    return dataset_a_;
+  }
+
+  [[nodiscard]] PJ::DatasetId datasetB() const {
+    return dataset_b_;
+  }
+
+  [[nodiscard]] int64_t topicA() const {
+    return static_cast<int64_t>(topic_a_.id);
+  }
+
+  [[nodiscard]] int64_t topicB() const {
+    return static_cast<int64_t>(topic_b_.id);
+  }
+
+  /// A topic of dataset B that the layout does not name, for a dock a user bound by hand.
+  PJ::ObjectTopicId registerExtraTopicOfB() {
+    return registerCloud(dataset_b_, "/cloud_b_extra");
+  }
+
+ private:
+  PJ::DatasetId createDataset(const char* source) {
+    const auto dataset = session_.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = source});
+    EXPECT_TRUE(dataset.has_value());
+    return dataset.has_value() ? *dataset : 0;
+  }
+
+  PJ::ObjectTopicId registerCloud(PJ::DatasetId dataset, const char* name) {
+    const auto topic_id = session_.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = dataset,
+            .topic_name = name,
+            .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+        });
+    EXPECT_TRUE(topic_id.has_value());
+    return topic_id.has_value() ? *topic_id : PJ::ObjectTopicId{};
+  }
+
+  void appendLayer(QDomElement& state, PJ::DatasetId dataset, const QString& source, const QString& topic) {
+    QDomElement layer = document_.createElement(u"layer"_s);
+    layer.setAttribute(u"dataset_id"_s, QString::number(dataset));
+    layer.setAttribute(u"dataset_source"_s, source);
+    layer.setAttribute(u"topic_name"_s, topic);
+    layer.setAttribute(u"object_type"_s, u"kPointCloud"_s);
+    state.appendChild(layer);
+  }
+
+  PJ::SessionManager session_;
+  QDomDocument document_;
+  FakeSceneDock dock_;
+  QStringList reasons_;
+  std::vector<PJ::DatasetId> loaded_;
+  PJ::DatasetId dataset_a_ = 0;
+  PJ::DatasetId dataset_b_ = 0;
+  PJ::ObjectTopicId topic_a_;
+  PJ::ObjectTopicId topic_b_;
+};
+
+}  // namespace
+
+// GAP-48: a mixed-dataset layout restores the same way whatever the load order,
+// because the dataset of the first saved element wins.
+TEST(SceneDockWidgetTest, MixedLayoutKeepsTheFirstSavedDatasetRegardlessOfLoadOrder) {
+  const auto replay = [](bool a_loads_first) {
+    LateDatasetsFixture fixture;
+    const QDomElement state = fixture.mixedLayout();
+    fixture.load(a_loads_first ? fixture.datasetA() : fixture.datasetB());
+    EXPECT_TRUE(fixture.dock().xmlLoadState(state));
+    QCoreApplication::processEvents();
+    fixture.load(a_loads_first ? fixture.datasetB() : fixture.datasetA());
+    fixture.dock().retryPendingRestores({});
+    QCoreApplication::processEvents();
+    fixture.dock().finishRestore();
+    QCoreApplication::processEvents();
+
+    EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicA()})) << "a_loads_first=" << a_loads_first;
+    EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+    EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
+    EXPECT_EQ(fixture.reasons().size(), 1) << "the dropped element is reported once, never silently lost";
+    if (!fixture.reasons().isEmpty()) {
+      EXPECT_TRUE(fixture.reasons().front().contains(u"a.mcap"_s)) << fixture.reasons().front().toStdString();
+      EXPECT_TRUE(fixture.reasons().front().contains(u"b.mcap"_s)) << fixture.reasons().front().toStdString();
+    }
+    return fixture.layerIds();
+  };
+
+  EXPECT_EQ(replay(/*a_loads_first=*/true), replay(/*a_loads_first=*/false));
+}
+
+// The first saved dataset never arrives: when the restore settles, the next saved
+// dataset that is loaded wins, and the elements of the other dataset are dropped
+// with a reason built from their saved source label, not counted as a failure.
+TEST(SceneDockWidgetTest, MixedLayoutFallsBackToTheNextLoadedSavedDataset) {
+  LateDatasetsFixture fixture;
+  const QDomElement state = fixture.mixedLayout();
+  fixture.load(fixture.datasetB());
+
+  EXPECT_TRUE(fixture.dock().xmlLoadState(state));
+  QCoreApplication::processEvents();
+  EXPECT_TRUE(fixture.layerIds().empty()) << "before the first saved dataset is known to be missing, B must wait";
+  EXPECT_TRUE(fixture.reasons().isEmpty());
+
+  fixture.dock().finishRestore();
+  QCoreApplication::processEvents();
+
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}));
+  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+  EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
+  ASSERT_EQ(fixture.reasons().size(), 1);
+  EXPECT_TRUE(fixture.reasons().front().contains(u"a.mcap"_s)) << fixture.reasons().front().toStdString();
+  EXPECT_TRUE(fixture.reasons().front().contains(u"b.mcap"_s)) << fixture.reasons().front().toStdString();
+}
+
+// A paste (or family switch) replays a saved scene through the IDataWidget contract with
+// no shell settlement: finishRestore() must close the dataset choice and retry, so the
+// loaded dataset's elements bind and the missing first dataset is refused with a reason.
+TEST(SceneDockWidgetTest, FinishRestoreSettlesAPastedMixedLayoutWhoseFirstDatasetIsNotLoaded) {
+  LateDatasetsFixture fixture;
+  const QDomElement state = fixture.mixedLayout();
+  fixture.load(fixture.datasetB());
+  PJ::IDataWidget& data_widget = fixture.dock();
+
+  ASSERT_TRUE(data_widget.xmlLoadState(state));
+  QCoreApplication::processEvents();
+  EXPECT_TRUE(fixture.layerIds().empty());
+
+  data_widget.finishRestore();
+  QCoreApplication::processEvents();
+
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}));
+  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+  EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
+  ASSERT_EQ(fixture.reasons().size(), 1);
+  EXPECT_TRUE(fixture.reasons().front().contains(u"a.mcap"_s)) << fixture.reasons().front().toStdString();
+  EXPECT_TRUE(fixture.reasons().front().contains(u"b.mcap"_s)) << fixture.reasons().front().toStdString();
+}
+
+// The second saved dataset never arrives either: the first one is the dock's dataset
+// from the start, so settle only has to drop the other dataset's still-pending element,
+// naming it by the label it was saved with.
+TEST(SceneDockWidgetTest, MixedLayoutDropsTheOtherSavedDatasetAtSettleWhenItNeverLoads) {
+  LateDatasetsFixture fixture;
+  const QDomElement state = fixture.mixedLayout();
+  fixture.load(fixture.datasetA());
+
+  EXPECT_TRUE(fixture.dock().xmlLoadState(state));
+  QCoreApplication::processEvents();
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicA()}));
+  EXPECT_EQ(fixture.dock().unresolvedBlockingPendingRestores().size(), 1) << "B waits until settle";
+  EXPECT_TRUE(fixture.reasons().isEmpty());
+
+  fixture.dock().finishRestore();
+  QCoreApplication::processEvents();
+
+  EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
+  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+  ASSERT_EQ(fixture.reasons().size(), 1);
+  EXPECT_TRUE(fixture.reasons().front().contains(u"a.mcap"_s)) << fixture.reasons().front().toStdString();
+  EXPECT_TRUE(fixture.reasons().front().contains(u"b.mcap"_s)) << fixture.reasons().front().toStdString();
+}
+
+// Documented limit: when nothing is loaded at settle there is no winner to pick,
+// so the first saved dataset to resolve afterwards wins.
+TEST(SceneDockWidgetTest, MixedLayoutWithNothingLoadedAtSettleLetsTheFirstResolvedDatasetWin) {
+  LateDatasetsFixture fixture;
+  const QDomElement state = fixture.mixedLayout();
+
+  EXPECT_TRUE(fixture.dock().xmlLoadState(state));
+  fixture.dock().finishRestore();
+  QCoreApplication::processEvents();
+  EXPECT_EQ(fixture.dock().unresolvedBlockingPendingRestores().size(), 2) << "nothing to choose yet: both stay pending";
+  EXPECT_TRUE(fixture.reasons().isEmpty());
+
+  fixture.load(fixture.datasetB());
+  fixture.dock().retryPendingRestores({});
+  QCoreApplication::processEvents();
+  fixture.load(fixture.datasetA());
+  fixture.dock().retryPendingRestores({});
+  QCoreApplication::processEvents();
+
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}));
+  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+  EXPECT_EQ(fixture.reasons().size(), 1);
+}
+
+namespace {
+
+// Two fan-out siblings of one file resolved by the session's own identity ladder (no injected
+// resolver): the saved source and path name both, so only the topic-name tiebreak tells which
+// sibling a saved element belongs to, and a topic that is not registered yet resolves to nothing.
+class SharedFileDatasetsFixture {
+ public:
+  SharedFileDatasetsFixture() {
+    EXPECT_TRUE(dir_.isValid());
+    const QString file_path = dir_.filePath(u"rec.mcap"_s);
+    EXPECT_TRUE(QFile(file_path).open(QIODevice::WriteOnly));
+    left_ = createDataset(file_path);
+    right_ = createDataset(file_path);
+    path_ = session_.datasetSourcePath(left_);
+    topic_a1_ = registerCloud(left_, "/cloud_a1");
+    topic_b_ = registerCloud(right_, "/cloud_b");
+    dock_.setSessionManager(&session_);
+    QObject::connect(
+        &dock_, &PJ::SceneDockWidget::topicRefused, [this](const QString& reason) { reasons_.push_back(reason); });
+  }
+
+  /// A saved layout with two datasets that no longer match any live id: dataset A holds
+  /// /cloud_a1 and /cloud_a2, dataset B holds /cloud_b. Source and path are the same for both.
+  [[nodiscard]] QDomElement layout() {
+    QDomElement state = document_.createElement(u"scene"_s);
+    appendLayer(state, kSavedIdA, u"/cloud_a1"_s);
+    appendLayer(state, kSavedIdA, u"/cloud_a2"_s);
+    appendLayer(state, kSavedIdB, u"/cloud_b"_s);
+    return state;
+  }
+
+  /// The late topic of dataset A's first sibling.
+  PJ::ObjectTopicId registerLateTopicA2() {
+    return registerCloud(left_, "/cloud_a2");
+  }
+
+  FakeSceneDock& dock() {
+    return dock_;
+  }
+
+  [[nodiscard]] const QStringList& reasons() const {
+    return reasons_;
+  }
+
+  [[nodiscard]] std::vector<int64_t> layerIds() const {
+    return infoIds(dock_.layers());
+  }
+
+  [[nodiscard]] int64_t topicA1() const {
+    return static_cast<int64_t>(topic_a1_.id);
+  }
+
+ private:
+  static constexpr uint32_t kSavedIdA = 90;
+  static constexpr uint32_t kSavedIdB = 91;
+
+  PJ::DatasetId createDataset(const QString& file_path) {
+    const auto dataset = session_.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "rec.mcap"});
+    EXPECT_TRUE(dataset.has_value());
+    session_.setDatasetSourcePath(*dataset, file_path);
+    return *dataset;
+  }
+
+  PJ::ObjectTopicId registerCloud(PJ::DatasetId dataset, const char* name) {
+    const auto topic_id = session_.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = dataset,
+            .topic_name = name,
+            .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+        });
+    EXPECT_TRUE(topic_id.has_value());
+    return topic_id.has_value() ? *topic_id : PJ::ObjectTopicId{};
+  }
+
+  void appendLayer(QDomElement& state, uint32_t saved_id, const QString& topic) {
+    QDomElement layer = document_.createElement(u"layer"_s);
+    layer.setAttribute(u"dataset_id"_s, QString::number(saved_id));
+    layer.setAttribute(u"dataset_source"_s, u"rec.mcap"_s);
+    layer.setAttribute(u"dataset_path"_s, path_);
+    layer.setAttribute(u"topic_name"_s, topic);
+    layer.setAttribute(u"object_type"_s, u"kPointCloud"_s);
+    state.appendChild(layer);
+  }
+
+  QTemporaryDir dir_;
+  PJ::SessionManager session_;
+  QDomDocument document_;
+  FakeSceneDock dock_;
+  QStringList reasons_;
+  QString path_;
+  PJ::DatasetId left_ = 0;
+  PJ::DatasetId right_ = 0;
+  PJ::ObjectTopicId topic_a1_;
+  PJ::ObjectTopicId topic_b_;
+};
+
+}  // namespace
+
+// Settle re-resolves a pending element by its own topic. Where the session can only tell the
+// two datasets apart by topic name, a winner's element whose topic has not arrived resolves to
+// nothing; that is "not yet", not "another dataset", so it stays pending and binds on arrival.
+TEST(SceneDockWidgetTest, SettleKeepsTheWinnersTopicThatArrivesAfterTheSettleUnderTheRealResolver) {
+  SharedFileDatasetsFixture fixture;
+  const QDomElement state = fixture.layout();
+
+  ASSERT_TRUE(fixture.dock().xmlLoadState(state));
+  QCoreApplication::processEvents();
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicA1()}));
+  ASSERT_EQ(fixture.reasons().size(), 1) << "dataset B's /cloud_b is refused as foreign as soon as A is known";
+
+  fixture.dock().finishRestore();
+  QCoreApplication::processEvents();
+  EXPECT_EQ(fixture.dock().unresolvedBlockingPendingRestores().join(u',').toStdString(), "/cloud_a2")
+      << "the winner's late topic is not foreign";
+  EXPECT_EQ(fixture.reasons().size(), 1) << "settle must not refuse an element of the dataset the dock shows";
+  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+
+  const PJ::ObjectTopicId late = fixture.registerLateTopicA2();
+  EXPECT_EQ(fixture.dock().retryPendingRestores({u"/cloud_a2"_s}), 1);
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicA1(), static_cast<int64_t>(late.id)}));
+  EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
+  EXPECT_EQ(fixture.reasons().size(), 1);
+}
+
+// A dock a user already bound to a dataset keeps it: the settle's choice is the dataset the dock
+// shows, the reason names it, and that dataset's own saved elements stay.
+TEST(SceneDockWidgetTest, SettleTakesTheDatasetTheDockAlreadyShows) {
+  LateDatasetsFixture fixture;
+  const QDomElement state = fixture.mixedLayout();
+
+  ASSERT_TRUE(fixture.dock().xmlLoadState(state));
+  const PJ::ObjectTopicId extra = fixture.registerExtraTopicOfB();
+  ASSERT_TRUE(fixture.dock().addTopic(extra, PJ::sdk::BuiltinObjectType::kPointCloud, u"extra"_s));
+  fixture.load(fixture.datasetA());
+  fixture.load(fixture.datasetB());
+  QCoreApplication::processEvents();
+
+  fixture.dock().finishRestore();
+  QCoreApplication::processEvents();
+
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{static_cast<int64_t>(extra.id), fixture.topicB()}));
+  EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
+  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+  ASSERT_EQ(fixture.reasons().size(), 1);
+  EXPECT_EQ(
+      fixture.reasons().front().toStdString(),
+      "This view shows dataset b.mcap; a topic from dataset a.mcap cannot be added to it.");
+}
+
+// A rejected paste rolls a dock back through xmlLoadState(previous state), which records the
+// datasets of that state again. A dock that had already settled has no settle to follow, so the
+// rollback must hand back its settled (empty) dataset choice together with its pending queue.
+TEST(SceneDockWidgetTest, RolledBackLoadDoesNotRearmTheDatasetChoiceOfASettledDock) {
+  LateDatasetsFixture fixture;
+  const QDomElement state = fixture.mixedLayout();
+  ASSERT_TRUE(fixture.dock().xmlLoadState(state));
+  fixture.dock().finishRestore();  // nothing loaded: settled, both stay pending, no gate
+  QCoreApplication::processEvents();
+  ASSERT_EQ(fixture.dock().unresolvedBlockingPendingRestores().size(), 2);
+
+  const auto snapshot = fixture.dock().capturePendingForTest();
+  QDomDocument previous_doc;
+  const QDomElement previous = fixture.dock().xmlSaveState(previous_doc);
+  previous_doc.appendChild(previous);
+  QDomDocument rejected_doc;
+  const QDomElement rejected = rejected_doc.createElement(u"scene"_s);
+  rejected_doc.appendChild(rejected);
+  ASSERT_TRUE(fixture.dock().xmlLoadState(rejected));
+  ASSERT_TRUE(fixture.dock().xmlLoadState(previous));
+  fixture.dock().restorePendingForTest(snapshot);
+
+  fixture.load(fixture.datasetB());
+  fixture.dock().retryPendingRestores({});
+  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}))
+      << "no settle follows the rollback, so the first dataset to resolve must win";
+  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
+}
+
 TEST(SceneDockWidgetTest, QualifiedRestoreRejectsKnownLiveObjectTypeMismatch) {
   PJ::SessionManager session;
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -726,9 +1232,15 @@ TEST(SceneDockWidgetTest, DeferredIntentRejectsUnsupportedAndSecondDatasetBefore
   ASSERT_TRUE(dataset_b.has_value());
   FakeSceneDock dock;
   dock.setSessionManager(&session);
+  QStringList reasons;
+  QObject::connect(
+      &dock, &PJ::SceneDockWidget::topicRefused, [&reasons](const QString& reason) { reasons.push_back(reason); });
   EXPECT_FALSE(dock.deferTopicIntent(*dataset_a, u"/image"_s, PJ::sdk::BuiltinObjectType::kImage, u"Image"_s));
   EXPECT_TRUE(dock.deferTopicIntent(*dataset_a, u"/cloud_a"_s, PJ::sdk::BuiltinObjectType::kPointCloud, u"A"_s));
+  EXPECT_TRUE(reasons.isEmpty()) << "an unsupported type or the first dataset is not a dataset refusal";
   EXPECT_FALSE(dock.deferTopicIntent(*dataset_b, u"/cloud_b"_s, PJ::sdk::BuiltinObjectType::kPointCloud, u"B"_s));
+  ASSERT_EQ(reasons.size(), 1) << "the foreign dataset refusal is reported, never silent";
+  EXPECT_TRUE(reasons.front().contains(u"dataset b"_s)) << reasons.front().toStdString();
   ASSERT_EQ(dock.pendingRestoreDemands().size(), 1U);
 }
 
@@ -1029,7 +1541,7 @@ TEST(SceneDockWidgetTest, ViewRenderKeyChangeRepaintsDespiteStableLayers) {
 // concrete view off the old layers (a sync with an empty order) BEFORE any of
 // them is destroyed: a view holding raw layer pointers (e.g. the 3D
 // SceneViewWidget's layer list) otherwise dereferences freed layers when it
-// reconciles, and the layers' GL resources die without a release hook.
+// reconciles, and never releases the GPU state it holds for them.
 TEST(SceneDockWidgetTest, ClearLayersRepointsViewBeforeDestroyingLayers) {
   FakeSceneDock dock;
   ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));
@@ -1089,6 +1601,205 @@ TEST(SceneDockWidgetTest, ConfigTopicIsConsumedWithoutCreatingLayer) {
 // 3D config panel: copy serializes one layer's xmlSaveState blob, paste applies
 // it to another. FakeLayer's "payload" attribute stands in for real per-layer
 // params (shape, size, colormap, …).
+// SCN-15: each writer owns a part of the row warning; the joined text lists the non-empty parts in order, and a
+// set reports a change only when the joined text changed.
+TEST(SceneWarningPartsTest, JoinsNonEmptyPartsInOrderAndReportsOnlyRealChanges) {
+  using Part = PJ::SceneWarningParts::Part;
+  PJ::SceneWarningParts parts;
+  EXPECT_FALSE(parts.set(Part::kData, {}));
+  EXPECT_TRUE(parts.set(Part::kDerived, u"missing input"_s));
+  EXPECT_EQ(parts.combined(), u"missing input"_s);
+  EXPECT_TRUE(parts.set(Part::kData, u"bad decode"_s));
+  EXPECT_EQ(parts.combined(), u"bad decode\nmissing input"_s);
+  EXPECT_TRUE(parts.set(Part::kRender, u"no texture"_s));
+  EXPECT_EQ(parts.combined(), u"bad decode\nno texture\nmissing input"_s);
+  EXPECT_FALSE(parts.set(Part::kRender, u"no texture"_s));
+  EXPECT_TRUE(parts.set(Part::kDerived, {}));
+  EXPECT_EQ(parts.combined(), u"bad decode\nno texture"_s);
+  EXPECT_EQ(parts.text(Part::kData), u"bad decode"_s);
+}
+
+namespace {
+
+constexpr PJ::Timestamp kSec = 1'000'000'000;
+
+/// The fake run every on-demand service built while it lives uses.
+struct ScopedFakeRun {
+  explicit ScopedFakeRun(PJ::test::FakeRun& fake) {
+    PJ::OnDemandService::setRunForTest(fake.function());
+  }
+  ~ScopedFakeRun() {
+    PJ::OnDemandService::setRunForTest({});
+  }
+  ScopedFakeRun(const ScopedFakeRun&) = delete;
+  ScopedFakeRun& operator=(const ScopedFakeRun&) = delete;
+};
+
+/// A dataset `log` with a canonical cloud topic `cloud` (entries at 5, 10 and 20 s) and on-demand recipes reading
+/// it, run by `fake`.
+struct DerivedDockFixture {
+  DerivedDockFixture() {
+    ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "log"}).value();
+    const PJ::ObjectTopicId cloud =
+        session.objectStore().registerTopic({ds, "cloud", R"({"builtin_object_type":"kPointCloud"})"}).value();
+    for (const PJ::Timestamp t : {5 * kSec, 10 * kSec, 20 * kSec}) {
+      const auto bytes = PJ::serializeBuiltinObject(PJ::sdk::BuiltinObject(PJ::test::makeCloud(4))).value();
+      EXPECT_TRUE(session.objectStore().pushOwned(cloud, t, bytes).has_value());
+    }
+    dock.setSessionManager(&session);
+  }
+  /// Installs `owner/<id>` reading the cloud and returns its output topic.
+  PJ::ObjectTopicId install(const std::string& id) {
+    const auto installed = session.onDemandService().install(
+        PJ::test::onDemandRecipe(
+            id, {"cloud"}, {{"cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud}}));
+    EXPECT_TRUE(installed.has_value());
+    return session.objectStore().findTopic(ds, "owner/" + id + "/cropped").value_or(PJ::ObjectTopicId{});
+  }
+
+  PJ::test::FakeRun fake;  ///< outlives the session, whose pool joins the runs
+  ScopedFakeRun scoped{fake};
+  PJ::SessionManager session;
+  PJ::DatasetId ds = 0;
+  FakeSceneDock dock;
+};
+
+}  // namespace
+
+// D30, GAP-05: while its derived layers compute, each row says how far its shown result is behind the one the
+// newest request produces (the scheduler's lag), and the dock's status strip shows the largest; both clear once
+// the results land.
+TEST(SceneDockWidgetTest, LagIndicatorShowsTheMaxLagOfItsDerivedLayers) {
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId a = fx.install("a");
+  const PJ::ObjectTopicId b = fx.install("b");
+  fx.session.onDemandService().requestAt("owner/a", 5 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 10 * kSec);
+  fx.session.enginePool().waitIdle();
+  ASSERT_TRUE(fx.dock.addTopic(a, PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));
+  ASSERT_TRUE(fx.dock.addTopic(b, PJ::sdk::BuiltinObjectType::kPointCloud, u"b"_s));
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+  EXPECT_TRUE(fx.dock.layerStatus(a).isEmpty());
+
+  std::vector<std::pair<uint32_t, QString>> statuses;
+  QObject::connect(&fx.dock, &PJ::SceneDockWidget::layerStatusChanged, [&](PJ::ObjectTopicId topic, QString text) {
+    statuses.emplace_back(topic.id, std::move(text));
+  });
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 20 * kSec);
+  EXPECT_EQ(fx.dock.layerStatus(a), u"behind 15 s"_s);
+  EXPECT_EQ(fx.dock.layerStatus(b), u"behind 10 s"_s);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 15 s)"_s);
+  EXPECT_EQ(statuses, (std::vector<std::pair<uint32_t, QString>>{{a.id, u"behind 15 s"_s}, {b.id, u"behind 10 s"_s}}));
+  fx.dock.removeTopic(a);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 10 s)"_s) << "a removed layer no longer counts";
+
+  fx.fake.allow(2);
+  fx.session.enginePool().waitIdle();
+  EXPECT_TRUE(fx.dock.layerStatus(b).isEmpty());
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+}
+
+// The status strip sums up what the dock shows: a hidden layer's lag leaves it, and comes back with the layer.
+TEST(SceneDockWidgetTest, AHiddenLayersLagLeavesTheStatusStrip) {
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId a = fx.install("a");
+  const PJ::ObjectTopicId b = fx.install("b");
+  fx.session.onDemandService().requestAt("owner/a", 5 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 10 * kSec);
+  fx.session.enginePool().waitIdle();
+  ASSERT_TRUE(fx.dock.addTopic(a, PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));
+  ASSERT_TRUE(fx.dock.addTopic(b, PJ::sdk::BuiltinObjectType::kPointCloud, u"b"_s));
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 20 * kSec);
+  ASSERT_EQ(fx.dock.derivedStatus(), u"computing (behind 15 s)"_s);
+
+  fx.dock.setLayerVisible(a, false);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 10 s)"_s);
+  fx.dock.setLayerVisible(b, false);
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+  fx.dock.setLayerVisible(a, true);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 15 s)"_s);
+  fx.fake.allow(2);
+  fx.session.enginePool().waitIdle();
+}
+
+// A raw topic's layer has no derived status, whatever the on-demand engine does.
+TEST(SceneDockWidgetTest, ARawLayerHasNoDerivedStatus) {
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId cloud = fx.session.objectStore().findTopic(fx.ds, "cloud").value();
+  ASSERT_TRUE(fx.dock.addTopic(cloud, PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
+  fx.install("a");
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  EXPECT_TRUE(fx.dock.layerStatus(cloud).isEmpty());
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+  fx.fake.allow(1);
+  fx.session.enginePool().waitIdle();
+}
+
+// The GUI cost of re-reading one derived layer's presentation (a state change), and of a raw layer's (a key miss).
+// Production does the same lookups: the history's key, the scheduler's state, the graph's node.
+TEST(SceneDockWidgetBench, DerivedPresentationPerLayer) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId derived = fx.install("a");
+  const PJ::ObjectTopicId raw = fx.session.objectStore().findTopic(fx.ds, "cloud").value();
+  fx.session.onDemandService().requestAt("owner/a", 5 * kSec);
+  fx.session.enginePool().waitIdle();
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  constexpr int kCalls = 10'000;
+  for (const auto& [name, topic] : {std::pair{"derived (behind)", derived}, std::pair{"raw", raw}}) {
+    std::size_t sink = 0;
+    const double micros = PJ::test::medianMicros(15, [&] {
+      for (int call = 0; call < kCalls; ++call) {
+        sink += static_cast<std::size_t>(PJ::derivedTopicPresentation(&fx.session, topic).status.size());
+      }
+    });
+    EXPECT_GT(sink + 1, 0u);
+    std::printf("[bench] derivedTopicPresentation %s: %.0f ns per layer\n", name, micros * 1000.0 / kCalls);
+  }
+  fx.fake.allow(1);
+  fx.session.enginePool().waitIdle();
+}
+
+// The dock's clock range of a derived layer runs on every tracker tick (the clamp): a reader two hops from its raw
+// input, among 10k topics. Production does the same lookups (the graph walk, the store's topic and range).
+TEST(SceneDockWidgetBench, DerivedClockRangePerLayer) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  DerivedDockFixture fx;
+  for (int index = 0; index < 10'000; ++index) {
+    ASSERT_TRUE(
+        fx.session.objectStore()
+            .registerTopic({fx.ds, "other/" + std::to_string(index), R"({"builtin_object_type":"kPointCloud"})"})
+            .has_value());
+  }
+  fx.install("a");
+  const auto reader = fx.session.onDemandService().install(
+      PJ::test::onDemandRecipe(
+          "b", {"owner/a/cropped"},
+          {{"cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud}}));
+  ASSERT_TRUE(reader.has_value());
+  const PJ::ObjectTopicId topic = fx.session.objectStore().findTopic(fx.ds, "owner/b/cropped").value();
+  ASSERT_TRUE(fx.session.derivedTopicInputRange(topic).has_value());
+  constexpr int kCalls = 10'000;
+  int64_t sink = 0;
+  const double micros = PJ::test::medianMicros(15, [&] {
+    for (int call = 0; call < kCalls; ++call) {
+      sink += fx.session.derivedTopicInputRange(topic)->second;
+    }
+  });
+  EXPECT_NE(sink, 0);
+  std::printf("[bench] derivedTopicInputRange, 2 hops among 10k topics: %.0f ns per layer\n", micros * 1000.0 / kCalls);
+}
+
 TEST(LayerParamsTest, RoundTripCopiesParamsBetweenLayers) {
   FakeLayer source(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"src"_s);
   source.setPayload(u"alpha"_s);

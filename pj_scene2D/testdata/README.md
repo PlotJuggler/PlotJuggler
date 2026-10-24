@@ -17,6 +17,7 @@ trusting a clean-clone result.
 | `test_av1.mp4` | `streaming_video_decoder_test` (AV1 path) |
 | `test_h264_bframes.mp4` | `streaming_video_decoder_test` (B-frame presentation order) |
 | `test_h264_bframes_deep.mp4` | `streaming_video_decoder_test` (deep reorder, 3 B-frames @60fps) |
+| `tagged_bt709_full_128x96.mp4` | `ffmpeg_decoder_test`: tagged BT.709 and full range, black left half and white right half (luma 0 and 255). Covers the tags through a hardware download (untagged, 128x96 reads as BT.601 and limited) and the luma through swscale (a squeeze would give 16 and 235) |
 
 ## Not tracked — these suites do NOT run on a clean clone
 
@@ -79,4 +80,12 @@ gst-launch-1.0 videotestsrc num-buffers=120 pattern=ball ! \
   x264enc bframes=3 b-adapt=false key-int-max=30 speed-preset=veryfast \
   bitrate=64 ! h264parse ! mp4mux ! \
   filesink location=pj_scene2D/testdata/test_h264_bframes_deep.mp4
+
+# tagged_bt709_full_128x96.mp4 (needs libx264): full-range H.264 signalling BT.709,
+# black left half and white right half
+ffmpeg -f lavfi -i "color=c=black:s=128x96:r=10:d=0.3,drawbox=x=64:y=0:w=64:h=96:color=white:t=fill" \
+  -c:v libx264 -preset veryslow -crf 12 -g 3 -pix_fmt yuvj420p -color_range pc -colorspace bt709 \
+  -color_primaries bt709 -color_trc bt709 \
+  -x264-params fullrange=on:colormatrix=bt709:colorprim=bt709:transfer=bt709 \
+  -movflags +faststart pj_scene2D/testdata/tagged_bt709_full_128x96.mp4
 ```

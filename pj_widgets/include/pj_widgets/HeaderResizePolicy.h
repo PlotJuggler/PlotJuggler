@@ -4,6 +4,7 @@
 #include <QObject>
 
 class QHeaderView;
+class QWidget;
 
 namespace PJ {
 
@@ -26,7 +27,9 @@ namespace PJ {
  * One section is nominated as the *fill* section (the wide "name" column by
  * convention). It absorbs the slack whenever the header itself is resized or a
  * column is shown/hidden, which keeps the table exactly viewport-wide without
- * making the section non-interactive.
+ * making the section non-interactive. While the header is hidden, the owning
+ * view's viewport width stands in for the header width and its resizes drive
+ * the rebalance.
  *
  * Install once per header; a second install on the same header is a no-op. The
  * policy owns itself as a child of the header and dies with it.
@@ -104,6 +107,13 @@ class HeaderResizePolicy : public QObject {
    */
   [[nodiscard]] int minimumWidthFor(int section) const;
 
+  /// Width the sections must sum to: the header's, or the owning view's viewport
+  /// while the header is hidden (a hidden header never gets resized).
+  [[nodiscard]] int availableWidth() const;
+
+  /// Gives sections [old_count, new_count) a width the fill section can afford.
+  void sizeNewSections(int old_count, int new_count);
+
   /// Next visible section after @p section, or -1 when @p section is the last.
   [[nodiscard]] int nextVisibleSection(int section) const;
 
@@ -111,6 +121,8 @@ class HeaderResizePolicy : public QObject {
   [[nodiscard]] int fillSection() const;
 
   QHeaderView* header_;
+  /// Owning view viewport, watched so a hidden header still rebalances; null without a view.
+  QWidget* viewport_ = nullptr;
   int fill_section_;
   int minimum_section_size_;
   /// Guards the programmatic resizes this class issues from re-entering

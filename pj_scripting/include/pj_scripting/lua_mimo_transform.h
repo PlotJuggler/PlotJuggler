@@ -7,14 +7,14 @@
 #include <string>
 #include <vector>
 
-#include "pj_datastore/derived_engine.hpp"  // PJ::IMIMOTransform, VarValue, StorageKind, Timestamp, Span
+#include "pj_datastore/incremental_engine.hpp"  // PJ::IMIMOTransform, VarValue, StorageKind, Timestamp, Span
 #include "pj_scripting/filter_class.h"
 #include "pj_scripting/script_engine.h"
 
 namespace PJ::scripting {
 
 /// A self-describing script filter installed as a multi-input / multi-output
-/// `PJ::IMIMOTransform` node in the `DerivedEngine`. The engine joins the N inputs
+/// `PJ::IMIMOTransform` node in the `IncrementalEngine`. The engine joins the N inputs
 /// and calls `calculate()` once per joined sample; this wraps a Luau
 /// `FilterInstance` whose `calculate(self, t, v, v1..vN-1)` returns M values.
 ///

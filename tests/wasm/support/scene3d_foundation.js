@@ -31,7 +31,7 @@ async function requestScene3DFoundationState(page, consoleMessages, previousCoun
   await expect.poll(() => dataMessages().length).toBe(dockCount);
   const dataByIndex = new Map(dataMessages().map((message) => {
     const match = message.match(
-      /index=(\d+) points=(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+) compressed=(\d+) depth=(\d+),(\d+),(\d+),(\d+),(\d+),(\d+) poses=(\d+),(\d+) occupancy=(\d+),(\d+),(\d+),(\d+) voxels=(\d+),(\d+),(\d+),(\d+) order=([^ ]*) submitted=([^ ]*) list=(-?\d+),(-?\d+),(\d+)x(\d+) rows=([^ ]*) toggle=(-?\d+),(-?\d+),(\d+)x(\d+) right_visible=(\d+) warnings=([^ ]*)/,
+      /index=(\d+) points=(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+) compressed=(\d+) depth=(\d+),(\d+),(\d+),(\d+),(\d+),(\d+) poses=(\d+),(\d+) occupancy=(\d+),(\d+),(\d+),(\d+) voxels=(\d+),(\d+),(\d+),(\d+) trails=(\d+),(\d+) order=([^ ]*) submitted=([^ ]*) list=(-?\d+),(-?\d+),(\d+)x(\d+) rows=([^ ]*) toggle=(-?\d+),(-?\d+),(\d+)x(\d+) right_visible=(\d+) warnings=([^ ]*)/,
     );
     expect(match, `unparseable Scene3D data state: ${message}`).not.toBeNull();
     const ids = encoded => decodeURIComponent(encoded).split(',').filter(Boolean).map(Number);
@@ -53,20 +53,21 @@ async function requestScene3DFoundationState(page, consoleMessages, previousCoun
       voxels: {
         live: Number(match[22]), count: Number(match[23]), uploads: Number(match[24]), max3d: Number(match[25]),
       },
-      order: ids(match[26]),
-      submitted: ids(match[27]),
-      list: { x: Number(match[28]), y: Number(match[29]), width: Number(match[30]), height: Number(match[31]) },
-      rows: decodeURIComponent(match[32]).split(',').filter(Boolean).map((entry) => {
+      trails: { rendered: Number(match[26]), vertices: Number(match[27]) },
+      order: ids(match[28]),
+      submitted: ids(match[29]),
+      list: { x: Number(match[30]), y: Number(match[31]), width: Number(match[32]), height: Number(match[33]) },
+      rows: decodeURIComponent(match[34]).split(',').filter(Boolean).map((entry) => {
         const [id, x, y] = entry.split(':').map(Number);
         return { id, x, y };
       }),
       rightPanel: {
         toggle: {
-          x: Number(match[33]), y: Number(match[34]), width: Number(match[35]), height: Number(match[36]),
+          x: Number(match[35]), y: Number(match[36]), width: Number(match[37]), height: Number(match[38]),
         },
-        visible: match[37] === '1',
+        visible: match[39] === '1',
       },
-      warnings: decodeURIComponent(match[38]).trim().split('|').filter(Boolean),
+      warnings: decodeURIComponent(match[40]).trim().split('|').filter(Boolean),
     }];
   }));
   const modelMessages = () => consoleMessages.filter(

@@ -1,0 +1,31 @@
+# Builtin modules the browser's on-demand Python lane never imports, disabled to keep them out of the
+# wasm32-emscripten libpython (about 0.8 MB Brotli). The strict profile imports only math, cmath,
+# statistics and json; what those and the boot load stays (see stdlib_zip.py). _datetime stays: the
+# interpreter's own lifecycle code needs _PyDateTime_InitTypes.
+*disabled*
+array
+_asyncio
+_csv
+_lsprof
+_pickle
+_queue
+_remote_debugging
+_zoneinfo
+binascii
+_md5
+_sha1
+_sha3
+_blake2
+_multibytecodec
+_codecs_cn
+_codecs_hk
+_codecs_iso2022
+_codecs_jp
+_codecs_kr
+_codecs_tw
+unicodedata
+fcntl
+mmap
+select
+_socket
+termios

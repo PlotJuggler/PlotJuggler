@@ -37,8 +37,8 @@
 #include "pj_base/time.hpp"      // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
-#include "pj_runtime/CurveDescriptor.h"       // openFilterEditor takes std::vector<CurveDescriptor> by value
-#include "pj_runtime/DataProcessorService.h"  // parseWantedTransforms returns TransformRecipes by value
+#include "pj_plugins/host_qt/embedded_view_host.hpp"  // makeEmbeddedViewHost returns it by value
+#include "pj_runtime/CurveDescriptor.h"               // openFilterEditor takes std::vector<CurveDescriptor> by value
 #include "pj_runtime/HistoryScope.h"
 #include "pj_runtime/RecordingService.h"  // CaptureResult / SourceRecordingStart — recording slot parameters
 #include "pj_runtime/SessionManager.h"
@@ -62,15 +62,21 @@ class MainWindow;
 
 #ifdef PJ_WITH_SCENE3D
 namespace pj::scene3d {
-class TransformService;
+class FixedFrameMemory;
 }  // namespace pj::scene3d
 #endif
 
 namespace PJ {
 
+class TransformService;
+
 class AppSession;
 struct CatalogItem;
+struct CustomTopicDeleteRefusal;
+struct DerivedDiagnostic;
+struct DerivedSnapshot;
 class CurveEditor;
+class DerivedObjects;
 class DiagnosticHistory;
 class DiagnosticsDialog;
 class DockWidget;
@@ -132,8 +138,15 @@ class MainWindow : public QMainWindow {
   friend class MainWindowPanelGeometryTestPeer;
   friend class MainWindowLayoutImportTestPeer;
   friend class MainWindowMarkerGeneratorTestPeer;
+  friend class MainWindowMarkerStatusTestPeer;
+  friend class MainWindowLayoutDatasetPathsTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
+  friend class MainWindowCustomTopicsTestPeer;
+  friend class MainWindowRelease41LayoutTestPeer;
+  friend class MainWindowScene3dDropFramingTestPeer;
+  friend class MainWindowOnDemandRestoreTestPeer;
+  friend class MainWindowEditorIntegrationTestPeer;
   friend class ToolboxPanelFoldTestPeer;
   friend class ToolboxPresenter;
 
@@ -164,6 +177,9 @@ class MainWindow : public QMainWindow {
   // Supersedes an in-flight source-replay picker without opening another host
   // picker, making late-callback rejection deterministic in browser tests.
   void wasmProbeSupersedeBrowserReplayPicker();
+  // Installs the plot readback shortcuts (F8, F9, F10); defined with the other
+  // acceptance probes in tests/wasm_acceptance_probes.inc.
+  void installWasmPlotAcceptanceProbes();
 #endif
 
   // Loads `path` on startup and auto-reloads its data source(s) without prompting
@@ -363,12 +379,17 @@ class MainWindow : public QMainWindow {
   // Removes selected catalog entries from the curve/object tree.
   void onCatalogTrashRequested(QStringList keys, bool covers_all);
 
-  // Before deleting `removed_names` (topic/"topic/field" names), find every derived
-  // series (transform) that depends on them transitively, warn the user, and — if
-  // confirmed — remove those transforms and their Custom Series entries. Returns
-  // true to proceed with the deletion, false if the user cancelled. No-op + true
-  // when nothing depends on the removed series.
-  bool confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics);
+  // Before deleting `removed_topics`, find every derived series (transform) that
+  // depends on them transitively, warn the user, and — if confirmed — remove those
+  // transforms and their Custom Topics entries, then run `proceed`. `proceed` runs
+  // at once when nothing depends on the removed series, and never on cancel or a
+  // failed removal. It may run after this returns (the browser prompt is
+  // non-blocking), so it must re-validate anything that could change meanwhile.
+  // `still_allowed`, when given, is asked once the prompt is accepted and before
+  // anything is removed: false abandons the whole delete (it reports why itself).
+  void confirmAndRemoveDependentTransforms(
+      const std::vector<TopicId>& removed_topics, std::function<void()> proceed,
+      std::function<bool()> still_allowed = {});
 
   // Removes the selected datasets (curve tree "Remove"): shows one
   // combined confirmation, then erases each. Widget sync is signal-driven.
@@ -538,6 +559,8 @@ class MainWindow : public QMainWindow {
   // when the user drops a scalar curve or object topic, set the playback range and
   // playhead immediately. Live ingest can also seed without any drop.
   void seedStreamingPlaybackFromDrop();
+  // The first topic dropped into an empty click-created object view: seeds streaming playback and frames it.
+  void onFirstObjectTopicAdded(DockWidget* dock);
 
   // Put the Source Timeline into read-only mode (called with streaming && playing,
   // from the streaming seek-lock refresh). While the cursor is glued to the live
@@ -582,6 +605,24 @@ class MainWindow : public QMainWindow {
   // the next recording uses them without an app restart. Called on every
   // Preferences dialog this window opens.
   void bindRecordingPreferences(PreferencesDialog& dialog);
+
+  // Pushes the derived-markers mode and reload rate the Preferences Plotting page
+  // persists to the batch engine: at startup, and on OK of every Preferences dialog
+  // this window opens (bindDerivedBatchPreferences).
+  void applyDerivedBatchPreferences();
+  void bindDerivedBatchPreferences(PreferencesDialog& dialog);
+
+  // Tells every plot which of the marker rules it displays are computing or failed
+  // (PlotWidget::setMarkerStatus), on BatchEngine::runningChanged. "Computing" waits
+  // until a rule has been running for 300 ms, so a quick run never flickers a note.
+  void wireMarkerPlotStatus();
+  // Reports the standing marker status to `plot` (wireMarkerPlotStatus's push), when it is wired.
+  void reportMarkerStatus(PlotWidget* plot);
+  void onPlotMarkerTargetsChanged();
+  std::function<void(PlotWidget*)> push_marker_status_;
+  // Tells `only`, or every plot when null, which on-demand series are not computed yet
+  // (PlotWidget::setSeriesStatus); on SessionManager::seriesStateChanged and for a new plot.
+  void pushSeriesStatus(PlotWidget* only);
 
   // Reloads a recorded source through its plugin + config (dialog skipped when
   // both are known). Shared by the global Reload button and the per-dataset
@@ -812,8 +853,9 @@ class MainWindow : public QMainWindow {
   void rebuildPendingDisplayBindings(const QDomDocument& doc);
   /// Coalesces plot-owned intent changes into one binder rebuild on the event loop.
   void schedulePendingDisplayBindingRebuild();
-  /// One post-restore settlement of every scene dock: final pending retry,
-  /// then the folded verdict (permanent failure / unresolved BLOCKING topics).
+  /// One post-restore settlement of every scene dock: dataset choice, final
+  /// pending retry, then the folded verdict (permanent failure / unresolved
+  /// BLOCKING topics).
   struct SceneRestoreVerdict {
     bool failed = false;
     QStringList blocking_topics;
@@ -923,7 +965,7 @@ class MainWindow : public QMainWindow {
   // Snapshots carry stable topic/field paths, not per-load keys, so one
   // survives an intervening data reload. Callers run it under applying_state_ as needed.
   // `out_reason`, when non-null, receives the one-sentence rejection reason from
-  // a `kHistory` intent's exempt-dependency check (see `restoreDataProcessors`);
+  // a `kHistory` intent's exempt-dependency check (see `checkDataProcessorDependencies`);
   // untouched on every other outcome.
   [[nodiscard]] RestoreResult restoreWorkspaceState(
       QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to = nullptr,
@@ -1036,91 +1078,64 @@ class MainWindow : public QMainWindow {
   // (see saveChromeState).
   void restoreChromeState(const QDomElement& element);
 
-  // Serializes the DataProcessorService snapshot into a <data_processors> block:
-  // per-curve filters as <processor> entries (INPUT stored as a stable
-  // (topic, field) path so it rebinds on reload) and plugin-created transforms as
-  // <transform> entries (script + bindings carried by value, inputs/outputs by
-  // name). Restore re-applies each filter onto the target dataset BEFORE curve-key
-  // rebinding, so the materialized output topics are in the catalog and the
-  // filtered curves resolve like any other curve, then replays the transforms.
-  // `scope == kFull` tags a history-exempt <transform>/<generator> with
-  // `history_exempt="1"` so it round-trips through a layout file; `kHistory`
-  // omits those entries outright (see `SnapshotScope`).
-  [[nodiscard]] QDomElement saveDataProcessors(QDomDocument& doc, SnapshotScope scope) const;
-  // Resolves each saved filter's input against whichever loaded dataset holds it
-  // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
-  // multi-file layout restores each filter against its own source.
-  //
-  // A history restore first rejects outright — leaving everything untouched and
-  // naming the exempt output in `out_reason` — if removing
-  // this snapshot's non-exempt processors would strand an exempt dependent;
-  // otherwise it clears only the non-exempt filters/transforms/generators and
-  // defensively skips any document entry marked `history_exempt="1"`.
-  // `kReplace` clears and recreates the complete set. `out_reason`, when
-  // non-null, is cleared on entry and set only on the history rejection path.
+  // Thin wrappers over `DerivedObjects` (pj_runtime), which owns the derived-recipe
+  // layout persistence (`save` writes the <data_processors> block of a snapshot,
+  // `parse` reads it for an intent, `restore` replays it). `restoreDataProcessors` =
+  // `parse` + `checkDataProcessorDependencies` + `applyDataProcessors`; `out_reason`,
+  // when non-null, is cleared on entry and set only when a `kHistory` restore is refused.
   [[nodiscard]] bool restoreDataProcessors(
       const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
 
-  // The read-only preflight `restoreDataProcessors` runs before its first clear:
-  // true outside `kHistory` or when nothing exempt is live; otherwise parses `root`
-  // and reports whether removing its non-exempt processors would strand an exempt
-  // transform or marker generator, WITHOUT mutating any participant. `applyWorkspace`
-  // calls it before applyTimelineOffsets so a refusal never has to undo a moved
-  // offset; `restoreDataProcessors` calls the same helper for its other callers.
-  // `out_reason`, when non-null, is cleared on entry and set only on refusal.
-  [[nodiscard]] bool checkDataProcessorDependencies(
-      const QDomElement& root, RestoreIntent intent, QString* out_reason = nullptr);
+  [[nodiscard]] DerivedObjects derivedObjects() const;
+  // Reports each derived-recipe diagnostic as a "Layout" warning.
+  void reportDerived(const std::vector<DerivedDiagnostic>& diagnostics);
+  // The read-only preflight a `kHistory` snapshot's restore runs before its first
+  // clear: false (reported, and the reason in `out_reason`) when removing the
+  // snapshot's non-exempt processors would strand an exempt transform or marker
+  // generator. `applyWorkspace` runs it before applyTimelineOffsets so a refusal never
+  // has to undo a moved offset.
+  [[nodiscard]] bool checkDataProcessorDependencies(const DerivedSnapshot& snapshot, QString* out_reason = nullptr);
+  // Restores `snapshot` under its intent, reports its parse and apply warnings and
+  // re-derives the Custom Topics list. The default (empty) snapshot clears every recipe.
+  [[nodiscard]] bool applyDataProcessors(DerivedSnapshot snapshot);
 
-  // Parses every <transform> under `element` (a <data_processors> node) into the
-  // recipes the snapshot wants live, resolving persisted dataset identities against
-  // the current session. Skips entries flagged `history_exempt="1"` when
-  // `keep_exempt` (history has no authority to replay one); an entry that fails to
-  // parse is reported, dropped, and clears `*restored_all`. Query-only: nothing in
-  // the session mutates, so the result can drive a rejection preflight.
-  [[nodiscard]] std::vector<DataProcessorService::TransformRecipe> parseWantedTransforms(
-      const QDomElement& element, bool keep_exempt, bool* restored_all);
-
-  // One <processor> entry of a snapshot: the input path as persisted plus the
-  // service-side description with that input resolved against the current
-  // catalog (input fields zero while it does not resolve). The path is kept
-  // because the restore re-resolves it each round: the input may be an output
-  // that only a later step of the same restore creates.
-  struct WantedFilter {
-    layout_xml::SeriesPath input;
-    DataProcessorService::PersistedFilter persisted;
-  };
-
-  // Parses every <processor> under `element` into the filters the snapshot wants
-  // live, resolving each input once so `unchangedFilterOutputs` can match live
-  // filters; an unresolved input is not an error yet. Query-only, like
-  // `parseWantedTransforms`.
-  [[nodiscard]] std::vector<WantedFilter> parseWantedFilters(const QDomElement& element) const;
-
-  // Re-creates every wanted filter and transform that is not live, in rounds:
-  // filters first, each input re-resolved through the catalog (rebuilt so an
-  // output the previous round minted resolves), then transforms, which resolve
-  // by name. A round can only create the entries whose inputs exist, so a chain
-  // of N alternating links takes up to N rounds; the loop stops as soon as a
-  // round creates nothing. History has no authority over a live exempt transform
-  // (`live_exempt_keys`), even when the snapshot carries its key. Each entry
-  // that is still not live at the end is reported once; returns whether every
-  // entry was restored.
-  [[nodiscard]] bool repairDataProcessors(
-      std::vector<WantedFilter>& wanted_filters,
-      const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
-      const std::unordered_set<std::string>& live_exempt_keys);
-
-  // Re-derives the Custom Series list from the live transform recipes and hands
-  // the whole set to the panel.
+  // Re-derives the Custom Topics rows from the live transform recipes and the
+  // persistent on-demand recipes (one flat row per object output, with its node's
+  // state) and hands the whole set to the panel.
   //
-  // The panel cannot maintain that list on its own: only DataProcessorService
-  // knows which catalog topics are transform outputs. Call this from any path that
-  // changes the recipe set WITHOUT retiring the outputs' catalog items — a plugin
-  // creating or withdrawing a transform, and a layout restore, which rebuilds the
-  // graph with no plugin announcing it. A path that does retire them needs nothing:
+  // The panel cannot maintain that list on its own: only the services know which
+  // catalog topics are derived. Every on-demand install (onDemandRecipeInstalled)
+  // calls this after the catalog has relisted; call it from any other path that changes the recipe set WITHOUT
+  // retiring the outputs' catalog items — a plugin creating or withdrawing a
+  // transform, and a layout restore. A path that does retire them needs nothing:
   // the panel prunes on CatalogModel::itemsRemoved. Call it AFTER the catalog
   // rebuild, or the new outputs have no keys yet.
-  void syncCustomSeriesPanel();
+  void syncCustomTopicsPanel();
+  // The rows again with the transform rows of the last sync (rebuilt only once the catalog changed since):
+  // what a node's state or an offset changes. Costs per derived row, never per catalog row.
+  void refreshCustomTopicsPanel();
+  // Runs refreshCustomTopicsPanel once at the next event-loop turn, however many state
+  // changes asked for it before then (a node's state changes on every request).
+  void scheduleCustomTopicsSync();
+  // Mirrors the extension catalog's Custom Topics editor into the panel.
+  void syncCustomTopicsEditor();
+  // The panel's Delete: an on-demand recipe's object topic or a transform output. Only
+  // the Custom Topics editor's rows are deleted; another owner's is refused with a
+  // warning (the panel disables the action; this is the backstop for any other caller).
+  void deleteCustomTopic(const QString& catalog_key);
+  // The panel's Delete of several rows: each recipe once, however many of its rows (series
+  // columns, `id/output` object rows) are among `catalog_keys`, then the transform outputs.
+  void deleteCustomTopics(const QStringList& catalog_keys);
+  // Removes the recipe `key` after confirming when other recipes read it (they stay,
+  // missing their input). A non-exempt recipe's removal is one undo step.
+  void deleteOnDemandRecipe(const std::string& key);
+  // Removes the transform whose output `catalog_key` is, with its dependents after confirming.
+  void deleteTransformOutput(const QString& catalog_key);
+  // Whether the Custom Topics editor may delete the transform writing `output_topic` now
+  // (`transformDeleteRefusal`); a refusal is reported before it returns false.
+  [[nodiscard]] bool mayDeleteTransformWriting(TopicId output_topic);
+  // Words a refusal of CustomTopicsPolicy.h as a warning; a row whose recipe is gone is re-synced instead.
+  void reportDeleteRefusal(const CustomTopicDeleteRefusal& refusal);
 
   // Size the bottom panel from the Source Timeline strip's open/closed state:
   // when OPEN, pin a minimum height so the strip can't be dragged to a clipped
@@ -1208,13 +1223,16 @@ class MainWindow : public QMainWindow {
   void paintEvent(QPaintEvent* event) override;
 
  private:
-  // Swaps the chart area (ui_->tabbedPlotWidget) out and presents `panel` in
-  // its place; returns false if a panel is already up. restoreCentralArea
-  // tears the panel down and restores the chart; releaseCentralPanel is the
-  // non-destructive variant that swaps the chart back and RETURNS the panel
-  // (reparented out, hidden) instead of deleting it — the "migrate to tab"
-  // gesture uses it to keep the live toolbox widget.
-  bool presentPanel(QWidget* panel);
+  // Presents `panel` (non-null) in place of the chart area, as a page of
+  // ui_->centralAreaStack, dismissing any panel already up. restoreCentralArea
+  // tears the panel down and shows the chart again; releaseCentralPanel is the
+  // non-destructive variant that shows the chart and RETURNS the panel (hidden,
+  // still a child of the stack) instead of deleting it — the "migrate to tab"
+  // gesture uses it to keep the live toolbox widget. Neither reparents: the
+  // destination does that once (and a teardown deletes the panel in place),
+  // because every reparent unpolishes and repolishes the whole widget tree
+  // against the app stylesheet (~180 ms for a toolbox panel in a browser).
+  void presentPanel(QWidget* panel);
   void restoreCentralArea();
   QWidget* releaseCentralPanel();
 
@@ -1236,6 +1254,10 @@ class MainWindow : public QMainWindow {
   // No-op once the panel is already pinned, so a second import does not
   // re-fold it.
   void foldTakeoverPanelIfOwnedBy(const void* owner, bool transient);
+  // A plugin just created one of its own tabs. When that plugin is the chart-area
+  // takeover the tab would stay hidden, so fold the takeover into a transient tab
+  // and make `docker` current.
+  void revealOwnedTabOverTakeover(const QString& plugin_id, PlotDocker* docker);
 
   // The toolbox presenting the chart-area takeover; null when the takeover is
   // up but not a toolbox (the marketplace, the filter editor) or absent.
@@ -1245,6 +1267,10 @@ class MainWindow : public QMainWindow {
   // false keeps both. Runs a modal event loop, so callers must re-validate any
   // iterator or pointer they held across it. `label` names the surface.
   bool confirmCancelRunningJob(const QString& label);
+  // Non-blocking form for the browser, whose Asyncify-free build cannot run a
+  // modal loop: `on_confirmed` runs only if the user chose to cancel, possibly
+  // after this returns, so it must re-find anything it acts on.
+  void confirmCancelRunningJobAsync(const QString& label, std::function<void()> on_confirmed);
 
   // Work-in-flight query and cooperative cancel for one panel's host. Both go
   // through `host_work_in_flight_` / `stop_host_work_` when set, which is how a
@@ -1280,8 +1306,9 @@ class MainWindow : public QMainWindow {
 
   // Builds the host-service assembly + plugin handle a launched toolbox binds
   // to (null after reporting the failure through `report_error`). Kept apart
-  // from launchToolbox so the presentation logic reads on its own; the block
-  // is mirrored by HeadlessDescriptorProviderSession::create.
+  // from launchToolbox so the presentation logic reads on its own; the
+  // provider services it shares with HeadlessDescriptorProviderSession::create
+  // are built the same way there.
   std::shared_ptr<ToolboxPanelSession> buildToolboxPanelSession(
       const RuntimeToolboxPlugin& toolbox, const QString& plugin_id, const QString& source,
       const std::function<void(const QString&, const QString&)>& report_error);
@@ -1347,6 +1374,20 @@ class MainWindow : public QMainWindow {
   // click-to-create path. Returns nullptr for an unknown kind.
   IDataWidget* makeSeededEmptyObjectDock(const QString& kind, QWidget* parent);
 
+  // The EmbeddedViewHost handed to plugin panels (`scene_view` frames): seeded
+  // scene widgets of the kind asked for, attached through the plugin scene tabs'
+  // own path (PluginSceneViewsController). Empty when this build has no scene
+  // family, so the panel then announces no scene-view capability.
+  EmbeddedViewHost makeEmbeddedViewHost();
+  // The views it built. They are not ADS docks, so forEachDock never reaches
+  // them; the tracker broadcasts tick them here, and QPointer drops the ones
+  // that died with their panel.
+  QList<QPointer<SceneDockWidget>> embedded_scene_views_;
+  // After a catalog change: every topic `view` attached whose layer is gone is attached
+  // again, under the id it now has, or recorded as evicted (0) so a detach skips it.
+  void reattachEmbeddedTopics(SceneDockWidget& view);
+  void tickEmbeddedViews(double display_seconds, bool visible_only);
+
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;
   DiagnosticHistory* diagnostic_history_ = nullptr;
@@ -1384,11 +1425,12 @@ class MainWindow : public QMainWindow {
   // Bridges progressive ingest signals from SessionManager to CurveTreeView
   // via CurveListPanel. Maintains linger/flash timers and ghost-row lifetime.
   std::unique_ptr<IngestProgressController> ingest_progress_controller_;
-  // Owns the per-dataset 3D TF buffers + load-time ingest. Lives here in the
-  // shell (not pj_runtime) so the runtime stays domain-neutral. Declared after
-  // session_ so it is destroyed first (it holds a reference into session_).
+  // Owns the per-dataset TF buffers + load-time ingest. Declared after session_
+  // so it is destroyed first (it holds a reference into session_).
 #ifdef PJ_WITH_SCENE3D
-  std::unique_ptr<pj::scene3d::TransformService> transform_service_;
+  std::unique_ptr<PJ::TransformService> transform_service_;
+  // The 3D docks' shared "last manual fixed frame" preference.
+  std::unique_ptr<pj::scene3d::FixedFrameMemory> fixed_frame_memory_;
 #endif
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<StreamingSourceManager> streaming_manager_;
@@ -1640,16 +1682,13 @@ class MainWindow : public QMainWindow {
   QWidget* empty_dock_page_ = nullptr;
 
   // Active toolbox panel presented in place of the chart area by
-  // presentPanel()/restoreCentralArea(). At most one at a time;
-  // panel_parent_/panel_layout_index_ remember where the chart was.
+  // presentPanel()/restoreCentralArea(). At most one at a time.
   // current_panel_engine_ is the owning PanelEngine when the panel is a
   // toolbox dialog (null for non-toolbox panels like the console / filter
   // editor); presentPanel() uses it to tear the previous toolbox down before
   // showing a new one, so launching a toolbox replaces the open panel.
   QWidget* current_panel_ = nullptr;
   PanelEngine* current_panel_engine_ = nullptr;
-  int panel_layout_index_ = -1;
-  QWidget* panel_parent_ = nullptr;
   // The marketplace controller while its panel holds the central area, so a
   // second open request re-activates it instead of building a second one (the
   // title-bar Update button and the File menu both route to onOpenMarketplace).
@@ -1717,6 +1756,19 @@ class MainWindow : public QMainWindow {
   bool show_points_ = false;
   bool activate_grid_ = false;
   bool dots_ = false;
+
+  // A refreshCustomTopicsPanel is queued by scheduleCustomTopicsSync and has not run yet.
+  bool custom_topics_sync_pending_ = false;
+  int custom_topics_syncs_ = 0;            ///< refreshCustomTopicsPanel runs, read by the coalescing test
+  int custom_topics_transform_scans_ = 0;  ///< transform-row rebuilds, read by the refresh test
+  /// One Custom Topics row of a transform output, as the last rebuild matched it to the catalog.
+  struct TransformTopicRow {
+    QString key;
+    QString owner;
+  };
+  std::vector<TransformTopicRow> custom_topic_transform_rows_;
+  /// The catalog changed, or a sync asked for it, since custom_topic_transform_rows_ were built.
+  bool custom_topic_transform_rows_stale_ = true;
 
   // Loaded from QSettings before any child widget is built so the first
   // applyIcons() of each widget already uses the saved metrics.

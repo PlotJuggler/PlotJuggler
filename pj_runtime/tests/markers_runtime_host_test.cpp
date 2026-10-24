@@ -1,14 +1,16 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// MarkersRuntimeHost bridges the pj.data_processors.v1 C ABI to MarkerService. These tests
+// MarkersRuntimeHost bridges the pj.data_processors.v1 C ABI to BatchEngine. These tests
 // drive it exactly as a plugin would — through the SDK's DataProcessorsHostView over the
 // host's raw fat pointer — proving the full host-driven chain: ABI create_data_processor →
-// trampoline → MarkerService → engine → ObjectStore, plus per-plugin id namespacing,
+// trampoline → BatchEngine → engine → ObjectStore, plus per-plugin id namespacing,
 // list (plugin-local ids), config round-trip, and remove.
 
 #include <gtest/gtest.h>
 
+#include <QThread>
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -16,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "batch_engine_test_utils.h"
 #include "marker_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/builtin/plot_markers_codec.hpp"
@@ -23,27 +26,29 @@
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DatasetQualifiedName.h"
-#include "pj_runtime/MarkerService.h"
+#include "pj_runtime/EnginePool.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/MarkersRuntimeHost.h"
 
 namespace {
 
+using PJ::BatchEngine;
 using PJ::kAllDatasetsMarkerDataset;
-using PJ::MarkerService;
 using PJ::MarkersRuntimeHost;
 using PJ::test::markerFamily;
 using PJ::test::readMarkerUnion;
 
 constexpr PJ::DatasetId kDataset = 1;
 
-MarkerService::SeriesResolver rampResolver() {
-  return [](PJ::DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+BatchEngine::SeriesResolver rampResolver() {
+  return [](PJ::DatasetId, const std::string& key,
+            const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in") {
       return std::nullopt;
     }
-    MarkerService::ResolvedSeries s;
+    BatchEngine::ResolvedSeries s;
     for (std::size_t i = 0; i < 5; ++i) {
       s.timestamps.push_back(static_cast<double>(i));
       s.values.push_back(static_cast<double>(i));
@@ -88,7 +93,7 @@ std::function<PJ::Expected<PJ::DatasetId>(std::vector<std::string>&, std::vector
 
 TEST(MarkersRuntimeHostTest, PluginCreateRunsPublishesAndNamespaces) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -126,12 +131,47 @@ TEST(MarkersRuntimeHostTest, PluginCreateRunsPublishesAndNamespaces) {
   EXPECT_TRUE(service.recipes().empty());
 }
 
+// The three-way check over markers always decides: a rule that compiles is VALID, one that does not is INVALID with
+// the compile error, never UNCHECKED. A kind or language markers do not run is a call that could not be made: false,
+// the status untouched, no compiler run.
+TEST(MarkersRuntimeHostTest, CheckScriptAnswersValidOrInvalid) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+  ASSERT_TRUE(PJ_HAS_TAIL_SLOT(PJ_data_processors_host_vtable_t, bridge.raw().vtable, check_data_processor_script));
+  const PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  const auto valid = view.checkScript("markers", "luau", "createMarker(0.0)\n");
+  ASSERT_TRUE(valid) << valid.error();
+  EXPECT_EQ(valid->status, PJ::sdk::ScriptCheckStatus::kValid);
+  const auto invalid = view.checkScript("markers", "luau", "createMarker(\n");
+  ASSERT_TRUE(invalid) << invalid.error();
+  EXPECT_EQ(invalid->status, PJ::sdk::ScriptCheckStatus::kInvalid);
+  EXPECT_FALSE(invalid->message.empty());
+
+  const PJ_data_processors_host_t raw = bridge.raw();
+  const auto refused = [&raw](std::string_view kind, std::string_view language, std::string_view expected) {
+    uint32_t status = 77;
+    PJ_error_t err{};
+    EXPECT_FALSE(raw.vtable->check_data_processor_script(
+        raw.ctx, PJ::sdk::toAbiString(kind), PJ::sdk::toAbiString(language),
+        PJ::sdk::toAbiString("createMarker(0.0)\n"), PJ::sdk::toAbiString("{}"), &status, &err))
+        << kind << "/" << language;
+    EXPECT_EQ(status, 77u) << kind << "/" << language;
+    EXPECT_NE(std::string_view(err.message).find(expected), std::string_view::npos) << err.message;
+  };
+  refused("markers", "python", "unsupported script language 'python'");
+  refused("bogus", "luau", "unknown generator kind 'bogus'");
+}
+
 // The dataset callback owns qualified-key handling: an error it returns fails
 // the create through the ABI (nothing may land on a dataset the caller did not
 // name), and the keys it normalizes are what the service stores.
 TEST(MarkersRuntimeHostTest, ActiveDatasetErrorFailsTheCreate) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly", [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> {
         return PJ::unexpected("input 'in' exists in several datasets");
@@ -148,7 +188,7 @@ TEST(MarkersRuntimeHostTest, ActiveDatasetErrorFailsTheCreate) {
 
 TEST(MarkersRuntimeHostTest, CallbackNormalizedKeysAreWhatTheServiceStores) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>& inputs, std::vector<std::string>& outputs) -> PJ::Expected<PJ::DatasetId> {
@@ -175,7 +215,7 @@ TEST(MarkersRuntimeHostTest, CallbackNormalizedKeysAreWhatTheServiceStores) {
 
 TEST(MarkersRuntimeHostTest, RemoveUnknownErrors) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -187,7 +227,7 @@ TEST(MarkersRuntimeHostTest, RemoveUnknownErrors) {
 // Two plugins never see each other's generators (per-plugin id isolation).
 TEST(MarkersRuntimeHostTest, PerPluginIsolation) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost host_a(
       service, "plugA",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -213,7 +253,7 @@ TEST(MarkersRuntimeHostTest, PerPluginIsolation) {
 // the invalid dataset 0.
 TEST(MarkersRuntimeHostTest, NoActiveDatasetRejected) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly", [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> {
         return PJ::DatasetId{0};
@@ -228,7 +268,7 @@ TEST(MarkersRuntimeHostTest, NoActiveDatasetRejected) {
 // the ALL-DATASETS key — the "__global__" the plugin sent is normalized host-side.
 TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(
       service, "anomaly",
@@ -253,7 +293,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
 // guards against left one of the two rules silently unpublished.
 TEST(MarkersRuntimeHostTest, DatasetAndGlobalScopeRulesCoexistOverTheAbi) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(
       service, "anomaly",
@@ -284,7 +324,7 @@ TEST(MarkersRuntimeHostTest, DatasetAndGlobalScopeRulesCoexistOverTheAbi) {
 // the auto-named preview topic, readable in the store, excluded from recipes()).
 TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -299,8 +339,12 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   EXPECT_TRUE(PJ::sdk::isPreviewMarkerTopic(topics->front()));
   EXPECT_EQ(markerFamily(store, kDataset, topics->front()).size(), 1u);  // host published it
   EXPECT_TRUE(service.recipes().empty());                                // ephemeral, not persisted
+  EXPECT_FALSE(view.recipeOf("__preview__").has_value()) << "config hides a preview";
+  EXPECT_TRUE(bridge.owns("__preview__")) << "the router's probe still sees it";
+  EXPECT_FALSE(bridge.owns("absent"));
 
   EXPECT_TRUE(view.remove("__preview__"));
+  EXPECT_FALSE(bridge.owns("__preview__"));
   EXPECT_TRUE(markerFamily(store, kDataset, topics->front()).empty());
 }
 
@@ -311,7 +355,7 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
 // first, and the ABI surface (list/remove) must still see one plugin-local id.
 TEST(MarkersRuntimeHostTest, DatasetScopeRuleOnEachDatasetKeepsBoth) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   PJ::DatasetId active = 1;
   MarkersRuntimeHost bridge(
       service, "anomaly",
@@ -349,7 +393,7 @@ TEST(MarkersRuntimeHostTest, DatasetScopeRuleOnEachDatasetKeepsBoth) {
 // ambiguous although scope=all evaluates every dataset separately.
 TEST(MarkersRuntimeHostTest, ScopeAllWithBareInputInTwoDatasetsIsNotAmbiguous) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets());
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -366,7 +410,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithBareInputInTwoDatasetsIsNotAmbiguous) {
 // generator fail with "none of the generator's inputs matches a loaded series".
 TEST(MarkersRuntimeHostTest, ScopeAllWithZeroInputsSucceeds) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets());
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -382,7 +426,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithZeroInputsSucceeds) {
 // is kept verbatim, so series("b:in") — the name the plugin declared — is nil.
 TEST(MarkersRuntimeHostTest, ScriptCanReadTheQualifiedInputNameItDeclared) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets());
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
 
@@ -399,7 +443,7 @@ TEST(MarkersRuntimeHostTest, ScriptCanReadTheQualifiedInputNameItDeclared) {
 // any PJ_DATA_PROCESSOR_FLAG_*.
 TEST(MarkersRuntimeHostTest, ReservedFlagBitIsRejected) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -418,7 +462,7 @@ TEST(MarkersRuntimeHostTest, ReservedFlagBitIsRejected) {
 // exemption request took.
 TEST(MarkersRuntimeHostTest, ConfigEchoesHistoryExemptBit) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -444,7 +488,7 @@ TEST(MarkersRuntimeHostTest, ConfigEchoesHistoryExemptBit) {
 // valid address for no reason.
 TEST(MarkersRuntimeHostTest, ConfigKeepsAUniqueBareInputBare) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   const SharedCatalog items = std::make_shared<std::vector<PJ::CatalogItem>>();
   items->push_back(catalogRow(1, "in"));
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOver(items), sourceNameOf);
@@ -461,7 +505,7 @@ TEST(MarkersRuntimeHostTest, ConfigKeepsAUniqueBareInputBare) {
 // resubmits; read-back qualifies it with the bound dataset's source.
 TEST(MarkersRuntimeHostTest, ConfigQualifiesAnInputOnceItsBareNameIsAmbiguous) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   const SharedCatalog items = std::make_shared<std::vector<PJ::CatalogItem>>();
   items->push_back(catalogRow(1, "in"));
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOver(items), sourceNameOf);
@@ -480,7 +524,7 @@ TEST(MarkersRuntimeHostTest, ConfigQualifiesAnInputOnceItsBareNameIsAmbiguous) {
 // key that resolves nowhere.
 TEST(MarkersRuntimeHostTest, ScopeAllRejectsARecognizedDatasetQualifier) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets(), sourceNameOf);
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -499,8 +543,9 @@ TEST(MarkersRuntimeHostTest, ScopeAllRejectsARecognizedDatasetQualifier) {
 // nowhere is rejected by the service.
 TEST(MarkersRuntimeHostTest, ScopeAllKeepsAColonNameThatMatchesNoSource) {
   PJ::ObjectStore store;
-  MarkerService service(
-      store, [](PJ::DatasetId, const std::string& key) { return rampResolver()(1, key == "zz:in" ? "in" : key); });
+  BatchEngine service(store, [](PJ::DatasetId, const std::string& key, const BatchEngine::Window& window) {
+    return rampResolver()(1, key == "zz:in" ? "in" : key, window);
+  });
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets(), sourceNameOf);
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -512,6 +557,212 @@ TEST(MarkersRuntimeHostTest, ScopeAllKeepsAColonNameThatMatchesNoSource) {
   ASSERT_TRUE(created) << created.error();
   ASSERT_EQ(service.recipes().size(), 1u);
   EXPECT_EQ(service.recipes().front().inputs, (std::vector<std::string>{"zz:in"}));
+}
+
+// config tells a plugin what its rule is doing: "computing" while a run is in flight,
+// and "error" (only then) when the last run failed, so a late failure is actionable.
+TEST(MarkersRuntimeHostTest, ConfigReportsComputingAndTheLastError) {
+  std::atomic<bool> released{true};
+  const PJ::test::ScopedComputeProbe probe([&released](QThread*) {
+    for (int waited_ms = 0; !released.load() && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  std::atomic<int> value{1};
+  PJ::ObjectStore store;
+  BatchEngine service(
+      store,
+      [&value](PJ::DatasetId, const std::string& key, const BatchEngine::Window&)
+          -> std::optional<BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        return BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {static_cast<double>(value.load())}};
+      });
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+  const std::string_view inputs[] = {"in"};
+  ASSERT_TRUE(view.createMarkers(
+      "gen", PJ::Span<const std::string_view>(inputs), "in",
+      "local s = series(\"in\")\nif s:at(0).v >= 5 then error(\"value too big\") end\ncreateMarker(0.0)\n", "{}"));
+  pool.waitIdle();
+  const auto config = [&view] {
+    const PJ::Expected<std::string> recipe = view.recipeOf("gen");
+    return recipe.has_value() ? *recipe : recipe.error();
+  };
+  EXPECT_NE(config().find("\"computing\":false"), std::string::npos) << config();
+
+  released = false;
+  service.refresh("anomaly/gen");
+  EXPECT_NE(config().find("\"computing\":true"), std::string::npos) << config();
+  released = true;
+  pool.waitIdle();
+  EXPECT_NE(config().find("\"computing\":false"), std::string::npos) << config();
+  EXPECT_EQ(config().find("\"error\""), std::string::npos) << "no failure, no error key: " << config();
+
+  value = 5;
+  service.refresh("anomaly/gen");
+  pool.waitIdle();
+  EXPECT_NE(config().find("\"error\":"), std::string::npos) << config();
+  EXPECT_NE(config().find("value too big"), std::string::npos) << config();
+}
+
+// Released plugins read a rule's markers right after create returns (the anomaly
+// detector's preview caches them until its input changes), so a create through the
+// plugin ABI runs to completion, ephemeral or persistent, whatever the create budget
+// and however long the run: the markers are readable when it returns.
+TEST(MarkersRuntimeHostTest, CreateReturnsWithTheRunsMarkersPublished) {
+  const PJ::test::ScopedCreateBudget budget(BatchEngine::kCreateBudget);
+  std::atomic<bool> released{false};
+  const PJ::test::ScopedComputeProbe probe(PJ::test::holdPoolComputesUntil(released));
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+  const std::string_view inputs[] = {"in"};
+
+  const PJ::Expected<std::vector<std::string>> persistent =
+      view.createMarkers("gen", PJ::Span<const std::string_view>(inputs), "in", "createMarker(0.0)\n", "{}");
+  ASSERT_TRUE(persistent) << persistent.error();
+  EXPECT_EQ(readMarkerUnion(store, kDataset, "in").markers.size(), 1u) << "published before the create returned";
+
+  const PJ::Expected<std::vector<std::string>> preview = view.createMarkers(
+      "__preview__", PJ::Span<const std::string_view>(inputs), /*output=*/"", "createMarker(0.0)\n", "{}",
+      PJ_DATA_PROCESSOR_FLAG_EPHEMERAL);
+  ASSERT_TRUE(preview) << preview.error();
+  ASSERT_EQ(preview->size(), 1u);
+  EXPECT_EQ(readMarkerUnion(store, kDataset, preview->front()).markers.size(), 1u)
+      << "the preview's markers are readable when the create returns";
+  released = true;
+}
+
+MarkersRuntimeHost fixedDatasetBridge(BatchEngine& service) {
+  return MarkersRuntimeHost(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+}
+
+PJ::sdk::DataProcessorRequest markerRequest(std::string_view id, std::string script) {
+  PJ::sdk::DataProcessorRequest request;
+  request.id = std::string(id);
+  request.kind = "markers";
+  request.language = "luau";
+  request.inputs = {"in"};
+  request.outputs = {{"in", ""}};
+  request.script = std::move(script);
+  return request;
+}
+
+// BAT-10: a WINDOW on the typed create installs a generator clipped to it.
+TEST(MarkersRuntimeHostTest, CreateV2WithWindowInstallsAClippedGenerator) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("windowed", R"(
+    local s = series("in")
+    for i = 0, s:size() - 1 do
+      local p = s:at(i)
+      createMarker(p.t, p.v)
+    end
+  )");
+  request.window = std::pair<int64_t, int64_t>{2, 3};
+
+  const PJ::Expected<std::vector<std::string>> created = view.createV2(request);
+  ASSERT_TRUE(created) << created.error();
+  ASSERT_EQ(service.recipes().size(), 1u);
+  ASSERT_TRUE(service.recipes().front().window.has_value());
+  EXPECT_EQ(*service.recipes().front().window, (std::pair<PJ::Timestamp, PJ::Timestamp>{2, 3}));
+  EXPECT_EQ(readMarkerUnion(store, kDataset, "in").markers.size(), 2u) << "only samples 2 and 3 fall in the window";
+}
+
+// BAT-10: config reports the window the last run actually staged (coverage_ns), not the
+// requested one: the ramp has samples 0..4, so [1, 100] staged [1, 4]. An unwindowed
+// rule reports no coverage.
+TEST(MarkersRuntimeHostTest, ConfigReportsTheStagedCoverage) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("coverage", "createMarker(0.0)\n");
+  request.window = std::pair<int64_t, int64_t>{1, 100};
+  ASSERT_TRUE(view.createV2(request));
+  const PJ::Expected<std::string> recipe = view.recipeOf("coverage");
+  ASSERT_TRUE(recipe) << recipe.error();
+  EXPECT_NE(recipe->find(R"("coverage_ns":{"first_ns":1,"last_ns":4})"), std::string::npos) << *recipe;
+
+  ASSERT_TRUE(view.createV2(markerRequest("whole", "createMarker(0.0)\n")));
+  const PJ::Expected<std::string> whole = view.recipeOf("whole");
+  ASSERT_TRUE(whole) << whole.error();
+  EXPECT_EQ(whole->find("coverage_ns"), std::string::npos) << *whole;
+}
+
+// BAT-10: a window whose start is after its end is refused; nothing is installed.
+TEST(MarkersRuntimeHostTest, CreateV2WindowStartAfterEndIsRejected) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("backwards", "createMarker(0.0)\n");
+  request.window = std::pair<int64_t, int64_t>{40, 20};
+  const PJ::Expected<std::vector<std::string>> created = view.createV2(request);
+  ASSERT_FALSE(created);
+  EXPECT_NE(created.error().find("window"), std::string::npos) << created.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
+// The markers kind takes no INSTANT (a marker rule has no pinned evaluation); refused
+// naming the kind, nothing installed.
+TEST(MarkersRuntimeHostTest, CreateV2WithInstantIsRejected) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("pinned", "createMarker(0.0)\n");
+  request.instant_ns = 2;
+  const PJ::Expected<std::vector<std::string>> created = view.createV2(request);
+  ASSERT_FALSE(created);
+  EXPECT_NE(created.error().find("kind 'markers'"), std::string::npos) << created.error();
+  EXPECT_NE(created.error().find("INSTANT"), std::string::npos) << created.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
+// Until the catalog v2 work, the markers kind takes no typed output and no dataset_id;
+// each is refused naming the kind, nothing installed.
+TEST(MarkersRuntimeHostTest, CreateV2WithATypedOutputOrDatasetIdIsRejectedNamingTheKind) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest typed_output = markerRequest("typed", "createMarker(0.0)\n");
+  typed_output.outputs = {{"in", "number"}};
+  const auto typed = view.createV2(typed_output);
+  ASSERT_FALSE(typed);
+  EXPECT_NE(typed.error().find("kind 'markers' takes untyped outputs"), std::string::npos) << typed.error();
+
+  PJ::sdk::DataProcessorRequest on_dataset = markerRequest("on_dataset", "createMarker(0.0)\n");
+  on_dataset.dataset_id = kDataset;
+  const auto refused = view.createV2(on_dataset);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(
+      refused.error().find("kind 'markers' takes no dataset_id yet: qualify the inputs with '<source>:'"),
+      std::string::npos)
+      << refused.error();
+  EXPECT_TRUE(service.recipes().empty());
 }
 
 }  // namespace

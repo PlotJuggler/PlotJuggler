@@ -42,6 +42,16 @@ using pj_app_test::pumpUntil;
 namespace fake = pj_layout_import_gui;
 using Peer = MainWindowLayoutImportTestPeer;
 
+// The --dump-diagnostics file's JSON envelope ({"version", "records"}); empty if unreadable.
+QJsonObject readDumpEnvelope(const QString& dump_path) {
+  QFile file(dump_path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    ADD_FAILURE() << "cannot open " << dump_path.toStdString();
+    return {};
+  }
+  return QJsonDocument::fromJson(file.readAll()).object();
+}
+
 class MainWindowLayoutSettleTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -71,6 +81,52 @@ class MainWindowLayoutSettleTest : public ::testing::Test {
   inline static std::unique_ptr<PJ::MainWindow> window_;
 };
 
+// A layout whose data file no plugin handles: FileLoader's failure reaches the
+// diagnostics (and so --dump-diagnostics), not only the console.
+TEST_F(MainWindowLayoutSettleTest, UnloadableLayoutSourceReachesTheDumpAsLoadFailed) {
+  const QString data_path = project_dir_->filePath(QStringLiteral("data.pjbogus"));
+  {
+    QFile data(data_path);
+    ASSERT_TRUE(data.open(QIODevice::WriteOnly));
+    data.write("bogus");
+  }
+  const QString layout_path = project_dir_->filePath(QStringLiteral("unloadable.pj4.xml"));
+  {
+    QFile layout(layout_path);
+    ASSERT_TRUE(layout.open(QIODevice::WriteOnly));
+    layout.write(
+        "<root binding=\"source\" format=\"PlotJuggler\" pj4_version=\"4\">"
+        "<previouslyLoaded_Datafiles><fileInfo filename=\"data.pjbogus\" prefix=\"\"/>"
+        "</previouslyLoaded_Datafiles></root>");
+  }
+
+  const QString dump_path = project_dir_->filePath(QStringLiteral("unloadable-diag.json"));
+  PJ::DiagnosticDump dump(dump_path);
+  dump.attachTo(window().diagnosticBridge());
+
+  QObject scope;
+  std::vector<bool> settles;
+  QObject::connect(
+      &window(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok) { settles.push_back(ok); });
+
+  Peer::loadLayout(window(), layout_path, /*interactive=*/false);
+  ASSERT_TRUE(pumpUntil([&settles]() { return !settles.empty(); }));
+
+  ASSERT_TRUE(dump.write());
+  const QJsonArray records = readDumpEnvelope(dump_path).value(QStringLiteral("records")).toArray();
+  bool saw_load_failed = false;
+  for (const auto& value : records) {
+    const QJsonObject record = value.toObject();
+    if (record.value(QStringLiteral("id")).toString() == QStringLiteral("data-source-load-failed")) {
+      saw_load_failed = true;
+      EXPECT_EQ(record.value(QStringLiteral("source")).toString(), QStringLiteral("File Loader"));
+      EXPECT_EQ(record.value(QStringLiteral("level")).toString(), QStringLiteral("error"));
+      EXPECT_TRUE(record.value(QStringLiteral("message")).toString().contains(QStringLiteral("data.pjbogus")));
+    }
+  }
+  EXPECT_TRUE(saw_load_failed) << "the dump must carry data-source-load-failed";
+}
+
 // (1) + (5): an unreadable layout settles false synchronously, and the
 // --dump-diagnostics composition holds on the failure path — the
 // layout-open-failed record reaches the JSON file.
@@ -97,9 +153,7 @@ TEST_F(MainWindowLayoutSettleTest, FailedOpenSettlesFalseAndTheDumpCarriesTheFai
   // leaves the queued bridge delivery undrained; write() must drain it so
   // the failure id reaches the file (scripts assert ids, never message text).
   ASSERT_TRUE(dump.write());
-  QFile file(dump_path);
-  ASSERT_TRUE(file.open(QIODevice::ReadOnly));
-  const QJsonObject envelope = QJsonDocument::fromJson(file.readAll()).object();
+  const QJsonObject envelope = readDumpEnvelope(dump_path);
   EXPECT_EQ(envelope.value(QStringLiteral("version")).toInt(), 1);
   const QJsonArray records = envelope.value(QStringLiteral("records")).toArray();
   bool saw_open_failed = false;

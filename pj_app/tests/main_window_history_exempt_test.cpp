@@ -25,10 +25,11 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlCdata.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "ui/CurveListPanel.h"
 
@@ -53,8 +54,8 @@ class MainWindowHistoryExemptTestPeer {
     return window.session_->sessionManager().dataProcessorService();
   }
 
-  [[nodiscard]] static MarkerService& markers(MainWindow& window) {
-    return window.session_->sessionManager().markerService();
+  [[nodiscard]] static BatchEngine& markers(MainWindow& window) {
+    return window.session_->sessionManager().batchEngine();
   }
 
   [[nodiscard]] static TabbedPlotWidget& tabs(MainWindow& window) {
@@ -150,7 +151,7 @@ QString catalogKeyForTopic(const PJ::CatalogModel& catalog, const QString& topic
   return item != items.end() ? item->key : QString{};
 }
 
-PJ::CurveTreeView* customSeriesView(PJ::MainWindow& window) {
+PJ::CurveTreeView* customTopicsView(PJ::MainWindow& window) {
   return window.findChild<PJ::CurveTreeView*>(u"customView"_s);
 }
 
@@ -200,7 +201,7 @@ QDomElement addUnresolvableProcessor(QDomDocument& doc) {
   processor.setAttribute(u"input_dataset_source"_s, u"missing-processor-source"_s);
   processor.setAttribute(u"processor_id"_s, u"absolute"_s);
   processor.setAttribute(u"output_name"_s, u"missing[Absolute]"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, processor, u"{}"_s);
+  PJ::appendJsonAsCdata(doc, processor, u"{}"_s);
   processors.appendChild(processor);
   return processor;
 }
@@ -370,10 +371,10 @@ TEST_F(MainWindowHistoryExemptFixture, ExemptTransformRoundTripsThroughFullNotHi
   app_session.catalogModel().rebuildFromDatastore();
   const QString initial_output_key = catalogKeyForTopic(app_session.catalogModel(), u"E_out"_s);
   ASSERT_FALSE(initial_output_key.isEmpty());
-  PJ::CurveTreeView* custom_view = customSeriesView(window);
+  PJ::CurveTreeView* custom_view = customTopicsView(window);
   ASSERT_NE(custom_view, nullptr);
   EXPECT_EQ(findRowByCatalogKey(custom_view->invisibleRootItem(), initial_output_key), nullptr)
-      << "a direct service install has not registered a Custom Series row";
+      << "a direct service install has not registered a Custom Topics row";
 
   const QDomDocument full_doc = PJ::MainWindowHistoryExemptTestPeer::xmlSaveState(
       window, PJ::MainWindowHistoryExemptTestPeer::SnapshotScope::kFull);
@@ -406,7 +407,7 @@ TEST_F(MainWindowHistoryExemptFixture, ExemptTransformRoundTripsThroughFullNotHi
   const QString restored_output_key = catalogKeyForTopic(app_session.catalogModel(), u"E_out"_s);
   ASSERT_FALSE(restored_output_key.isEmpty());
   EXPECT_NE(findRowByCatalogKey(custom_view->invisibleRootItem(), restored_output_key), nullptr)
-      << "full restore must register the persisted transform in Custom Series";
+      << "full restore must register the persisted transform in Custom Topics";
 }
 
 TEST_F(MainWindowHistoryExemptFixture, FullReplaceDropsReplacedTransformFromCustomSeries) {
@@ -428,10 +429,10 @@ TEST_F(MainWindowHistoryExemptFixture, FullReplaceDropsReplacedTransformFromCust
   const QString output_key = catalogKeyForTopic(app_session.catalogModel(), u"obsolete_output"_s);
   ASSERT_FALSE(output_key.isEmpty());
   auto* panel = window.findChild<PJ::CurveListPanel*>();
-  PJ::CurveTreeView* custom_view = customSeriesView(window);
+  PJ::CurveTreeView* custom_view = customTopicsView(window);
   ASSERT_NE(panel, nullptr);
   ASSERT_NE(custom_view, nullptr);
-  panel->setCustomCurves({output_key});
+  panel->setCustomTopics({{.key = output_key}});
   ASSERT_NE(findRowByCatalogKey(custom_view->invisibleRootItem(), output_key), nullptr);
 
   QDomDocument reload_doc = without_transform;
@@ -443,7 +444,7 @@ TEST_F(MainWindowHistoryExemptFixture, FullReplaceDropsReplacedTransformFromCust
 
   EXPECT_TRUE(service.transformRecipes().empty());
   EXPECT_EQ(findRowByCatalogKey(custom_view->invisibleRootItem(), output_key), nullptr)
-      << "full replacement must remove the replaced transform's Custom Series row";
+      << "full replacement must remove the replaced transform's Custom Topics row";
 }
 
 // (d) A history restore that would strand an exempt dependent is rejected
@@ -500,13 +501,13 @@ TEST_F(MainWindowHistoryExemptFixture, HistoryRestoreRejectsWhenExemptDependentW
 TEST_F(MainWindowHistoryExemptFixture, ExemptMarkerRoundTripsThroughFullNotHistoryScope) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
-  PJ::MarkerService& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
+  PJ::BatchEngine& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
 
   const PJ::DatasetId dataset = pj_test::createDataset(app_session, "exempt-marker-roundtrip", true);
   ASSERT_NE(dataset, 0U);
   ASSERT_NE(pj_test::addScalarTopic(app_session, dataset, "/marker_input"), 0U);
 
-  PJ::MarkerService::GeneratorRecipe recipe;
+  PJ::BatchEngine::GeneratorRecipe recipe;
   recipe.id = "assistant-test/marker";
   recipe.dataset_id = dataset;
   recipe.inputs = {"/marker_input"};
@@ -545,7 +546,7 @@ TEST_F(MainWindowHistoryExemptFixture, UndoRejectsExemptMarkerDependencyWithoutM
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
   PJ::DataProcessorService& processors = PJ::MainWindowHistoryExemptTestPeer::processors(window);
-  PJ::MarkerService& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
+  PJ::BatchEngine& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
 
   const PJ::DatasetId dataset = pj_test::createDataset(app_session, "exempt-marker-dependency", true);
   ASSERT_NE(dataset, 0U);
@@ -558,7 +559,7 @@ TEST_F(MainWindowHistoryExemptFixture, UndoRejectsExemptMarkerDependencyWithoutM
   ASSERT_TRUE(user_transform.has_value()) << user_transform.error();
   app_session.catalogModel().rebuildFromDatastore();
 
-  PJ::MarkerService::GeneratorRecipe marker;
+  PJ::BatchEngine::GeneratorRecipe marker;
   marker.id = "assistant-test/dependent-marker";
   marker.dataset_id = user_transform->dataset_id;
   marker.inputs = {"marker_source_derived/value"};
@@ -791,17 +792,17 @@ TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptTransformUn
   EXPECT_EQ(it->script, kTimes10Script) << "the live exempt script must survive an unrelated undo";
 }
 
-// Regression [Codex #4], marker mirror: the same overwrite through MarkerService::upsertGenerator.
+// Regression [Codex #4], marker mirror: the same overwrite through BatchEngine::upsertGenerator.
 TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptMarkerUnderSameId) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
-  PJ::MarkerService& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
+  PJ::BatchEngine& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
 
   const PJ::DatasetId dataset = pj_test::createDataset(app_session, "exempt-marker-same-id", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0U);
   ASSERT_NE(pj_test::addScalarTopic(app_session, dataset, "/marker_input"), 0U);
 
-  PJ::MarkerService::GeneratorRecipe recipe;
+  PJ::BatchEngine::GeneratorRecipe recipe;
   recipe.id = "user-plugin/marker";
   recipe.dataset_id = dataset;
   recipe.inputs = {"/marker_input"};
@@ -1194,7 +1195,7 @@ TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoWithExemptMarkerDependentKee
   const auto producer = service.upsertTransform("user", "negate", {"/x"}, {"U"}, kNegateScript, "{}");
   ASSERT_TRUE(producer) << producer.error();
   app.catalogModel().rebuildFromDatastore();
-  PJ::MarkerService::GeneratorRecipe marker;
+  PJ::BatchEngine::GeneratorRecipe marker;
   marker.id = "assistant/marker";
   marker.dataset_id = producer->dataset_id;
   marker.inputs = {"U/value"};

@@ -13,9 +13,8 @@
 #include <algorithm>  // std::clamp
 #include <cmath>      // std::isfinite
 #include <cstdint>
-#include <cstdlib>  // std::free / std::realloc
+#include <cstdlib>  // std::free
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -24,102 +23,13 @@
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
+#include "luau_sandbox_state.h"
 #include "pj_scripting/script_engine.h"
 
 namespace PJ::scripting {
 namespace {
 
-// ---- sandbox: memory cap + instruction-budget watchdog -------------------
-
-// Largest filter source we will hand to luau_compile (the compiler runs on the
-// host heap, outside the VM allocator/watchdog — bound it by source size).
-constexpr std::size_t kMaxSourceBytes = 1u << 20;  // 1 MiB
-
-struct BudgetState {
-  std::size_t used = 0;
-  std::size_t max_bytes = 0;
-  std::int64_t fuel = 0;
-  bool tripped = false;  ///< set when the watchdog fired; checked by the host even if the script caught the error
-};
-
-// Lua allocator with a hard peak-bytes ceiling, overflow-safe. ptr==null ⇒ new
-// (osize is a type tag — ignore it); nsize==0 ⇒ free; else realloc. Returns null
-// past the cap, which Luau surfaces as a catchable out-of-memory error.
-void* budgetAlloc(void* ud, void* ptr, std::size_t osize, std::size_t nsize) {
-  auto* b = static_cast<BudgetState*>(ud);
-  if (nsize == 0) {
-    std::free(ptr);
-    if (ptr != nullptr) {
-      b->used = (osize <= b->used) ? b->used - osize : 0;  // guard underflow
-    }
-    return nullptr;
-  }
-  const std::size_t base = (ptr == nullptr) ? b->used : ((osize <= b->used) ? b->used - osize : 0);
-  if (nsize > b->max_bytes || base > b->max_bytes - nsize) {  // base+nsize>max, no overflow
-    return nullptr;
-  }
-  void* np = std::realloc(ptr, nsize);
-  if (np != nullptr) {
-    b->used = base + nsize;
-  }
-  return np;
-}
-
-// Safepoint callback: spends one fuel unit per safepoint, records the trip, and
-// aborts the script when exhausted. The error is catchable by a script `pcall`,
-// so `tripped` is the authoritative signal the host checks after every protected
-// call. gc>=0 marks a GC interrupt — skip it.
-void budgetInterrupt(lua_State* L, int gc) {
-  if (gc >= 0) {
-    return;
-  }
-  auto* b = static_cast<BudgetState*>(lua_callbacks(L)->userdata);
-  if (b != nullptr && --b->fuel <= 0) {
-    b->tripped = true;
-    luaL_error(L, "script exceeded its instruction budget");
-  }
-}
-
-void armFuel(BudgetState* b, std::uint64_t fuel) {
-  b->tripped = false;
-  constexpr std::uint64_t kCap = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-  b->fuel = static_cast<std::int64_t>(fuel > kCap ? kCap : fuel);
-}
-
-// Create a sandboxed VM: curated stdlib, os/coroutine/debug/setfenv/getfenv
-// dropped, the shared stdlib frozen read-only (luaL_sandbox), then a fresh
-// per-VM writable global table layered on top (luaL_sandboxthread). Net effect: a
-// filter can assign its own top-level globals for persistent state, but cannot
-// mutate the stdlib or leak globals into a sibling filter's VM. Also installs a
-// memory cap + watchdog. `budget` must outlive the returned state. The byte cap is
-// left OPEN during trusted setup (openlibs/sandbox) and clamped to limits.mem_bytes
-// only once setup is done, so a small cap can never make setup fail/abort.
-lua_State* newSandboxedState(BudgetState* budget, const BudgetLimits& limits) {
-  budget->used = 0;
-  budget->max_bytes = std::numeric_limits<std::size_t>::max();  // no cap during setup
-  armFuel(budget, limits.setup_fuel);
-  lua_State* L = lua_newstate(budgetAlloc, budget);
-  if (L == nullptr) {
-    return nullptr;
-  }
-  luaL_openlibs(L);
-  // Drop capabilities filters never need; setfenv/getfenv would let a script swap
-  // its environment and escape the per-VM globals table back onto the frozen
-  // stdlib (or another scope), defeating the sandbox isolation set up below.
-  for (const char* lib : {"os", "coroutine", "debug", "setfenv", "getfenv"}) {
-    lua_pushnil(L);
-    lua_setglobal(L, lib);
-  }
-  luaL_sandbox(L);  // freeze the shared stdlib read-only
-  // Own writable global table for this VM (frozen stdlib as read-only __index):
-  // top-level globals the script assigns land here, stdlib reads fall through.
-  // One module loads per VM, so safeenv stays on and imports keep the fast path.
-  luaL_sandboxthread(L);
-  lua_callbacks(L)->userdata = budget;
-  lua_callbacks(L)->interrupt = budgetInterrupt;
-  budget->max_bytes = limits.mem_bytes;  // cap now applies to all untrusted execution
-  return L;
-}
+using namespace detail;
 
 // ---- small stack helpers -------------------------------------------------
 
@@ -354,7 +264,7 @@ std::string loadModule(lua_State* L, BudgetState* budget, const std::string& sou
     lua_pop(L, 1);
     return err;
   }
-  if (budget->tripped) {  // a top-level pcall may have swallowed the watchdog error
+  if (budget->trip != nullptr) {  // a top-level pcall may have swallowed the watchdog error
     lua_pop(L, 1);
     return "filter module exceeded its instruction budget during evaluation";
   }
@@ -462,7 +372,7 @@ class LuauInstance final : public FilterInstance {
       r.suppress = true;
       return r;
     }
-    if (budget_->tripped) {  // the script may have pcall-swallowed the watchdog — fail anyway
+    if (budget_->trip != nullptr) {  // the script may have pcall-swallowed the watchdog — fail anyway
       lua_settop(L_, base);
       fail("calculate exceeded its instruction budget");
       r.suppress = true;
@@ -527,7 +437,7 @@ class LuauInstance final : public FilterInstance {
       r.suppress = true;
       return r;
     }
-    if (budget_->tripped) {  // pcall may have swallowed the watchdog — fail anyway
+    if (budget_->trip != nullptr) {  // pcall may have swallowed the watchdog — fail anyway
       lua_settop(L_, base);
       fail("calculate exceeded its instruction budget");
       r.suppress = true;
@@ -569,7 +479,7 @@ class LuauInstance final : public FilterInstance {
       armFuel(budget_.get(), call_fuel_);
       if (lua_pcall(L_, nargs, 0, 0) != 0) {
         fail(lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "reset error");
-      } else if (budget_->tripped) {
+      } else if (budget_->trip != nullptr) {
         fail("reset exceeded its instruction budget");
       }
     }
@@ -752,7 +662,7 @@ class LuauEngine final : public ScriptEngine {
       std::string err = lua_isstring(L, -1) ? lua_tostring(L, -1) : "create() failed";
       return PJ::unexpected(err);
     }
-    if (budget->tripped) {
+    if (budget->trip != nullptr) {
       return PJ::unexpected("create() exceeded its instruction budget");
     }
     if (!lua_istable(L, -1)) {

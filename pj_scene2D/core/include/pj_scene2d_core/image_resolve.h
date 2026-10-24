@@ -19,6 +19,9 @@ class MessageParserPluginBase;
 struct ResolvedImage {
   sdk::Image image;
   int64_t pts = 0;  ///< record.ts (parser) or the entry timestamp (canonical blob).
+  /// `image.timestamp_ns` moved onto the dataset clock by the entry's `payload_stamp_shift` (saturating): the stamp the
+  /// annotations made from the image carry (DecodedFrame::stamp).
+  int64_t stamp = 0;
 };
 
 /// Resolve a store entry's bytes into a canonical sdk::Image — the single source
@@ -32,8 +35,9 @@ struct ResolvedImage {
 ///
 /// The returned image aliases `payload`'s bytes/anchor, so it must be consumed
 /// before the payload is released (both callers decode it synchronously).
+/// `payload_stamp_shift` is the entry's (ResolvedObjectEntry), which a merge moved.
 [[nodiscard]] Expected<ResolvedImage, ParserObjectError> resolveImage(
     MessageParserPluginBase* parser, const std::shared_ptr<std::mutex>& parser_mutex, bool canonical, int64_t entry_ts,
-    const sdk::PayloadView& payload);
+    const sdk::PayloadView& payload, int64_t payload_stamp_shift);
 
 }  // namespace PJ

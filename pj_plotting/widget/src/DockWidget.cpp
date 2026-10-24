@@ -392,7 +392,9 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   connect(new_widget, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
   connect(new_widget, &DockWidget::plotWidgetCreated, parent_docker, &PlotDocker::plotWidgetAdded);
   connect(new_widget, &DockWidget::objectFamilyRequested, parent_docker, &PlotDocker::objectFamilyRequested);
-  connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, &PlotDocker::firstObjectTopicAdded);
+  connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, [parent_docker, new_widget] {
+    emit parent_docker->firstObjectTopicAdded(new_widget);
+  });
   connect(new_widget, &DockWidget::placeholderTopicDropped, parent_docker, &PlotDocker::placeholderTopicDropped);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
@@ -755,6 +757,7 @@ void DockWidget::pasteObjectWidgetFromClipboard() {
       object_widget_awaiting_first_topic_ &&
       (!element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull());
   if (object_widget_->xmlLoadState(element)) {
+    object_widget_->finishRestore();
     if (seeds_empty_click_created_widget) {
       object_widget_awaiting_first_topic_ = false;
       emit firstObjectTopicAdded();
@@ -803,6 +806,7 @@ void DockWidget::pastePlaceholderWidgetFromClipboard() {
     setPlaceholderWidget();
     return;
   }
+  object_widget_->finishRestore();
   object_widget_awaiting_first_topic_ = !seeded;
   if (seeded) {
     emit firstObjectTopicAdded();

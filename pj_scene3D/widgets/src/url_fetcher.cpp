@@ -33,15 +33,13 @@ FetchResult readLocalFile(const QString& path) {
   // local-file behavior below.
   const qint64 size = file.size();
   if (size < 0 || size > UrlFetcher::kMaxFetchBytes) {
-    result.error =
-        QString(u"local model exceeds the %1 MiB browser limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
+    result.error = QString(u"local model exceeds the %1 MiB limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
     return result;
   }
   result.bytes = file.read(size);
   if (!file.atEnd()) {
     result.bytes.clear();
-    result.error =
-        QString(u"local model exceeds the %1 MiB browser limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
+    result.error = QString(u"local model exceeds the %1 MiB limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
     return result;
   }
 #else
@@ -109,7 +107,7 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
     deliverLater(std::move(on_done), readLocalFile(*local));
     return;
   }
-  if (url.scheme() != "http"_L1 && url.scheme() != "https"_L1) {
+  if (!isNetworkUrl(url)) {
     FetchResult result;
     result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
     deliverLater(std::move(on_done), std::move(result));

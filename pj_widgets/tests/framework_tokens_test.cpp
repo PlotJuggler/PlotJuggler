@@ -47,7 +47,6 @@ constexpr std::array<ElevatedSurface, 5> kElevatedSurfaces = {
     ElevatedSurface::Dialog, ElevatedSurface::Card, ElevatedSurface::CardHover, ElevatedSurface::Toast,
     ElevatedSurface::Disabled};
 constexpr std::array<Gradient, 2> kGradients = {Gradient::Accent, Gradient::Brand};
-constexpr std::array<GradientEndpoint, 2> kGradientEndpoints = {GradientEndpoint::Start, GradientEndpoint::End};
 constexpr std::array<Space, 5> kSpaces = {Space::None, Space::Tight, Space::Snug, Space::Comfortable, Space::Section};
 constexpr std::array<Metric, 7> kMetrics = {Metric::InputMinHeight, Metric::InputOuterHeight};
 constexpr std::array<Radius, 5> kRadii = {Radius::Square, Radius::Input, Radius::Card, Radius::Dialog, Radius::Pill};

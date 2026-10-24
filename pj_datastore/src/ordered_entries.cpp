@@ -4,12 +4,26 @@
 #include "pj_datastore/ordered_entries.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <iterator>
 #include <numeric>
 
-#include "saturating_time.hpp"
+#include "pj_datastore/saturating_time.hpp"
 
 namespace PJ {
+
+OrderedEntries::OrderedEntries() {
+  changed(true);
+}
+
+void OrderedEntries::changed(bool rewrite) noexcept {
+  static std::atomic<uint64_t> next{1};
+  identity_.content = next.fetch_add(1, std::memory_order_relaxed);
+  if (rewrite) {
+    identity_.rewrite = identity_.content;
+  }
+}
 
 // --- Entry access ---
 
@@ -56,16 +70,18 @@ std::vector<OrderedEntries::TimeRangeEntry> OrderedEntries::rangeByTime(Timestam
 // --- UID-cursor lookups ---
 
 const ObjectEntry* OrderedEntries::atUid(SequentialUID uid) const {
-  if (uid_order_.empty()) {
-    return nullptr;
-  }
+  const std::optional<size_t> index = indexOfUid(uid);
+  return index ? &entries_[*index] : nullptr;
+}
+
+std::optional<size_t> OrderedEntries::indexOfUid(SequentialUID uid) const {
   const auto it = std::lower_bound(uid_order_.begin(), uid_order_.end(), uid, [this](uint32_t pos, SequentialUID u) {
     return entries_[pos].sequential_uid < u;
   });
   if (it == uid_order_.end() || entries_[*it].sequential_uid != uid) {
-    return nullptr;
+    return std::nullopt;
   }
-  return &entries_[*it];
+  return *it;
 }
 
 SequentialUID OrderedEntries::firstUid() const {
@@ -97,16 +113,36 @@ SequentialUID OrderedEntries::maxUidAtOrBefore(Timestamp t) const {
   return max_uid;
 }
 
+std::optional<Timestamp> OrderedEntries::oldestTimestampAfterUid(SequentialUID after) const {
+  auto it = std::upper_bound(uid_order_.begin(), uid_order_.end(), after, [this](SequentialUID u, uint32_t pos) {
+    return u < entries_[pos].sequential_uid;
+  });
+  std::optional<Timestamp> oldest;
+  for (; it != uid_order_.end(); ++it) {
+    const Timestamp stamp = entry_timestamps_[*it];
+    oldest = std::min(oldest.value_or(stamp), stamp);
+  }
+  return oldest;
+}
+
 // --- Mutation ---
 
 OrderedEntries::PushOrder OrderedEntries::push(ObjectEntry&& entry) {
-  const Timestamp timestamp = entry.timestamp;
+  reserveOneMore(entry_timestamps_);
+  reserveOneMore(uid_order_);
+  // The one allocation left; a deque push_back changes nothing when it throws.
+  entries_.push_back(std::move(entry));
+  return indexBack();
+}
+
+OrderedEntries::PushOrder OrderedEntries::indexBack() {
+  const Timestamp timestamp = entries_.back().timestamp;
   // uid_order positions index `entries_` as uint32_t. A series this large is far
   // beyond any real retained window; assert rather than silently narrow.
   assert(entries_.size() < UINT32_MAX);
   // In-order fast path (the overwhelming common case): amortized O(1) append.
   if (entry_timestamps_.empty() || timestamp >= entry_timestamps_.back()) {
-    entries_.push_back(std::move(entry));
+    changed(false);  // lands after every entry, an equal stamp's too: a UID cursor finds it
     entry_timestamps_.push_back(timestamp);
     // Newest (max) UID appended at the array tail => also the UID-order tail. O(1)
     // tail check only (the full O(n) checker would make debug ingest O(n^2)).
@@ -117,7 +153,7 @@ OrderedEntries::PushOrder OrderedEntries::push(ObjectEntry&& entry) {
          entries_[uid_order_[uid_order_.size() - 2]].sequential_uid < entries_[uid_order_.back()].sequential_uid));
     return PushOrder::kInOrderAppend;
   }
-  // Out-of-order: insert at the sorted position so entry_timestamps stays ordered
+  // Out-of-order: move it to the sorted position so entry_timestamps stays ordered
   // (latestAt/indexAt/timestamps() all rely on it). upper_bound puts the new entry
   // AFTER any equal timestamps, preserving arrival order among equals. O(n) shift,
   // but regressions are rare (e.g. multi-publisher /tf whose publish stamps
@@ -125,7 +161,7 @@ OrderedEntries::PushOrder OrderedEntries::push(ObjectEntry&& entry) {
   const auto pos = std::upper_bound(entry_timestamps_.begin(), entry_timestamps_.end(), timestamp);
   const auto idx = pos - entry_timestamps_.begin();
   entry_timestamps_.insert(pos, timestamp);
-  entries_.insert(entries_.begin() + idx, std::move(entry));
+  std::rotate(entries_.begin() + idx, entries_.end() - 1, entries_.end());
   // Every existing position at or past `idx` shifted up by one; then the new slot
   // (which carries the max UID by precondition) lands at the UID-order tail.
   // Shift-then-push so the freshly appended slot is not itself incremented.
@@ -135,35 +171,116 @@ OrderedEntries::PushOrder OrderedEntries::push(ObjectEntry&& entry) {
     }
   }
   uid_order_.push_back(static_cast<uint32_t>(idx));
+  changed(true);
 #ifndef NDEBUG
   checkInvariant();
 #endif
   return PushOrder::kOutOfOrderInsert;
 }
 
-ObjectEntry OrderedEntries::evictFront() {
-  assert(!entries_.empty());
-  ObjectEntry front = std::move(entries_.front());
-  entries_.pop_front();
-  entry_timestamps_.erase(entry_timestamps_.begin());
-  // Front entry (position 0) is gone: drop its slot from uid_order (exactly one
-  // slot holds 0 for a non-empty series), then shift every remaining position down
-  // by one. Independent of the pop above — it only renumbers integer positions.
-  const auto z = std::find(uid_order_.begin(), uid_order_.end(), 0u);
-  assert(z != uid_order_.end() && "evictFront: uid_order lost the front slot (desynced from entries)");
-  if (z != uid_order_.end()) {
-    uid_order_.erase(z);
+void OrderedEntries::evictFront(size_t count, std::vector<ObjectEntry>& removed) {
+  assert(count <= entries_.size());
+  if (count == 0) {
+    return;
   }
-  for (auto& p : uid_order_) {
-    --p;
+  reserveMore(removed, count);
+  changed(false);
+  const auto end = entries_.begin() + static_cast<std::ptrdiff_t>(count);
+  std::move(entries_.begin(), end, std::back_inserter(removed));
+  entries_.erase(entries_.begin(), end);
+  entry_timestamps_.erase(entry_timestamps_.begin(), entry_timestamps_.begin() + static_cast<std::ptrdiff_t>(count));
+  // Positions below `count` are gone; the rest slide down by `count`, keeping their UID order.
+  const auto first = static_cast<uint32_t>(count);
+  size_t next = 0;
+  for (const uint32_t position : uid_order_) {
+    if (position >= first) {
+      uid_order_[next++] = position - first;
+    }
   }
+  uid_order_.resize(next);
 #ifndef NDEBUG
   checkInvariant();
 #endif
-  return front;
+}
+
+OrderedEntries::Removal OrderedEntries::planRemoval(const EntryPredicate& drop) const {
+  Removal plan;
+  plan.new_position.resize(entries_.size());
+  uint32_t kept = 0;
+  auto entry = entries_.begin();
+  for (size_t i = 0; i < entries_.size(); ++i, ++entry) {
+    if (drop(entry_timestamps_[i], entry->sequential_uid)) {
+      plan.new_position[i] = Removal::kRemoved;
+      ++plan.count;
+    } else {
+      plan.new_position[i] = kept++;
+    }
+  }
+  return plan;
+}
+
+void OrderedEntries::remove(const Removal& plan, std::vector<ObjectEntry>& removed) {
+  if (plan.count == 0) {
+    return;
+  }
+  removed.reserve(removed.size() + plan.count);
+  entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(compact(plan, removed)), entries_.end());
+#ifndef NDEBUG
+  checkInvariant();
+#endif
+}
+
+OrderedEntries::PushOrder OrderedEntries::removeAndPush(
+    const Removal& plan, ObjectEntry&& entry, std::vector<ObjectEntry>& removed) {
+  if (plan.count == 0) {
+    return push(std::move(entry));
+  }
+  removed.reserve(removed.size() + plan.count);
+  // The new entry takes a slot the removal freed, so the deque does not grow and nothing
+  // below allocates: the vectors had room for the entries removed.
+  const auto kept = static_cast<std::ptrdiff_t>(compact(plan, removed));
+  entries_[static_cast<size_t>(kept)] = std::move(entry);
+  entries_.erase(entries_.begin() + kept + 1, entries_.end());
+  return indexBack();
+}
+
+size_t OrderedEntries::compact(const Removal& plan, std::vector<ObjectEntry>& removed) {
+  assert(plan.new_position.size() == entries_.size());
+  assert(removed.capacity() - removed.size() >= plan.count);
+  changed(true);
+  // ponytail: survivors always shift toward the front, so the sliding window's front
+  // removal moves every entry (~7 ns per entry with the predicate). Upgrade: erase a
+  // contiguous run with deque::erase, which moves the shorter side.
+  auto entry = entries_.begin();
+  auto kept_entry = entries_.begin();
+  const size_t kept = plan.new_position.size() - plan.count;
+  for (size_t i = 0; i < plan.new_position.size(); ++i, ++entry) {
+    const uint32_t to = plan.new_position[i];
+    if (to == Removal::kRemoved) {
+      removed.push_back(std::move(*entry));
+      continue;
+    }
+    if (to != i) {
+      *kept_entry = std::move(*entry);
+      entry_timestamps_[to] = entry_timestamps_[i];
+    }
+    ++kept_entry;
+  }
+  entry_timestamps_.resize(kept);
+  // A removal never reorders the survivors' UIDs, so uid_order keeps its order and only
+  // renumbers the positions: no sort.
+  size_t next = 0;
+  for (const uint32_t position : uid_order_) {
+    if (plan.new_position[position] != Removal::kRemoved) {
+      uid_order_[next++] = plan.new_position[position];
+    }
+  }
+  uid_order_.resize(next);
+  return kept;
 }
 
 void OrderedEntries::clear() {
+  changed(true);
   entries_.clear();
   entry_timestamps_.clear();
   uid_order_.clear();
@@ -173,6 +290,7 @@ bool OrderedEntries::shift(Timestamp delta) {
   if (delta == 0 || entries_.empty()) {
     return false;
   }
+  changed(true);
   for (size_t i = 0; i < entries_.size(); ++i) {
     entries_[i].timestamp = saturatingAdd(entries_[i].timestamp, delta);
     entry_timestamps_[i] = entries_[i].timestamp;
@@ -185,6 +303,7 @@ bool OrderedEntries::shift(Timestamp delta) {
 }
 
 void OrderedEntries::reuidAll() {
+  changed(true);
   for (ObjectEntry& entry : entries_) {
     entry.sequential_uid = SequentialUID::getNext();
   }
@@ -213,6 +332,7 @@ void OrderedEntries::appendReuidFrom(OrderedEntries& src) {
   // out-of-order insert); the moved entries carry fresh max UIDs. Rebuild rather
   // than iota so our pre-existing UIDs stay stable (consumer cursors hold them).
   rebuildUidOrder();
+  changed(true);
   src.clear();
 }
 
@@ -250,12 +370,14 @@ void OrderedEntries::detachInto(std::deque<ObjectEntry>& entries_out, std::vecto
   entries_.clear();
   entry_timestamps_.clear();
   uid_order_.clear();
+  changed(true);
 }
 
 void OrderedEntries::restoreRebuild(std::deque<ObjectEntry>&& entries_in, std::vector<Timestamp>&& stamps_in) {
   entries_ = std::move(entries_in);
   entry_timestamps_ = std::move(stamps_in);
   rebuildUidOrder();
+  changed(true);
 }
 
 #ifndef NDEBUG

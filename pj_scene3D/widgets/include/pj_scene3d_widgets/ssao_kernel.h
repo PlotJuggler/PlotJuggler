@@ -9,8 +9,8 @@
 
 namespace pj::scene3d {
 
-// Deterministic SSAO hemisphere kernel shared by the native GL pass and the
-// browser QRhi pipeline so both backends sample identical occlusion patterns.
+// Deterministic SSAO hemisphere kernel, so every backend samples identical
+// occlusion patterns.
 // Denser near the origin (LearnOpenGL lerp-scale); fixed seed — the kernel is
 // a fixed quality knob, not entropy.
 inline std::vector<glm::vec3> ssaoHemisphereKernel(int size) {

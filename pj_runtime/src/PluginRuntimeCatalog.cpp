@@ -465,7 +465,9 @@ bool PluginRuntimeCatalog::registerStaticToolbox(
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
       [](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); },
       [this](const std::string& id) { return claimStaticId(id, "Toolbox"); },
-      [this](RuntimeToolboxPlugin& loaded, const PluginDescriptor& /*descriptor*/) {
+      [this](RuntimeToolboxPlugin& loaded, const PluginDescriptor& descriptor) {
+        loaded.custom_topics_editor = descriptor.hasCapability(kCustomTopicsEditorCapability);
+        loaded.badge = descriptor.badge;
         const auto capabilities = probeCapabilities(loaded.library);
         if (!capabilities) {
           report(
@@ -617,6 +619,8 @@ bool PluginRuntimeCatalog::loadAndRegisterToolbox(const PluginDescriptor& descri
   loaded.id = descriptor.id;
   loaded.name = descriptor.name;
   loaded.version = descriptor.version;
+  loaded.custom_topics_editor = descriptor.hasCapability(kCustomTopicsEditorCapability);
+  loaded.badge = descriptor.badge;
 
   const auto capabilities = probeCapabilities(loaded.library);
   if (!capabilities) {

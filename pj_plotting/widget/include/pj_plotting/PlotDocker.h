@@ -118,9 +118,9 @@ class PlotDocker : public ads::CDockManager {
   // scene-kind-aware module) can build + adopt an empty object widget when a
   // placeholder 2D/3D icon is clicked.
   void objectFamilyRequested(DockWidget* dock, VisualizationKind family);
-  // Re-emit of DockWidget::firstObjectTopicAdded — an empty click-created object
-  // dock received its first topic, so the shell can seed streaming playback.
-  void firstObjectTopicAdded();
+  // Re-emit of DockWidget::firstObjectTopicAdded, with the dock — an empty click-created object
+  // dock received its first topic, so the shell can seed streaming playback and frame the view.
+  void firstObjectTopicAdded(DockWidget* dock);
   // Re-emit of DockWidget::placeholderTopicDropped — see that signal's doc.
   void placeholderTopicDropped(
       DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);

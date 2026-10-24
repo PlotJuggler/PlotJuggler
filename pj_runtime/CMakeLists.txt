@@ -14,31 +14,46 @@ add_library(pj_runtime STATIC
     src/AppSession.cpp
     src/CatalogModel.cpp
     src/CurveColorRegistry.cpp
+    src/CustomTopicsPolicy.cpp
     src/DataProcessorService.cpp
     src/DatasetQualifiedName.cpp
+    src/DerivedObjects.cpp
+    src/DerivedRuntimeHosts.cpp
+    src/DerivedTopics.cpp
     src/DataProcessorsKindRouter.cpp
     src/DataProcessorsRuntimeHost.cpp
+    src/OnDemandRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
-    src/MarkerService.cpp
+    src/BatchEngine.cpp
+    src/EnginePool.cpp
+    src/GridRunner.cpp
     src/MarkerTopics.cpp
     src/MarkersRuntimeHost.cpp
+    src/NodeScheduler.cpp
     src/ObjectIngestTap.cpp
+    src/OnDemandService.cpp
+    src/SeriesRunner.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
     src/HttpGet.cpp
+    src/InFlightBudget.cpp
+    src/InputStager.cpp
     src/PluginRuntimeCatalog.cpp
     src/PlaybackControlHost.cpp
     src/PlaybackEngine.cpp
     src/ParserRoutingService.cpp
     src/PlotTabsRuntimeHost.cpp
     src/QSettingsBackend.cpp
+    src/RecipeGraph.cpp
     src/Recorder.cpp
     src/RecordingService.cpp
+    src/ResultHistory.cpp
     src/ServiceRegistration.cpp
     src/SessionManager.cpp
     src/TelemetryPing.cpp
     src/ToolboxRuntimeHost.cpp
     src/TopicDemandTracker.cpp
+    src/TransformService.cpp
     src/UpdateChecker.cpp
     src/ViewportRuntimeHost.cpp
     include/pj_runtime/AppSession.h
@@ -48,31 +63,43 @@ add_library(pj_runtime STATIC
     include/pj_runtime/DataProcessorService.h
     include/pj_runtime/HistoryScope.h
     include/pj_runtime/DataSourceRuntimeHost.h
+    include/pj_runtime/DiagnosticEmit.h
     include/pj_runtime/DiagnosticHistory.h
     include/pj_runtime/ExtensionCatalogService.h
     include/pj_runtime/HttpGet.h
     include/pj_runtime/PluginRuntimeCatalog.h
     include/pj_runtime/SourceCacheStore.h
     include/pj_runtime/IDataWidget.h
-    include/pj_runtime/MarkerService.h
+    include/pj_runtime/InFlightBudget.h
+    include/pj_runtime/InputStager.h
+    include/pj_runtime/BatchEngine.h
+    include/pj_runtime/EnginePool.h
+    include/pj_runtime/GridRunner.h
+    include/pj_runtime/SeriesRunner.h
+    include/pj_runtime/TsanAnnotations.h
     include/pj_runtime/MarkersRuntimeHost.h
+    include/pj_runtime/NodeScheduler.h
     include/pj_runtime/ObjectIngestTap.h
+    include/pj_runtime/OnDemandService.h
     include/pj_runtime/PlaybackControlHost.h
     include/pj_runtime/PlaybackEngine.h
     include/pj_runtime/ParserRoutingService.h
     include/pj_runtime/PlotTabsRuntimeHost.h
     include/pj_runtime/QSettingsBackend.h
+    include/pj_runtime/RecipeGraph.h
     include/pj_runtime/RecordTap.h
     include/pj_runtime/Recorder.h
     include/pj_runtime/RecordingFormat.h
     include/pj_runtime/RecordingService.h
     include/pj_runtime/RecordingSink.h
     include/pj_runtime/RecordingTypes.h
+    include/pj_runtime/ResultHistory.h
     include/pj_runtime/ServiceRegistration.h
     include/pj_runtime/SessionManager.h
     include/pj_runtime/TelemetryPing.h
     include/pj_runtime/ToolboxRuntimeHost.h
     include/pj_runtime/TopicDemandTracker.h
+    include/pj_runtime/TransformService.h
     include/pj_runtime/UpdateChecker.h
     include/pj_runtime/UpdateVersion.h
     include/pj_runtime/ViewportRuntimeHost.h
@@ -102,9 +129,13 @@ target_link_libraries(pj_runtime PUBLIC
     Qt6::Network
     Qt6::Xml
     pj_datastore
+    # TransformService.h owns the per-dataset pj::tf::TransformBuffer forest;
+    # pj_tf's public glm types reach it transitively through this link.
+    pj_tf
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_marketplace>
     plotjuggler_sdk::plugin_host
     nlohmann_json::nlohmann_json
+    pj_scripting  # RecipeGraph.h exposes scripting::OutputSpec
   PRIVATE
     # Source-cache mechanics (per-identity locks, lease-then-validate lookup,
     # atomic publish, LRU cleanup) come from the SDK; SourceCacheStore wraps them.
@@ -112,7 +143,6 @@ target_link_libraries(pj_runtime PUBLIC
     tsl::robin_map
     pj_internal_fmt
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:mcap::mcap>
-    pj_scripting  # DataProcessorService routes by-id applyFilter through the Luau FilterCatalogue
 )
 
 # Only the MCAP sink is platform-bound (it links mcap and writes to a real
@@ -137,13 +167,52 @@ if(PJ_BUILD_TESTS)
         tests/source_cache_store_test.cpp
         tests/object_ingest_tap_test.cpp
         tests/time_test.cpp
+        # EnginePool: compute off the GUI thread, bounded GUI-thread drain, run
+        # tokens, the Python lane, destruction.
+        tests/engine_pool_test.cpp
+        # PJ_BENCH-gated: prints the GUI-thread stall of applying a transform or a
+        # marker rule over a long series (docs/derived_objects/ARCHITECTURE.md §19).
+        tests/engine_freeze_bench_test.cpp
         # M1: re-prove the streaming gate through a Luau LuaSisoTransform
         tests/data_processor_service_test.cpp
         # links the shared marker engine (runMarkerScript) the service drives
-        tests/marker_service_test.cpp
+        tests/batch_engine_test.cpp
+        # Marker topics are recognized and routed by their metadata, never by name.
+        tests/marker_topics_test.cpp
+        # A derived object topic is registered with fixed metadata and recognized by it.
+        tests/derived_topics_test.cpp
+        # Derived-recipe layout persistence restores across the engines without MainWindow.
+        tests/derived_objects_test.cpp
+        tests/derived_objects_on_demand_test.cpp
+        # A plugin binding's derived hosts: previews belong to the instance that made them.
+        tests/derived_runtime_hosts_test.cpp
+        # Who may delete a Custom Topics row: the editor's own recipes, never reaching another plugin's work.
+        tests/custom_topics_policy_test.cpp
+        # The on-demand recipe graph: bindings, the DAG, ownership, the protocol verbs, pins.
+        tests/recipe_graph_test.cpp
+        # On-demand results: the ring in the ObjectStore and the compute cache, one eviction rule.
+        tests/result_history_test.cpp
+        # On-demand inputs: staged by identity on the GUI thread, decoded on any thread.
+        tests/input_stager_test.cpp
+        # The in-flight memory budget: one line of waiters for both engines, served first in, first out.
+        tests/in_flight_budget_test.cpp
+        # On-demand scheduling under D30 (one run in flight, one pending request per node), through the facade.
+        tests/node_scheduler_test.cpp
+        # AppSession drives the on-demand engine: the playhead, demand, installs and findings.
+        tests/on_demand_cursor_follow_test.cpp
+        # The on-demand live edge: a live announcement requests demanded recipes at their inputs' newest stamp.
+        tests/on_demand_live_edge_test.cpp
+        # On-demand media: the real Luau run with an injected (fake) decoder and the stored pairing.
+        tests/on_demand_media_test.cpp
+        # Explicit evaluations: the window grid, chains with job-local upstream results, budgets and the report.
+        tests/grid_runner_test.cpp
+        # On-demand series: demand-gated replays into a DataEngine topic, live appends, the life cycle.
+        tests/series_runner_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp
+        # The on-demand plugin bridge: typed create, list/config/remove, evaluations and their handles.
+        tests/on_demand_runtime_host_test.cpp
         # Dataset-qualified input names ("dataset_source:topic/field") coming from a
         # plugin: the parse, and the ambiguity a bare topic leaves behind.
         tests/dataset_qualified_name_test.cpp
@@ -182,6 +251,8 @@ if(PJ_BUILD_TESTS)
         tests/data_source_runtime_host_stream_swap_test.cpp
         # M5: notify_available_topics threading + a-priori classification fallback.
         tests/data_source_runtime_host_advertise_test.cpp
+        # report_message → DiagnosticSink forwarding (levels, label, reporting thread).
+        tests/data_source_runtime_host_message_test.cpp
         # Route-aware parser selection (SDK 0.22): claim admission, lazy exact-claim
         # discovery, per-route winners, divergent-winner bindings, and the legacy
         # fallback for encodings outside the SDK claim registry.
@@ -237,6 +308,22 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME recorder_test COMMAND recorder_test)
     set_tests_properties(recorder_test PROPERTIES TIMEOUT 60)
+
+    # Keep this executable separate: its debug thread-affinity death test forks
+    # and deliberately aborts in the child process.
+    # H.20: full coverage for TransformService's incremental UID-keyed TF ingest —
+    # the heart of PR #174 (live + scrubbable streaming TF) and the bulk file path.
+    # Pure logic against a SessionManager + a mock FrameTransforms parser; no GL,
+    # no widgets. Custom main (QCoreApplication for the QObject service).
+    add_executable(transform_service_test
+        tests/transform_service_test.cpp
+    )
+    target_link_libraries(transform_service_test PRIVATE
+        pj_runtime
+        GTest::gtest
+    )
+    target_compile_options(transform_service_test PRIVATE ${PJ_WARNING_FLAGS})
+    add_test(NAME transform_service_test COMMAND transform_service_test)
 
     add_library(runtime_host_object_parser_plugin SHARED
         tests/runtime_host_object_parser_plugin.cpp
@@ -314,7 +401,8 @@ if(PJ_BUILD_TESTS)
     target_compile_definitions(mock_data_source_pinning_v2_plugin PRIVATE PIN_MOCK_VERSION="2.0.0")
     target_link_libraries(mock_data_source_pinning_v2_plugin PRIVATE plotjuggler_sdk::base)
 
-    if(NOT WIN32)
+    # ELF-only pin (ld64 has no -z nodelete); the residency canary that checks it is Linux-only too.
+    if(NOT WIN32 AND NOT APPLE)
       target_link_options(mock_data_source_pinning_plugin PRIVATE -Wl,-z,nodelete)
       target_link_options(mock_data_source_pinning_v2_plugin PRIVATE -Wl,-z,nodelete)
     endif()
@@ -375,6 +463,13 @@ if(PJ_BUILD_TESTS)
             PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_newer_sdk_plugin>"
             PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
     )
+    # pj_bench_stats.h: the Qt-free thread clock and statistics of the engine
+    # freeze bench (pj_bench_probes would pull Qt Widgets into this core runner).
+    target_include_directories(pj_runtime_tests PRIVATE "${PJ_TEST_MAINS_DIR}")
+    if(TARGET pj_scripting_python_test_probe)
+      target_link_libraries(pj_runtime_tests PRIVATE pj_scripting_python_test_probe)
+      target_compile_definitions(pj_runtime_tests PRIVATE PJ_PYTHON_TEST_PROBE)
+    endif()
     set_target_properties(pj_runtime_tests PROPERTIES AUTOMOC ON)
     add_dependencies(pj_runtime_tests
         runtime_host_object_parser_plugin streaming_caching_parser_plugin

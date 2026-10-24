@@ -68,6 +68,10 @@ class CoalescingTrigger {
   [[nodiscard]] int fireCountForTesting() const noexcept {
     return fire_count_;
   }
+  /// No window open, so no trailing run is still to come.
+  [[nodiscard]] bool idleForTesting() const noexcept {
+    return !timer_.isActive();
+  }
 
  private:
   void fire() {

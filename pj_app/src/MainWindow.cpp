@@ -71,6 +71,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <ranges>
 #include <unordered_set>
 #include <utility>
 
@@ -112,6 +113,7 @@
 #include "PluginPlotTabsController.h"
 #include "PreferencesDialog.h"
 #include "RasterKeyMap.h"
+#include "SeriesProgressController.h"
 #include "SourcePromotionHost.h"
 #include "SourceTimelineController.h"
 #include "StreamingSourceManager.h"
@@ -119,10 +121,11 @@
 #include "TitleBar.h"
 #include "ToolboxHostWiring.h"
 #include "TopicDemandController.h"
+#include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_codec.hpp"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/types.hpp"
-#include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
@@ -141,6 +144,7 @@
 #ifdef PJ_TARGET_WASM
 #include "pj_plotting/PlotRhiCanvas.h"
 #endif
+#include "pj_plotting/PlotMarkersItem.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
@@ -155,16 +159,18 @@
 #include "pj_plugins/host_qt/panel_engine.hpp"
 #include "pj_plugins/host_qt/widget_binding.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/CustomTopicsPolicy.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/DataProcessorsKindRouter.h"
-#include "pj_runtime/DataProcessorsRuntimeHost.h"
-#include "pj_runtime/DatasetQualifiedName.h"
+#include "pj_runtime/DerivedObjects.h"
+#include "pj_runtime/DerivedRuntimeHosts.h"
+#include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
-#include "pj_runtime/MarkerService.h"
-#include "pj_runtime/MarkersRuntimeHost.h"
+#include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PlotTabsRuntimeHost.h"
@@ -181,13 +187,16 @@
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/UpdateChecker.h"
 #include "pj_runtime/ViewportRuntimeHost.h"
+#include "pj_runtime/XmlCdata.h"
 #ifdef PJ_WITH_SCENE2D
+#include "SceneImageDecoder.h"
+#include "SceneVideoFrameSource.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
-#include "pj_scene2d_widgets/media_viewer_widget.h"
 #endif
 #ifdef PJ_WITH_SCENE3D
+#include "pj_runtime/TransformService.h"
+#include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
-#include "pj_scene3d_widgets/transform_service.h"
 #endif
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_widgets/CoalescingTrigger.h"
@@ -237,6 +246,37 @@ namespace PJ {
 namespace {
 Q_LOGGING_CATEGORY(lcMain, "pj.app.main")
 
+// Arms the 3D view's first-content framing (Scene3DDockWidget::frameInitialContent) for a view a user drop or a
+// plugin panel fills: the default fixed frame can sit far from the data. Any other widget, or none, is left alone.
+void frameDroppedScene3dContent(IDataWidget* widget) {
+#ifdef PJ_WITH_SCENE3D
+  if (auto* scene3d = widget != nullptr ? qobject_cast<Scene3DDockWidget*>(widget->widget()) : nullptr) {
+    scene3d->frameInitialContent();
+  }
+#else
+  Q_UNUSED(widget);
+#endif
+}
+
+// An embedded scene view keeps one dynamic property per (dataset, topic) request it
+// attached, named by embeddedAttachedKey and holding the ObjectTopicId it attached, or
+// 0 once that topic was evicted (the request stands; a later load re-attaches it).
+constexpr char kEmbeddedAttachedPrefix[] = "_pj_attached:";
+
+[[maybe_unused]] QByteArray embeddedAttachedKey(const QString& topic, const QString& dataset) {
+  return QByteArray(kEmbeddedAttachedPrefix) + dataset.toUtf8() + '\n' + topic.toUtf8();
+}
+
+QList<QByteArray> embeddedAttachedKeys(const QObject& view) {
+  QList<QByteArray> keys = view.dynamicPropertyNames();
+  keys.removeIf([](const QByteArray& key) { return !key.startsWith(kEmbeddedAttachedPrefix); });
+  return keys;
+}
+
+uint32_t embeddedAttachedId(const QObject& view, const QByteArray& key) {
+  return view.property(key.constData()).value<uint32_t>();
+}
+
 // Check the button with id `id` in an exclusive QButtonGroup as a passive UI
 // resync, with the group's signals blocked. The block is load-bearing: a passive
 // resync (e.g. binding the toolbar to a newly-focused plot) must not run the Curve
@@ -258,9 +298,13 @@ void checkGroupButton(QButtonGroup* group, int id) {
 // the data reference. A relative path counts as a "subpath" only when Qt's
 // relativeFilePath did NOT emit a "../" prefix or the literal ".." path; the
 // simpler `!rel.startsWith("..")` check would misclassify legitimate filenames
-// like "..foo" or "..bar/data.csv" as escaping the dir.
+// like "..foo" or "..bar/data.csv" as escaping the dir. Both sides compare
+// canonically, the form the session stores source paths in: a layout reached
+// through a symlinked folder (macOS /var -> /private/var) still contains its data.
 [[nodiscard]] QString relocatableSubpath(const QString& absolute_path, const QDir& layout_dir) {
-  const QString relative = layout_dir.relativeFilePath(absolute_path);
+  const QString canonical_dir = layout_dir.canonicalPath();
+  const QDir base(canonical_dir.isEmpty() ? layout_dir.absolutePath() : canonical_dir);
+  const QString relative = base.relativeFilePath(SessionManager::normalizedSourcePath(absolute_path));
   const bool is_subpath = relative != ".."_L1 && !relative.startsWith("../"_L1);
   return is_subpath ? relative : absolute_path;
 }
@@ -322,7 +366,7 @@ constexpr int kTrackerBroadcastIntervalMs = 33;
 // finish inside this window never flash it. WASM shortens this for deterministic
 // cancellation fixtures (PJ_WASM_ENABLE_INGRESS_PROBE below).
 constexpr int kIngestStripShowDelayMs = 500;
-constexpr int kIngestStripShowDelayWasmMs = 50;
+[[maybe_unused]] constexpr int kIngestStripShowDelayWasmMs = 50;
 // Linger after the last load/import drains before the strip hides.
 constexpr int kIngestStripHideLingerMs = 1000;
 // Progress-bar resolution: byte counts exceed QProgressBar's int range, so the
@@ -439,51 +483,28 @@ inline constexpr std::array<std::pair<const char*, double>, 4> kWidthButtonSpecs
     {"globalWidth3_0", 3.0},
 }};
 
-/// Producers before dependents, document order otherwise: restore resolves
-/// transform inputs by name, so a dependent replayed before its producer fails.
-/// Used for both persisting and replaying, so a saved file is already ordered
-/// and an older unordered one still loads. A cycle (never installable) keeps its
-/// members in document order at the end.
-void orderTransformsByDependency(std::vector<PJ::DataProcessorService::TransformRecipe>& recipes) {
-  const auto produces = [](const PJ::DataProcessorService::TransformRecipe& recipe, const std::string& input) {
-    return std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&input](const std::string& output) {
-      const std::string topic = output.substr(0, output.find(':'));  // "rpy:a,b" materializes topic "rpy"
-      return input == topic || input.starts_with(topic + '/');
-    });
-  };
-  // ponytail: O(n^3) passes over a handful of transforms; Kahn's algorithm if layouts grow large.
-  std::vector<PJ::DataProcessorService::TransformRecipe> ordered;
-  ordered.reserve(recipes.size());
-  std::vector<bool> placed(recipes.size(), false);
-  for (bool progress = true; progress;) {
-    progress = false;
-    for (std::size_t index = 0; index < recipes.size(); ++index) {
-      if (placed[index]) {
-        continue;
-      }
-      const bool ready =
-          std::all_of(recipes[index].inputs.begin(), recipes[index].inputs.end(), [&](const std::string& input) {
-            for (std::size_t other = 0; other < recipes.size(); ++other) {
-              if (other != index && !placed[other] && produces(recipes[other], input)) {
-                return false;
-              }
-            }
-            return true;
-          });
-      if (ready) {
-        placed[index] = true;
-        ordered.push_back(std::move(recipes[index]));
-        progress = true;
-      }
-    }
+// The on-demand node whose object output the catalog item `catalog_key` is; null otherwise.
+const RecipeGraph::Node* onDemandNodeOfCatalogKey(AppSession& session, const QString& catalog_key) {
+  const std::optional<CatalogItem> item = session.catalogModel().itemDescriptor(catalog_key);
+  if (!item.has_value()) {
+    return nullptr;
   }
-  for (std::size_t index = 0; index < recipes.size(); ++index) {
-    if (!placed[index]) {
-      ordered.push_back(std::move(recipes[index]));
-    }
+  const OnDemandService& on_demand = session.sessionManager().onDemandService();
+  if (const ScalarFieldPayload* field = asScalarField(*item)) {
+    // A series column: its topic is named like its node's key, and only that node's series owns it.
+    const RecipeGraph::Node* node = on_demand.graph().find(item->topic_name.toStdString());
+    const std::optional<SeriesRunner::State> series =
+        node != nullptr ? on_demand.series().state(node->recipe.key()) : std::nullopt;
+    return series.has_value() && series->topic == field->topic_id ? node : nullptr;
   }
-  recipes = std::move(ordered);
+  const ObjectTopicPayload* object = asObjectTopic(*item);
+  if (object == nullptr) {
+    return nullptr;
+  }
+  const std::optional<std::string> key = on_demand.keyOfTopic(object->object_topic_id);
+  return key.has_value() ? on_demand.graph().find(*key) : nullptr;
 }
+
 }  // namespace
 
 #ifdef PJ_TARGET_WASM
@@ -546,18 +567,42 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           std::make_unique<TopicDemandController>(
               session_->catalogModel(), session_->topicDemandTracker(),
               session_->sessionManager().dataProcessorService(), *pending_binder_,
-              session_->sessionManager().dataEngine())),
+              session_->sessionManager().dataEngine(),
+              [this](DatasetId dataset_id, DisplaySeconds start) {
+                session_->sessionManager().setSeriesVisibleStart(dataset_id, start);
+              })),
       ingest_progress_controller_(std::make_unique<IngestProgressController>(this)),
       theme_(std::make_unique<Theme>()) {
 #ifdef PJ_TARGET_WASM
   browser_layout_runtime_ = std::make_unique<BrowserLayoutRuntime>();
 #endif
-  // The 3D transform service owns the per-dataset TF buffers + load-time
-  // ingest. It lives in the shell (not pj_runtime) so the runtime stays
-  // domain-neutral; it reads only SessionManager's neutral surface.
+  // The transform service owns the per-dataset TF buffers + load-time ingest;
+  // the fixed-frame memory is the 3D docks' view preference layered on top.
 #ifdef PJ_WITH_SCENE3D
-  transform_service_ = std::make_unique<pj::scene3d::TransformService>(session_->sessionManager());
+  transform_service_ = std::make_unique<PJ::TransformService>(session_->sessionManager());
   transform_service_->activateIngestTap();
+  session_->sessionManager().setTransformService(transform_service_.get());  // on-demand runs read TF here
+  fixed_frame_memory_ = std::make_unique<pj::scene3d::FixedFrameMemory>(session_->sessionManager());
+#endif
+#ifdef PJ_WITH_SCENE2D
+  session_->sessionManager().setImageDecoder(std::make_shared<SceneImageDecoder>());  // on-demand scripts' decode()
+#ifdef PJ_HAS_FFMPEG
+  // On-demand scripts' frame_at: a decoder per topic and parser, made again when the topic's parser changes.
+  {
+    SessionManager& session = session_->sessionManager();
+    session.setVideoFrameSource(
+        std::make_shared<SceneVideoFrameSource>(
+            session.objectStore(),
+            [&session](PJ::ObjectTopicId topic) {
+              const SessionManager::ParserBinding binding = session.parserBindingForObjectTopic(topic);
+              return binding ? SceneVideoFrameSource::parserExtractor(binding.parser, binding.mutex, binding.keepalive)
+                             : SceneVideoFrameSource::canonicalExtractor();
+            },
+            [&session](PJ::ObjectTopicId topic) -> const void* {
+              return session.parserBindingForObjectTopic(topic).parser;
+            }));
+  }
+#endif
 #endif
   // Pull saved icon metrics before setupUi so the literals we feed into
   // build*Toolbar() pick up the correct values on first paint. Widgets
@@ -637,22 +682,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
       PJ::theme::space(theme::Space::None));
 
-  // Qt 6.8 QRhiWidget needs an RHI-capable top-level backing store from
-  // the first show(). Keep a zero-size viewer in an existing visible layout
-  // so image docks created later can initialize their QRhi.
-  // Excluded on wasm: an early WebGL context can be lost across a cold
-  // browser file-picker round-trip, and Emscripten then dereferences null
-  // WebGL context attributes (see docs/research/wasm_reboot_plan.md, W8a).
-#if defined(PJ_WITH_SCENE2D) && !defined(PJ_TARGET_WASM)
-  auto* rhi_bootstrap = new MediaViewerWidget(ui_->globalToolbarWidget);
-  rhi_bootstrap->setObjectName(u"rhi_bootstrap"_s);
-  rhi_bootstrap->setMaximumSize(0, 0);
-  rhi_bootstrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-  if (auto* global_toolbar_layout = qobject_cast<QVBoxLayout*>(ui_->globalToolbarWidget->layout())) {
-    global_toolbar_layout->addWidget(rhi_bootstrap);
-  }
-#endif
-
   ui_->mainSplitter->setHandleWidth(1);
   ui_->timelineSplitter->setHandleWidth(1);
   ui_->rightToolbarSplitter->setHandleWidth(1);
@@ -728,8 +757,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   action_open_data_->setShortcut(QKeySequence::Open);
   file_menu->addSeparator();
   // Desktop retains its path-based layout dialogs. WASM exposes W9's
-  // content-based layout open/download actions; Preferences remains omitted
-  // until its nested dialog flow has a browser-safe continuation.
+  // content-based layout open/download actions.
 #ifndef PJ_TARGET_WASM
   action_load_layout_ = file_menu->addAction(tr("Load Layout..."), this, &MainWindow::onLoadLayout);
   action_save_layout_ = file_menu->addAction(tr("Save Layout..."), this, &MainWindow::onSaveLayout);
@@ -747,6 +775,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   action_save_source_layout_->setObjectName(u"actionSaveSourceLayout"_s);
   action_save_source_layout_->setEnabled(false);
   ui_->actionMarketplace->setVisible(false);
+  file_menu->addSeparator();
+  action_preferences_ = file_menu->addAction(tr("Preferences..."), this, &MainWindow::onShowPreferencesDialog);
+  action_preferences_->setObjectName(u"actionPreferences"_s);
 #endif
   file_menu->addSeparator();
   file_menu->addAction(ui_->actionExit);
@@ -759,10 +790,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // (rebuilt on aboutToShow; managing extensions happens in the
   // Marketplace, reached from the File menu).
   QMenu* help_menu = title_bar_->helpMenu();
-#ifndef PJ_TARGET_WASM
-  // AboutDialog::exec() blocks on a nested event loop, unusable on wasm.
-  // Async port deferred to W8.
   help_menu->addAction(tr("About PlotJuggler..."), this, &MainWindow::onShowAboutDialog);
+#ifndef PJ_TARGET_WASM
   // A browser tab cannot install a release, and the check itself cannot
   // succeed there (the GitHub API refuses the cross-origin request), so the
   // action would only ever toast a failure.
@@ -859,8 +888,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           // demand. Build the empty dock of the resolved family; the drop site
           // stages a pending drop that completes with the real ObjectTopicId
           // when the subscription delivers the first sample
-          // (TopicDemandController::handleSceneDockPlaceholderDrop).
-          return makeSeededEmptyObjectDock(resolved_kind, dock_parent);
+          // (TopicDemandController::handleSceneDockPlaceholderDrop). A user drop:
+          // the content that arrives later is framed once.
+          IDataWidget* empty_dock = makeSeededEmptyObjectDock(resolved_kind, dock_parent);
+          frameDroppedScene3dContent(empty_dock);
+          return empty_dock;
         }
 
         // Drop path: build, then populate the first topic and apply view
@@ -893,6 +925,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           // never gets the current playhead — seed it now to render at the right
           // time immediately.
           scene3d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+          scene3d->frameInitialContent();
         } else
 #endif
 #ifdef PJ_WITH_SCENE2D
@@ -936,34 +969,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   wireIngestProgress(
       session_->sessionManager(), session_->catalogModel(), *ingest_progress_controller_, *ui_->curveListPanel, this);
 
-  // Marker generators read their inputs through these two catalog-backed callbacks.
-  // They are SESSION state, not panel state: a generator can also arrive from a saved
-  // layout, which is replayed before any toolbox panel exists, so they are installed
-  // once here rather than per toolbox launch. The resolver maps an input key
-  // (markerSeriesKey) to its samples using the same naming the producer and the
-  // overlay use, so a generator yields the same markers in GUI and CI.
-  session_->sessionManager().markerService().setResolver(
-      [this](PJ::DatasetId dataset, const std::string& key) -> std::optional<PJ::MarkerService::ResolvedSeries> {
-        const PJ::DataReader reader = session_->sessionManager().createReader();
-        for (const PJ::CatalogItem& item : session_->catalogModel().items()) {
-          if (item.dataset_id != dataset) {
-            continue;
-          }
-          const PJ::ScalarFieldPayload* scalar = markerSeriesField(item, key);
-          if (scalar == nullptr) {
-            continue;
-          }
-          PJ::Expected<PJ::SeriesReader> series = reader.series(scalar->topic_id, scalar->column_index);
-          if (!series.has_value()) {
-            return std::nullopt;
-          }
-          return PJ::readResolvedSeries(*series);
-        }
-        return std::nullopt;
-      });
-  // For `all_datasets` (global-across-all) generators: list every loaded dataset.
-  session_->sessionManager().markerService().setDatasetLister(
-      [this]() { return session_->catalogModel().datasetIds(); });
+  applyDerivedBatchPreferences();
+  wireMarkerPlotStatus();
+  connect(
+      &session_->sessionManager(), &SessionManager::seriesStateChanged, this, [this] { pushSeriesStatus(nullptr); });
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass
@@ -995,67 +1004,71 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   });
   connect(ui_->curveListPanel, &CurveListPanel::removeDatasetsRequested, this, &MainWindow::onRemoveDatasetsRequested);
   connect(ui_->curveListPanel, &CurveListPanel::mergeDatasetsRequested, this, &MainWindow::onMergeDatasetsRequested);
-  // The "+" in Custom Series opens the Transform Editor — now provided by the
-  // toolbox plugin (the native panel was retired). Launch it like any toolbox.
-  connect(ui_->curveListPanel, &CurveListPanel::createCustomSeriesRequested, this, [this]() {
-    launchToolbox(u"toolbox-transform-editor"_s);
-  });
-  // Edit (pencil): open the Transform Editor pre-populated with the selected custom
-  // series' saved editor state (stored in the recipe's params_json at create time),
-  // so the user can Modify it in place.
-  connect(ui_->curveListPanel, &CurveListPanel::editCustomSeriesRequested, this, [this](const QString& catalog_key) {
-    // The custom view yields a catalog KEY (same as the delete path); resolve it to
-    // the output topic name, then find that transform's saved editor state.
-    QString output_name;
-    for (const auto& item : session_->catalogModel().items()) {
-      if (item.key == catalog_key) {
-        output_name = item.topic_name;
-        break;
-      }
+  connect(ui_->curveListPanel, &CurveListPanel::refreshDerivedRequested, this, [this](const QList<DatasetId>& ids) {
+    for (const DatasetId dataset_id : ids) {
+      session_->sessionManager().batchEngine().refreshAll(dataset_id);
     }
-    auto& dp = session_->sessionManager().dataProcessorService();
+  });
+  // The "+" opens the toolbox whose manifest declares `custom_topics_editor`, like any toolbox.
+  connect(ui_->curveListPanel, &CurveListPanel::createCustomTopicRequested, this, [this]() {
+    if (const QString editor = session_->extensionCatalog().customTopicsEditorId(); !editor.isEmpty()) {
+      launchToolbox(editor);
+    }
+  });
+  // Edit (pencil): open the Custom Topics editor pre-populated with the row's saved editor
+  // state (the recipe's params_json), so the user can modify it in place. The panel gates
+  // the pencil to the editor's own rows; the owner is checked again here.
+  connect(ui_->curveListPanel, &CurveListPanel::editCustomTopicRequested, this, [this](const QString& catalog_key) {
+    const ExtensionCatalogService& extensions = session_->extensionCatalog();
     QString initial_config;
-    for (const auto& recipe : dp.transformRecipes()) {
-      const bool owns = std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&](const std::string& o) {
-        return QString::fromStdString(o) == output_name;
-      });
-      if (owns) {
-        initial_config = QString::fromStdString(recipe.params_json);
-        break;
+    if (const RecipeGraph::Node* node = onDemandNodeOfCatalogKey(*session_, catalog_key)) {
+      if (!extensions.isCustomTopicsEditor(QString::fromStdString(node->recipe.owner_plugin))) {
+        return;
       }
-    }
-    launchToolbox(u"toolbox-transform-editor"_s, initial_config);
-  });
-  connect(ui_->curveListPanel, &CurveListPanel::deleteCustomSeriesRequested, this, [this](const QString& catalog_key) {
-    const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
-    if (!output.has_value()) {
-      // The row outlived its catalog item, so there is nothing to delete and the
-      // row itself is what needs clearing — refusing here is what would make it
-      // unremovable.
-      syncCustomSeriesPanel();
-      return;
-    }
-    if (!confirmAndRemoveDependentTransforms({output->topic_id})) {
-      return;
-    }
-    auto& dp = session_->sessionManager().dataProcessorService();
-    bool removed = false;
-    for (const auto& recipe : dp.transformRecipes()) {
-      const bool owns = std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), output->topic_id) !=
-                        recipe.output_topic_ids.end();
-      if (owns) {
-        removed = dp.removeTransform(recipe.key).has_value();
-        break;
+      initial_config = QString::fromStdString(node->recipe.params_json);
+    } else {
+      const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+      const auto transform = output.has_value()
+                                 ? session_->sessionManager().dataProcessorService().transformOwning(output->topic_id)
+                                 : std::nullopt;
+      if (!transform.has_value() || !extensions.isCustomTopicsEditor(QString::fromStdString(transform->owner_plugin))) {
+        return;
       }
+      initial_config = QString::fromStdString(transform->params_json);
     }
-    if (!removed) {
-      syncCustomSeriesPanel();
-      return;
-    }
-    // The rebuild retires the output topic, so itemsRemoved fires synchronously and
-    // the panel drops the row on its own.
-    session_->catalogModel().rebuildFromDatastore();
+    launchToolbox(extensions.customTopicsEditorId(), initial_config);
   });
+  connect(ui_->curveListPanel, &CurveListPanel::deleteCustomTopicsRequested, this, &MainWindow::deleteCustomTopics);
+  // A series replay is a stoppable bar on its Custom Topics rows.
+  wireSeriesProgress(
+      session_->sessionManager(), *new SeriesProgressController(this), *ui_->curveListPanel, /*context=*/this);
+  ui_->curveListPanel->setOwnerResolver([this](const QString& plugin_id) {
+    const ExtensionCatalogService& extensions = session_->extensionCatalog();
+    return CurveListPanel::OwnerInfo{extensions.toolboxDisplayName(plugin_id), extensions.toolboxBadge(plugin_id)};
+  });
+  ui_->curveListPanel->setDisplayTimeResolver([this](DatasetId dataset_id, Timestamp raw_ns) {
+    return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, raw_ns);
+  });
+  // An on-demand recipe's topics join Custom Topics with every install (an announced
+  // removal needs nothing: the catalog relists and the panel prunes on itemsRemoved).
+  // Connected after the catalog's own slot, so the new topics already have catalog keys.
+  connect(
+      &session_->sessionManager(), &SessionManager::onDemandRecipeInstalled, this, &MainWindow::syncCustomTopicsPanel);
+  // A transform row is matched to the catalog by name, so the refresh reuses the matches until the catalog changes.
+  const auto transform_rows_stale = [this]() { custom_topic_transform_rows_stale_ = true; };
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, transform_rows_stale);
+  connect(&session_->catalogModel(), &CatalogModel::itemsRemoved, this, transform_rows_stale);
+  connect(&session_->catalogModel(), &CatalogModel::cleared, this, transform_rows_stale);
+  // A node's state changes on every request, a finding's pin moves on the display axis
+  // with the offsets: both only repaint, once per event-loop turn.
+  connect(
+      &session_->sessionManager(), &SessionManager::derivedStateChanged, this, &MainWindow::scheduleCustomTopicsSync);
+  connect(
+      &session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this,
+      &MainWindow::scheduleCustomTopicsSync);
+  connect(
+      &session_->sessionManager(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      &MainWindow::scheduleCustomTopicsSync);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
     if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
       streaming_manager_->stopAllAndWait(tr("dataset removed"));
@@ -1069,7 +1082,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // lastLoadedSource for the quick-reload path (#99).
     // An all_datasets generator is bound to the session, not to a dataset, so
     // removeDataset() below would leave it alive to publish onto whatever loads next.
-    session_->sessionManager().markerService().clearAllGenerators();
+    session_->sessionManager().batchEngine().clearAllGenerators();
     session_->sessionManager().clearAllObjects();
     // TF buffers derive from the just-evicted objects; drop them with the data.
 #ifdef PJ_WITH_SCENE3D
@@ -1463,6 +1476,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(
       streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
       [this, refresh_streaming_seek_lock](DatasetId id, const QString& reason) {
+        session_->sessionManager().notifyStreamEnded(id);
         if (active_streaming_dataset_id_ == id) {
           active_streaming_dataset_id_ = 0;
           session_->setActiveStreamingDataset(0);
@@ -1544,20 +1558,28 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       &MainWindow::refreshStreamingCombo);
 
   plugin_plot_tabs_ = std::make_unique<PluginPlotTabsController>(
-      *ui_->tabbedPlotWidget, session_->catalogModel(), session_->extensionCatalog());
+      *ui_->tabbedPlotWidget, session_->catalogModel(), session_->sessionManager(), session_->extensionCatalog(),
+      [this](const QString& kind, QWidget* dock_parent) { return makeSeededEmptyObjectDock(kind, dock_parent); });
+  plugin_plot_tabs_->setOwnedTabCreatedHook(
+      [this](const QString& plugin_id, PlotDocker* docker) { revealOwnedTabOverTakeover(plugin_id, docker); });
 
   // Populate the Cloud page from the catalog now and on every catalog change.
   ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
   connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this, [this]() {
     ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
     plugin_plot_tabs_->refreshAvailability();
+    syncCustomTopicsEditor();
   });
+  syncCustomTopicsEditor();
 
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
 #ifdef PJ_WITH_SCENE3D
   file_loader_->setTransformService(transform_service_.get());
 #endif
+  // Load failures and the loading plugins' warnings/errors reach the bell and
+  // --dump-diagnostics, not only the console.
+  file_loader_->setDiagnosticSink(diagnosticSink());
   // Passing the MainWindow as the metrics source primes the file dialog's
   // toolbar icon size and keeps it in step via chromeMetricsChanged. Injected
   // here so FileLoader itself never links MainWindow (keeps it testable).
@@ -1588,169 +1610,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 #ifdef PJ_WITH_SCENE3D
   installWasmScene3dAcceptanceProbes();
 #endif
-  const auto run_wasm_plot_probe = [this](bool fit_complete_series) {
-    PlotWidget* plot = firstPlotOfActiveTab();
-    const auto curves = session_->catalogModel().curves();
-    if (plot == nullptr || curves.empty()) {
-      qWarning("PJ_WASM_PLOT_PROBE_FAILED no plot or scalar curve");
-      return;
-    }
-    auto selected = std::find_if(
-        curves.begin(), curves.end(), [](const CurveDescriptor& curve) { return curve.field_name == u"temp"_s; });
-    if (selected == curves.end()) {
-      selected = curves.begin();
-    }
-    auto* added = plot->addCurve(selected->name);
-    if (added == nullptr) {
-      qWarning("PJ_WASM_PLOT_PROBE_FAILED addCurve rejected %s", qPrintable(selected->name));
-      return;
-    }
-    if (fit_complete_series) {
-      plot->zoomOut(/*emit_signal=*/false);
-    }
-    auto* canvas = plot->findChild<PlotRhiCanvas*>();
-    const QColor curve_color = added->curve->pen().color();
-    QTimer::singleShot(500, canvas, [canvas, curve_color]() {
-      const QImage image = canvas->grabFramebuffer();
-      qsizetype curve_pixels = 0;
-      int min_x = image.width();
-      int min_y = image.height();
-      int max_x = -1;
-      int max_y = -1;
-      for (int y = 0; y < image.height(); ++y) {
-        for (int x = 0; x < image.width(); ++x) {
-          const QColor pixel = image.pixelColor(x, y);
-          if (std::abs(pixel.red() - curve_color.red()) <= 2 && std::abs(pixel.green() - curve_color.green()) <= 2 &&
-              std::abs(pixel.blue() - curve_color.blue()) <= 2) {
-            ++curve_pixels;
-            min_x = std::min(min_x, x);
-            min_y = std::min(min_y, y);
-            max_x = std::max(max_x, x);
-            max_y = std::max(max_y, y);
-          }
-        }
-      }
-      qInfo(
-          "PJ_WASM_PLOT_READBACK size=%dx%d curve=%s curve_pixels=%lld curve_bounds=%d,%d..%d,%d", image.width(),
-          image.height(), qPrintable(curve_color.name(QColor::HexArgb)), static_cast<long long>(curve_pixels), min_x,
-          min_y, max_x, max_y);
-    });
-  };
-  auto* wasm_plot_probe_shortcut = new QShortcut(QKeySequence(Qt::Key_F9), this);
-  connect(wasm_plot_probe_shortcut, &QShortcut::activated, this, [run_wasm_plot_probe]() {
-    run_wasm_plot_probe(/*fit_complete_series=*/false);
-  });
-  auto* wasm_reduction_probe_shortcut = new QShortcut(QKeySequence(Qt::Key_F10), this);
-  connect(wasm_reduction_probe_shortcut, &QShortcut::activated, this, [run_wasm_plot_probe]() {
-    run_wasm_plot_probe(/*fit_complete_series=*/true);
-  });
-  auto* wasm_plot_state_shortcut = new QShortcut(QKeySequence(Qt::Key_F8), this);
-  connect(wasm_plot_state_shortcut, &QShortcut::activated, this, [this]() {
-    PlotWidget* plot = firstPlotOfActiveTab();
-    if (plot == nullptr) {
-      qWarning("PJ_WASM_PLOT_STATE_FAILED no plot");
-      return;
-    }
-    auto* canvas = plot->findChild<PlotRhiCanvas*>();
-    if (canvas == nullptr) {
-      qWarning("PJ_WASM_PLOT_STATE_FAILED no RHI canvas");
-      return;
-    }
-    QStringList titles;
-    std::vector<std::pair<QString, QColor>> curve_colors;
-    for (const PlotWidgetBase::CurveInfo& info : plot->curveList()) {
-      if (info.curve == nullptr) {
-        continue;
-      }
-      const QString title = info.curve->title().text();
-      titles.push_back(title);
-      curve_colors.emplace_back(title, info.curve->pen().color());
-    }
-    const QPoint canvas_position = canvas->mapTo(this, QPoint(0, 0));
-    const QRectF view = plot->currentBoundingRect();
-    const QColor tracker_color =
-        theme::interaction(theme::Variant::Highlight, theme::State::Checked, theme::appTheme());
-    const QColor grid_color =
-        theme::outline(theme::OutlineRole::Gridline, theme::OutlineState::Rest, theme::appTheme());
-    const QColor hover_fill_color =
-        theme::interaction(theme::Variant::Emphasis, theme::State::Nominal, theme::appTheme());
-    const QColor canvas_color = canvas->palette().color(QPalette::Window);
-    const WasmHoverState hover = findWasmHoverState(plot);
-    const QByteArray encoded_hover_label = QUrl::toPercentEncoding(hover.label);
-    const int curve_style = static_cast<int>(plot->defaultCurveStyle());
-    const int line_width = static_cast<int>(plot->lineWidth());
-    qInfo(
-        "PJ_WASM_PLOT_STATE count=%lld titles=%s canvas=%d,%d,%dx%d view=%.17g,%.17g,%.17g,%.17g "
-        "time=%.17g tracker_enabled=%d tracker_parameter=%d xy=%d style=%d width=%d",
-        static_cast<long long>(titles.size()), qPrintable(titles.join(',')), canvas_position.x(), canvas_position.y(),
-        canvas->width(), canvas->height(), view.left(), view.right(), view.bottom(), view.top(),
-        toAxisDouble(session_->playbackEngine().currentTime()), plot->trackerEnabled() ? 1 : 0,
-        static_cast<int>(plot->trackerParameter()), plot->isXYPlot() ? 1 : 0, curve_style, line_width);
-    qInfo(
-        "PJ_WASM_PLOT_HOVER enabled=%d visible=%d point=%.17g,%.17g label=%s", plot->showPoints() ? 1 : 0,
-        hover.visible ? 1 : 0, hover.point.x(), hover.point.y(), encoded_hover_label.constData());
-
-    QTimer::singleShot(
-        250, canvas,
-        [canvas, curve_colors = std::move(curve_colors), tracker_color, grid_color, hover_fill_color, canvas_color,
-         curve_style, line_width]() {
-          const QImage image = canvas->grabFramebuffer();
-          QStringList counts;
-          WasmPixelBounds first_curve;
-          for (const auto& [title, color] : curve_colors) {
-            const WasmPixelBounds pixels = findWasmExactColor(image, color);
-            if (counts.empty()) {
-              first_curve = pixels;
-            }
-            counts.push_back(u"%1:%2:%3"_s.arg(title, color.name(QColor::HexArgb)).arg(pixels.pixels));
-          }
-          qInfo("PJ_WASM_PLOT_CURVE_PIXELS curves=%s", qPrintable(counts.join(',')));
-          if (!curve_colors.empty()) {
-            qInfo(
-                "PJ_WASM_PLOT_STYLE_PIXELS style=%d width=%d pixels=%lld bounds=%d,%d..%d,%d hash=%llu "
-                "framebuffer=%dx%d",
-                curve_style, line_width, static_cast<long long>(first_curve.pixels), first_curve.min_x,
-                first_curve.min_y, first_curve.max_x, first_curve.max_y,
-                static_cast<unsigned long long>(first_curve.coordinate_hash), image.width(), image.height());
-          }
-
-          const WasmLineCadence major_grid = findWasmVerticalCadence(image, grid_color, 6, 4);
-          const WasmLineCadence minor_grid = findWasmVerticalCadence(image, grid_color, 3, 1);
-          qInfo(
-              "PJ_WASM_PLOT_GRID_PIXELS major_pixels=%lld major_column=%d major_period=%d "
-              "major_period_matches=%d major_period_comparisons=%d major_phase_mask=%d major_on_phases=%d "
-              "minor_pixels=%lld minor_column=%d minor_period=%d minor_period_matches=%d "
-              "minor_period_comparisons=%d minor_phase_mask=%d minor_on_phases=%d",
-              static_cast<long long>(major_grid.pixels), major_grid.column, major_grid.period,
-              major_grid.period_matches, major_grid.period_comparisons, major_grid.phase_mask, major_grid.on_phases,
-              static_cast<long long>(minor_grid.pixels), minor_grid.column, minor_grid.period,
-              minor_grid.period_matches, minor_grid.period_comparisons, minor_grid.phase_mask, minor_grid.on_phases);
-
-          const WasmPixelBounds tracker = findWasmBlendedColor(image, tracker_color, canvas_color);
-          qInfo(
-              "PJ_WASM_PLOT_TRACKER color=%s pixels=%lld bounds=%d,%d..%d,%d framebuffer=%dx%d",
-              qPrintable(tracker_color.name(QColor::HexArgb)), static_cast<long long>(tracker.pixels), tracker.min_x,
-              tracker.min_y, tracker.max_x, tracker.max_y, image.width(), image.height());
-          const WasmPixelBounds text = findWasmDarkPixels(image);
-          qInfo(
-              "PJ_WASM_PLOT_TEXT_PIXELS pixels=%lld bounds=%d,%d..%d,%d framebuffer=%dx%d",
-              static_cast<long long>(text.pixels), text.min_x, text.min_y, text.max_x, text.max_y, image.width(),
-              image.height());
-          const WasmPixelBounds hover_fill = findWasmExactColor(image, hover_fill_color);
-          WasmPixelBounds hover_border;
-          if (hover_fill.pixels > 0) {
-            const QRect hover_border_rect =
-                QRect(QPoint(hover_fill.min_x, hover_fill.min_y), QPoint(hover_fill.max_x, hover_fill.max_y))
-                    .adjusted(-3, -3, 3, 3);
-            hover_border = findWasmDarkPixels(image, hover_border_rect);
-          }
-          qInfo(
-              "PJ_WASM_PLOT_HOVER_PIXELS yellow_pixels=%lld yellow_bounds=%d,%d..%d,%d border_pixels=%lld "
-              "framebuffer=%dx%d",
-              static_cast<long long>(hover_fill.pixels), hover_fill.min_x, hover_fill.min_y, hover_fill.max_x,
-              hover_fill.max_y, static_cast<long long>(hover_border.pixels), image.width(), image.height());
-        });
-  });
+  installWasmPlotAcceptanceProbes();
 #endif
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, [this](const QString& id) { launchToolbox(id); });
@@ -2168,9 +2028,11 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   if (kind == "scene3d"_L1) {
     auto* widget = new Scene3DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
     connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
+    widget->setFixedFrameMemory(fixed_frame_memory_.get());
     widget->setSettings(app_settings_.get());
     topic_demand_controller_->registerSceneDock(widget);
     // Seed the resolver's per-source remembered-roots map + auto search roots
@@ -2201,6 +2063,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   if (kind == "scene2d"_L1) {
     auto* widget = new Scene2DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
     connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     topic_demand_controller_->registerSceneDock(widget);
@@ -2220,6 +2083,80 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     return widget;
   }
   return nullptr;
+}
+
+EmbeddedViewHost MainWindow::makeEmbeddedViewHost() {
+  EmbeddedViewHost host;
+#if defined(PJ_WITH_SCENE3D) || defined(PJ_WITH_SCENE2D)
+  host.create = [this](const QString& kind, QWidget* parent) -> QWidget* {
+    IDataWidget* widget = makeSeededEmptyObjectDock(sceneWidgetKind(kind), parent);
+    auto* view = widget == nullptr ? nullptr : qobject_cast<SceneDockWidget*>(widget->widget());
+    if (view == nullptr) {
+      return nullptr;
+    }
+    // The plugin owns the view: its changes snapshot no workspace, and a refusal
+    // reaches the plugin as scene_view_error instead of a toast.
+    disconnect(view, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, nullptr);
+    disconnect(view, &SceneDockWidget::topicRefused, this, nullptr);
+    embedded_scene_views_.append(view);
+    frameDroppedScene3dContent(widget);
+    return view;
+  };
+  // Every toolbox panel is torn down before the window resets the controller.
+  PluginSceneViewsController& scene_views = plugin_plot_tabs_->sceneViews();
+  // A detach undoes the topic its attach resolved: by then the name may resolve to
+  // another dataset's topic, or to none.
+  host.attach = [&scene_views](QWidget* view, const QString& topic, const QString& dataset, std::string* error) {
+    const Expected<ObjectTopicId> attached =
+        scene_views.attachEmbeddedTopic(qobject_cast<SceneDockWidget*>(view), topic, dataset);
+    if (!attached) {
+      if (error != nullptr) {
+        *error = attached.error();
+      }
+      return false;
+    }
+    view->setProperty(embeddedAttachedKey(topic, dataset).constData(), attached->id);
+    return true;
+  };
+  // Two requests may name one topic (by bare name and by dataset): its layer goes
+  // with the last of them.
+  host.detach = [](QWidget* view, const QString& topic, const QString& dataset) {
+    const QByteArray key = embeddedAttachedKey(topic, dataset);
+    const uint32_t id = embeddedAttachedId(*view, key);
+    view->setProperty(key.constData(), QVariant());
+    const QList<QByteArray> others = embeddedAttachedKeys(*view);
+    const bool held = std::any_of(others.begin(), others.end(), [view, id](const QByteArray& other) {
+      return embeddedAttachedId(*view, other) == id;
+    });
+    if (auto* scene = qobject_cast<SceneDockWidget*>(view); scene != nullptr && id != 0 && !held) {
+      (void)scene->detachTopic(ObjectTopicId{id});
+    }
+  };
+#endif
+  return host;
+}
+
+void MainWindow::reattachEmbeddedTopics(SceneDockWidget& view) {
+  for (const QByteArray& key : embeddedAttachedKeys(view)) {
+    const uint32_t id = embeddedAttachedId(view, key);
+    if (id != 0 && view.layerFor(ObjectTopicId{id}) != nullptr) {
+      continue;
+    }
+    const QByteArray entry = key.mid(QByteArrayView(kEmbeddedAttachedPrefix).size());
+    const qsizetype split = entry.indexOf('\n');
+    const Expected<ObjectTopicId> attached = plugin_plot_tabs_->sceneViews().attachEmbeddedTopic(
+        &view, QString::fromUtf8(entry.mid(split + 1)), QString::fromUtf8(entry.left(split)));
+    view.setProperty(key.constData(), attached ? attached->id : 0U);
+  }
+}
+
+void MainWindow::tickEmbeddedViews(double display_seconds, bool visible_only) {
+  embedded_scene_views_.removeIf([](const QPointer<SceneDockWidget>& view) { return view.isNull(); });
+  for (const QPointer<SceneDockWidget>& view : embedded_scene_views_) {
+    if (!visible_only || view->isVisible()) {
+      view->onTrackerTime(display_seconds);
+    }
+  }
 }
 
 IDataWidget* MainWindow::makeSeededEmptyObjectDock(const QString& kind, QWidget* parent) {
@@ -2309,6 +2246,12 @@ MainWindow::~MainWindow() {
   if (current_panel_ != nullptr) {
     delete releaseCentralPanel();
   }
+  // Plot and scene docks are QObject children: the base-class child sweep
+  // would destroy them only after session_ has unloaded the plugin libraries
+  // they may still depend on (a Scene2D video layer keeps parser-owned records
+  // and a decode thread). ~ads::CDockManager deletes its docks in place.
+  plugin_plot_tabs_.reset();  // its tab-strip reference must not outlive the strip
+  delete ui_->tabbedPlotWidget;
   // Break the widget-owned pointers to services before session_ destroys
   // the engine — guarantees no late signal dereferences a dead pointer.
   ui_->timelineWidget->setPlaybackEngine(nullptr);
@@ -2352,6 +2295,35 @@ bool MainWindow::populateTestData() {
   const std::vector<TopicId> changed_topics = session_->sessionManager().commitChunks(writer.flushAll());
   if (changed_topics.empty()) {
     qCWarning(lcMain) << "test data commit produced no datastore changes";
+    return false;
+  }
+
+  // One image, so a media viewer has something to render (the packaging smokes'
+  // fixture layout, packaging/smoke/, shows it in a Scene2D view).
+  constexpr uint32_t kImageSide = 64;
+  std::vector<uint8_t> pixels(static_cast<size_t>(kImageSide) * kImageSide * 4);
+  for (uint32_t y = 0; y < kImageSide; ++y) {
+    for (uint32_t x = 0; x < kImageSide; ++x) {
+      uint8_t* px = pixels.data() + ((static_cast<size_t>(y) * kImageSide) + x) * 4;
+      px[0] = static_cast<uint8_t>(x * 4);
+      px[1] = static_cast<uint8_t>(y * 4);
+      px[2] = 128;
+      px[3] = 255;
+    }
+  }
+  sdk::Image image;
+  image.width = kImageSide;
+  image.height = kImageSide;
+  image.encoding = "rgba8";
+  image.data = Span<const uint8_t>(pixels.data(), pixels.size());
+  ObjectStore& objects = session_->sessionManager().objectStore();
+  const auto image_topic = objects.registerTopic(
+      ObjectTopicDescriptor{
+          .dataset_id = *dataset_or,
+          .topic_name = "test/image",
+          .metadata_json = R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  if (!image_topic.has_value() || !objects.pushOwned(*image_topic, 0, serializeImage(image)).has_value()) {
+    qCWarning(lcMain) << "test image topic could not be written";
     return false;
   }
   session_->catalogModel().rebuildFromDatastore();
@@ -2509,7 +2481,7 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
       plugin.setAttribute(u"filepath_mode"_s, u"source"_s);
       const std::string logical_config =
           detail::rewriteReplayFilepaths(record.plugin_config_json.toStdString(), logical_path);
-      layout_xml::appendJsonAsCdata(doc, plugin, QString::fromStdString(logical_config));
+      appendJsonAsCdata(doc, plugin, QString::fromStdString(logical_config));
       file_info.appendChild(plugin);
     }
     wrapper.appendChild(file_info);
@@ -2595,8 +2567,11 @@ void MainWindow::wasmProbeReportFilterResult() const {
 }
 
 void MainWindow::wasmProbeReportToolboxTransformResult() const {
-  const auto recipes = session_->sessionManager().dataProcessorService().transformRecipes();
-  qInfo("PJ_WASM_TOOLBOX_TRANSFORMS count=%llu", static_cast<unsigned long long>(recipes.size()));
+  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
+  const auto recipes = processors.transformRecipes();
+  qInfo(
+      "PJ_WASM_TOOLBOX_TRANSFORMS count=%llu materializing=%d", static_cast<unsigned long long>(recipes.size()),
+      processors.materializationPending() ? 1 : 0);
 
   auto* custom = findChild<QTreeWidget*>(u"customView"_s);
   for (const DataProcessorService::TransformRecipe& recipe : recipes) {
@@ -2830,6 +2805,7 @@ void MainWindow::onOpenMarketplace() {
       PreferencesDialog prefs(*theme_, this);
       prefs.setChromeMetrics(chrome_metrics_);
       bindRecordingPreferences(prefs);
+      bindDerivedBatchPreferences(prefs);
       prefs.showPage(PreferencesDialog::kPluginsPage);
       prefs.exec();
     });
@@ -2884,10 +2860,7 @@ void MainWindow::onOpenMarketplace() {
   // a tab) cannot fire this against a stale pointer.
   connect(wrapped.container, &QObject::destroyed, mkt, &QObject::deleteLater);
 
-  if (!presentPanel(wrapped.container)) {
-    wrapped.container->deleteLater();
-    return;
-  }
+  presentPanel(wrapped.container);
   // QPointer, so the re-activation guard above sees empty slots again as soon
   // as the controller (and its container) go — no explicit clearing on any of
   // the exit paths.
@@ -2965,16 +2938,10 @@ QSet<QString> MainWindow::captureHistoryDataUniverse() const {
   const QChar separator(QLatin1Char('\x1f'));
   const auto signature = [separator](const QStringList& fields) { return fields.join(separator); };
 
-  // Processor outputs belong to workspace state and may be recreated by undo.
+  // Processor outputs and on-demand series belong to workspace state and may be recreated by undo.
   // Only raw inputs constrain whether an older snapshot remains restorable.
-  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
-  std::unordered_set<TopicId> processor_outputs = processors.ephemeralOutputTopics();
-  for (const DataProcessorService::FilterRecipe& recipe : processors.recipes()) {
-    processor_outputs.insert(recipe.output_topic_id);
-  }
-  for (const DataProcessorService::TransformRecipe& recipe : processors.transformRecipes()) {
-    processor_outputs.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
-  }
+  const std::unordered_set<TopicId> processor_outputs =
+      session_->sessionManager().derivedScalarTopics(/*ephemeral_only=*/false);
 
   // Use datastore identities, including hidden catalog rows. A processor can
   // retain a raw dependency after its input has disappeared from the browser.
@@ -3023,10 +2990,14 @@ QSet<QString> MainWindow::captureHistoryDataUniverse() const {
     }
   }
 
-  // ObjectStore has an independent lock; never nest it under DataEngine's.
+  // ObjectStore has an independent lock; never nest it under DataEngine's. A marker or
+  // derived topic is a processor output too: the host publishes it, an undo recreates it.
   const ObjectStore& objects = session_manager.objectStore();
   for (const ObjectTopicId topic_id : objects.listTopics()) {
     const ObjectTopicDescriptor object_descriptor = objects.descriptor(topic_id);
+    if (isOffClockTopic(object_descriptor)) {
+      continue;
+    }
     QStringList object_identity{u"object-topic"_s};
     object_identity.append(dataset_identities.value(
         object_descriptor.dataset_id, {QString::number(object_descriptor.dataset_id), QString(),
@@ -3139,11 +3110,13 @@ void MainWindow::onFileLoaded(
 #endif
 }
 
-bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics) {
+void MainWindow::confirmAndRemoveDependentTransforms(
+    const std::vector<TopicId>& removed_topics, std::function<void()> proceed, std::function<bool()> still_allowed) {
   auto& dp = session_->sessionManager().dataProcessorService();
   const std::vector<TopicId> outputs = dp.dependentProcessorOutputs(removed_topics);
   if (outputs.empty()) {
-    return true;  // nothing depends on it — proceed
+    proceed();  // nothing depends on it
+    return;
   }
   const std::unordered_set<TopicId> dependent_outputs(outputs.begin(), outputs.end());
 
@@ -3163,24 +3136,32 @@ bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<TopicId>&
   if (names.isEmpty()) {
     names << tr("%n derived series", nullptr, static_cast<int>(dependent_outputs.size()));
   }
-  const int choice = MessageBox::question(
+  MessageBox::questionAsync(
       this, tr("Delete derived series?"),
       tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
           .arg(names.join(u"\n• "_s)),
-      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
-  if (choice != 0) {
-    return false;  // user cancelled — leave everything intact
-  }
-  for (const QString& key : dependent_curve_keys) {
-    ui_->curveListPanel->removeCustomCurve(key);
-  }
-  if (const Status removed = dp.removeProcessorsDependingOn(removed_topics); !removed.has_value()) {
-    emitDiagnostic(
-        DiagnosticLevel::kError, "Processors", "dependent-remove-failed", QString::fromStdString(removed.error()));
-    return false;
-  }
-  session_->catalogModel().rebuildFromDatastore();
-  return true;
+      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      [this, removed_topics, dependent_curve_keys, proceed = std::move(proceed),
+       still_allowed = std::move(still_allowed)](int choice, bool) {
+        if (choice != 0) {
+          return;  // user cancelled — leave everything intact
+        }
+        if (still_allowed && !still_allowed()) {
+          return;
+        }
+        for (const QString& key : dependent_curve_keys) {
+          ui_->curveListPanel->removeCustomCurve(key);
+        }
+        auto& processors = session_->sessionManager().dataProcessorService();
+        if (const Status removed = processors.removeProcessorsDependingOn(removed_topics); !removed.has_value()) {
+          emitDiagnostic(
+              DiagnosticLevel::kError, "Processors", "dependent-remove-failed",
+              QString::fromStdString(removed.error()));
+          return;
+        }
+        session_->catalogModel().rebuildFromDatastore();
+        proceed();
+      });
 }
 
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
@@ -3199,7 +3180,7 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     // subscription sees them gone and resets 2D viewers (symmetric with the
     // "Remove all Datasets" path). Keep lastLoadedSource for reload.
     // Session-scoped all_datasets generators go too — see the sibling wipe path.
-    session_->sessionManager().markerService().clearAllGenerators();
+    session_->sessionManager().batchEngine().clearAllGenerators();
     session_->sessionManager().clearAllObjects();
     // TF buffers derive from the just-evicted objects; drop them with the data.
 #ifdef PJ_WITH_SCENE3D
@@ -3223,49 +3204,46 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     return;
   }
   // Cascade to derived series that depend on the trashed ones (warn + remove).
-  {
-    std::vector<TopicId> removed_topics;
-    for (const QString& key : keys) {
-      if (const auto d = catalog.curveDescriptor(key)) {
-        removed_topics.push_back(d->topic_id);
-      }
-    }
-    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
-      return;  // user cancelled
-    }
-  }
-
-  // Evict the trashed object topics before mutating the catalog, so the
-  // itemsRemoved subscription's revalidateObjects() (which checks the
-  // ObjectStore, not the catalog) drops their 2D layers. Scalar keys are ignored
-  // here (engine is append-only).
-  std::vector<ObjectTopicId> trashed_objects;
+  std::vector<TopicId> removed_topics;
   for (const QString& key : keys) {
-    if (const auto item = catalog.itemDescriptor(key); item.has_value()) {
-      forEachSceneDock([&item](SceneDockWidget* scene_dock) {
-        scene_dock->discardPendingRestoresForTopic(item->dataset_id, item->topic_name);
-      });
-      if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
-        trashed_objects.push_back(obj->object_topic_id);
-      }
+    if (const auto d = catalog.curveDescriptor(key)) {
+      removed_topics.push_back(d->topic_id);
     }
   }
-  session_->sessionManager().evictObjectTopics(trashed_objects);
-  catalog.removeItems(std::vector<QString>(keys.begin(), keys.end()));
-  if (pending_binder_ != nullptr) {
-    static_cast<void>(pending_binder_->flush({}));
-  }
-  // Shrink the playback range to the surviving visible data right away,
-  // rather than only on the next load — unless a streaming dataset exists:
-  // the slider is then scoped to the active stream (see the streaming range
-  // wiring in the constructor) and a catalog-wide recompute would stomp it.
-  if (active_streaming_dataset_id_ == 0) {
-    session_->seedPlaybackFromSession();
-  }
-  resetUndoHistory();
+  confirmAndRemoveDependentTransforms(removed_topics, [this, keys]() {
+    CatalogModel& model = session_->catalogModel();
+    // Evict the trashed object topics before mutating the catalog, so the
+    // itemsRemoved subscription's revalidateObjects() (which checks the
+    // ObjectStore, not the catalog) drops their 2D layers. Scalar keys are ignored
+    // here (engine is append-only).
+    std::vector<ObjectTopicId> trashed_objects;
+    for (const QString& key : keys) {
+      if (const auto item = model.itemDescriptor(key); item.has_value()) {
+        forEachSceneDock([&item](SceneDockWidget* scene_dock) {
+          scene_dock->discardPendingRestoresForTopic(item->dataset_id, item->topic_name);
+        });
+        if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
+          trashed_objects.push_back(obj->object_topic_id);
+        }
+      }
+    }
+    session_->sessionManager().evictObjectTopics(trashed_objects);
+    model.removeItems(std::vector<QString>(keys.begin(), keys.end()));
+    if (pending_binder_ != nullptr) {
+      static_cast<void>(pending_binder_->flush({}));
+    }
+    // Shrink the playback range to the surviving visible data right away,
+    // rather than only on the next load — unless a streaming dataset exists:
+    // the slider is then scoped to the active stream (see the streaming range
+    // wiring in the constructor) and a catalog-wide recompute would stomp it.
+    if (active_streaming_dataset_id_ == 0) {
+      session_->seedPlaybackFromSession();
+    }
+    resetUndoHistory();
 #ifdef PJ_TARGET_WASM
-  updateBrowserLayoutActions();
+    updateBrowserLayoutActions();
 #endif
+  });
 }
 
 void MainWindow::removeDatasetData(DatasetId dataset_id) {
@@ -3327,40 +3305,38 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
   } else {
     message = tr("Are you sure you want to remove these %1 datasets and their data?").arg(dataset_ids.size());
   }
-  const int choice = MessageBox::question(
+  MessageBox::questionAsync(
       this, dataset_ids.size() == 1 ? tr("Remove dataset") : tr("Remove datasets"), message,
-      {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
-  if (choice != 0) {
-    return;  // Cancel / Esc
-  }
-
-  // Cascade to derived series whose input lives in any of these datasets (their
-  // output is typically in another dataset, so removeDataset alone would orphan
-  // them). Warn + remove those transforms and their Custom Series entries; abort
-  // the whole removal on cancel. No-op when nothing depends on the removed data.
-  {
-    std::vector<TopicId> removed_topics;
-    for (const DatasetId dataset_id : dataset_ids) {
-      const std::vector<TopicId> dataset_topics = session_->sessionManager().dataEngine().listTopics(dataset_id);
-      removed_topics.insert(removed_topics.end(), dataset_topics.begin(), dataset_topics.end());
-    }
-    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
-      return;  // user cancelled
-    }
-  }
-
-  for (const DatasetId id : dataset_ids) {
-    removeDatasetData(id);
-  }
-  // A confirmed removal changes the data universe under the playhead, so halt
-  // playback and shrink the range to the survivors (or reset to empty when none
-  // remain) — unless a live stream is active, where the slider stays scoped to
-  // the tip and follow-live keeps running. Reset undo once.
-  if (active_streaming_dataset_id_ == 0) {
-    session_->playbackEngine().pause();
-    session_->seedPlaybackFromSession();
-  }
-  resetUndoHistory();
+      {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      [this, dataset_ids](int choice, bool) {
+        if (choice != 0) {
+          return;  // Cancel / Esc
+        }
+        // Cascade to derived series whose input lives in any of these datasets
+        // (their output is typically in another dataset, so removeDataset alone
+        // would orphan them). Warn + remove those transforms and their Custom
+        // Series entries; abort the whole removal on cancel. No-op when nothing
+        // depends on the removed data.
+        std::vector<TopicId> removed_topics;
+        for (const DatasetId dataset_id : dataset_ids) {
+          const std::vector<TopicId> dataset_topics = session_->sessionManager().dataEngine().listTopics(dataset_id);
+          removed_topics.insert(removed_topics.end(), dataset_topics.begin(), dataset_topics.end());
+        }
+        confirmAndRemoveDependentTransforms(removed_topics, [this, dataset_ids]() {
+          for (const DatasetId id : dataset_ids) {
+            removeDatasetData(id);
+          }
+          // A confirmed removal changes the data universe under the playhead, so
+          // halt playback and shrink the range to the survivors (or reset to empty
+          // when none remain) — unless a live stream is active, where the slider
+          // stays scoped to the tip and follow-live keeps running. Reset undo once.
+          if (active_streaming_dataset_id_ == 0) {
+            session_->playbackEngine().pause();
+            session_->seedPlaybackFromSession();
+          }
+          resetUndoHistory();
+        });
+      });
 }
 
 void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
@@ -3371,26 +3347,38 @@ void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
   }
   // confirmAndMergeDatasets shows the shared destructive-merge warning and gates on
   // ≥2 data-bearing datasets; mark the surviving anchor on the Source Timeline.
-  if (const auto anchor = confirmAndMergeDatasets(this, *session_, ids)) {
+  confirmAndMergeDatasets(this, *session_, ids, [this](DatasetId anchor) {
     if (source_timeline_controller_ != nullptr) {
-      source_timeline_controller_->markDatasetMerged(*anchor);
+      source_timeline_controller_->markDatasetMerged(anchor);
     }
 #ifdef PJ_TARGET_WASM
     // A merge result cannot be recreated by replaying one browser file. Remove
     // its save-ledger entry so the single-source action cannot claim otherwise.
     if (browser_layout_runtime_ != nullptr) {
-      browser_layout_runtime_->sources.remove(file_loader_->sourcePathForDataset(*anchor));
+      browser_layout_runtime_->sources.remove(file_loader_->sourcePathForDataset(anchor));
     }
     updateBrowserLayoutActions();
 #endif
-  }
+  });
 }
 
 void MainWindow::onShowPreferencesDialog() {
+#ifdef PJ_TARGET_WASM
+  // No nested event loop in the Asyncify-free browser build: the dialog owns
+  // itself and commits through its own accepted/rejected handlers.
+  auto* dlg = new PreferencesDialog(*theme_, this);
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
+  dlg->setChromeMetrics(chrome_metrics_);
+  bindRecordingPreferences(*dlg);
+  bindDerivedBatchPreferences(*dlg);
+  dlg->open();
+#else
   PreferencesDialog dlg(*theme_, this);
   dlg.setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(dlg);
+  bindDerivedBatchPreferences(dlg);
   dlg.exec();
+#endif
 }
 
 void MainWindow::bindRecordingPreferences(PreferencesDialog& dialog) {
@@ -3406,10 +3394,138 @@ void MainWindow::bindRecordingPreferences(PreferencesDialog& dialog) {
   });
 }
 
+void MainWindow::applyDerivedBatchPreferences() {
+  session_->sessionManager().batchEngine().setSettings(BatchEngine::loadSettings());
+}
+
+namespace {
+
+// How long a rule runs before its plots show it as computing, so a quick run never flickers a note.
+constexpr std::chrono::milliseconds kMarkerStatusShowDelay{300};
+
+// The rule behind a status entry, and the marker set it publishes.
+struct RuleStatusEntry {
+  MarkerRuleStatus status;
+  MarkerTopicInfo info;
+  bool all_datasets = false;
+  DatasetId dataset_id = 0;
+};
+
+// Whether a plot with `targets` draws the set `entry`'s rule publishes: a target names the rule's
+// scope and key, on the rule's dataset (any dataset for an all_datasets rule).
+bool plotDrawsRule(const std::vector<MarkerTarget>& targets, const RuleStatusEntry& entry) {
+  return std::ranges::any_of(targets, [&](const MarkerTarget& target) {
+    return target.marker == entry.info && (entry.all_datasets || target.dataset == entry.dataset_id);
+  });
+}
+
+}  // namespace
+
+void MainWindow::wireMarkerPlotStatus() {
+  BatchEngine* batch_engine = &session_->sessionManager().batchEngine();
+  auto* delay = new QTimer(this);
+  delay->setSingleShot(true);
+  using Clock = std::chrono::steady_clock;
+  // When each binding that runs started its current run; one that lasts kMarkerStatusShowDelay is shown as computing.
+  using BindingId = std::pair<std::string, DatasetId>;
+  auto running_since = std::make_shared<std::map<BindingId, Clock::time_point>>();
+  // Reports the standing status to `only`, or to every plot when null.
+  push_marker_status_ = [this, batch_engine, delay, running_since](PlotWidget* only) {
+    const Clock::time_point now = Clock::now();
+    std::map<BindingId, Clock::time_point> still_running;
+    std::optional<Clock::time_point> next_due;
+    std::vector<RuleStatusEntry> entries;  // only the rules a plot would report
+    for (const BatchEngine::GeneratorRecipe& recipe : batch_engine->recipes()) {
+      bool computing = false;
+      if (batch_engine->isBindingRunning(recipe)) {
+        const BindingId binding{recipe.id, recipe.all_datasets ? BatchEngine::kAnyDataset : recipe.dataset_id};
+        const auto known = running_since->find(binding);
+        const Clock::time_point since = known != running_since->end() ? known->second : now;
+        still_running.emplace(binding, since);
+        computing = now - since >= kMarkerStatusShowDelay;
+        if (!computing && (!next_due.has_value() || since + kMarkerStatusShowDelay < *next_due)) {
+          next_due = since + kMarkerStatusShowDelay;
+        }
+      }
+      QString error = QString::fromStdString(batch_engine->bindingError(recipe));
+      if (recipe.outputs.empty() || (!computing && error.isEmpty())) {
+        continue;
+      }
+      entries.push_back(
+          RuleStatusEntry{
+              .status =
+                  {.rule_id = QString::fromStdString(recipe.id), .computing = computing, .error = std::move(error)},
+              .info = markerInfoForKey(recipe.outputs.front()),
+              .all_datasets = recipe.all_datasets,
+              .dataset_id = recipe.dataset_id});
+    }
+    *running_since = std::move(still_running);
+    if (next_due.has_value()) {
+      delay->start(
+          std::max(std::chrono::milliseconds(1), std::chrono::ceil<std::chrono::milliseconds>(*next_due - now)));
+    } else {
+      delay->stop();
+    }
+    const auto report = [&entries](PlotWidget* plot) {
+      const std::vector<MarkerTarget> targets = plot->markerTargets();
+      std::vector<MarkerRuleStatus> statuses;
+      for (const RuleStatusEntry& entry : entries) {
+        if (plotDrawsRule(targets, entry)) {
+          statuses.push_back(entry.status);
+        }
+      }
+      plot->setMarkerStatus(std::move(statuses));
+    };
+    if (only != nullptr) {
+      report(only);
+    } else {
+      forEachPlot(report);
+    }
+  };
+  connect(delay, &QTimer::timeout, this, [this] { push_marker_status_(nullptr); });
+  connect(batch_engine, &BatchEngine::runningChanged, this, [this] { push_marker_status_(nullptr); });
+}
+
+void MainWindow::pushSeriesStatus(PlotWidget* only) {
+  const OnDemandService& service = session_->sessionManager().onDemandService();
+  std::vector<SeriesCurveStatus> statuses;
+  for (const std::string& key : service.graph().keys()) {
+    const std::optional<SeriesRunner::State> state = service.series().state(key);
+    if (!state || state->complete) {
+      continue;  // computed: a live append says nothing
+    }
+    std::optional<int> percent;
+    if (state->replaying) {
+      percent = state->total == 0 ? 0 : static_cast<int>(state->done * 100 / state->total);
+    }
+    statuses.push_back(
+        SeriesCurveStatus{
+            .dataset_id = service.graph().find(key)->dataset,
+            .topic_name = QString::fromStdString(key),
+            .computing_percent = percent});
+  }
+  if (only != nullptr) {
+    only->setSeriesStatus(std::move(statuses));
+  } else {
+    forEachPlot([&statuses](PlotWidget* plot) { plot->setSeriesStatus(statuses); });
+  }
+}
+
+void MainWindow::bindDerivedBatchPreferences(PreferencesDialog& dialog) {
+  connect(&dialog, &PreferencesDialog::derivedBatchSettingsChanged, this, &MainWindow::applyDerivedBatchPreferences);
+}
+
 void MainWindow::onShowAboutDialog() {
+#ifdef PJ_TARGET_WASM
+  auto* dialog = new AboutDialog(this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setChromeMetrics(chrome_metrics_);
+  dialog->open();
+#else
   AboutDialog dialog(this);
   dialog.setChromeMetrics(chrome_metrics_);
   dialog.exec();
+#endif
 }
 
 void MainWindow::showToast(const QString& message, const QPixmap& icon) {
@@ -3742,9 +3858,7 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   // shell owns the family→kind mapping). The first topic dropped into such an
   // empty dock seeds streaming playback, matching the placeholder→drop path.
   connect(docker, &PlotDocker::objectFamilyRequested, this, &MainWindow::onObjectFamilyRequested, Qt::UniqueConnection);
-  connect(
-      docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::seedStreamingPlaybackFromDrop,
-      Qt::UniqueConnection);
+  connect(docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::onFirstObjectTopicAdded, Qt::UniqueConnection);
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
@@ -3781,8 +3895,21 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   topic_demand_controller_->registerPlot(plot);
   plot->setTrackerPosition(toAxisDouble(session_->playbackEngine().currentTime()));
   applyGlobalToggles(plot);
+  connect(plot, &PlotWidget::markerTargetsChanged, this, &MainWindow::onPlotMarkerTargetsChanged, Qt::UniqueConnection);
+  reportMarkerStatus(plot);
+  pushSeriesStatus(plot);
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
     bindEditorToPlot(plot);
+  }
+}
+
+void MainWindow::onPlotMarkerTargetsChanged() {
+  reportMarkerStatus(qobject_cast<PlotWidget*>(sender()));
+}
+
+void MainWindow::reportMarkerStatus(PlotWidget* plot) {
+  if (push_marker_status_ && plot != nullptr) {
+    push_marker_status_(plot);
   }
 }
 
@@ -3823,12 +3950,7 @@ void MainWindow::openFilterEditor(std::vector<CurveDescriptor> sources, PlotWidg
     emitDiagnostic(DiagnosticLevel::kWarning, "Filter", "apply", message);
   });
 
-  if (!presentPanel(panel)) {
-    // Another chart-area panel (e.g. a toolbox) is already open.
-    emitDiagnostic(DiagnosticLevel::kWarning, "Filter", "panel", tr("Close the open panel before applying a filter"));
-    panel->deleteLater();
-    return;
-  }
+  presentPanel(panel);
   filter_editor_origin_ = origin;  // the preview mirrors this plot's grid/style/width
   syncFilterEditorPreviewDisplay();
 }
@@ -4159,6 +4281,12 @@ void MainWindow::onUseTimeOffsetToggled(bool checked) {
   session_->sessionManager().setUseTimeOffset(checked);
 }
 
+void MainWindow::onFirstObjectTopicAdded(DockWidget* dock) {
+  seedStreamingPlaybackFromDrop();
+  // A layout restore never gets here: it repopulates layers without a drop.
+  frameDroppedScene3dContent(dock != nullptr ? dock->objectWidget() : nullptr);
+}
+
 void MainWindow::seedStreamingPlaybackFromDrop() {
   if (active_streaming_dataset_id_ == 0) {
     return;
@@ -4376,6 +4504,7 @@ void MainWindow::forEachVisibleDock(const std::function<void(DockWidget*)>& oper
 
 void MainWindow::broadcastTrackerTime(double display_seconds) {
   forEachDock([display_seconds](DockWidget* dock) { dock->onTrackerTime(display_seconds); });
+  tickEmbeddedViews(display_seconds, /*visible_only=*/false);
   ui_->curveListPanel->refreshValues(display_seconds);
 }
 
@@ -4388,6 +4517,7 @@ void MainWindow::broadcastTrackerTimeToVisible(double display_seconds) {
   // broadcastTrackerTime() (ALL tabs) so a hidden tab is correct the instant it is
   // revealed, and the currentTabChanged handler re-seeds the newly active tab.
   forEachVisibleDock([display_seconds](DockWidget* dock) { dock->onTrackerTime(display_seconds); });
+  tickEmbeddedViews(display_seconds, /*visible_only=*/true);
   ui_->curveListPanel->refreshValues(display_seconds);
 }
 
@@ -4415,12 +4545,26 @@ void MainWindow::syncWidgetsToCatalog() {
   // Each widget prunes its OWN now-invalid pieces against the live catalog/store:
   //  - plots drop curves whose source key is gone (empty plot stays, reusable);
   //  - object viewers drop layers whose topic was evicted, reporting empty so the
-  //    shell resets that dock to the reusable placeholder.
+  //    shell resets that dock to the reusable placeholder, except in a plugin's own
+  //    tab: the plugin chose its kind, so the emptied scene stays a scene.
   forEachPlot([](PlotWidget* plot) { plot->revalidate(); });
-  forEachDock([](DockWidget* dock) {
-    auto* viewer = dynamic_cast<IObjectViewer*>(dock->objectWidget());
-    if (viewer != nullptr && !viewer->revalidateObjects()) {
-      dock->clearToPlaceholder();
+  // A plugin panel's embedded view keeps its emptied widget too: the plugin owns the
+  // frame, whose unchanged request the binding never re-applies, so the shell re-attaches
+  // what it still asks for (and forgets the ids an evicted topic held: clear() reuses them).
+  for (const QPointer<SceneDockWidget>& view : embedded_scene_views_) {
+    if (view != nullptr) {
+      (void)view->revalidateObjects();
+      reattachEmbeddedTopics(*view);
+    }
+  }
+  ui_->tabbedPlotWidget->forEachDocker([](PlotDocker* docker) {
+    const bool plugin_owned = !docker->ownerPlugin().isEmpty();
+    for (int index = 0; index < docker->plotCount(); ++index) {
+      DockWidget* dock = docker->plotAt(index);
+      auto* viewer = dock == nullptr ? nullptr : dynamic_cast<IObjectViewer*>(dock->objectWidget());
+      if (viewer != nullptr && !viewer->revalidateObjects() && !plugin_owned) {
+        dock->clearToPlaceholder();
+      }
     }
   });
   // Clearing a dock to its placeholder doesn't change ADS focus, so the right
@@ -4878,7 +5022,7 @@ void MainWindow::onRebuildToolboxMenu() {
     const auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
     // Skip toolboxes that opt out of this menu: "cloud" ones are reached from the
     // Sources panel; "hidden" ones are launched elsewhere (e.g. the Transform
-    // Editor, opened from the "+" in Custom Series).
+    // Editor, opened from the "+" in Custom Topics).
     bool skip = false;
     if (manifest.is_object()) {
       if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
@@ -6057,7 +6201,7 @@ void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& 
     QScopedValueRollback guard(applying_state_, true);
     // FileLoader is still producing topics. Tear down the previous graph now,
     // but replay nothing until queueDrained, when missing inputs are meaningful.
-    static_cast<void>(restoreDataProcessors(QDomElement{}));
+    static_cast<void>(applyDataProcessors(DerivedSnapshot{}));
     // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths
     // return is not needed here because the progressive binder reports them at
     // drain.
@@ -6230,10 +6374,10 @@ void MainWindow::schedulePendingDisplayBindingRebuild() {
 }
 
 MainWindow::SceneRestoreVerdict MainWindow::settleSceneRestores() {
-  // One final retry so a deferred element whose identity became resolvable is
-  // validated now, then fold every dock's verdict. Aggregation lives here —
-  // a dock cannot see its siblings.
-  retryPendingSceneRestores({});
+  // Each dock closes its dataset choice and makes one final retry, so a deferred element
+  // whose identity became resolvable is validated now; then fold every dock's verdict.
+  // Aggregation lives here — a dock cannot see its siblings.
+  forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->finishRestore(); });
   SceneRestoreVerdict verdict;
   forEachSceneDock([&verdict](SceneDockWidget* scene_dock) {
     verdict.failed = verdict.failed || scene_dock->workspaceRestoreFailed();
@@ -6738,580 +6882,306 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "saved", tr("Saved layout: %1").arg(QFileInfo(path).fileName()));
 }
 
-QDomElement MainWindow::saveDataProcessors(QDomDocument& doc, SnapshotScope scope) const {
-  QDomElement element = doc.createElement(u"data_processors"_s);
-  for (const auto& recipe : session_->sessionManager().dataProcessorService().recipes()) {
-    // Resolve the input column to a stable (topic, field) path so it rebinds on
-    // reload exactly like a plotted curve.
-    const QString input_key = u"dataset:%1/topic:%2/column:%3"_s.arg(recipe.dataset_id)
-                                  .arg(recipe.input_topic_id)
-                                  .arg(recipe.input_column_index);
-    const std::optional<CurveDescriptor> input_desc = session_->catalogModel().curveDescriptor(input_key);
-    if (!input_desc.has_value()) {
-      continue;  // input field is gone; nothing to persist
-    }
-    QDomElement processor = doc.createElement(u"processor"_s);
-    processor.setAttribute(u"input_topic"_s, input_desc->topic_name);
-    processor.setAttribute(u"input_field"_s, input_desc->field_path);
-    // Dataset qualifiers so the input rebinds to its own source dataset on restore,
-    // never a same-topic sibling (first-match was part of the reported undo bug).
-    // input_dataset_path is stamped by stampDatasetSourcePaths at layout-file save.
-    processor.setAttribute(u"input_dataset_id"_s, QString::number(recipe.dataset_id));
-    if (const auto source = session_->catalogModel().datasetSourceName(recipe.dataset_id); source.has_value()) {
-      processor.setAttribute(u"input_dataset_source"_s, *source);
-    }
-    processor.setAttribute(u"processor_id"_s, QString::fromStdString(recipe.processor_id));
-    processor.setAttribute(u"output_name"_s, QString::fromStdString(recipe.output_name));
-    if (recipe.processor) {
-      layout_xml::appendJsonAsCdata(doc, processor, QString::fromStdString(recipe.processor->saveParams()));
-    }
-    // Embed the filter's Luau source so the layout reopens on a machine without
-    // this filter installed (resolved by restore's source_fallback leg). A named
-    // child element, NOT a second direct CDATA child — restore reads params via
-    // directCdataText, which ignores child elements. Empty for native C++ builtins.
-    if (!recipe.filter_source.empty()) {
-      QDomElement source_el = doc.createElement(u"source_fallback"_s);
-      layout_xml::appendJsonAsCdata(doc, source_el, QString::fromStdString(recipe.filter_source));
-      processor.appendChild(source_el);
-    }
-    element.appendChild(processor);
+bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+  DerivedSnapshot snapshot = derivedObjects().parse(root, intent);
+  if (!checkDataProcessorDependencies(snapshot, out_reason)) {
+    return false;
   }
-  // Plugin-created transforms (pj.data_processors.v1): named, owner-tagged nodes
-  // that carry their script + bindings BY VALUE, so they replay on load WITHOUT the
-  // originating plugin (needed only for re-editing). Persisted in the same snapshot
-  // block as the per-curve filters above; restore re-installs them via
-  // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
-  // engine resolves them on restore), so no (topic, field) rebinding is needed here.
-  std::vector<DataProcessorService::TransformRecipe> transforms =
-      session_->sessionManager().dataProcessorService().transformRecipes();
-  orderTransformsByDependency(transforms);
-  for (const auto& recipe : transforms) {
-    // History snapshots omit entries the restore has no authority to replay.
-    if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
-      continue;
-    }
-    QDomElement transform = doc.createElement(u"transform"_s);
-    transform.setAttribute(u"owner_plugin"_s, QString::fromStdString(recipe.owner_plugin));
-    transform.setAttribute(u"id"_s, QString::fromStdString(recipe.user_id));
-    if (recipe.history_exempt) {
-      transform.setAttribute(u"history_exempt"_s, u"1"_s);
-    }
-    transform.setAttribute(u"backend"_s, QString::fromStdString(recipe.backend));
-    transform.setAttribute(u"api_version"_s, QString::fromStdString(recipe.api_version));
-    if (!recipe.backend_version.empty()) {
-      transform.setAttribute(u"backend_version"_s, QString::fromStdString(recipe.backend_version));
-    }
-    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
-      const std::string& input_name = recipe.inputs[index];
-      QDomElement in = doc.createElement(u"input"_s);
-      in.setAttribute(u"name"_s, QString::fromStdString(input_name));
-      if (index < recipe.input_bindings.size()) {
-        const auto& binding = recipe.input_bindings[index];
-        in.setAttribute(u"dataset_id"_s, QString::number(binding.dataset_id));
-        in.setAttribute(u"dataset_source"_s, QString::fromStdString(binding.dataset_source));
-        in.setAttribute(u"topic"_s, QString::fromStdString(binding.topic_name));
-        in.setAttribute(u"field"_s, QString::fromStdString(binding.field_path));
-        in.setAttribute(u"column"_s, QString::number(static_cast<qulonglong>(binding.column_index)));
-      }
-      transform.appendChild(in);
-    }
-    for (const auto& output_name : recipe.outputs) {
-      QDomElement out = doc.createElement(u"output"_s);
-      out.setAttribute(u"name"_s, QString::fromStdString(output_name));
-      transform.appendChild(out);
-    }
-    // params (create(params), JSON) and script (the full backend payload, Luau today)
-    // each get their own CDATA child so restore reads them back independently.
-    if (!recipe.params_json.empty()) {
-      QDomElement params = doc.createElement(u"params"_s);
-      layout_xml::appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
-      transform.appendChild(params);
-    }
-    QDomElement script = doc.createElement(u"script"_s);
-    layout_xml::appendJsonAsCdata(doc, script, QString::fromStdString(recipe.script));
-    transform.appendChild(script);
-    element.appendChild(transform);
-  }
-
-  // Marker generators (kind=markers of pj.data_processors.v1): whole-series object
-  // generators run by MarkerService. Persisted like transforms — script + inputs
-  // BY VALUE so they replay on load without the originating plugin. Dataset identity
-  // is stamped for cross-session rebind (mirrors the <processor> qualifiers); an
-  // all_datasets generator has no single dataset, so it stamps none.
-  for (const auto& recipe : session_->sessionManager().markerService().recipes()) {
-    // Marker generators use the same history scope as transforms.
-    if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
-      continue;
-    }
-    QDomElement gen = doc.createElement(u"generator"_s);
-    gen.setAttribute(u"id"_s, QString::fromStdString(recipe.id));
-    if (recipe.history_exempt) {
-      gen.setAttribute(u"history_exempt"_s, u"1"_s);
-    }
-    gen.setAttribute(u"language"_s, QString::fromStdString(recipe.language));
-    gen.setAttribute(u"all_datasets"_s, recipe.all_datasets ? u"1"_s : u"0"_s);
-    if (!recipe.all_datasets) {
-      gen.setAttribute(u"dataset_id"_s, QString::number(recipe.dataset_id));
-      if (const auto source = session_->catalogModel().datasetSourceName(recipe.dataset_id); source.has_value()) {
-        gen.setAttribute(u"dataset_source"_s, *source);
-      }
-      gen.setAttribute(u"dataset_path"_s, session_->sessionManager().datasetSourcePath(recipe.dataset_id));
-    }
-    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
-      QDomElement in = doc.createElement(u"input"_s);
-      in.setAttribute(u"name"_s, QString::fromStdString(recipe.inputs[index]));
-      if (index < recipe.declared_inputs.size()) {
-        in.setAttribute(u"declared"_s, QString::fromStdString(recipe.declared_inputs[index]));
-      }
-      gen.appendChild(in);
-    }
-    for (const auto& output_name : recipe.outputs) {
-      QDomElement out = doc.createElement(u"output"_s);
-      out.setAttribute(u"name"_s, QString::fromStdString(output_name));
-      gen.appendChild(out);
-    }
-    if (!recipe.params_json.empty()) {
-      QDomElement params = doc.createElement(u"params"_s);
-      layout_xml::appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
-      gen.appendChild(params);
-    }
-    QDomElement gen_script = doc.createElement(u"script"_s);
-    layout_xml::appendJsonAsCdata(doc, gen_script, QString::fromStdString(recipe.script));
-    gen.appendChild(gen_script);
-    element.appendChild(gen);
-  }
-  return element;
+  return applyDataProcessors(std::move(snapshot));
 }
 
-std::vector<DataProcessorService::TransformRecipe> MainWindow::parseWantedTransforms(
-    const QDomElement& element, bool keep_exempt, bool* restored_all) {
-  std::vector<DataProcessorService::TransformRecipe> wanted_transforms;
-  for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
-       transform = transform.nextSiblingElement(u"transform"_s)) {
-    DataProcessorService::TransformRecipe recipe;
-    QString transform_parse_error;
-    recipe.owner_plugin = transform.attribute(u"owner_plugin"_s).toStdString();
-    recipe.user_id = transform.attribute(u"id"_s).toStdString();
-    recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
-    recipe.history_exempt = transform.attribute(u"history_exempt"_s) == u"1"_s;
-    // Defensive: a kHistory document never carries an exempt entry by
-    // construction (saveDataProcessors omits them), but history still has no
-    // authority to replay one if it somehow did (e.g. a hand-edited snapshot).
-    if (keep_exempt && recipe.history_exempt) {
-      continue;
-    }
-    recipe.backend = transform.attribute(u"backend"_s, u"luau"_s).toStdString();
-    recipe.api_version = transform.attribute(u"api_version"_s, u"1"_s).toStdString();
-    recipe.backend_version = transform.attribute(u"backend_version"_s).toStdString();
-    std::vector<DataProcessorService::TransformInputBinding> parsed_bindings;
-    bool has_persisted_binding = false;
-    for (QDomElement in = transform.firstChildElement(u"input"_s); !in.isNull();
-         in = in.nextSiblingElement(u"input"_s)) {
-      recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
-      DataProcessorService::TransformInputBinding binding;
-      const bool has_binding = in.hasAttribute(u"dataset_id"_s) || in.hasAttribute(u"dataset_source"_s) ||
-                               in.hasAttribute(u"dataset_path"_s) || in.hasAttribute(u"topic"_s) ||
-                               in.hasAttribute(u"field"_s) || in.hasAttribute(u"column"_s);
-      has_persisted_binding = has_persisted_binding || has_binding;
-      if (in.hasAttribute(u"dataset_id"_s)) {
-        bool ok = false;
-        const qulonglong raw = in.attribute(u"dataset_id"_s).toULongLong(&ok);
-        if (ok && raw <= std::numeric_limits<DatasetId>::max()) {
-          binding.dataset_id = static_cast<DatasetId>(raw);
-        } else {
-          transform_parse_error = tr("invalid input dataset id");
-        }
-      }
-      binding.dataset_source = in.attribute(u"dataset_source"_s).toStdString();
-      binding.topic_name = in.attribute(u"topic"_s).toStdString();
-      binding.field_path = in.attribute(u"field"_s).toStdString();
-      const QString saved_dataset_path = in.attribute(u"dataset_path"_s);
-      if (!saved_dataset_path.isEmpty()) {
-        const DatasetIdentityResolution resolved = session_->sessionManager().resolveDatasetIdentity(
-            binding.dataset_id, QString::fromStdString(binding.dataset_source), saved_dataset_path);
-        if (resolved.id.has_value()) {
-          binding.dataset_id = *resolved.id;
-          if (const DatasetInfo* live = session_->sessionManager().dataEngine().getDataset(*resolved.id)) {
-            binding.dataset_source = live->source_name;
-          }
-        } else {
-          transform_parse_error =
-              resolved.ambiguous ? tr("ambiguous input dataset path") : tr("input dataset path is not loaded");
-        }
-      }
-      if (in.hasAttribute(u"column"_s)) {
-        bool ok = false;
-        const qulonglong raw = in.attribute(u"column"_s).toULongLong(&ok);
-        if (ok && raw <= std::numeric_limits<std::size_t>::max()) {
-          binding.column_index = static_cast<std::size_t>(raw);
-        } else {
-          transform_parse_error = tr("invalid input column");
-        }
-      }
-      parsed_bindings.push_back(std::move(binding));
-    }
-    if (has_persisted_binding) {
-      recipe.input_bindings = std::move(parsed_bindings);
-    }
-    for (QDomElement out = transform.firstChildElement(u"output"_s); !out.isNull();
-         out = out.nextSiblingElement(u"output"_s)) {
-      recipe.outputs.push_back(out.attribute(u"name"_s).toStdString());
-    }
-    recipe.params_json = layout_xml::directCdataText(transform.firstChildElement(u"params"_s)).toStdString();
-    if (recipe.params_json.empty()) {
-      recipe.params_json = "{}";
-    }
-    recipe.script = layout_xml::directCdataText(transform.firstChildElement(u"script"_s)).toStdString();
-    if (!transform_parse_error.isEmpty()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
-          tr("Could not restore transform '%1': %2").arg(QString::fromStdString(recipe.key), transform_parse_error));
-      *restored_all = false;
-      continue;
-    }
-    wanted_transforms.push_back(std::move(recipe));
-  }
-  orderTransformsByDependency(wanted_transforms);  // older layouts were written unordered
-  return wanted_transforms;
+DerivedObjects MainWindow::derivedObjects() const {
+  return DerivedObjects(session_->sessionManager(), session_->catalogModel());
 }
 
-std::vector<MainWindow::WantedFilter> MainWindow::parseWantedFilters(const QDomElement& element) const {
-  std::vector<WantedFilter> wanted;
-  // A null <data_processors> yields a null firstChildElement, so this loop runs
-  // zero times and the snapshot wants no filter at all.
-  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
-       processor = processor.nextSiblingElement(u"processor"_s)) {
-    WantedFilter entry;
-    entry.input = layout_xml::SeriesPath{
-        processor.attribute(u"input_topic"_s), processor.attribute(u"input_field"_s),
-        static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
-        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
-    if (const std::optional<CurveDescriptor> input_desc =
-            resolveSeriesDescriptor(session_->catalogModel(), entry.input);
-        input_desc.has_value()) {
-      entry.persisted.input_topic_id = input_desc->topic_id;
-      entry.persisted.dataset_id = input_desc->dataset_id;
-      entry.persisted.input_column_index = input_desc->column_index;
-    }
-    entry.persisted.processor_id = processor.attribute(u"processor_id"_s).toStdString();
-    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
-    // <source_fallback> child (QDomElement::text() would recurse and merge them).
-    const QString params = layout_xml::directCdataText(processor);
-    entry.persisted.params_json = params.isEmpty() ? std::string("{}") : params.toStdString();
-    entry.persisted.filter_source = processor.firstChildElement(u"source_fallback"_s).text().toStdString();
-    entry.persisted.output_name = processor.attribute(u"output_name"_s).toStdString();
-    wanted.push_back(std::move(entry));
+void MainWindow::reportDerived(const std::vector<DerivedDiagnostic>& diagnostics) {
+  for (const DerivedDiagnostic& diagnostic : diagnostics) {
+    emitDiagnostic(DiagnosticLevel::kWarning, "Layout", diagnostic.id, diagnostic.message);
   }
-  return wanted;
 }
 
-bool MainWindow::repairDataProcessors(
-    std::vector<WantedFilter>& wanted_filters,
-    const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
-    const std::unordered_set<std::string>& live_exempt_keys) {
-  auto& service = session_->sessionManager().dataProcessorService();
-  const auto is_live = [&service](const WantedFilter& wanted) {
-    return wanted.persisted.input_topic_id != 0 &&
-           service.isFilterLive(wanted.persisted.dataset_id, wanted.persisted.output_name);
-  };
-  // A failure is recorded per snapshot entry (its identity may not resolve yet)
-  // and reported once at the end: an entry whose input only a later round
-  // creates legitimately fails until then.
-  std::map<std::size_t, QString> filter_failures;
-  std::map<std::string, QString> transform_failures;
-  for (bool progress = true; progress;) {
-    progress = false;
-    if (std::any_of(
-            wanted_filters.begin(), wanted_filters.end(), [&](const auto& wanted) { return !is_live(wanted); })) {
-      session_->catalogModel().rebuildFromDatastore();
-    }
-    for (std::size_t index = 0; index < wanted_filters.size(); ++index) {
-      WantedFilter& wanted = wanted_filters[index];
-      if (is_live(wanted)) {
-        continue;
-      }
-      DataProcessorService::PersistedFilter& persisted = wanted.persisted;
-      const std::optional<CurveDescriptor> input_desc = resolveSeriesDescriptor(session_->catalogModel(), wanted.input);
-      if (!input_desc.has_value()) {
-        persisted.input_topic_id = 0;
-        filter_failures[index] =
-            tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(wanted.input.topic, wanted.input.field);
-        continue;
-      }
-      persisted.input_topic_id = input_desc->topic_id;
-      persisted.dataset_id = input_desc->dataset_id;
-      persisted.input_column_index = input_desc->column_index;
-      if (service.isFilterLive(persisted.dataset_id, persisted.output_name)) {
-        filter_failures.erase(index);  // resolved onto a filter already live (kept, or a duplicate)
-        continue;
-      }
-      // Resolve order: live catalogue → embedded source → transitional C++ builtin.
-      std::unique_ptr<proc::DataProcessor> built =
-          service.makeRestoredProcessor(persisted.processor_id, persisted.params_json, persisted.filter_source);
-      if (!built) {
-        filter_failures[index] = tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.")
-                                     .arg(QString::fromStdString(persisted.processor_id));
-        continue;
-      }
-      const auto applied = service.applyFilter(
-          persisted.input_topic_id, persisted.dataset_id, std::move(built), persisted.output_name,
-          persisted.input_column_index);
-      if (applied.has_value()) {
-        filter_failures.erase(index);
-        progress = true;
-      } else {
-        filter_failures[index] =
-            tr("Could not restore filter '%1': %2")
-                .arg(QString::fromStdString(persisted.output_name), QString::fromStdString(applied.error()));
-      }
-    }
-    for (const auto& recipe : wanted_transforms) {
-      if (live_exempt_keys.count(recipe.key) != 0 || service.isTransformLive(recipe.key)) {
-        continue;
-      }
-      if (const auto restored = service.restoreTransform(recipe); restored.has_value()) {
-        transform_failures.erase(recipe.key);
-        progress = true;
-      } else {
-        transform_failures[recipe.key] =
-            tr("Could not restore transform '%1': %2")
-                .arg(QString::fromStdString(recipe.key), QString::fromStdString(restored.error()));
-      }
-    }
-  }
-  const auto report = [this](const auto& failures, const char* diagnostic_id) {
-    for (const auto& [key, reason] : failures) {
-      emitDiagnostic(DiagnosticLevel::kWarning, "Layout", diagnostic_id, reason);
-    }
-    return failures.empty();
-  };
-  const bool filters_restored = report(filter_failures, "processor-restore-failed");
-  const bool transforms_restored = report(transform_failures, "transform-restore-failed");
-  return filters_restored && transforms_restored;
-}
-
-bool MainWindow::checkDataProcessorDependencies(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+bool MainWindow::checkDataProcessorDependencies(const DerivedSnapshot& snapshot, QString* out_reason) {
   if (out_reason != nullptr) {
     out_reason->clear();
   }
-  if (intent != RestoreIntent::kHistory) {
+  const std::optional<QString> reason = derivedObjects().refusal(snapshot);
+  if (!reason.has_value()) {
     return true;
   }
-  auto& service = session_->sessionManager().dataProcessorService();
-  MarkerService& marker_service = session_->sessionManager().markerService();
-  // Reject before the first clear if what this restore removes — each filter and
-  // each non-exempt transform the snapshot drops or changes, plus everything the
-  // removal cascades into — would strand an exempt transform or marker generator.
-  // Removal cascades between filters and transforms, so checking after the first
-  // clear would be too late. Nothing below mutates the session: this is a query
-  // over the same parse restoreDataProcessors repeats to actually apply it.
-  if (!service.hasHistoryExemptTransforms() && !marker_service.hasHistoryExemptGenerators()) {
-    return true;
-  }
-  const QDomElement element = root.firstChildElement(u"data_processors"_s);
-  bool restored_all = true;
-  const std::vector<WantedFilter> wanted_filters = parseWantedFilters(element);
-  const std::vector<DataProcessorService::TransformRecipe> wanted_transforms =
-      parseWantedTransforms(element, /*keep_exempt=*/true, &restored_all);
-  std::vector<DataProcessorService::PersistedFilter> persisted_filters;
-  persisted_filters.reserve(wanted_filters.size());
-  for (const WantedFilter& wanted : wanted_filters) {
-    persisted_filters.push_back(wanted.persisted);
-  }
-  const std::unordered_set<TopicId> unchanged_filters = service.unchangedFilterOutputs(persisted_filters);
-  const std::unordered_set<std::string> unchanged_keys = service.unchangedTransformKeys(wanted_transforms, intent);
-  const DataProcessorService::HistoryRemovalImpact impact =
-      service.historyRemovalImpact(unchanged_keys, unchanged_filters);
-  std::vector<std::string> blocked = impact.exempt_transform_names;
-  const std::vector<std::string> blocked_markers = marker_service.exemptDependentsOf(impact.removed_output_names);
-  blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
-  std::sort(blocked.begin(), blocked.end());
-  blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
-  if (blocked.empty()) {
-    return true;
-  }
-  QStringList names;
-  names.reserve(static_cast<int>(blocked.size()));
-  for (const std::string& name : blocked) {
-    names.push_back(QString::fromStdString(name));
-  }
-  const QString reason =
-      tr("Cannot undo: protected outputs would lose an input this step removes: %1").arg(names.join(u", "_s));
   if (out_reason != nullptr) {
-    *out_reason = reason;
+    *out_reason = *reason;
   }
-  emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "history-exempt-blocked", reason);
+  emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "history-exempt-blocked", *reason);
   return false;
 }
 
-bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
-  if (!checkDataProcessorDependencies(root, intent, out_reason)) {
-    return false;
-  }
-  auto& service = session_->sessionManager().dataProcessorService();
-  MarkerService& marker_service = session_->sessionManager().markerService();
-
-  // Parse the snapshot's filters and transforms first and decide which live ones
-  // it leaves unchanged: those stay live with their output TopicIds, so curves
-  // bound to them (e.g. in a preserved history-exempt tab, which no history
-  // snapshot describes) survive an unrelated undo. The same sets define what the
-  // clears further down count as removed.
-  const QDomElement element = root.firstChildElement(u"data_processors"_s);
-  const bool keep_exempt = intent == RestoreIntent::kHistory;
-  bool restored_all = true;
-  std::vector<WantedFilter> wanted_filters = parseWantedFilters(element);
-  std::vector<DataProcessorService::TransformRecipe> wanted_transforms =
-      parseWantedTransforms(element, keep_exempt, &restored_all);
-  std::vector<DataProcessorService::PersistedFilter> persisted_filters;
-  persisted_filters.reserve(wanted_filters.size());
-  for (const WantedFilter& wanted : wanted_filters) {
-    persisted_filters.push_back(wanted.persisted);
-  }
-  const std::unordered_set<TopicId> unchanged_filters = service.unchangedFilterOutputs(persisted_filters);
-  const std::unordered_set<std::string> unchanged_keys = service.unchangedTransformKeys(wanted_transforms, intent);
-  std::unordered_set<std::string> live_exempt_keys;
-  for (const auto& live : service.transformRecipes()) {
-    if (keep_exempt && live.history_exempt) {
-      live_exempt_keys.insert(live.key);
-    }
-  }
-
-  // Drop the filters and the transforms the snapshot lacks or changes; a kept
-  // entry reading a removed output falls with it and is re-created below. A
-  // snapshot with NO <data_processors> clears everything; the rebuild at the end
-  // MUST run on every path so the retired outputs leave the catalog. Replacement
-  // may drop every transform; history never touches the exempt ones, after the
-  // preflight above.
-  service.clearAllFilters(unchanged_filters);
-  service.clearTransforms(intent, unchanged_keys);
-
-  restored_all = repairDataProcessors(wanted_filters, wanted_transforms, live_exempt_keys) && restored_all;
-
-  // Marker generators: clear + replay, same as transforms. Done after them so a
-  // generator reading a transform/filter output resolves it by name. upsertGenerator
-  // re-creates AND re-runs each in one call, so no separate recompute is needed.
-  // Replacement clears every generator; history clears only the non-exempt ones,
-  // after the dependency preflight above.
-  //
-  // upsertGenerator publishes to the store without announcing it. The toolbox's
-  // onDataChanged sends the same notification; this replay must do so too, once,
-  // after the catalog rebuild below.
-  const std::size_t generators_before = marker_service.recipes().size();
-  bool any_generator_restored = false;
-  marker_service.clearGenerators(intent);
-  std::unordered_set<std::string> live_exempt_generators;
-  if (keep_exempt) {
-    for (const auto& live : marker_service.recipes()) {
-      if (live.history_exempt) {
-        live_exempt_generators.insert(live.id);
-      }
-    }
-  }
-  for (QDomElement gen = element.firstChildElement(u"generator"_s); !gen.isNull();
-       gen = gen.nextSiblingElement(u"generator"_s)) {
-    MarkerService::GeneratorRecipe recipe;
-    recipe.id = gen.attribute(u"id"_s).toStdString();
-    recipe.history_exempt = gen.attribute(u"history_exempt"_s) == u"1"_s;
-    // Mirrors the transform loop: history has no authority over an exempt
-    // generator, whether the document flags it or a live exempt one holds its id.
-    if (keep_exempt && (recipe.history_exempt || live_exempt_generators.count(recipe.id) != 0)) {
-      continue;
-    }
-    recipe.kind = GeneratorKind::kMarkers;
-    recipe.language = gen.attribute(u"language"_s, u"luau"_s).toStdString();
-    recipe.all_datasets = gen.attribute(u"all_datasets"_s) == u"1"_s;
-    QString gen_parse_error;
-    if (!recipe.all_datasets) {
-      bool ok = false;
-      const qulonglong raw = gen.attribute(u"dataset_id"_s).toULongLong(&ok);
-      if (ok && raw <= std::numeric_limits<DatasetId>::max()) {
-        recipe.dataset_id = static_cast<DatasetId>(raw);
-      }
-      const QString saved_source = gen.attribute(u"dataset_source"_s);
-      const QString saved_path = gen.attribute(u"dataset_path"_s);
-      // Ids are minted by load order, so a saved id is trusted only while its
-      // portable qualifiers (source label, path) still agree; a bare id stays as is.
-      if (!saved_source.isEmpty() || !saved_path.isEmpty()) {
-        const DatasetIdentityResolution resolved =
-            session_->sessionManager().resolveDatasetIdentity(recipe.dataset_id, saved_source, saved_path);
-        if (resolved.id.has_value()) {
-          recipe.dataset_id = *resolved.id;
-        } else {
-          gen_parse_error = resolved.ambiguous ? tr("ambiguous dataset identity") : tr("dataset is not loaded");
-        }
-      }
-    }
-    bool any_declared = false;
-    for (QDomElement in = gen.firstChildElement(u"input"_s); !in.isNull(); in = in.nextSiblingElement(u"input"_s)) {
-      recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
-      recipe.declared_inputs.push_back(in.attribute(u"declared"_s, in.attribute(u"name"_s)).toStdString());
-      any_declared = any_declared || in.hasAttribute(u"declared"_s);
-    }
-    if (!any_declared) {
-      recipe.declared_inputs.clear();
-    }
-    for (QDomElement out = gen.firstChildElement(u"output"_s); !out.isNull();
-         out = out.nextSiblingElement(u"output"_s)) {
-      recipe.outputs.push_back(out.attribute(u"name"_s).toStdString());
-    }
-    recipe.params_json = layout_xml::directCdataText(gen.firstChildElement(u"params"_s)).toStdString();
-    recipe.script = layout_xml::directCdataText(gen.firstChildElement(u"script"_s)).toStdString();
-    // A generator that cannot be restored is reported and skipped, but does NOT fail
-    // the restore: unlike a filter or transform, it publishes only overlay decoration
-    // — no topic that a curve, a plot or a scene binds to. Failing the restore here
-    // costs the user the whole workspace (applyWorkspace rolls back) to save a set of
-    // annotations, and a rule whose input series is legitimately absent in the data
-    // this layout was reopened against is an ordinary outcome, not a corrupt layout.
-    if (!gen_parse_error.isEmpty()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "generator-restore-failed",
-          tr("Could not restore marker generator '%1': %2").arg(QString::fromStdString(recipe.id), gen_parse_error));
-      continue;
-    }
-    if (const auto restored = marker_service.upsertGenerator(recipe); !restored.has_value()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "generator-restore-failed",
-          tr("Could not restore marker generator '%1': %2")
-              .arg(QString::fromStdString(recipe.id), QString::fromStdString(restored.error())));
-    } else {
-      any_generator_restored = true;
-    }
-  }
-  session_->catalogModel().rebuildFromDatastore();
-  if (any_generator_restored || marker_service.recipes().size() != generators_before) {
-    session_->sessionManager().notifyMarkersChanged();
-  }
-  // A null <data_processors> reaches here with every clearAll* done and nothing
-  // replayed, so this empties the panel — which is what the teardown pass of a
-  // progressive restore wants.
-  syncCustomSeriesPanel();
-  return restored_all;
+bool MainWindow::applyDataProcessors(DerivedSnapshot snapshot) {
+  const DerivedRestoreReport report = derivedObjects().restore(std::move(snapshot));
+  reportDerived(report.diagnostics);
+  // An empty snapshot reaches here with every recipe cleared and nothing replayed,
+  // so this empties the panel — which is what the teardown pass of a progressive
+  // restore wants.
+  syncCustomTopicsPanel();
+  return report.restored_all;
 }
 
-void MainWindow::syncCustomSeriesPanel() {
+void MainWindow::syncCustomTopicsPanel() {
+  custom_topic_transform_rows_stale_ = true;
+  refreshCustomTopicsPanel();
+}
+
+void MainWindow::refreshCustomTopicsPanel() {
+  custom_topics_sync_pending_ = false;
+  ++custom_topics_syncs_;
   if (session_ == nullptr) {
     return;
   }
-  // One pass over the catalog, then O(1) per output. First key wins for a
-  // repeated topic name, matching how a plotted curve resolves one.
-  QHash<QString, QString> key_by_topic;
-  for (const auto& item : session_->catalogModel().items()) {
-    if (!key_by_topic.contains(item.topic_name)) {
-      key_by_topic.insert(item.topic_name, item.key);
-    }
-  }
-  QStringList keys;
-  // Deliberately unfiltered by owner: a restored transform's plugin may not be
-  // loaded at all, which is exactly why the layout carries the script by value.
-  for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
-    for (const auto& output_name : recipe.outputs) {
-      if (const auto found = key_by_topic.constFind(QString::fromStdString(output_name));
-          found != key_by_topic.constEnd()) {
-        keys.push_back(found.value());
+  const CatalogModel& catalog = session_->catalogModel();
+  if (custom_topic_transform_rows_stale_) {
+    custom_topic_transform_rows_stale_ = false;
+    ++custom_topics_transform_scans_;
+    custom_topic_transform_rows_.clear();
+    // Deliberately unfiltered by owner: a restored transform's plugin may not be
+    // loaded at all, which is exactly why the layout carries the script by value.
+    const auto transforms = session_->sessionManager().dataProcessorService().transformRecipes();
+    if (!transforms.empty()) {
+      // One pass over the catalog, then O(1) per output. First key wins for a
+      // repeated topic name, matching how a plotted curve resolves one.
+      QHash<QString, QString> key_by_topic;
+      for (const auto& item : catalog.items()) {
+        if (!key_by_topic.contains(item.topic_name)) {
+          key_by_topic.insert(item.topic_name, item.key);
+        }
+      }
+      for (const auto& recipe : transforms) {
+        for (const auto& output_name : recipe.outputs) {
+          if (const auto found = key_by_topic.constFind(QString::fromStdString(output_name));
+              found != key_by_topic.constEnd()) {
+            custom_topic_transform_rows_.push_back(
+                {.key = found.value(), .owner = QString::fromStdString(recipe.owner_plugin)});
+          }
+        }
       }
     }
   }
-  ui_->curveListPanel->setCustomCurves(keys);
+  std::vector<CurveListPanel::CustomTopicRow> rows;
+  for (const TransformTopicRow& transform_row : custom_topic_transform_rows_) {
+    rows.push_back({.key = transform_row.key, .owner = transform_row.owner});
+  }
+  // Persistent on-demand recipes, findings included; a preview is never a row. One flat
+  // row per object output, named by the recipe id, or `id/output` when it has several.
+  // Each output's key is a catalog lookup, so a refresh costs nothing per catalog row.
+  const OnDemandService& on_demand = session_->sessionManager().onDemandService();
+  for (const DatasetId dataset : session_->sessionManager().dataEngine().listDatasets()) {
+    for (const std::string& key : on_demand.graph().keysOf(dataset)) {
+      const RecipeGraph::Node* node = on_demand.graph().find(key);
+      if (node == nullptr || node->recipe.ephemeral) {
+        continue;
+      }
+      const std::vector<ObjectTopicId> topics = on_demand.history().topicsOf(key);
+      const std::optional<NodeScheduler::NodeState> state = on_demand.state(key);
+      size_t object_output = 0;
+      for (const scripting::OutputSpec& output : node->recipe.outputs) {
+        if (output.type != scripting::OutputType::kObject || object_output >= topics.size()) {
+          continue;
+        }
+        const std::optional<QString> catalog_key = catalog.objectTopicKey(dataset, topics[object_output++]);
+        if (!catalog_key.has_value()) {
+          continue;
+        }
+        QString name = QString::fromStdString(node->recipe.user_id);
+        if (topics.size() > 1) {
+          name += u'/' + QString::fromStdString(output.name);
+        }
+        rows.push_back(
+            {.key = *catalog_key,
+             .owner = QString::fromStdString(node->recipe.owner_plugin),
+             .name = std::move(name),
+             .pinned_t = node->recipe.pinned_t,
+             .state = state});
+      }
+      // A series writes one engine topic with a column per number output, in declaration order: a flat row each,
+      // always `id/output`, since a recipe with an object output already lists the bare id.
+      if (const std::optional<SeriesRunner::State> series = on_demand.series().state(key)) {
+        size_t column = 0;
+        for (const scripting::OutputSpec& output : node->recipe.outputs) {
+          if (output.type != scripting::OutputType::kNumber) {
+            continue;
+          }
+          if (const std::optional<QString> catalog_key = catalog.scalarColumnKey(dataset, series->topic, column++)) {
+            rows.push_back(
+                {.key = *catalog_key,
+                 .owner = QString::fromStdString(node->recipe.owner_plugin),
+                 .name = QString::fromStdString(node->recipe.user_id) + u'/' + QString::fromStdString(output.name)});
+          }
+        }
+      }
+    }
+  }
+  ui_->curveListPanel->setCustomTopics(rows);
+}
+
+void MainWindow::scheduleCustomTopicsSync() {
+  if (custom_topics_sync_pending_) {
+    return;
+  }
+  custom_topics_sync_pending_ = true;
+  QTimer::singleShot(0, this, [this]() { refreshCustomTopicsPanel(); });
+}
+
+void MainWindow::syncCustomTopicsEditor() {
+  ui_->curveListPanel->setEditorPluginId(session_->extensionCatalog().customTopicsEditorId());
+}
+
+void MainWindow::reportDeleteRefusal(const CustomTopicDeleteRefusal& refusal) {
+  using Reason = CustomTopicDeleteRefusal::Reason;
+  const QString user_id = QString::fromStdString(refusal.user_id);
+  const auto owner_name = [this, &refusal]() {
+    return session_->extensionCatalog().toolboxDisplayName(QString::fromStdString(refusal.owner_plugin));
+  };
+  switch (refusal.reason) {
+    case Reason::kGone:
+      syncCustomTopicsPanel();  // the row outlived its recipe: clearing it is all there is to do
+      return;
+    case Reason::kReadOnly:
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "CustomTopics", "delete-read-only",
+          refusal.owner_plugin.empty()
+              ? tr("'%1' has no owner and cannot be deleted from here").arg(user_id)
+              : tr("'%1' was created by %2 and cannot be deleted from here").arg(user_id, owner_name()));
+      return;
+    case Reason::kForeignReader:
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "CustomTopics", "delete-cascade-read-only",
+          tr("'%1' cannot be deleted: '%2' of %3 reads its output")
+              .arg(user_id, QString::fromStdString(refusal.reader), owner_name()));
+      return;
+    case Reason::kExemptReader:
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "CustomTopics", "delete-exempt-reader",
+          tr("'%1' cannot be deleted: the protected '%2' reads its output")
+              .arg(user_id, QString::fromStdString(refusal.reader)));
+      return;
+  }
+}
+
+void MainWindow::deleteCustomTopic(const QString& catalog_key) {
+  deleteCustomTopics({catalog_key});
+}
+
+void MainWindow::deleteCustomTopics(const QStringList& catalog_keys) {
+  // Resolved before anything goes: a delete relists the catalog, and a prompt the user
+  // cancels must not come back for the recipe's next row.
+  std::vector<std::string> recipes;
+  QStringList outputs;
+  for (const QString& catalog_key : catalog_keys) {
+    if (const RecipeGraph::Node* node = onDemandNodeOfCatalogKey(*session_, catalog_key)) {
+      if (std::find(recipes.begin(), recipes.end(), node->recipe.key()) == recipes.end()) {
+        recipes.push_back(node->recipe.key());
+      }
+    } else {
+      outputs.push_back(catalog_key);
+    }
+  }
+  for (const std::string& key : recipes) {
+    deleteOnDemandRecipe(key);
+  }
+  for (const QString& output : outputs) {
+    deleteTransformOutput(output);
+  }
+}
+
+void MainWindow::deleteOnDemandRecipe(const std::string& key) {
+  // Asked again once a prompt is answered: the editor may have been unloaded, or a reader installed, meanwhile.
+  const auto refused = [this, key]() {
+    const std::optional<CustomTopicDeleteRefusal> refusal = onDemandDeleteRefusal(
+        session_->sessionManager().onDemandService().graph(), key, session_->extensionCatalog().customTopicsEditorId());
+    if (refusal.has_value()) {
+      reportDeleteRefusal(*refusal);
+    }
+    return refusal.has_value();
+  };
+  if (refused()) {
+    return;
+  }
+  const auto remove = [this, key, refused]() {
+    if (refused()) {
+      return;
+    }
+    OnDemandService& on_demand = session_->sessionManager().onDemandService();
+    // A history-exempt recipe is outside undo and redo: removed directly. An ordinary
+    // one is an undo step, the baseline refreshed first because an install pushes no
+    // snapshot of its own.
+    const bool history_exempt = on_demand.graph().find(key)->recipe.history_exempt;
+    if (!history_exempt) {
+      hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+    }
+    // The announcement relists the catalog, which drops the rows and any view bound to the topics.
+    if (!on_demand.remove(key).empty()) {
+      session_->sessionManager().notifyObjectTopicsChanged();
+    }
+    if (!history_exempt) {
+      onUndoableChange(/*force_new_state=*/true);
+    }
+  };
+  const std::vector<std::string> dependents = session_->sessionManager().onDemandService().graph().dependentsOf({key});
+  if (dependents.empty()) {
+    remove();
+    return;
+  }
+  QStringList names;
+  for (const std::string& dependent : dependents) {
+    names << QString::fromStdString(dependent);
+  }
+  MessageBox::questionAsync(
+      this, tr("Delete derived topic?"),
+      tr("These derived topics read what you are deleting. They stay, but report a missing input:\n\n• %1")
+          .arg(names.join(u"\n• "_s)),
+      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      [remove](int choice, bool) {
+        if (choice == 0) {
+          remove();
+        }
+      });
+}
+
+bool MainWindow::mayDeleteTransformWriting(TopicId output_topic) {
+  SessionManager& session_manager = session_->sessionManager();
+  const std::optional<CustomTopicDeleteRefusal> refusal = transformDeleteRefusal(
+      session_manager.dataProcessorService(), session_manager.onDemandService().graph(), session_manager.batchEngine(),
+      output_topic, session_->extensionCatalog().customTopicsEditorId());
+  if (refusal.has_value()) {
+    reportDeleteRefusal(*refusal);
+  }
+  return !refusal.has_value();
+}
+
+void MainWindow::deleteTransformOutput(const QString& catalog_key) {
+  const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+  if (!output.has_value()) {
+    syncCustomTopicsPanel();  // the row outlived its catalog item: clearing it is all there is to do
+    return;
+  }
+  const TopicId output_topic = output->topic_id;
+  if (!mayDeleteTransformWriting(output_topic)) {
+    return;
+  }
+  confirmAndRemoveDependentTransforms(
+      {output_topic},
+      [this, output_topic]() {
+        // Looked up again: the confirmation may have removed transforms.
+        DataProcessorService& live = session_->sessionManager().dataProcessorService();
+        const auto transform = live.transformOwning(output_topic);
+        if (!transform.has_value() || !live.removeTransform(transform->key).has_value()) {
+          syncCustomTopicsPanel();
+          return;
+        }
+        // The rebuild retires the output topic, so itemsRemoved fires synchronously and
+        // the panel drops the row on its own.
+        session_->catalogModel().rebuildFromDatastore();
+      },
+      // The editor may have been unloaded, or a foreign reader added, while the prompt was open.
+      [this, output_topic]() { return mayDeleteTransformWriting(output_topic); });
 }
 
 void MainWindow::recordRecentLayout(const QString& path) {
@@ -7333,6 +7203,14 @@ QStringList MainWindow::recentLayouts() const {
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
+  // A hidden embedded scene view skips the per-tick cursor moves (tickEmbeddedViews);
+  // revealed, it catches up to the playhead, which may since have stopped moving.
+  if (type == QEvent::Show && !embedded_scene_views_.isEmpty()) {
+    if (auto* scene = qobject_cast<SceneDockWidget*>(watched);
+        scene != nullptr && embedded_scene_views_.contains(scene)) {
+      scene->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+    }
+  }
   // QTipLabel is the internal widget Qt creates for tooltips. On Linux
   // KWin / Mutter normally paint a drop shadow around any tool/popup
   // window; setting Qt::NoDropShadowWindowHint asks the platform plugin
@@ -7417,7 +7295,7 @@ QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocum
   // undo/redo restore so both bind curves identically; returns the paths no
   // loaded dataset could provide (the caller decides whether to prompt).
   return layout_xml::rebindCurveKeys(
-      doc, [this](const layout_xml::SeriesPath& p) { return resolveSeriesPath(session_->catalogModel(), p); });
+      doc, [this](const layout_xml::SeriesPath& p) { return session_->catalogModel().resolveCurveKey(p); });
 }
 
 MainWindow::TimelineChromeState MainWindow::captureTimelineChrome() const {
@@ -7644,7 +7522,9 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // pre-restore one, so offsets move BEFORE the processor replay.
   // 1. Preflight (read-only): reject before anything mutates if dropping this
   //    snapshot's processors would strand an exempt transform or marker generator.
-  if (!checkDataProcessorDependencies(root, intent, out_reason)) {
+  //    The one parse also drives step 3.
+  DerivedSnapshot processors = derivedObjects().parse(root, intent);
+  if (!checkDataProcessorDependencies(processors, out_reason)) {
     return RestoreResult::kFailed;
   }
   // 2. Move each track's display offset to its saved value.
@@ -7658,7 +7538,7 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // 3. Recreate the snapshot's filters and replay its generators, so each derived
   //    output topic is in the catalog and its plotted (derived) curve resolves like
   //    any other curve, and a marker generator recomputes under the offset above.
-  if (!restoreDataProcessors(root, intent, out_reason)) {
+  if (!applyDataProcessors(std::move(processors))) {
     return RestoreResult::kFailed;
   }
   // 4. Rebind every curve's stable topic+field to a concrete catalog key.
@@ -7979,7 +7859,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
       // appendJsonAsCdata splits across multiple CDATA sections when the JSON
       // contains a literal "]]>" sequence (otherwise it'd terminate the
       // CDATA early and corrupt the layout file).
-      layout_xml::appendJsonAsCdata(doc, plugin, src.plugin_config_json);
+      appendJsonAsCdata(doc, plugin, src.plugin_config_json);
       file_info.appendChild(plugin);
     }
 
@@ -8001,7 +7881,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
       QDomElement materialize = doc.createElement(u"materialize"_s);
       materialize.setAttribute(u"provider"_s, record->provider_id);
       materialize.setAttribute(u"identity"_s, record->source_identity);
-      layout_xml::appendJsonAsCdata(doc, materialize, record->descriptor_json);
+      appendJsonAsCdata(doc, materialize, record->descriptor_json);
       file_info.appendChild(materialize);
       break;
     }
@@ -8500,7 +8380,7 @@ QDomDocument MainWindow::xmlSaveState(SnapshotScope scope) const {
   // used by undo/redo (not just layout save). Without this, undoing across a filter's
   // creation drops its derived curve (its output topic is never recreated on restore).
   // saveLayoutToPath therefore no longer appends this separately.
-  root.appendChild(saveDataProcessors(doc, scope));
+  root.appendChild(derivedObjects().save(doc, scope));
   return doc;
 }
 
@@ -9386,89 +9266,31 @@ MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
   return {.container = container, .apply_chrome = apply_chrome};
 }
 
-bool MainWindow::presentPanel(QWidget* panel) {
-  if (panel == nullptr) {
-    return false;
-  }
+void MainWindow::presentPanel(QWidget* panel) {
+  Q_ASSERT(panel);
   // A panel is already presented: dismiss it so launching a new toolbox/panel
   // replaces the open one instead of refusing.
   dismissTakeoverPanel();
 
-  // The chart area (ui_->tabbedPlotWidget) lives as a direct child of a
-  // QSplitter in MainWindow.ui. Swap the panel into the chart's splitter slot
-  // and remember the slot so restoreCentralArea() can put the chart back.
-  QWidget* chart = ui_->tabbedPlotWidget;
-  panel_parent_ = chart->parentWidget();
-  auto* splitter = qobject_cast<QSplitter*>(panel_parent_);
-  if (splitter == nullptr) {
-    qWarning("MainWindow::presentPanel: tabbedPlotWidget is not in a QSplitter");
-    panel_parent_ = nullptr;
-    return false;
-  }
-  panel_layout_index_ = splitter->indexOf(chart);
-  if (panel_layout_index_ < 0) {
-    qWarning("MainWindow::presentPanel: chart not in splitter");
-    panel_parent_ = nullptr;
-    return false;
-  }
-  // Swap the panel into the chart's exact splitter slot via replaceWidget so the
-  // pane count stays constant and the saved size list still lines up (an
-  // insert+hide would leave N+1 panes against an N-entry size list). replaceWidget
-  // hands the chart back to us, reparented out of the splitter; keep it hidden so
-  // restoreCentralArea can swap it back into the same slot.
-  const QList<int> saved_sizes = splitter->sizes();
-  QWidget* removed = splitter->replaceWidget(panel_layout_index_, panel);
-  if (removed != chart) {
-    qWarning("MainWindow::presentPanel: unexpected widget at chart slot; aborting swap");
-    if (removed != nullptr) {
-      splitter->replaceWidget(panel_layout_index_, removed);
-    }
-    panel_parent_ = nullptr;
-    panel_layout_index_ = -1;
-    return false;
-  }
-  chart->hide();
-  panel->show();
-  // The incoming panel inherits the chart's role as the pane that absorbs every
-  // width change, not just its slot. Without this the sidebar starts growing
-  // again the moment the window is resized with a panel open — replaceWidget
-  // carries no stretch factor over from the widget it displaced.
-  splitter->setStretchFactor(panel_layout_index_, 1);
-  splitter->setSizes(saved_sizes);
+  ui_->centralAreaStack->addWidget(panel);
+  ui_->centralAreaStack->setCurrentWidget(panel);
   current_panel_ = panel;
-  return true;
 }
 
 QWidget* MainWindow::releaseCentralPanel() {
   if (current_panel_ == nullptr) {
     return nullptr;
   }
-  auto* splitter = qobject_cast<QSplitter*>(panel_parent_);
-  if (splitter == nullptr || panel_layout_index_ < 0) {
-    qWarning("MainWindow::releaseCentralPanel: panel_parent_ is no longer a splitter; chart not restored to slot");
-    ui_->tabbedPlotWidget->show();
-  } else {
-    // Swap the chart back into its slot; replaceWidget removes the panel and
-    // hands it back reparented out of the splitter.
-    const QList<int> saved_sizes = splitter->sizes();
-    splitter->replaceWidget(panel_layout_index_, ui_->tabbedPlotWidget);
-    // Show the chart before restoring the sizes: a hidden pane is left out of
-    // the splitter's layout, so sizes applied while the chart is still hidden
-    // are recomputed the instant it appears — and the sidebar keeps the slack.
-    ui_->tabbedPlotWidget->show();
-    splitter->setSizes(saved_sizes);
-  }
   QWidget* released = current_panel_;
+  ui_->centralAreaStack->setCurrentWidget(ui_->tabbedPlotWidget);
+  ui_->centralAreaStack->removeWidget(released);
   released->hide();
-  released->setParent(nullptr);
   current_panel_ = nullptr;
   filter_editor_origin_ = nullptr;  // no Filter Editor preview to drive once the panel is gone
   // The engine (when this was a toolbox panel) is owned by whoever tore the
   // panel down (the onCloseRequested handler, presentPanel's replace path, or
   // the migrate gesture); here we only drop our non-owning reference.
   current_panel_engine_ = nullptr;
-  panel_layout_index_ = -1;
-  panel_parent_ = nullptr;
   return released;
 }
 
@@ -9519,6 +9341,17 @@ void MainWindow::foldTakeoverPanelIfOwnedBy(const void* owner, bool transient) {
   }
 }
 
+void MainWindow::revealOwnedTabOverTakeover(const QString& plugin_id, PlotDocker* docker) {
+  ToolboxPresenter* toolbox = takeoverToolbox();
+  if (toolbox == nullptr || toolbox->pluginId() != plugin_id) {
+    return;
+  }
+  // The fold keeps the panel's instance alive and leaves the panel's own tab
+  // current, so the new tab is selected after it.
+  toolbox->moveToTab(/*transient=*/true);
+  ui_->tabbedPlotWidget->focusTab(docker);
+}
+
 bool MainWindow::hostHasWorkInFlight(ToolboxRuntimeHost* host) const {
   if (host_work_in_flight_) {
     return host_work_in_flight_(host);
@@ -9537,19 +9370,34 @@ void MainWindow::stopHostWork(ToolboxRuntimeHost* host) {
 }
 
 bool MainWindow::confirmCancelRunningJob(const QString& label) {
+  // Desktop's prompt is modal, so the continuation has run by the time this
+  // returns. The browser cannot block; its callers use the async form.
+  bool confirmed = false;
+  confirmCancelRunningJobAsync(label, [&confirmed]() { confirmed = true; });
+  return confirmed;
+}
+
+void MainWindow::confirmCancelRunningJobAsync(const QString& label, std::function<void()> on_confirmed) {
   if (confirm_running_job_) {
-    return confirm_running_job_(label);
+    if (confirm_running_job_(label)) {
+      on_confirmed();
+    }
+    return;
   }
   // No default button: closing here cancels a transfer the user may have been
   // waiting on for minutes, so an accidental Enter must not do it. Esc /
   // dismiss keeps downloading.
-  constexpr int kCancelAndClose = 0;
-  const int choice = MessageBox::question(
+  static constexpr int kCancelAndClose = 0;
+  MessageBox::questionAsync(
       this, label.isEmpty() ? tr("Cancel download?") : label, tr("A download is in progress. Cancel it and close?"),
       // "&&" so Qt renders a literal ampersand instead of eating it as a mnemonic.
       {{tr("Cancel download && close"), MessageBox::kDestructiveRole},
-       {tr("Keep downloading"), MessageBox::kCancelRole}});
-  return choice == kCancelAndClose;
+       {tr("Keep downloading"), MessageBox::kCancelRole}},
+      [on_confirmed = std::move(on_confirmed)](int choice, bool) {
+        if (choice == kCancelAndClose) {
+          on_confirmed();
+        }
+      });
 }
 
 void MainWindow::openEmbeddedConsole() {
@@ -9558,10 +9406,7 @@ void MainWindow::openEmbeddedConsole() {
 #else
   auto* view = new RasterStreamView(this);
   view->setKeyTranslator(&engineKeyForQtKey);
-  if (!presentPanel(view)) {
-    view->deleteLater();
-    return;
-  }
+  presentPanel(view);
   connect(view, &RasterStreamView::sessionEnded, this, [this]() { restoreCentralArea(); });
   const QString dir = QCoreApplication::applicationDirPath() + u"/3rdparty/retro/"_s;
   QString helper = QStandardPaths::findExecutable(u"pj-raster-helper"_s, {dir});
@@ -9582,9 +9427,7 @@ struct ToolboxPanelSession {
   std::unique_ptr<QSettingsBackend> settings;
   std::unique_ptr<ServiceRegistryBuilder> builder;
   std::unique_ptr<ToolboxRuntimeHost> host;
-  std::unique_ptr<MarkersRuntimeHost> markers_host;
-  std::unique_ptr<DataProcessorsRuntimeHost> dp_host;
-  std::unique_ptr<DataProcessorsKindRouter> dp_router;
+  std::unique_ptr<DerivedRuntimeHosts> derived_hosts;
   std::unique_ptr<SourcePromotionHost> promotion_host;
   std::unique_ptr<PlaybackControlHost> playback_host;
   std::unique_ptr<ViewportRuntimeHost> viewport_host;
@@ -9601,23 +9444,21 @@ struct ToolboxPanelSession {
   // and the safe synchronous shutting_down_ rejection, not a
   // use-after-free. Then the plugin (handle), which persists its state
   // through the settings backend in its destructor; only now the promotion
-  // host; then the service views (builder) into host/dp_host/settings,
-  // then the bridge + host. dp_host holds only an external
-  // DataProcessorService& (session-owned, outlives this), so it just has
-  // to outlive the builder views into it; host holds a SettingsBackend&,
-  // so settings goes last. This survives a future member reorder; the
-  // implicit reverse-declaration destruction that follows only resets
-  // already-null pointers.
+  // host; then the service views (builder) into host/derived_hosts/settings,
+  // then the bridges + host. derived_hosts holds only references to
+  // session-owned engines (which outlive this), so it just has to outlive the
+  // builder views into it and follow the handle (it ends the plugin's previews,
+  // which no plugin call may re-create); host holds a SettingsBackend&, so
+  // settings goes last. This survives a future member reorder; the implicit
+  // reverse-declaration destruction that follows only resets already-null pointers.
   ~ToolboxPanelSession() {
     if (promotion_host != nullptr) {
       promotion_host->shutdown();
     }
     handle.reset();
     promotion_host.reset();
-    builder.reset();       // drops the service views into host + the routed bridges first
-    dp_router.reset();     // holds fat pointers into markers_host + dp_host, so goes before them
-    markers_host.reset();  // bridge only; the generators live on in MarkerService
-    dp_host.reset();
+    builder.reset();        // drops the service views into host + the routed bridges first
+    derived_hosts.reset();  // ends this plugin's previews; its persistent recipes live on in the engines
     // Pure adapters over session-owned services (PlaybackEngine) and
     // MainWindow-capturing lambdas — both outlive every ToolboxPanelSession.
     playback_host.reset();
@@ -9634,12 +9475,11 @@ struct ToolboxPanelSession {
 std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
     const RuntimeToolboxPlugin& toolbox, const QString& plugin_id, const QString& source,
     const std::function<void(const QString&, const QString&)>& report_error) {
-  // KEEP IN SYNC: HeadlessDescriptorProviderSession::create mirrors this
-  // whole service-assembly block for the dialog-free layout-import path (a
-  // provider plugin must see an identical host environment headless vs
-  // interactive). Any service newly registered here — or any change to the
-  // callbacks' host-side semantics — must be applied there too; the
-  // verbatim-shared snippets live in ToolboxHostWiring.h.
+  // HeadlessDescriptorProviderSession::create binds a provider plugin to the services
+  // a provider uses, for the dialog-free layout-import path: the toolbox host,
+  // DerivedRuntimeHosts and source promotion. Those are built the same way in both
+  // places (ToolboxHostWiring.h holds the shared snippets); keep a change to their
+  // host-side semantics in step there.
   auto session = std::make_shared<ToolboxPanelSession>();
   session->settings = std::make_unique<QSettingsBackend>();
   session->builder = std::make_unique<ServiceRegistryBuilder>();
@@ -9678,11 +9518,11 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
     // A toolbox write may have added/removed markers; repaint plot overlays.
     session_->sessionManager().notifyMarkersChanged();
     // A toolbox write may also have created or withdrawn transforms; re-derive the
-    // Custom Series list (flat, not in the main data tree) from what the service
+    // Custom Topics list (flat, not in the main data tree) from what the service
     // holds now. Deriving rather than announcing is what makes a withdrawal drop
     // its row: an announce-only pass has nothing to say about a recipe that is
     // gone.
-    syncCustomSeriesPanel();
+    syncCustomTopicsPanel();
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
     auto& dps = session_->sessionManager().dataProcessorService();
     qInfo(
@@ -9846,40 +9686,12 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
     return nullptr;
   }
 
-  // Host-driven data processors (pj.data_processors.v1, kind=markers): expose the marker
-  // service so a toolbox can submit whole-series generators the HOST runs + recomputes
-  // (the anomaly-detector path) instead of executing the script in-process. The service's
-  // catalog-backed resolver/lister are installed once at construction, not here — see
-  // the MainWindow constructor.
-  const auto source_name_of = [this](PJ::DatasetId id) -> std::optional<std::string> {
-    const std::optional<QString> src = session_->catalogModel().datasetSourceName(id);
-    return src.has_value() ? std::optional<std::string>(src->toStdString()) : std::nullopt;
-  };
-  session->markers_host = std::make_unique<MarkersRuntimeHost>(
-      session_->sessionManager().markerService(), plugin_id.toStdString(),
-      [this, source_name_of](
-          std::vector<std::string>& inputs, std::vector<std::string>& outputs) -> PJ::Expected<PJ::DatasetId> {
-        // Bind the generator to the dataset its keys name (qualified keys pick it
-        // explicitly and are normalized to bare form); an unqualified input that
-        // exists in several datasets is refused with the qualified candidates —
-        // landing on the first-loaded dataset silently stranded generators on the
-        // wrong data. Policy lives in pj_runtime so it is testable and stays in
-        // step with the series resolver the MainWindow constructor installs.
-        std::vector<PJ::DatasetId> datasets;
-        for (const auto& [id, label] : session_->catalogModel().datasets()) {
-          datasets.push_back(id);
-        }
-        return PJ::resolveMarkerDataset(inputs, outputs, session_->catalogModel().items(), datasets, source_name_of);
-      },
-      source_name_of);
-  session->dp_host = std::make_unique<DataProcessorsRuntimeHost>(
-      session_->sessionManager().dataProcessorService(), plugin_id.toStdString());
-  // ONE pj.data_processors.v1 registration, routed by kind: the registry rejects
-  // duplicate names, so registering both bridges directly would silently drop the
-  // second one and break that kind's toolboxes.
-  session->dp_router =
-      std::make_unique<DataProcessorsKindRouter>(session->markers_host->raw(), session->dp_host->raw());
-  if (auto status = session->dp_router->registerServices(*session->builder); !status) {
+  // Host-driven data processors (pj.data_processors.v1): transforms and marker rules
+  // the HOST runs and recomputes, so a toolbox submits them by data instead of
+  // executing the script in-process. Assembled with the headless session's.
+  session->derived_hosts = std::make_unique<DerivedRuntimeHosts>(
+      session_->sessionManager(), session_->catalogModel(), plugin_id.toStdString());
+  if (auto status = session->derived_hosts->registerServices(*session->builder); !status) {
     report_error(
         source, tr("Failed to publish data-processor services for '%1': %2")
                     .arg(source, QString::fromStdString(status.error())));
@@ -10077,6 +9889,7 @@ void MainWindow::launchToolbox(
   // of falling back to the bare ChartPreviewWidget.
   panel_config.session = session_.get();
   panel_config.catalog = &session_->catalogModel();
+  panel_config.embedded_views = makeEmbeddedViewHost();
   panel_config.catalog_key_resolver = [this](const std::string& key) -> std::string {
     auto descriptor = session_->catalogModel().curveDescriptor(QString::fromStdString(key));
     if (!descriptor) {
@@ -10128,10 +9941,8 @@ void MainWindow::launchToolbox(
               },
           .on_float =
               [this, plugin_id]() { withToolbox(plugin_id, [](ToolboxPresenter& shown) { shown.moveToFloating(); }); },
-          .on_dock =
-              [this, plugin_id]() {
-                withToolbox(plugin_id, [](ToolboxPresenter& shown) { shown.moveToDockOrTab(); });
-              }},
+          .on_dock = [this,
+                      plugin_id]() { withToolbox(plugin_id, [](ToolboxPresenter& shown) { shown.moveToDock(); }); }},
       /*persist_key=*/plugin_id);
   ToolboxPresenter& presenter = registerToolbox(
       plugin_id, ToolboxPresenter::Spec{
@@ -10152,10 +9963,8 @@ void MainWindow::launchToolbox(
 
   if (target == ToolboxLaunchTarget::kPinnedTab) {
     presenter.moveToTab(/*transient=*/false);
-  } else if (!presenter.moveToDock()) {
-    report_error(source, tr("Cannot show '%1': another panel is already open").arg(source));
-    teardownToolbox(plugin_id, ToolboxPresenter::Teardown::kDeferred);
-    return;
+  } else {
+    presenter.moveToDock();
   }
   schedulePanelPreviewSync();
 }
@@ -10215,7 +10024,7 @@ QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
     if (const QString config = toolbox.saveConfig(); !config.isEmpty()) {
       // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
       // layout site — a plain text node entity-escapes on each round trip.
-      layout_xml::appendJsonAsCdata(doc, element, config);
+      appendJsonAsCdata(doc, element, config);
     }
     root.appendChild(element);
   };
@@ -10283,7 +10092,13 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
     // raise the confirmation modal. Its resolution is the same as a decline —
     // the live panels and their jobs are retained, the layout's pinned set is
     // not applied — reported through the diagnostic sink.
-    if (policy == MissingCurvePolicy::kRetainAndDiagnose) {
+    // The browser cannot ask mid-restore (no modal loop), so it resolves the
+    // same way.
+    bool can_prompt = policy != MissingCurvePolicy::kRetainAndDiagnose;
+#ifdef PJ_TARGET_WASM
+    can_prompt = false;
+#endif
+    if (!can_prompt) {
       reportLayoutRestoreIssue(
           policy, "pinned-toolbox-busy",
           tr("Layout restore kept the current pinned panels: '%1' has a job still running.").arg(busy_label));
@@ -10321,8 +10136,7 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
     // QDomElement::text(): the latter recurses into any future child
     // elements).
     launchToolbox(
-        plugin_id, layout_xml::directCdataText(element), ToolboxLaunchTarget::kPinnedTab,
-        element.attribute(u"tab_name"_s));
+        plugin_id, directCdataText(element), ToolboxLaunchTarget::kPinnedTab, element.attribute(u"tab_name"_s));
   }
   return true;
 }

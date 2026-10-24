@@ -175,7 +175,7 @@ combined behavior:
 | ID | Requirement | Metric |
 |----|-------------|--------|
 | NF-01 | C++20 | Module builds at C++20 (`CMAKE_CXX_STANDARD 20`), matching the rest of PJ4 and `plotjuggler_sdk` |
-| NF-02 | Qt 6.x Widgets | 6.11 now; 6.12 LTS target |
+| NF-02 | Qt 6.x Widgets | 6.12 LTS |
 | NF-03 | Cross-platform | Works on Linux, Windows, macOS |
 | NF-04 | Build system: CMake | Standard CMake project |
 | NF-05 | Dependencies: Conan (current), Pixi (future) | Builds with specified tools |

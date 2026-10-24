@@ -78,7 +78,8 @@ class TopicStorage {
   /// drop late data.
   [[nodiscard]] PJ::Status appendSealedChunk(TopicChunk chunk);
 
-  /// Remove chunks whose max time is strictly before `t_keep_min`.
+  /// Remove chunks whose max time is strictly before `t_keep_min` and raise the
+  /// retention floor to it. Records the evicted chunks in evictedThroughChunkId().
   void evictBefore(Timestamp t_keep_min);
 
   /// Unconditionally remove all retained sealed chunks.
@@ -92,7 +93,8 @@ class TopicStorage {
     std::deque<TopicChunk> chunks;
     std::vector<ColumnDescriptor> column_descriptors;
     Timestamp retention_floor = kNoRetentionFloor;  // NOT 0 -- see kNoRetentionFloor
-    SchemaId schema_id = 0;                         // descriptor().schema_id, mutable via updateSchema()
+    ChunkId evicted_through_chunk_id = 0;
+    SchemaId schema_id = 0;  // descriptor().schema_id, mutable via updateSchema()
     uint32_t max_observed_array_length = 0;
     uint32_t truncated_sample_count = 0;
     std::unordered_map<std::string, uint32_t> array_expansion_counts;
@@ -122,7 +124,7 @@ class TopicStorage {
   [[nodiscard]] const std::deque<TopicChunk>& sealedChunks() const noexcept;
 
   /// Store column layout for schema_id==0 topics (populated at writer registration time).
-  /// Allows derived engine and fresh writers to resolve the layout without a committed chunk.
+  /// Allows incremental engine and fresh writers to resolve the layout without a committed chunk.
   void setColumnDescriptors(std::vector<ColumnDescriptor> descs) noexcept;
 
   /// Inline column layout (non-empty for schema_id==0 topics after the first writer is created).
@@ -158,6 +160,12 @@ class TopicStorage {
   /// Raised monotonically by evictBefore(); reset by clearChunks(). See the
   /// sealedChunks() caveat.
   [[nodiscard]] Timestamp retentionFloor() const noexcept;
+
+  /// Highest chunk id that evictBefore() dropped, or cut rows from by raising the
+  /// floor into it; 0 when nothing was ever evicted. Chunk ids ascend in commit
+  /// order, so a consumer whose last-consumed chunk id is below this one never saw
+  /// some evicted rows. Reset by clearChunks().
+  [[nodiscard]] ChunkId evictedThroughChunkId() const noexcept;
 
   /// Monotonic generation of the series content visible to readers, EXCLUDING
   /// the two mutations an incremental consumer can absorb on its own: a
@@ -262,6 +270,7 @@ class TopicStorage {
   // requested cutoff; read accessors clamp to it so rows below it stay invisible
   // even while their straddling chunk remains physically retained (lazy GC).
   Timestamp retention_floor_ = kNoRetentionFloor;
+  ChunkId evicted_through_chunk_id_ = 0;  // see evictedThroughChunkId()
   // Authoritative expansion count per variable-length array field path.
   // Shared across all DataWriter instances writing to this topic.
   std::unordered_map<std::string, uint32_t> array_expansion_counts_;

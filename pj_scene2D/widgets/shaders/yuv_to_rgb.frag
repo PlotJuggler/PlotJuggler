@@ -10,9 +10,10 @@ layout(binding = 2) uniform sampler2D u_tex;
 // V plane (unused for NV12/RGBA)
 layout(binding = 3) uniform sampler2D v_tex;
 // Rectification lookup: per output pixel, the SOURCE sample point in [0,1]
-// texture space (.rg); .r < 0 marks an out-of-bounds pixel (render black).
-// Sampled NEAREST so each output pixel gets its exact precomputed source coord.
-layout(binding = 4) uniform sampler2D remap_tex;
+// texture space, as the bits of two floats (RG32UI: QRhi has no RG32F); .r < 0
+// marks an out-of-bounds pixel (render black). Fetched texel-exact so each
+// output pixel gets its precomputed source coord.
+layout(binding = 4) uniform usampler2D remap_tex;
 
 layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
@@ -37,7 +38,9 @@ void main()
     vec2 uv = v_uv;
     if (rectify == 1) {
         // Look up the source sample point for this output pixel.
-        vec2 s = texture(remap_tex, v_uv).rg;
+        ivec2 remap_size = textureSize(remap_tex, 0);
+        ivec2 texel = clamp(ivec2(v_uv * vec2(remap_size)), ivec2(0), remap_size - 1);
+        vec2 s = uintBitsToFloat(texelFetch(remap_tex, texel, 0).rg);
         if (s.x < 0.0) {  // out-of-bounds sentinel -> black border
             fragColor = vec4(0.0, 0.0, 0.0, 1.0);
             return;
@@ -90,15 +93,23 @@ void main()
     float y = texture(y_tex, uv).r;
     float u, v;
 
+    // 4:2:0 chroma sample (x / 2, y / 2) belongs to luma pixel (x, y). At an odd
+    // size the (n + 1) / 2-sample chroma plane ends in a sample covering one luma
+    // pixel, so scale uv by n / (2 * chroma_n) instead of stretching the plane over
+    // the frame. The select keeps even sizes exactly at uv (no rounded n / n).
+    ivec2 luma_size = textureSize(y_tex, 0);
+    ivec2 chroma_span = 2 * textureSize(u_tex, 0);
+    vec2 chroma_uv = mix(uv * vec2(luma_size) / vec2(chroma_span), uv, equal(luma_size, chroma_span));
+
     if (pixelFormat == 1) {
         // NV12: UV interleaved in a single RG texture
-        vec2 uv_val = texture(u_tex, uv).rg;
+        vec2 uv_val = texture(u_tex, chroma_uv).rg;
         u = uv_val.r;
         v = uv_val.g;
     } else {
         // YUV420P: separate U and V planes
-        u = texture(u_tex, uv).r;
-        v = texture(v_tex, uv).r;
+        u = texture(u_tex, chroma_uv).r;
+        v = texture(v_tex, chroma_uv).r;
     }
 
     // YUV → RGB via color matrix (BT.709 or BT.601)

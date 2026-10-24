@@ -9,11 +9,14 @@
 #include <string>
 #include <vector>
 
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 
 namespace pj::scene3d {
 namespace {
+
+using pj::tf::StampedTransform;
+using pj::tf::Transform;
 
 using namespace std::chrono_literals;
 
@@ -38,6 +41,18 @@ const TfConnectionSegment* findByChild(const std::vector<TfConnectionSegment>& s
     }
   }
   return nullptr;
+}
+
+// TF R6: the lines join the triads at the cursor, in the entry clock. The 200 ns
+// sample (x = 2) is logged at 300 ns, so at 250 ns the line still ends at x = 1.
+TEST(TfConnectionsTest, SegmentsReadTheEntryClock) {
+  TransformBuffer tf(TransformBuffer::kKeepAll);
+  ASSERT_TRUE(tf.setTransform(stamped("world", "a", tp(100ns), translation(1, 0, 0)), tp(100ns)).has_value());
+  ASSERT_TRUE(tf.setTransform(stamped("world", "a", tp(200ns), translation(2, 0, 0)), tp(300ns)).has_value());
+
+  const auto segs = buildTfConnectionSegments(tf, "world", tp(250ns));
+  ASSERT_EQ(segs.size(), 1u);
+  EXPECT_NE(findByChild(segs, {1, 0, 0}), nullptr);
 }
 
 TEST(TfConnectionsTest, OneSegmentPerNonRootFrameToParentOrigin) {

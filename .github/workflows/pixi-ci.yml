@@ -8,7 +8,7 @@ name: Pixi CI
 
 on:
   pull_request:
-    branches: [main, main-4.x, development]
+    branches: [main, main-4.x, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
     # Path-filtered to the pixi packaging inputs: the Conan workflows already
     # compile and test every C++ change on the PR. A pixi-only breakage from a
@@ -37,8 +37,11 @@ jobs:
   build:
     needs: changed
     # !cancelled(): on PR and manual runs the gate is skipped, which would
-    # otherwise skip this job too.
-    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
+    # otherwise skip this job too. Also skipped on PRs into release-* while the
+    # repo variable PJ_CI_RELEASE_PR_LITE is 'true'.
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') &&
+      !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
     # No draft gate: the paths filter above already limits PR runs to
     # packaging-relevant changes, and recipe work (the MSVC ffmpeg above all)
     # can only be validated in CI — drafts included.
@@ -82,7 +85,7 @@ jobs:
         with:
           submodules: recursive
 
-      # Persists pixi's downloaded package archives (~2.1 GB: Qt 6.11.1, the
+      # Persists pixi's downloaded package archives (~2.1 GB: Qt 6.12.0, the
       # compiler, every conda-forge library) across runs. There's no committed
       # multi-platform pixi.lock to key setup-pixi's own cache on yet (blocked
       # on the win-64 gap packages needing to exist first to generate one, see
@@ -208,9 +211,6 @@ jobs:
         run: pixi run sccache --show-stats
         continue-on-error: true
 
-      # Qt needs a display for the widget/GL tests; wrap ctest in a virtual
-      # framebuffer. conda's Qt ships its own xcb platform plugin + libs, so
-      # xvfb (the display) is the only extra piece the runner needs.
       # Runs the Qt-free CORE test suite only (~155 tests). The widget/GL test
       # families (pj_scene3D/widgets, pj_scene2D/widgets, pj_widgets, plotting-GL)
       # need a GL context that conda's Qt cannot bring up on this GPU-less runner
@@ -229,7 +229,7 @@ jobs:
         shell: bash
         run: |
           fail=0
-          for m in pj_datastore pj_runtime pj_scripting \
+          for m in pj_datastore pj_runtime pj_scripting pj_tf \
                    pj_scene3D/core pj_scene2D/core pj_scene_common; do
             echo "::group::ctest ${m}"
             pixi run ctest --test-dir "build-pixi/${m}" --output-on-failure --timeout 120 || fail=1

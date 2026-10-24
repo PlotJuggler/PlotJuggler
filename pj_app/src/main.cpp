@@ -13,12 +13,14 @@
 #include <QPixmap>
 #include <QScreen>
 #include <QSplashScreen>
+#include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
 #include <Qt>
 #ifndef PJ_TARGET_WASM
 #include <backward.hpp>
 #endif
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #ifndef PJ_TARGET_WASM
@@ -48,12 +50,13 @@
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/processor_detail.hpp"
 #include "pj_plotting/PlotWidgetBase.h"
-#include "pj_plotting/RasterTextEngine.h"
 #ifndef PJ_TARGET_WASM
 #include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/python_engine.h"
 #endif
+#include "pj_scripting/python_object_script.h"
+#include "pj_widgets/GraphicsApi.h"
 #ifdef PJ_WITH_SCENE3D
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
 #endif
@@ -220,25 +223,25 @@ int main(int argc, char* argv[]) {
   // and the underline-mnemonic decoration.
   QApplication::setStyle(new PJ::Style(u"Fusion"_s));
 
-  // NOTE: we deliberately do NOT set Qt::AA_ShareOpenGLContexts. It was once set
-  // so a 3D scene's GL resources would survive a QOpenGLWidget context
-  // recreation on ADS reparent — but it put every SceneViewWidget's context into
-  // a single share group, and destroying one view's context (closing/splitting a
-  // 3D dock) corrupted the VAO/FBO state of the sibling views still on screen
-  // (a glBindVertexArray(non-gen name) flood + the map texture vanishing in the
-  // surviving view). With each view's GL context fully independent, tearing one
-  // down can no longer touch the others. The original "survive a context
-  // recreation" concern is handled instead inside pj_scene3D: every render pass
-  // and layer implements releaseGL(), and SceneViewWidget rebuilds its GL state
-  // in initializeGL() — so a recreated context self-heals rather than relying on
-  // a process-wide share group.
-
-  // GL-safe on-canvas text (legend/tracker): must run before ANY QwtText is
-  // constructed — Qwt deletes the engines this replaces while existing
-  // QwtText objects still hold raw pointers to them. See RasterTextEngine.h.
-  PJ::installRasterTextEngines();
-
+  // ADS calls winId() on every floating dock container, a window parented to the
+  // dock manager, and by default Qt then makes all the manager's children native:
+  // the docked area becomes a native child window. Under Vulkan on Wayland that
+  // child surface stops getting frame callbacks, so the main window's docks stop
+  // repainting (or crash in the swapchain) once any dock floats.
+  QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
+#if defined(Q_OS_MACOS)
+  // macOS gives an OpenGL QRhi (the Metal fallback, or PJ_GRAPHICS_API=opengl) a
+  // legacy 2.1 context unless the window asks for core: the shader packs need
+  // GLSL 330+. Set before QApplication for every window; Metal ignores it.
+  QSurfaceFormat core_format = QSurfaceFormat::defaultFormat();
+  core_format.setVersion(4, 1);
+  core_format.setProfile(QSurfaceFormat::CoreProfile);
+  QSurfaceFormat::setDefaultFormat(core_format);
+#endif
   QApplication app(argc, argv);
+  // Fixes (and logs) the graphics API, with its Metal-to-OpenGL fallback, before
+  // any QRhiWidget exists: each top-level can pick its API only once.
+  (void)PJ::preferredGraphicsApi();
 #ifdef PJ_TARGET_WASM
   // Qt's browser-backed exec() never returns, including on application exit.
   // Let File -> Quit close the window (and run MainWindow::closeEvent's
@@ -267,6 +270,8 @@ int main(int argc, char* argv[]) {
   // therefore retain their existing settings backend and behavior.
   auto* browser_persistence = new PJ::BrowserPersistence(&app);
   Q_UNUSED(browser_persistence);
+  // Before a validate's bounded wait on the Python helper: see prestartPythonHelper().
+  PJ::scripting::prestartPythonHelper();
 #endif
 
   // Register the bundled Noto Sans and apply it as the application font, before
@@ -293,7 +298,7 @@ int main(int argc, char* argv[]) {
   parser.addHelpOption();
   parser.addVersionOption();
   const QCommandLineOption test_data_option(
-      u"test-data"_s, u"Populate the datastore with generated sin/cos samples."_s);
+      u"test-data"_s, u"Populate the datastore with generated sin/cos samples and one image."_s);
   parser.addOption(test_data_option);
   const QCommandLineOption plugin_dir_option(
       u"plugin-dir"_s, u"Override the directory where extensions are discovered and managed."_s, u"path"_s);
@@ -330,18 +335,20 @@ int main(int argc, char* argv[]) {
   const QCommandLineOption debug_mode_option(
       u"debug-mode"_s, u"Reveal developer-only preferences and tooling that are hidden in normal runs."_s);
   parser.addOption(debug_mode_option);
-  const QCommandLineOption disable_opengl_option(
+  const QCommandLineOption disable_gpu_canvas_option(
       u"disable-opengl"_s,
       QStringLiteral(
-          "Force plots onto the software raster canvas for this session, overriding the saved OpenGL "
+          "Force plots onto the software raster canvas for this session, overriding the saved GPU canvas "
           "preference (does not change it)."));
-  parser.addOption(disable_opengl_option);
+  parser.addOption(disable_gpu_canvas_option);
   // Headless 3D capture for verification: after --screenshot-delay ms (enough for an
   // async --layout load + a couple seconds of --autoplay to pose the robot), grab the
   // first SceneViewWidget's framebuffer to a PNG and quit. GNOME Wayland blocks
   // external screen-capture tools, so the app must grab itself.
   const QCommandLineOption screenshot_option(
-      u"screenshot"_s, u"Grab the first 3D view to a PNG after --screenshot-delay, then exit."_s, u"path"_s);
+      u"screenshot"_s,
+      u"Grab the first 3D view to a PNG after --screenshot-delay, then exit (non-zero on a missing or blank capture)."_s,
+      u"path"_s);
   parser.addOption(screenshot_option);
   const QCommandLineOption screenshot_delay_option(
       u"screenshot-delay"_s, u"ms to wait before the screenshot grab (default 7000)."_s, u"ms"_s, u"7000"_s);
@@ -405,9 +412,9 @@ int main(int argc, char* argv[]) {
   // reads it to decide whether to show the chrome-metric scrubbers).
   PJ::setDebugMode(parser.isSet(debug_mode_option));
 
-  // Session-only OpenGL override: applied before any plot is constructed so the
+  // Session-only GPU-canvas override: applied before any plot is constructed so the
   // first plot already honours it. Leaves Preferences::use_opengl untouched.
-  PJ::PlotWidgetBase::setOpenGlDisabledOverride(parser.isSet(disable_opengl_option));
+  PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(parser.isSet(disable_gpu_canvas_option));
 
   // Dev preview (disabled, kept for future tweaks): render the configured splash
   // to a PNG and exit — lets us inspect the "serious" splash without launching
@@ -579,6 +586,8 @@ int main(int argc, char* argv[]) {
   }
 #endif
 
+  // Exits non-zero when nothing usable was captured (no view, a null or single-colour
+  // image, a failed save), so package smoke tests can rely on the status.
   if (parser.isSet(screenshot_option)) {
     const QString path = parser.value(screenshot_option);
     const int delay_ms = parser.value(screenshot_delay_option).toInt();
@@ -588,21 +597,37 @@ int main(int argc, char* argv[]) {
       if (views.isEmpty()) {
         std::fprintf(stderr, "[screenshot] no 3D SceneViewWidget found\n");
       } else {
-        // grabFramebuffer() renders paintGL() on demand, so it returns a fresh frame
-        // with no separate update()/second timer needed.
-        const QImage img = views.first()->grabFramebuffer();
-        if (img.save(path)) {
-          std::printf("[screenshot] saved: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
-        } else {
-          std::fprintf(stderr, "[screenshot] save FAILED: %s\n", qPrintable(path));
-        }
+        // Renders a fresh frame, possibly after returning to the event loop
+        // (see grabPresentedFrame()).
+        pj::scene3d::SceneViewWidget* view = views.first();
+        view->grabPresentedFrame([path, view](const QImage& img) {
+          std::printf("[screenshot] graphics backend: %s\n", qPrintable(view->rhiBackendName()));
+          const QImage rgb = img.convertToFormat(QImage::Format_RGB32);
+          const QRgb first = rgb.isNull() ? 0 : rgb.pixel(0, 0);
+          bool blank = true;
+          for (int y = 0; blank && y < rgb.height(); ++y) {
+            const auto* line = reinterpret_cast<const QRgb*>(rgb.constScanLine(y));
+            blank = std::all_of(line, line + rgb.width(), [first](QRgb pixel) { return pixel == first; });
+          }
+          if (blank) {
+            std::fprintf(stderr, "[screenshot] FAILED: the captured image is %s\n", rgb.isNull() ? "null" : "blank");
+          } else if (img.save(path)) {
+            std::printf("[screenshot] saved: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
+            QCoreApplication::exit(0);
+            return;
+          } else {
+            std::fprintf(stderr, "[screenshot] save FAILED: %s\n", qPrintable(path));
+          }
+          QCoreApplication::exit(1);
+        });
+        return;
       }
 #else
       Q_UNUSED(window);
       Q_UNUSED(path);
       std::fprintf(stderr, "[screenshot] Scene3D is not available in this build\n");
 #endif
-      QCoreApplication::quit();
+      QCoreApplication::exit(1);
     });
   }
 

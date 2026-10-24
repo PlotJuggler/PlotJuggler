@@ -29,6 +29,8 @@
 #include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <utility>
+
+#include "host_info.hpp"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -58,6 +60,11 @@ struct PanelEngine::Impl {
   std::function<void()> request_owner_close;  // bound to PanelEngine::close in openPanel
   Stats stats;
   bool closed = false;
+#ifdef PJ_TARGET_WASM
+  // Context for a non-blocking sub-dialog's completion: destroyed with this
+  // Impl, so a sub-dialog that outlives the engine never calls back into it.
+  std::unique_ptr<QObject> sub_dialog_context = std::make_unique<QObject>();
+#endif
   // Theme the panel's icons were last applied for; a change triggers a full
   // re-apply (see PanelEngine::eventFilter).
   QString applied_theme;
@@ -65,8 +72,18 @@ struct PanelEngine::Impl {
   // Single wiring point for the session/catalog pair: every panel-family apply
   // must route here so a session-backed chart never silently degrades to the
   // preview widget because one call site forgot the arguments.
+  // A `scene_view` request the host refused reaches the plugin once the whole
+  // update is applied; a widget-data change it makes in answer is picked up by
+  // the next tick, never applied from inside this one.
   void applyPanelData(QWidget* target, const WidgetDataView& view) {
-    applyWidgetData(target, view, config.session, config.catalog);
+    for (const EmbeddedViewFailure& failure :
+         applyWidgetData(target, view, config.session, config.catalog, &config.embedded_views)) {
+      (void)handle.sendEvent(failure.frame, WidgetEventBuilder::sceneViewError(failure.error));
+    }
+  }
+  // A modal sub-dialog embeds no scene view: the SDK grants that to panels only.
+  void applyModalData(QWidget* target, const WidgetDataView& view) {
+    (void)applyWidgetData(target, view, config.session, config.catalog);
   }
 
   void restartTickTimerAfterEvent() {
@@ -102,11 +119,12 @@ struct PanelEngine::Impl {
 
   // One full tick: advance the plugin, poll widget_data, apply the diff, and
   // honor a requestClose. Shared by the tick timer and the Show-event
-  // catch-up (see PanelEngine::eventFilter). The sub_panel guard only matters
-  // for the catch-up path — during a modal sub-dialog exec() the timer is
-  // already paused, and a re-entrant tick could observe half-applied state.
+  // catch-up (see PanelEngine::eventFilter). The modal guard only matters for
+  // the catch-up path — during a modal sub-dialog exec() the timer is already
+  // paused, and a re-entrant tick could observe half-applied state. An open
+  // interactive sub-panel does not stop ticks: it is updated by them.
   void runTick() {
-    if (closed || sub_panel != nullptr) {
+    if (closed || modal_sub_dialog_open) {
       return;
     }
     ++stats.tick_count;
@@ -124,6 +142,8 @@ struct PanelEngine::Impl {
   // A Show-event catch-up tick is already queued (coalesces bursts of Show
   // events into one deferred tick).
   bool show_catchup_queued = false;
+  // A modal sub-dialog's nested exec() is running (desktop only).
+  bool modal_sub_dialog_open = false;
 
   // Open the interactive sub-panel from its .ui XML. Unlike the requestSubDialog
   // modal, this is a live, non-blocking child wired into the normal event path:
@@ -154,6 +174,8 @@ struct PanelEngine::Impl {
     const QSize avail = (dlg->screen() ? dlg->screen() : QGuiApplication::primaryScreen())->availableSize();
     dlg->resize(want.boundedTo(avail));
     forwardEmbeddedDialogClose(loaded, dlg);
+    // Dismissed by any path, it is deleted, and the scene views it embeds with it.
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::ApplicationModal);
     applyPanelData(loaded, full_view);
     installDeclarativeRules(loaded);
@@ -305,7 +327,7 @@ struct PanelEngine::Impl {
         // Pre-fill the sub-dialog from the current widget data so it opens
         // populated. Names that don't exist in the sub-dialog are simply
         // skipped, so the panel's own widget values don't leak in.
-        applyPanelData(sub_dialog, view);
+        applyModalData(sub_dialog, view);
         // Declarative per-combo field enabling/visibility ("pj_enable_when" /
         // "pj_visible_when" in the .ui) — the nested modal loop below blocks the
         // plugin from doing this itself.
@@ -325,57 +347,77 @@ struct PanelEngine::Impl {
               combo, &QComboBox::currentIndexChanged, sub_dialog, [sub_dialog](int) { sub_dialog->adjustSize(); },
               Qt::QueuedConnection);
         }
-        // exec() spins a nested modal event loop. Pause our tick timer for its
-        // duration so a timer-driven applyAndDiff() can't re-enter on the same
-        // Impl while the sub-dialog is open — a re-entrant tick could observe a
-        // __request_close and tear us down (and delete sub_dialog) underneath
-        // the suspended outer call. Resume only if we weren't closed meanwhile.
+        // Pause our tick timer while the sub-dialog is up so a timer-driven
+        // applyAndDiff() can't re-enter on the same Impl meanwhile — a
+        // re-entrant tick could observe a __request_close and tear us down (and
+        // delete sub_dialog) underneath the suspended outer call. Resume only if
+        // we weren't closed meanwhile.
         const bool timer_was_active = (tick_timer != nullptr) && tick_timer->isActive();
         if (timer_was_active) {
           tick_timer->stop();
         }
+        const auto finish = [this, sub_dialog, timer_was_active](int dlg_result) {
+          if (timer_was_active && !closed && tick_timer != nullptr) {
+            tick_timer->start();
+          }
+          // When the user clicks OK, harvest the values the user typed
+          // into the sub-dialog's inputs and surface them to the plugin
+          // through the existing event channels. Plugins that want
+          // user input from a sub-dialog override `onTextChanged` /
+          // `onClicked` for the dialog's widget names (each must have
+          // an objectName set in the .ui), then handle the synthetic
+          // `subDialogAccepted` click as the "OK was pressed, commit
+          // changes" signal. Without this loop, the values typed into
+          // the sub-dialog are dropped on the floor.
+          if (dlg_result == QDialog::Accepted) {
+            for (auto* line_edit : sub_dialog->findChildren<QLineEdit*>()) {
+              const QString name = line_edit->objectName();
+              if (name.isEmpty() || name.startsWith("qt_"_L1)) {
+                continue;
+              }
+              nlohmann::json ev = {{"text", line_edit->text().toStdString()}};
+              (void)handle.sendEvent(name.toStdString(), ev.dump());
+            }
+            for (auto* check_box : sub_dialog->findChildren<QCheckBox*>()) {
+              const QString name = check_box->objectName();
+              if (name.isEmpty() || name.startsWith("qt_"_L1)) {
+                continue;
+              }
+              nlohmann::json ev = {{"checked", check_box->isChecked()}};
+              (void)handle.sendEvent(name.toStdString(), ev.dump());
+            }
+            for (auto* combo_box : sub_dialog->findChildren<QComboBox*>()) {
+              const QString name = combo_box->objectName();
+              if (name.isEmpty() || name.startsWith("qt_"_L1)) {
+                continue;
+              }
+              nlohmann::json ev = {
+                  {"current_text", combo_box->currentText().toStdString()},
+                  {"current_index", combo_box->currentIndex()}};
+              (void)handle.sendEvent(name.toStdString(), ev.dump());
+            }
+            (void)handle.sendEvent("subDialogAccepted", R"({"clicked":true})");
+          }
+        };
+#ifdef PJ_TARGET_WASM
+        // The Asyncify-free browser build cannot nest exec()'s modal loop: open
+        // non-blocking and harvest when the user answers, unless the engine
+        // closed meanwhile.
+        QObject::connect(
+            sub_dialog, &QDialog::finished, sub_dialog_context.get(), [this, sub_dialog, finish](int dlg_result) {
+              if (!closed) {
+                finish(dlg_result);
+              }
+              sub_dialog->deleteLater();
+            });
+        sub_dialog->open();
+#else
+        modal_sub_dialog_open = true;
         const int dlg_result = sub_dialog->exec();
-        if (timer_was_active && !closed && tick_timer != nullptr) {
-          tick_timer->start();
-        }
-        // When the user clicks OK, harvest the values the user typed
-        // into the sub-dialog's inputs and surface them to the plugin
-        // through the existing event channels. Plugins that want
-        // user input from a sub-dialog override `onTextChanged` /
-        // `onClicked` for the dialog's widget names (each must have
-        // an objectName set in the .ui), then handle the synthetic
-        // `subDialogAccepted` click as the "OK was pressed, commit
-        // changes" signal. Without this loop, the values typed into
-        // the sub-dialog are dropped on the floor.
-        if (dlg_result == QDialog::Accepted) {
-          for (auto* line_edit : sub_dialog->findChildren<QLineEdit*>()) {
-            const QString name = line_edit->objectName();
-            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
-              continue;
-            }
-            nlohmann::json ev = {{"text", line_edit->text().toStdString()}};
-            (void)handle.sendEvent(name.toStdString(), ev.dump());
-          }
-          for (auto* check_box : sub_dialog->findChildren<QCheckBox*>()) {
-            const QString name = check_box->objectName();
-            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
-              continue;
-            }
-            nlohmann::json ev = {{"checked", check_box->isChecked()}};
-            (void)handle.sendEvent(name.toStdString(), ev.dump());
-          }
-          for (auto* combo_box : sub_dialog->findChildren<QComboBox*>()) {
-            const QString name = combo_box->objectName();
-            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
-              continue;
-            }
-            nlohmann::json ev = {
-                {"current_text", combo_box->currentText().toStdString()}, {"current_index", combo_box->currentIndex()}};
-            (void)handle.sendEvent(name.toStdString(), ev.dump());
-          }
-          (void)handle.sendEvent("subDialogAccepted", R"({"clicked":true})");
-        }
+        modal_sub_dialog_open = false;
+        finish(dlg_result);
         delete sub_dialog;
+#endif
       }
     }
 
@@ -387,7 +429,12 @@ struct PanelEngine::Impl {
 };
 
 PanelEngine::PanelEngine(DialogHandle handle, PanelEngineConfig config, QObject* parent)
-    : QObject(parent), impl_(std::make_unique<Impl>(std::move(handle), config)) {}
+    : QObject(parent), impl_(std::make_unique<Impl>(std::move(handle), config)) {
+  // A plugin gates its scene UI on this bit: without an EmbeddedViewHost its
+  // `scene_view` frames stay empty.
+  detail::announceHostInfo(
+      impl_->handle, impl_->config.embedded_views ? static_cast<uint64_t>(PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS) : 0);
+}
 
 PanelEngine::~PanelEngine() {
   close();
@@ -547,9 +594,11 @@ QWidget* PanelEngine::openPanel() {
     }
   }
 
-  // 5. Install keyboard shortcuts declared in widget data.
+  // 5. Install keyboard shortcuts declared in widget data. Read from the initial
+  //    document: polling again would consume the plugin's answer to an error the
+  //    initial application reported, which belongs to the next tick.
   {
-    WidgetDataView shortcut_view(impl_->handle.widget_data());
+    WidgetDataView shortcut_view(initial_raw);
     installButtonShortcuts(loaded, shortcut_view);
   }
 

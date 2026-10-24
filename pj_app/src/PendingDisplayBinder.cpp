@@ -32,22 +32,6 @@ std::vector<DatasetId> datasetsNaming(const CatalogModel& catalog, const QString
 }
 }  // namespace
 
-std::optional<QString> resolveSeriesPath(const CatalogModel& catalog, const layout_xml::SeriesPath& path) {
-  // Thin adapter over the shared catalog resolver: unpack the SeriesPath's
-  // qualifiers into CatalogModel::resolveCurveKey, which owns the whole three-tier
-  // algorithm (qualified exact-id/path-fallback + unqualified unique-match) so this
-  // and PlotWidget's clipboard rebind never drift.
-  return catalog.resolveCurveKey(path.dataset_id, path.dataset_source, path.dataset_path, path.topic, path.field);
-}
-
-std::optional<CurveDescriptor> resolveSeriesDescriptor(
-    const CatalogModel& catalog, const layout_xml::SeriesPath& path) {
-  if (const std::optional<QString> key = resolveSeriesPath(catalog, path); key.has_value()) {
-    return catalog.curveDescriptor(*key);
-  }
-  return std::nullopt;
-}
-
 PendingDisplayBinder::PendingDisplayBinder(CatalogModel& catalog, TopicDemandTracker* tracker)
     : catalog_(catalog), tracker_(tracker) {}
 
@@ -128,13 +112,12 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
         if (const auto y_path = layout_xml::readXyYPath(curve)) {
           entry.path = *y_path;
         }
-        if (resolveSeriesPath(catalog_, entry.x_path).has_value() &&
-            resolveSeriesPath(catalog_, entry.path).has_value()) {
+        if (catalog_.resolveCurveKey(entry.x_path).has_value() && catalog_.resolveCurveKey(entry.path).has_value()) {
           continue;
         }
       } else if (const auto ts_path = layout_xml::readTimeSeriesPath(curve)) {
         entry.path = *ts_path;
-        if (resolveSeriesPath(catalog_, entry.path).has_value()) {
+        if (catalog_.resolveCurveKey(entry.path).has_value()) {
           continue;
         }
       } else {
@@ -300,16 +283,14 @@ std::optional<QString> PendingDisplayBinder::resolveEntryPath(
     if (preferred_path.dataset_source.isEmpty()) {
       preferred_path.dataset_source = catalog_.datasetSourceName(*preferred).value_or(QString{});
     }
-    if (const auto key = catalog_.resolveCurveKey(
-            preferred_path.dataset_id, preferred_path.dataset_source, preferred_path.dataset_path, preferred_path.topic,
-            preferred_path.field)) {
+    if (const auto key = catalog_.resolveCurveKey(preferred_path)) {
       return key;
     }
     if (catalog_.datasetSourceName(*preferred).has_value()) {
       return std::nullopt;
     }
   }
-  return resolveSeriesPath(catalog_, path);
+  return catalog_.resolveCurveKey(path);
 }
 
 std::optional<std::vector<QString>> PendingDisplayBinder::scalarKeysForTopic(
@@ -498,10 +479,10 @@ QList<layout_xml::SeriesPath> PendingDisplayBinder::unresolved() const {
     // Report only the half/halves that still don't resolve: an XY entry can be
     // pending because just one source is missing, and listing a present series as
     // "missing" would mislead the prompt (matches rebindCurveKeys' reporting).
-    if (entry.isXY() && !resolveSeriesPath(catalog_, entry.x_path).has_value()) {
+    if (entry.isXY() && !catalog_.resolveCurveKey(entry.x_path).has_value()) {
       paths.push_back(entry.x_path);
     }
-    if (!resolveSeriesPath(catalog_, entry.path).has_value()) {
+    if (!catalog_.resolveCurveKey(entry.path).has_value()) {
       paths.push_back(entry.path);
     }
   }

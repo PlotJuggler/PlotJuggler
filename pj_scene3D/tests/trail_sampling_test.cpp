@@ -5,14 +5,18 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_tf/tf_buffer.h"
 
 namespace pj::scene3d {
 namespace {
+
+using pj::tf::StampedTransform;
+using pj::tf::Transform;
 
 using namespace std::chrono_literals;
 
@@ -97,9 +101,9 @@ TEST(BuildPoseTopicTrail, TransformsEachSampleAtItsOwnStamp) {
   (void)buffer.setTransform(stampedAt(20ns, "map", "odom", 200.0));
 
   std::vector<PoseTrailSample> samples;
-  samples.push_back(PoseTrailSample{tp(10ns), glm::dvec3(1.0, 0.0, 0.0), "odom"});
-  samples.push_back(PoseTrailSample{tp(20ns), glm::dvec3(1.0, 0.0, 0.0), "odom"});
-  samples.push_back(PoseTrailSample{tp(20ns), glm::dvec3(0.0, 0.0, 0.0), "ghost_frame"});  // skipped
+  samples.push_back(PoseTrailSample{tp(10ns), glm::dvec3(1.0, 0.0, 0.0), "odom", std::nullopt});
+  samples.push_back(PoseTrailSample{tp(20ns), glm::dvec3(1.0, 0.0, 0.0), "odom", std::nullopt});
+  samples.push_back(PoseTrailSample{tp(20ns), glm::dvec3(0.0, 0.0, 0.0), "ghost_frame", std::nullopt});  // skipped
 
   const TrailPolyline trail = buildPoseTopicTrail(buffer, "map", samples);
   ASSERT_EQ(trail.size(), 2U);
@@ -107,10 +111,45 @@ TEST(BuildPoseTopicTrail, TransformsEachSampleAtItsOwnStamp) {
   EXPECT_DOUBLE_EQ(trail[1].pos.x, 201.0);
 }
 
+// TF R6: the trail is sampled in the entry clock (the cursor's), so its head meets
+// the frame's triad. The odom->base samples were logged 5 ns after their stamps.
+TEST(BuildTfFrameTrail, SamplesTheEntryClock) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  for (const int64_t stamp : {10, 20, 30}) {
+    const auto edge = stampedAt(std::chrono::nanoseconds(stamp), "odom", "base", static_cast<double>(stamp));
+    ASSERT_TRUE(buffer.setTransform(edge, tp(std::chrono::nanoseconds(stamp + 5))).has_value());
+  }
+  const TrailPolyline trail = buildTfFrameTrail(buffer, "odom", "base", TimePoint::min(), TimePoint::max(), 1000);
+  ASSERT_EQ(trail.size(), 3U);
+  EXPECT_EQ(trail[0].t, tp(15ns));
+  EXPECT_DOUBLE_EQ(trail[0].pos.x, 10.0);
+  EXPECT_EQ(trail[2].t, tp(35ns));
+  EXPECT_DOUBLE_EQ(trail[2].pos.x, 30.0);
+}
+
+// A pose is placed like the pose layer places it: at its own header stamp (the
+// header clock), else at its store timestamp t (the entry clock).
+TEST(BuildPoseTopicTrail, PlacesEachPoseAtItsOwnHeaderStamp) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  // map->odom stamped 10 and 20, logged at 40 and 50.
+  ASSERT_TRUE(buffer.setTransform(stampedAt(10ns, "map", "odom", 100.0), tp(40ns)).has_value());
+  ASSERT_TRUE(buffer.setTransform(stampedAt(20ns, "map", "odom", 200.0), tp(50ns)).has_value());
+
+  std::vector<PoseTrailSample> samples;
+  // Logged at 45 but measured at 20: by 45 only the stamp-10 transform had arrived.
+  samples.push_back(PoseTrailSample{tp(45ns), glm::dvec3(1.0, 0.0, 0.0), "odom", tp(20ns)});
+  samples.push_back(PoseTrailSample{tp(45ns), glm::dvec3(2.0, 0.0, 0.0), "odom", std::nullopt});
+
+  const TrailPolyline trail = buildPoseTopicTrail(buffer, "map", samples);
+  ASSERT_EQ(trail.size(), 2U);
+  EXPECT_DOUBLE_EQ(trail[0].pos.x, 201.0) << "placed at its own stamp (header clock)";
+  EXPECT_DOUBLE_EQ(trail[1].pos.x, 102.0) << "unstamped: placed at t (entry clock)";
+}
+
 TEST(BuildPoseTopicTrail, IdentityWhenAlreadyInFixedFrame) {
   TransformBuffer buffer(TransformBuffer::kKeepAll);  // empty: no TF needed for same-frame poses
   std::vector<PoseTrailSample> samples;
-  samples.push_back(PoseTrailSample{tp(10ns), glm::dvec3(7.0, 0.0, 0.0), "map"});
+  samples.push_back(PoseTrailSample{tp(10ns), glm::dvec3(7.0, 0.0, 0.0), "map", std::nullopt});
   const TrailPolyline trail = buildPoseTopicTrail(buffer, "map", samples);
   ASSERT_EQ(trail.size(), 1U);
   EXPECT_DOUBLE_EQ(trail[0].pos.x, 7.0);

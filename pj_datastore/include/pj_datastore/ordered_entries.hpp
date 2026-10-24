@@ -13,6 +13,7 @@
 // latestAt cache, retention/memory accounting, and payload resolution all stay in
 // ObjectStore/ObjectSeries. The caller holds the series lock across every call.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -31,6 +32,25 @@ namespace PJ {
 
 /// Eager payload: store-owned bytes, counted against the retention budget.
 using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
+
+/// Chooses entries by (store timestamp, UID); true selects the entry. Runs under the
+/// caller's lock, once per entry: keep it cheap and never call back into the ObjectStore.
+using EntryPredicate = std::function<bool(Timestamp, SequentialUID)>;
+
+/// Room for `count` more elements, grown geometrically as push_back would (appends stay
+/// amortized O(1) across calls), so the push_backs that follow cannot allocate: how the store
+/// takes every allocation of a mutation before it unlinks anything.
+template <typename T>
+void reserveMore(std::vector<T>& values, size_t count) {
+  if (values.capacity() - values.size() < count) {
+    values.reserve(std::max({values.size() + count, values.capacity() < 4 ? size_t{8} : 2 * values.capacity()}));
+  }
+}
+
+template <typename T>
+void reserveOneMore(std::vector<T>& values) {
+  reserveMore(values, 1);
+}
 
 /// Lazy payload: idempotent, thread-safe fetcher returning bytes + anchor.
 /// Invoked on every read; bytes are not counted against the retention budget.
@@ -105,7 +125,20 @@ class OrderedEntries {
   /// when a mid-stream insert could change an at-or-before lookup.
   enum class PushOrder { kInOrderAppend, kOutOfOrderInsert };
 
-  OrderedEntries() = default;
+  /// Revisions of the entries, process-unique, so a series rebuilt after a clear never repeats one. `content` moves on
+  /// every change; `rewrite` only when the change is not an append at or after the newest stamp or a front eviction,
+  /// the two a reader can follow with a UID cursor and a timestamp floor without rescanning what it read.
+  struct ContentIdentity {
+    uint64_t content = 0;
+    uint64_t rewrite = 0;
+    bool operator==(const ContentIdentity&) const = default;
+  };
+
+  OrderedEntries();
+
+  [[nodiscard]] ContentIdentity contentIdentity() const noexcept {
+    return identity_;
+  }
 
   // --- Size / basics ---
 
@@ -139,11 +172,6 @@ class OrderedEntries {
   }
   // Bounds-checked; nullptr when index >= size().
   [[nodiscard]] const ObjectEntry* atIndex(size_t index) const;
-  // The oldest retained entry (precondition: !empty()). ObjectStore reads its
-  // uid/payload for cache + memory accounting just before evictFront().
-  [[nodiscard]] const ObjectEntry& frontEntry() const {
-    return entries_.front();
-  }
 
   // --- Time lookups ---
 
@@ -158,6 +186,8 @@ class OrderedEntries {
 
   // The entry with this exact UID, or nullptr when absent (evicted / never here).
   [[nodiscard]] const ObjectEntry* atUid(SequentialUID uid) const;
+  // Its timestamp-order position, or nullopt when absent. O(log n), no payload touched.
+  [[nodiscard]] std::optional<size_t> indexOfUid(SequentialUID uid) const;
   // Smallest RETAINED UID, or the invalid UID when empty.
   [[nodiscard]] SequentialUID firstUid() const;
   // Smallest retained UID strictly greater than `after`, or invalid when none.
@@ -167,6 +197,9 @@ class OrderedEntries {
   // the at-or-before prefix (an out-of-order insert can leave the newest-TIMESTAMP
   // entry's UID below a retained entry's). O(count with timestamp <= t).
   [[nodiscard]] SequentialUID maxUidAtOrBefore(Timestamp t) const;
+  // The smallest timestamp among the entries whose UID is greater than `after`, or nullopt when none: the oldest of
+  // what arrived since a cursor. O(log n + those entries).
+  [[nodiscard]] std::optional<Timestamp> oldestTimestampAfterUid(SequentialUID after) const;
 
   // --- Mutation ---
 
@@ -175,13 +208,37 @@ class OrderedEntries {
   // Reads entry.timestamp for placement. Precondition: entry.sequential_uid is the
   // series max (the ObjectStore push paths mint it via SequentialUID::getNext()
   // immediately before) — the incremental uid_order maintenance relies on it. A
-  // caller inserting a non-max UID must rebuildUidOrder() instead.
+  // caller inserting a non-max UID must rebuildUidOrder() instead. An allocation
+  // failure throws before anything changes and leaves `entry` with the caller.
   PushOrder push(ObjectEntry&& entry);
-  // Remove the oldest entry (front position) and return it, so the caller decides
-  // where it is destroyed (ObjectStore drops it after releasing its locks).
-  // Precondition: !empty(). Triple only — the caller drops the warm cache and
-  // adjusts memory accounting around it.
-  ObjectEntry evictFront();
+  // Move the oldest `count` entries (front positions) into `removed`, in array order, so the
+  // caller decides where they are destroyed (ObjectStore drops them after releasing its locks).
+  // O(size) whatever `count`: a retention jump expiring most of a series costs one pass, not one
+  // pass per entry. The only allocation is room in `removed`, taken first, so a failure changes
+  // nothing. Precondition: count <= size(). Triple only: the caller drops the warm cache and
+  // adjusts memory accounting around it. Not a rewrite (see ContentIdentity).
+  void evictFront(size_t count, std::vector<ObjectEntry>& removed);
+  // A removal of entries at any position (not only the oldest prefix), decided before
+  // anything changes so a transaction can validate every topic first.
+  struct Removal {
+    static constexpr uint32_t kRemoved = UINT32_MAX;
+    // Where each entry lands once the removal is applied, or kRemoved.
+    std::vector<uint32_t> new_position;
+    size_t count = 0;
+  };
+  // Runs `drop` once per entry and changes nothing, so an exception from it leaves this
+  // instance as it was.
+  [[nodiscard]] Removal planRemoval(const EntryPredicate& drop) const;
+  // Applies a plan made on this instance, unchanged since: the removed entries are moved
+  // into `removed` in array order (the caller adjusts memory accounting and the warm
+  // cache), the survivors close the gaps in place and keep their order and UIDs. O(n).
+  // The only allocation is room in `removed` for `plan.count` more, taken first, so a
+  // failure changes nothing.
+  void remove(const Removal& plan, std::vector<ObjectEntry>& removed);
+  // remove() then push() as one step that applies whole or not at all: the entry takes
+  // a slot the removal freed, so after the room in `removed` nothing allocates (with
+  // nothing to remove it is push()). Same preconditions as both.
+  PushOrder removeAndPush(const Removal& plan, ObjectEntry&& entry, std::vector<ObjectEntry>& removed);
   // Empty the triple. Memory/cache stay the caller's (see clearEntriesLocked).
   void clear();
   // Slide every store timestamp by `delta` (also entry_timestamps and each entry's
@@ -226,6 +283,17 @@ class OrderedEntries {
   void restoreRebuild(std::deque<ObjectEntry>&& entries_in, std::vector<Timestamp>&& stamps_in);
 
  private:
+  // Indexes the entry at the back of `entries_`, which the two vectors do not cover yet,
+  // and moves it to its sorted position. The vectors have room for one more, so nothing
+  // here allocates.
+  PushOrder indexBack();
+  // The survivors of `plan` close its gaps at the front; the removed entries move into
+  // `removed`, which has room for them. The vectors are final; the deque keeps its size,
+  // with moved-from slots after the survivors. Returns the survivor count.
+  size_t compact(const Removal& plan, std::vector<ObjectEntry>& removed);
+  // Every mutator calls it once it changed something; `rewrite` as `ContentIdentity` defines it.
+  void changed(bool rewrite) noexcept;
+
 #ifndef NDEBUG
   // Assert uid_order is a size-matching permutation of entries with strictly
   // ascending projected UIDs. Debug tripwire for the two hand-rolled hot paths.
@@ -235,6 +303,7 @@ class OrderedEntries {
   std::deque<ObjectEntry> entries_;
   std::vector<Timestamp> entry_timestamps_;
   std::vector<uint32_t> uid_order_;
+  ContentIdentity identity_;
 };
 
 }  // namespace PJ

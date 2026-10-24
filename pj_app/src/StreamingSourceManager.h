@@ -100,6 +100,9 @@ class StreamingSourceManager : public QObject {
   DataEngine& secondaryEngineForTests();
   ObjectStore& secondaryStoreForTests();
 
+  // Test seam: runs one ingest tick for `dataset_id`. GUI thread only.
+  void ingestTickForTests(DatasetId dataset_id);
+
  public slots:
   // Wired from LeftPanel::streamingStartRequested. Starts a session for the
   // plugin currently held in selected_plugin_. There is no UI-driven stop —
@@ -191,6 +194,12 @@ class StreamingSourceManager : public QObject {
   // classified subset to TopicDemandTracker::setInfrastructureTopics. A no-op if
   // the session already tore down before the QueuedConnection marshal landed.
   void applyAdvertisedTopics(DatasetId dataset_id, std::vector<AdvertisedTopic> topics);
+
+  // The GUI-thread half of one poll cycle, queued by workerLoop after each
+  // poll + flush: eager processors consume the new rows, retention trims, then
+  // the ingest is announced. The order is the streaming correctness order: a
+  // stateful node must see a sample before it can age out of the window.
+  void onIngestTick(DatasetId dataset_id);
 
   // Worker thread body. Looks the session up by dataset_id (the map is only
   // mutated on the UI thread, so reads from the worker are safe as long as

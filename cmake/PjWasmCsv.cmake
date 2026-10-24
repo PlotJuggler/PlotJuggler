@@ -18,7 +18,7 @@ add_library(pj_wasm_csv_parser STATIC
     "${_pj_csv_dir}/timestamp_parsing.cpp")
 target_compile_features(pj_wasm_csv_parser PUBLIC cxx_std_20)
 target_include_directories(pj_wasm_csv_parser PUBLIC "${_pj_csv_dir}")
-target_link_libraries(pj_wasm_csv_parser PUBLIC date::date)
+target_link_libraries(pj_wasm_csv_parser PUBLIC date::date plotjuggler_sdk::base)
 
 add_library(pj_wasm_csv_source STATIC
     "${_pj_csv_dir}/csv_source.cpp"

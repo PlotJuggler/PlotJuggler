@@ -52,14 +52,9 @@ QString keyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
   return {};
 }
 
-QString scopeTopicName(PJ::MarkerScope scope) {
-  const std::string_view topic = PJ::markerScopeTopic(scope);
-  return QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size()));
-}
-
 // Registers `scope`'s bare marker object topic where the overlay reads it for
 // `dataset_id` (the dataset itself, or the shared dataset for the ALL-DATASETS
-// scope) the same way MarkerService::publishMarkerSet does (that method is
+// scope) the same way BatchEngine::publishMarkerSet does (that method is
 // private; this mirrors its ObjectStore calls). Notification is kept separate
 // (publishScopeTopic) so tests can pin when PlotWidget observes a new topic.
 void registerScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
@@ -81,19 +76,34 @@ void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ
   session.notifyMarkersChanged();
 }
 
+// A generator's topic as BatchEngine registers it: the metadata, not the name, says
+// which key it serves and who owns it.
+PJ::ObjectTopicDescriptor generatorTopic(PJ::DatasetId dataset_id, std::string_view key, std::string_view owner) {
+  PJ::MarkerTopicInfo info = PJ::markerInfoForKey(key);
+  info.owner = std::string(owner);
+  return PJ::ObjectTopicDescriptor{
+      .dataset_id = dataset_id,
+      .topic_name = PJ::markerOwnerTopicName(key, owner),
+      .metadata_json = PJ::markerTopicMetadataJson(info)};
+}
+
 bool hasScopeTarget(const std::vector<PJ::MarkerTarget>& targets, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
-  const QString topic = scopeTopicName(scope);
+  const PJ::MarkerTopicInfo info = PJ::markerInfoForScope(scope);
   return std::any_of(targets.begin(), targets.end(), [&](const PJ::MarkerTarget& target) {
-    return target.dataset == dataset_id && target.topic == topic;
+    return target.dataset == dataset_id && target.marker == info;
   });
 }
 
 bool hasSeriesTarget(const std::vector<PJ::MarkerTarget>& targets, PJ::DatasetId dataset_id) {
-  const QString dataset_topic = scopeTopicName(PJ::MarkerScope::kDataset);
-  const QString global_topic = scopeTopicName(PJ::MarkerScope::kAllDatasets);
   return std::any_of(targets.begin(), targets.end(), [&](const PJ::MarkerTarget& target) {
-    return target.dataset == dataset_id && target.topic != dataset_topic && target.topic != global_topic;
+    return target.dataset == dataset_id && target.marker.scope == PJ::MarkerScopeKind::kSeries;
   });
+}
+
+// What the overlay resolves `target` to: its dataset's scan and the shared home's.
+std::vector<PJ::MarkerTargetTopic> targetTopics(const PJ::ObjectStore& store, const PJ::MarkerTarget& target) {
+  return PJ::markerTargetTopics(
+      target, PJ::scanMarkerTopics(store, target.dataset), PJ::scanMarkerTopics(store, PJ::kAllDatasetsMarkerDataset));
 }
 
 }  // namespace
@@ -385,10 +395,7 @@ TEST(PlotWidgetGlobalMarkers, ScopeRowFollowsAnOwnerTopic) {
   EXPECT_TRUE(plot.markerScopeRows().empty());
 
   const auto registered = session.objectStore().registerTopic(
-      PJ::ObjectTopicDescriptor{
-          .dataset_id = *dataset,
-          .topic_name = PJ::markerOwnerTopicName(PJ::markerScopeTopic(PJ::MarkerScope::kDataset), "plug/rule"),
-          .metadata_json = {}});
+      generatorTopic(*dataset, PJ::markerScopeTopic(PJ::MarkerScope::kDataset), "plug/rule"));
   ASSERT_TRUE(registered.has_value()) << registered.error();
   ASSERT_TRUE(session.objectStore()
                   .pushOwned(*registered, PJ::Timestamp{0}, PJ::serializePlotMarkers(PJ::sdk::PlotMarkers{}))
@@ -405,21 +412,13 @@ TEST(PlotWidgetGlobalMarkers, ScopeRowFollowsAnOwnerTopic) {
 // shared-home family (display frame), each member tagged with its frame.
 TEST(PlotWidgetGlobalMarkers, SeriesTargetResolvesItsOwnAndTheSharedFamily) {
   PJ::ObjectStore store;
-  const auto own = store.registerTopic(
-      PJ::ObjectTopicDescriptor{
-          .dataset_id = 7, .topic_name = PJ::markerOwnerTopicName("imu/x", "plug/bound"), .metadata_json = {}});
-  const auto shared = store.registerTopic(
-      PJ::ObjectTopicDescriptor{
-          .dataset_id = PJ::kAllDatasetsMarkerDataset,
-          .topic_name = PJ::markerOwnerTopicName("imu/x", "plug/all"),
-          .metadata_json = {}});
-  const auto other = store.registerTopic(
-      PJ::ObjectTopicDescriptor{
-          .dataset_id = 8, .topic_name = PJ::markerOwnerTopicName("imu/x", "plug/bound"), .metadata_json = {}});
+  const auto own = store.registerTopic(generatorTopic(7, "imu/x", "plug/bound"));
+  const auto shared = store.registerTopic(generatorTopic(PJ::kAllDatasetsMarkerDataset, "imu/x", "plug/all"));
+  const auto other = store.registerTopic(generatorTopic(8, "imu/x", "plug/bound"));
   ASSERT_TRUE(own.has_value() && shared.has_value() && other.has_value());
 
   const std::vector<PJ::MarkerTargetTopic> topics =
-      PJ::markerTargetTopics(store, PJ::MarkerTarget{7, QString::fromUtf8("imu/x")});
+      targetTopics(store, PJ::MarkerTarget{7, PJ::markerInfoForKey("imu/x")});
   ASSERT_EQ(topics.size(), 2U);
   EXPECT_EQ(topics[0].id.id, own->id);
   EXPECT_FALSE(topics[0].display_frame);
@@ -427,8 +426,30 @@ TEST(PlotWidgetGlobalMarkers, SeriesTargetResolvesItsOwnAndTheSharedFamily) {
   EXPECT_TRUE(topics[1].display_frame);
 
   const std::vector<PJ::MarkerTargetTopic> all_scope =
-      PJ::markerTargetTopics(store, PJ::MarkerTarget{7, QString::fromUtf8(PJ::kAllDatasetsMarkerTopic.data())});
+      targetTopics(store, PJ::MarkerTarget{7, PJ::markerInfoForScope(PJ::MarkerScope::kAllDatasets)});
   EXPECT_TRUE(all_scope.empty()) << "the all-datasets scope reads the shared dataset only";
+}
+
+// The overlay finds a topic through its metadata, whatever it is called, and passes
+// over one whose name looks like a family member but whose metadata says otherwise.
+TEST(PlotWidgetGlobalMarkers, OverlayRoutesByMetadataNotByName) {
+  PJ::ObjectStore store;
+  const auto opaque = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = 7,
+          .topic_name = "opaque-id",
+          .metadata_json = PJ::markerTopicMetadataJson(PJ::markerInfoForKey("imu/x"))});
+  const auto lookalike = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = 7,
+          .topic_name = PJ::markerOwnerTopicName("imu/x", "plug/ghost"),
+          .metadata_json = R"({"builtin_object_type":"kImage"})"});
+  ASSERT_TRUE(opaque.has_value() && lookalike.has_value());
+
+  const std::vector<PJ::MarkerTargetTopic> topics =
+      targetTopics(store, PJ::MarkerTarget{7, PJ::markerInfoForKey("imu/x")});
+  ASSERT_EQ(topics.size(), 1U);
+  EXPECT_EQ(topics[0].id.id, opaque->id);
 }
 
 // Rows are rebuilt on markersChanged, not on the store write itself: a topic
@@ -472,8 +493,11 @@ TEST(PlotWidgetGlobalMarkers, PendingScopeResolutionRebuildsRows) {
   registerScopeTopic(session, *dataset, PJ::MarkerScope::kDataset);
 
   int changed_count = 0;
+  int target_changes = 0;
   QObject::connect(&plot, &PJ::PlotWidget::datasetMarkerScopesChanged, [&]() { ++changed_count; });
+  QObject::connect(&plot, &PJ::PlotWidget::markerTargetsChanged, [&]() { ++target_changes; });
   plot.resolvePendingMarkerScopes();
+  EXPECT_EQ(target_changes, 1) << "the hidden scope moved into the targets' gate";
   ASSERT_EQ(plot.markerScopeRows().size(), 1U);
   EXPECT_EQ(plot.markerScopeRows().front(), PJ::MarkerScopeKey(*dataset, PJ::MarkerScope::kDataset));
   EXPECT_FALSE(plot.datasetMarkerScopeVisible(*dataset, PJ::MarkerScope::kDataset));

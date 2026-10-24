@@ -26,10 +26,18 @@ namespace PJ::scripting {
 ///         def calculate(self, time, value, *args):
 ///             return value * 2         # number, or (out_time, value), or None to suppress
 ///
-/// MVP CAVEATS (vs the Luau backend): single process-wide interpreter (one GIL,
-/// commit/GUI thread only); no watchdog / weak sandbox (a runaway script can hang
-/// the app, and module-level code runs during inspection). `limits` is accepted
-/// for API symmetry but not yet enforced.
+/// Limits (`limits`): each `calculate()`/`reset()` runs under a wall-clock watchdog of `python_call_millis`, module
+/// evaluation and `create()` under `python_watchdog_millis`, and an instance's allocations, across its whole life,
+/// under `mem_bytes` (past it a block of 1 KiB or more fails; smaller ones are served until twice the cap, where a
+/// MemoryError stops the call). Past either the instance fails for good, even if the script caught the exception, and a
+/// call past its deadline fails even when the watchdog never interrupted it; a native call is never interrupted, the
+/// timeout lands at the next bytecode. Script code (its teardown included) runs with the process-wide audit hook armed,
+/// which refuses `open`, `os.*`, `subprocess.*` and the like (python_sandbox.h).
+///
+/// The compatible profile: filters keep the real builtins (`getattr`, `type`, `eval`, `str.format`, ...), no AST
+/// check, and the real modules behind the `math`/`cmath`/`statistics` import allowlist, so existing filters run
+/// unchanged; they are as escapable as before. On-demand scripts use the strict profile of the same sandbox.
+/// One process-wide interpreter (one GIL), shared with the on-demand Python lane: a guardrail, not a sandbox.
 [[nodiscard]] std::shared_ptr<ScriptEngine> makePythonEngine(BudgetLimits limits = {});
 
 }  // namespace PJ::scripting

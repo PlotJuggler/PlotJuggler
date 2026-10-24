@@ -140,6 +140,8 @@ DecodedFrame makeRgbFrame(int w, int h, uint8_t r, uint8_t g, uint8_t b) {
   f.height = h;
   f.format = PixelFormat::kRGB888;
   f.frame_id = "cam";
+  f.stamp = 22;
+  f.entry_ts = 33;
   f.pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(w) * h * 3);
   for (int i = 0; i < w * h; ++i) {
     (*f.pixels)[static_cast<size_t>(i) * 3 + 0] = r;
@@ -174,6 +176,8 @@ TEST(ImageRectifierTest, IdentityMapReproducesSolidImage) {
   EXPECT_EQ(out->height, 6);
   EXPECT_EQ(out->format, PixelFormat::kRGB888);
   EXPECT_EQ(out->frame_id, "cam");
+  EXPECT_EQ(out->stamp, src.stamp);
+  EXPECT_EQ(out->entry_ts, src.entry_ts);
   ASSERT_TRUE(out->isValid());
   // Interior pixels (whose 2x2 neighborhood is in bounds) keep the solid color.
   const auto& px = *out->pixels;
@@ -244,6 +248,8 @@ DecodedFrame makeGradientRgbFrame(int w, int h) {
   f.height = h;
   f.format = PixelFormat::kRGB888;
   f.frame_id = "cam";
+  f.stamp = 22;
+  f.entry_ts = 33;
   f.pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(w) * h * 3);
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
@@ -275,6 +281,8 @@ TEST(ImageRectifierFastTest, MatchesFloatReferenceWithinOne) {
   EXPECT_EQ(out.height, ref->height);
   EXPECT_EQ(out.format, ref->format);
   EXPECT_EQ(out.frame_id, ref->frame_id);
+  EXPECT_EQ(out.stamp, src.stamp);
+  EXPECT_EQ(out.entry_ts, src.entry_ts);
   ASSERT_EQ(out.pixels->size(), ref->pixels->size());
   size_t mismatches = 0;
   for (size_t i = 0; i < ref->pixels->size(); ++i) {

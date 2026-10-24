@@ -71,22 +71,6 @@ struct PendingDisplayEntry {
   }
 };
 
-// Resolves a stable layout SeriesPath to a concrete catalog key, never guessing by
-// load order. Thin adapter that unpacks the SeriesPath's qualifiers into
-// CatalogModel::resolveCurveKey, which owns the shared three-tier algorithm (exact
-// id while qualifiers agree → unique full-path match → unique raw-source match, then
-// confirm topic+field; unqualified path binds only when topic+field is globally
-// unique). Kept as a free function so layout/undo restore call sites read the same
-// as before; see resolveCurveKey for the full resolution + ambiguity semantics.
-[[nodiscard]] std::optional<QString> resolveSeriesPath(const CatalogModel& catalog, const layout_xml::SeriesPath& path);
-
-// `resolveSeriesPath` followed by the catalog's descriptor for the resolved key:
-// the exact source dataset when the qualifiers still agree, a unique fallback
-// otherwise, never a same-topic sibling by load order. Empty when no loaded
-// dataset matches (a filter input, say, that only a later restore step creates).
-[[nodiscard]] std::optional<CurveDescriptor> resolveSeriesDescriptor(
-    const CatalogModel& catalog, const layout_xml::SeriesPath& path);
-
 // GUI-thread-only registry for display intents whose topics were not in the catalog
 // when they were staged: plot curves from a progressive layout restore (collect()) or
 // a placeholder drop on a plot (addPendingCurve()), plus demand references for
@@ -152,7 +136,7 @@ class PendingDisplayBinder : public QObject {
   void refreshDemandRefs(PendingDisplayEntry& entry);
   // Releases exactly the references refreshDemandRefs recorded for this entry.
   void releaseDemandRefs(const PendingDisplayEntry& entry);
-  // resolveSeriesPath honoring `preferred`: exact match in that dataset first,
+  // CatalogModel::resolveCurveKey honoring `preferred`: exact match in that dataset first,
   // then the global load-order scan (the preferred id may have vanished — stream
   // reconnects mint fresh dataset ids).
   [[nodiscard]] std::optional<QString> resolveEntryPath(

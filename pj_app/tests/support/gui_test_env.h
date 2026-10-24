@@ -7,7 +7,8 @@
 
 namespace pj_app_test {
 
-// Shell scenarios exercise widget behavior without requiring a working OpenGL context.
+// Shell scenarios exercise widget behavior without requiring a working OpenGL context,
+// and a layout load's marker rules run to completion within its create budget.
 class GuiTestEnvironment : public ::testing::Environment {
  public:
   void SetUp() override;

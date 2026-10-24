@@ -193,4 +193,49 @@ TEST(MarkerEngine, AtTimeNonFiniteDoesNotReadOutOfBounds) {
   EXPECT_EQ(markers[0].value_low, 0.0);  // atTime(NaN) → 0.0 sentinel
 }
 
+// A loop that never calls a native function is stopped by the interpreter's own
+// interrupt: a set cancel ends it with the cancelled error, not the fuel one.
+TEST(MarkerEngine, LuauLoopHonoursTheCancelToken) {
+  std::string err;
+  const auto markers = runMarkerScript("while true do end", SeriesProvider{}, &err, {}, [] { return true; });
+  EXPECT_TRUE(markers.empty());
+  EXPECT_NE(err.find("cancelled"), std::string::npos) << err;
+  EXPECT_EQ(err.find("instruction budget"), std::string::npos) << err;
+}
+
+// Markers and labels live outside the VM's memory cap, so they have their own ceiling.
+TEST(MarkerEngine, NativeOutputByteCeilingRejectsManyMarkersAndLargeLabels) {
+  std::string err;
+  const auto many = runMarkerScript("for i = 1, 1000 do createMarker(i) end", SeriesProvider{}, &err, {}, {}, 1024);
+  EXPECT_TRUE(many.empty());
+  EXPECT_NE(err.find("byte ceiling"), std::string::npos) << err;
+  const auto label =
+      runMarkerScript("createMarker(0, 1, {label = string.rep('x', 2048)})", SeriesProvider{}, &err, {}, {}, 1024);
+  EXPECT_TRUE(label.empty());
+  EXPECT_NE(err.find("byte ceiling"), std::string::npos) << err;
+}
+
+// A pcall inside the script catches the ceiling error, but the run still fails as a whole:
+// a truncated marker set must never replace the previous one.
+TEST(MarkerEngine, NativeOutputByteCeilingSurvivesAScriptPcall) {
+  std::string err;
+  const auto markers = runMarkerScript(
+      "pcall(function() for i = 1, 1000 do createMarker(i) end end)", SeriesProvider{}, &err, {}, {}, 1024);
+  EXPECT_TRUE(markers.empty());
+  EXPECT_NE(err.find("byte ceiling"), std::string::npos) << err;
+}
+
+// A cancel the script swallows with pcall still fails the run, with or without an error out-parameter.
+TEST(MarkerEngine, ACancelSwallowedByPcallStillFailsTheRun) {
+  const std::string script = "pcall(function() while true do end end)\ncreateMarker(0)\n";
+  int polls = 0;
+  // True once, at a poll deep inside the pcall'd loop, then false: the script goes on to emit a marker.
+  const auto once = [&polls] { return ++polls == 100; };
+  std::string err;
+  EXPECT_TRUE(runMarkerScript(script, SeriesProvider{}, &err, {}, once).empty());
+  EXPECT_NE(err.find("cancelled"), std::string::npos) << err;
+  polls = 0;
+  EXPECT_TRUE(runMarkerScript(script, SeriesProvider{}, nullptr, {}, once).empty());
+}
+
 }  // namespace

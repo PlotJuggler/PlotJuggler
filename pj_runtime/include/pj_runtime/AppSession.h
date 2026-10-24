@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,9 @@ struct ObjectMergeConflict {
   // type but different formats is a conflict too: one parser decodes the merge.
   std::string anchor_format;
   std::string source_format;
+  // Same-named marker topics whose scope, target or owner differ: merging would keep
+  // the anchor's description for both sets.
+  bool marker_description_differs = false;
 };
 
 // Central runtime object for PlotJuggler 4. Owns long-lived application
@@ -171,8 +175,9 @@ class AppSession : public QObject {
   // no-op (fewer than two of the selected datasets carry time-bearing data).
   PJ::DatasetId mergeDatasets(const std::vector<PJ::DatasetId>& selected);
 
-  // Returns shared-name canonical object type conflicts for the merge plan that
-  // mergeDatasets() would use. Pure preflight; does not mutate stores/catalog.
+  // Returns shared-name conflicts (canonical object type, payload format, or marker
+  // description) for the merge plan that mergeDatasets() would use. Pure preflight;
+  // does not mutate stores/catalog.
   [[nodiscard]] std::vector<ObjectMergeConflict> objectMergeConflicts(const std::vector<PJ::DatasetId>& selected) const;
 
  signals:
@@ -195,6 +200,15 @@ class AppSession : public QObject {
 
   [[nodiscard]] std::optional<MergePlan> planMerge(const std::vector<DatasetId>& selected) const;
 
+  // Requests the on-demand recipe `key` at the playhead, converted to its dataset's raw time (a finding: its pin).
+  void requestOnDemandAtPlayhead(const std::string& key);
+  // Keeps the raw topics the demanded recipes of `dataset` read in the demand tracker's derived-input tier, so a
+  // demand-capable stream sends them while only a derived topic is displayed.
+  void demandOnDemandRawInputs(DatasetId dataset);
+  // `demandOnDemandRawInputs` for every dataset whose tier is not empty, after topics were retired (a removal, a
+  // re-binding).
+  void refreshOnDemandRawInputs();
+
   // Collapse the transport to the no-data state: pause, clear live hold, reset
   // the range to [0,0] and the cursor to 0, and re-arm the first-seed snap.
   // Called whenever the last visible data disappears (recomputeRange's empty
@@ -203,6 +217,8 @@ class AppSession : public QObject {
 
   // The active live-streaming dataset (0 = none); see setActiveStreamingDataset.
   PJ::DatasetId active_streaming_dataset_id_ = 0;
+  // The datasets whose derived-input tier holds topics (demandOnDemandRawInputs).
+  std::set<PJ::DatasetId> raw_input_datasets_;
 
   std::unique_ptr<SessionManager> session_manager_;
   std::unique_ptr<PlaybackEngine> playback_engine_;

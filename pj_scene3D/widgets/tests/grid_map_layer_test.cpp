@@ -22,6 +22,8 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -31,12 +33,12 @@
 #include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 #include "pj_widgets/DoubleScrubber.h"
 using namespace Qt::StringLiterals;
 
@@ -260,9 +262,9 @@ TEST(GridMapLayer, DockTransformsSourceBoundsIntoFixedFrame) {
   ASSERT_TRUE(session.objectStore().pushOwned(topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
   registerGridParser(session, topic_id);
 
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   const auto tf_buffer = transform_service.transformBuffer(1);
-  pj::scene3d::StampedTransform fixed_from_map;
+  pj::tf::StampedTransform fixed_from_map;
   fixed_from_map.stamp = PJ::fromRaw(100);
   fixed_from_map.parent_frame = "world";
   fixed_from_map.child_frame = "map";
@@ -279,7 +281,11 @@ TEST(GridMapLayer, DockTransformsSourceBoundsIntoFixedFrame) {
   ASSERT_NE(layer, nullptr);
   layer->renderAtForTest(100);
 
-  const auto bounds = dock.sceneView()->sceneBoundsForTest();
+  // The dock places the layer's source-frame box in the view's fixed frame
+  // (looked up in the dock's buffer) and hands the union to the view's camera.
+  // No GPU is involved: the view is never shown.
+  ASSERT_EQ(dock.sceneView()->fixedFrame(), "world");
+  const pj::scene3d::AABB bounds = dock.sceneView()->sceneBounds();
   ASSERT_TRUE(bounds.valid);
   EXPECT_FLOAT_EQ(bounds.min.x, 101.0f);
   EXPECT_FLOAT_EQ(bounds.max.x, 103.0f);
@@ -289,9 +295,8 @@ TEST(GridMapLayer, DockTransformsSourceBoundsIntoFixedFrame) {
   EXPECT_FLOAT_EQ(bounds.max.z, 311.0f);
 }
 
-// Bounds are computed inside renderAt (during paint) after the dock has already
-// unioned the layers' bounds for this frame, so a changed extent must ask for
-// another repaint (PointCloudLayer::onGpuAabb does the same).
+// Bounds are computed inside renderAt, i.e. during the paint, so a changed extent
+// must ask for another repaint to re-fit the scene bounds.
 TEST(GridMapLayer, BoundsChangeRequestsRepaint) {
   Rig rig;
   rig.pushAndBind();
@@ -436,6 +441,18 @@ TEST(GridMapLayer, CanonicalCodecRouteStagesTheSameUpload) {
   EXPECT_FLOAT_EQ(bounds->min.y, 2.0f);
   EXPECT_FLOAT_EQ(bounds->max.y, 3.5f);
   EXPECT_FLOAT_EQ(bounds->max.z, 11.0f);
+}
+
+// TF R6: the layer reports the grid's own header stamp, which the view places it
+// at, not the store (log) time it was found at.
+TEST(GridMapLayer, RenderStampIsTheGridsOwnHeaderStamp) {
+  Rig rig;
+  ASSERT_TRUE(rig.session.objectStore()
+                  .pushOwned(rig.topic_id, /*logged=*/1000, PJ::serializeGridMap(makeGrid(960)))
+                  .has_value());
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(1000);
+  EXPECT_EQ(rig.layer.renderStamp(), PJ::fromRaw(960));
 }
 
 // Parser route: the parser does not validate, so the layer's validateGridMap()

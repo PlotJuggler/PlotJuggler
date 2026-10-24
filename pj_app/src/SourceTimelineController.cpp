@@ -3,6 +3,7 @@
 
 #include "SourceTimelineController.h"
 
+#include <QPointer>
 #include <QStringList>
 #include <QTimer>
 #include <algorithm>
@@ -316,9 +317,12 @@ void SourceTimelineController::onMergeRequested(const QList<quint64>& ids) {
     datasets.push_back(static_cast<DatasetId>(id));
   }
   // confirmAndMergeDatasets filters to data-bearing datasets and gates on ≥2.
-  if (const auto anchor = confirmAndMergeDatasets(widget_, *session_, datasets)) {
-    markDatasetMerged(*anchor);
-  }
+  confirmAndMergeDatasets(
+      widget_, *session_, datasets, [guard = QPointer<SourceTimelineController>(this)](DatasetId anchor) {
+        if (guard != nullptr) {
+          guard->markDatasetMerged(anchor);
+        }
+      });
 }
 
 void SourceTimelineController::markDatasetMerged(DatasetId anchor) {

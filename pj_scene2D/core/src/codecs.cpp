@@ -523,4 +523,85 @@ std::optional<std::shared_ptr<std::vector<uint8_t>>> recoverContainerRawSamples(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Container headers
+// ---------------------------------------------------------------------------
+
+ImageHeader peekImageHeader(const uint8_t* data, size_t size, ImageContainer container) noexcept {
+  if (container == ImageContainer::kPng) {
+    if (size < 24) {
+      return {};
+    }
+    const auto be32 = [](const uint8_t* bytes) {
+      return (uint32_t{bytes[0]} << 24) | (uint32_t{bytes[1]} << 16) | (uint32_t{bytes[2]} << 8) | bytes[3];
+    };
+    return {be32(data + 16), be32(data + 20)};
+  }
+  if (container != ImageContainer::kJpeg) {
+    return {};
+  }
+  ImageHeader header;
+  bool progressive = false;
+  for (size_t at = 2; at + 3 < size;) {
+    if (data[at++] != 0xff) {
+      break;
+    }
+    while (at < size && data[at] == 0xff) {
+      ++at;
+    }
+    if (at >= size) {
+      break;
+    }
+    const uint8_t marker = data[at++];
+    if (marker == 0xd9) {  // end of image
+      break;
+    }
+    if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {  // markers without a length
+      continue;
+    }
+    if (at + 1 >= size) {
+      break;
+    }
+    const size_t length = (size_t{data[at]} << 8) | data[at + 1];
+    if (length < 2 || length > size - at) {
+      break;
+    }
+    if (marker == 0xda) {  // the first scan: does it hold every component?
+      if (header.width == 0 || length < 3) {
+        return {};
+      }
+      header.multi_scan = progressive || data[at + 2] < header.components;
+      return header;
+    }
+    const bool sof = (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) ||
+                     (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf);
+    if (sof && header.width == 0) {
+      if (length < 8) {
+        return {};
+      }
+      header.width = (uint32_t{data[at + 5]} << 8) | data[at + 6];
+      header.height = (uint32_t{data[at + 3]} << 8) | data[at + 4];
+      header.components = data[at + 7];
+      header.multi_scan = true;  // until the first scan says otherwise
+      progressive = marker == 0xc2 || marker == 0xc6 || marker == 0xca || marker == 0xce;
+    }
+    at += length;
+  }
+  return header;  // a frame with no scan found stays multi-scan: the bound covers it
+}
+
+size_t codecWorkspaceBound(const ImageHeader& header, ImageContainer container) noexcept {
+  constexpr size_t kLibraryState = size_t{64} << 10;  // zlib's window and inflate state, libjpeg's tables
+  const size_t row_pointers = size_t{header.height} * sizeof(void*);
+  if (container == ImageContainer::kPng) {
+    return row_pointers + 2 * (size_t{header.width} * 8 + 1) + kLibraryState;  // a row and the previous one
+  }
+  // The coefficient buffer is 2 bytes per sample, blocks padded to 16.
+  const size_t padded_width = (size_t{header.width} + 15) / 16 * 16;
+  const size_t padded_height = (size_t{header.height} + 15) / 16 * 16;
+  const size_t coefficients =
+      header.multi_scan ? padded_width * padded_height * header.components * sizeof(int16_t) : 0;
+  return row_pointers + coefficients + padded_width * header.components * 64 + kLibraryState;
+}
+
 }  // namespace PJ

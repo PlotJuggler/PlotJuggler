@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,8 +30,10 @@
 
 #include "nanoarrow/nanoarrow.h"
 #include "nanoarrow/nanoarrow.hpp"
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/object_topic_metadata.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/arrow_import.hpp"
@@ -39,6 +42,7 @@
 #include "pj_datastore/encoding.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 
@@ -1046,6 +1050,7 @@ struct CatalogSnapshotState {
   std::vector<PJ_data_source_info_t> data_sources;
   std::vector<PJ_topic_info_t> topics;
   std::vector<PJ_field_info_t> fields;
+  std::vector<PJ_object_topic_info_t> object_topics;  // v2 only
 };
 
 void releaseCatalogSnapshot(void* ctx) {
@@ -1058,15 +1063,67 @@ PJ_string_view_t storeString(CatalogSnapshotState& state, std::string_view value
   return PJ_string_view_t{stored.data(), stored.size()};
 }
 
+// A topic's `builtin_object_type` as its static PJ::sdk::name(), or "" when the metadata
+// names no type this SDK knows (kNone, a non-string, metadata that is not an object).
+[[nodiscard]] std::string_view canonicalObjectType(std::string_view metadata_json) {
+  const auto doc = nlohmann::json::parse(metadata_json.begin(), metadata_json.end(), nullptr, false);
+  if (!doc.is_object()) {
+    return {};
+  }
+  const auto field = doc.find(std::string(sdk::kBuiltinObjectTypeMetadataKey));
+  if (field == doc.end() || !field->is_string()) {
+    return {};
+  }
+  const auto type = sdk::parseBuiltinObjectType(field->get_ref<const std::string&>());
+  if (!type || *type == sdk::BuiltinObjectType::kNone) {
+    return {};
+  }
+  return sdk::name(*type);
+}
+
+// v2 only: every object topic of every dataset, derived and marker topics included, sorted
+// by (dataset, name). Called with the engine lock released, since the engine lock and the
+// ObjectStore lock never nest. The strings are copied under the store's shared lock; each
+// type is read from the copied metadata after it.
+void fillObjectTopics(CatalogSnapshotState* state, const ObjectStore& object_store) {
+  object_store.forEachTopicRetained(
+      [state](ObjectTopicId id, const ObjectTopicDescriptor& desc, const ObjectStore::RetainedRange& retained) {
+        state->object_topics.push_back(
+            PJ_object_topic_info_t{
+                .handle = PJ_object_topic_handle_t{.id = id.id},
+                .source = DataSourceHandle{.id = desc.dataset_id},
+                .name = storeString(*state, desc.topic_name),
+                .builtin_object_type = {},
+                .metadata_json = storeString(*state, desc.metadata_json),
+                .entry_count = retained.entry_count,
+                .time_min_ns = retained.first,
+                .time_max_ns = retained.last,
+                .reserved = {0, 0},
+            });
+      });
+  for (auto& info : state->object_topics) {
+    const std::string_view type = canonicalObjectType(toStringView(info.metadata_json));
+    info.builtin_object_type = PJ_string_view_t{type.data(), type.size()};
+  }
+  std::sort(
+      state->object_topics.begin(), state->object_topics.end(),
+      [](const PJ_object_topic_info_t& lhs, const PJ_object_topic_info_t& rhs) {
+        if (lhs.source.id != rhs.source.id) {
+          return lhs.source.id < rhs.source.id;
+        }
+        return toStringView(lhs.name) < toStringView(rhs.name);
+      });
+}
+
 struct ToolboxCore {
   explicit ToolboxCore(DataEngine& data_engine) : write(data_engine), engine(data_engine) {}
 
   WriteCore write;
   DataEngine& engine;
 
-  [[nodiscard]] bool acquireCatalogSnapshot(PJ_catalog_snapshot_t* out_snapshot) {
-    auto lock = engine.lockEngine();  // held through the deep-copy below
-    auto* state = new CatalogSnapshotState{};
+  // The scalar half of the catalog (data sources / topics / fields), shared by v1 and
+  // v2. Caller holds engine.lockEngine(): every read here is a live view into engine state.
+  void fillScalarCatalog(CatalogSnapshotState* state) {
     auto dataset_ids = engine.listDatasets();
     std::sort(dataset_ids.begin(), dataset_ids.end());
     state->data_sources.reserve(dataset_ids.size());
@@ -1113,6 +1170,12 @@ struct ToolboxCore {
               .topic_count = static_cast<uint32_t>(state->topics.size()) - first_topic,
           });
     }
+  }
+
+  [[nodiscard]] bool acquireCatalogSnapshot(PJ_catalog_snapshot_t* out_snapshot) {
+    auto lock = engine.lockEngine();  // held through the deep-copy below
+    auto* state = new CatalogSnapshotState{};
+    fillScalarCatalog(state);
 
     *out_snapshot = PJ_catalog_snapshot_t{
         .data_sources = state->data_sources.data(),
@@ -1128,6 +1191,36 @@ struct ToolboxCore {
     return true;
   }
 
+  // v2: the scalar half under the engine lock, then the object half once it is released.
+  // sdk::storeCatalogSnapshotV2 applies the caller-size rule and releases the snapshot
+  // itself when it refuses the caller's struct.
+  [[nodiscard]] bool acquireCatalogSnapshotV2(PJ_catalog_snapshot_v2_t* out_snapshot, const ObjectStore& object_store) {
+    auto state = std::make_unique<CatalogSnapshotState>();
+    {
+      auto lock = engine.lockEngine();
+      fillScalarCatalog(state.get());
+    }
+    fillObjectTopics(state.get(), object_store);
+
+    PJ_catalog_snapshot_v2_t filled{};
+    filled.data_sources = state->data_sources.data();
+    filled.data_source_count = state->data_sources.size();
+    filled.topics = state->topics.data();
+    filled.topic_count = state->topics.size();
+    filled.fields = state->fields.data();
+    filled.field_count = state->fields.size();
+    filled.object_topics = state->object_topics.data();
+    filled.object_topic_count = state->object_topics.size();
+    filled.release = releaseCatalogSnapshot;
+    filled.release_ctx = state.release();
+    if (auto stored = sdk::storeCatalogSnapshotV2(out_snapshot, filled); !stored) {
+      write.setError(stored.error());
+      return false;
+    }
+    write.last_error.clear();
+    return true;
+  }
+
   // v4: materialise one field's time series into host-owned Arrow structs.
   // Output is a struct array with 2 columns: ["timestamp" (int64),
   // <field_name> (typed)]. The caller must invoke out_schema->release and
@@ -1138,7 +1231,8 @@ struct ToolboxCore {
       write.setError("readSeriesArrow: out_schema and out_array must be non-null");
       return false;
     }
-    auto lock = engine.lockEngine();  // held through the row-decode loop below
+    engine.awaitCompleteSeries(field.topic.id);  // a snapshot must not catch a derived series mid-replay
+    auto lock = engine.lockEngine();             // held through the row-decode loop below
 
     const auto* storage = engine.getTopicStorage(field.topic.id);
     if (storage == nullptr) {
@@ -1219,30 +1313,31 @@ struct ToolboxCore {
 
     // Rows below the topic's retention floor are logically evicted: a toolbox
     // plugin reading this series must not see them (the retention contract).
-    const auto retention_floor = storage->retentionFloor();
-    for (const auto& chunk : storage->sealedChunks()) {
-      if (chunk.stats.t_max < retention_floor) {
-        continue;  // whole chunk below the floor
-      }
-      int col_index = -1;
-      for (std::size_t i = 0; i < chunk.columns.size(); ++i) {
-        if (chunk.columns[i].descriptor->field_id == field.id) {
-          col_index = static_cast<int>(i);
-          break;
+    // Chunks committed out of time order (a backfill) are merged, so the rows
+    // come out in time order.
+    RangeCursor cursor(storage->sealedChunks(), storage->retentionFloor(), std::numeric_limits<Timestamp>::max());
+    const TopicChunk* column_chunk = nullptr;
+    int col_index = -1;
+    for (; cursor.valid(); cursor.advance()) {
+      const SampleRow sample = cursor.current();
+      const TopicChunk& chunk = *sample.chunk;
+      if (&chunk != column_chunk) {
+        column_chunk = &chunk;
+        col_index = -1;
+        for (std::size_t i = 0; i < chunk.columns.size(); ++i) {
+          if (chunk.columns[i].descriptor->field_id == field.id) {
+            col_index = static_cast<int>(i);
+            break;
+          }
         }
       }
       if (col_index < 0) {
-        continue;
+        continue;  // a chunk without the field
       }
       const auto col_sz = static_cast<std::size_t>(col_index);
-
-      for (uint32_t row = 0; row < chunk.stats.row_count; ++row) {
-        // Skip logically-evicted rows; ts_child and val_child stay in sync
-        // because both appends are gated by this single guard.
-        const auto ts = chunk.readTimestamp(row);
-        if (ts < retention_floor) {
-          continue;
-        }
+      const auto row = static_cast<uint32_t>(sample.row_index);
+      {
+        const auto ts = sample.timestamp;
         if (ArrowArrayAppendInt(ts_child, ts) != NANOARROW_OK) {
           write.setError("readSeriesArrow: timestamp append failed");
           return false;
@@ -1682,6 +1777,18 @@ bool toolboxAcquireCatalogSnapshot(void* ctx, PJ_catalog_snapshot_t* out_snapsho
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
     if (!impl->core.acquireCatalogSnapshot(out_snapshot)) {
+      propagateError(out_error, impl->core.write.lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+bool toolboxAcquireCatalogSnapshotV2(
+    void* ctx, PJ_catalog_snapshot_v2_t* out_snapshot, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    if (!impl->core.acquireCatalogSnapshotV2(out_snapshot, impl->object_store)) {
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
@@ -2333,6 +2440,7 @@ const PJ_toolbox_host_vtable_t kToolboxVTable = {
     toolboxPushOwnedObject,
     toolboxRegisterObjectTopicOnDataset,
     toolboxSetObjectTopicRetention,
+    toolboxAcquireCatalogSnapshotV2,
 };
 
 const PJ_object_write_host_vtable_t kSourceObjectWriteVTable = {

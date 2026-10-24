@@ -10,18 +10,12 @@
 #include <qwt_plot_grid.h>
 #include <qwt_plot_layout.h>
 #include <qwt_plot_marker.h>
-
-#include "pj_plotting/PlotCurve.h"
-#ifndef PJ_TARGET_WASM
-#include <qwt_plot_opengl_canvas.h>
-#else
-#include "pj_plotting/PlotRhiCanvas.h"
-#endif
 #include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
 #include <qwt_scale_widget.h>
 #include <qwt_symbol.h>
 
+#include <QApplication>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
@@ -31,6 +25,7 @@
 #include <QPalette>
 #include <QPen>
 #include <QSettings>
+#include <QTimer>
 #include <QWheelEvent>
 #include <algorithm>
 #include <array>
@@ -40,9 +35,11 @@
 #include <utility>
 
 #include "pj_plotting/DatastoreCurveAdapter.h"
+#include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotMagnifier.h"
 #include "pj_plotting/PlotPanner.h"
+#include "pj_plotting/PlotRhiCanvas.h"
 #include "pj_plotting/PlotScaleDraw.h"
 #include "pj_plotting/PlotZoomer.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -71,10 +68,21 @@ namespace {
   return k_colors[static_cast<std::size_t>(index) % k_colors.size()];
 }
 
-// Session-wide override for the OpenGL canvas choice, set by
-// PlotWidgetBase::setOpenGlDisabledOverride (the --disable-opengl CLI flag).
+// The raster canvas: the non-GPU choice, and the replacement for a failed GPU
+// canvas. Its backing store also serves the panner's drag image.
+[[nodiscard]] QwtPlotCanvas* newRasterCanvas(const QPalette& palette) {
+  auto* canvas = new QwtPlotCanvas();
+  canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
+  canvas->setLineWidth(1);
+  canvas->setPalette(palette);
+  canvas->setPaintAttribute(QwtPlotCanvas::BackingStore, true);
+  return canvas;
+}
+
+// Session-wide override for the GPU canvas choice, set by
+// PlotWidgetBase::setGpuCanvasDisabledOverride (the --disable-opengl CLI flag).
 // Read once per plot at construction; only written at startup.
-bool g_opengl_disabled_override = false;
+bool g_gpu_canvas_disabled_override = false;
 
 }  // namespace
 
@@ -217,46 +225,38 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   // is applied after construction or toggled at runtime.
   const QColor canvas_bg = dataBackdropForCurrentTheme();
 
-  QWidget* abs_canvas = nullptr;
+  // The browser has no raster canvas; on desktop the "GPU canvas" preference and
+  // --disable-opengl select it.
 #ifdef PJ_TARGET_WASM
-  // QOpenGLWidget cannot provide its context-sharing contract on WebGL. Keep
-  // the existing Qwt canvas and preferences byte-for-byte on desktop, while
-  // the browser submits plot geometry through QRhi's OpenGL/WebGL backend.
-  auto* rhi_canvas = new PlotRhiCanvas();
-  rhi_canvas->setPalette(canvas_bg);
-  abs_canvas = rhi_canvas;
+  const bool gpu_canvas = true;
 #else
-  const bool use_opengl = !g_opengl_disabled_override && QSettings().value("Preferences::use_opengl", true).toBool();
-  if (use_opengl) {
-    auto* canvas = new QwtPlotOpenGLCanvas();
-    // Drop Qwt's own backing-store FBO: it is a persistent-content GL resource
-    // that outlives context recreation (ADS float/re-dock) and GPU resets, and
-    // QOpenGLWidget's internal FBO already restores content on re-expose. Its
-    // only saving was skipping a redraw on rare non-replot repaints (focus
-    // activation); without it every canvas paint re-renders from live state.
-    canvas->setPaintAttribute(QwtPlotOpenGLCanvas::BackingStore, false);
-    canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
-    canvas->setLineWidth(1);
-    canvas->setPalette(canvas_bg);
-    abs_canvas = canvas;
-  } else {
-    auto* canvas = new QwtPlotCanvas();
-    canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
-    canvas->setLineWidth(1);
-    canvas->setPalette(canvas_bg);
-    canvas->setPaintAttribute(QwtPlotCanvas::BackingStore, true);
-    abs_canvas = canvas;
-  }
+  const bool gpu_canvas =
+      !g_gpu_canvas_disabled_override && QSettings().value("Preferences::use_opengl", true).toBool();
 #endif
-  abs_canvas->setObjectName("qwtCanvas");
+  PlotRhiCanvas* rhi_canvas = nullptr;
+  QWidget* canvas = nullptr;
+  if (gpu_canvas) {
+    rhi_canvas = new PlotRhiCanvas();
+    rhi_canvas->setPalette(canvas_bg);
+    canvas = rhi_canvas;
+  } else {
+    canvas = newRasterCanvas(canvas_bg);
+  }
+  canvas->setObjectName("qwtCanvas");
 
-  plot_ = new QwtPlotPimpl(this, abs_canvas, on_view_resized, on_event);
-#ifdef PJ_TARGET_WASM
+  plot_ = new QwtPlotPimpl(this, canvas, on_view_resized, on_event);
   // The canvas is constructed before the plot exists (QwtPlot adopts its canvas
   // during its own ctor), so bind the source plot now instead of resolving it
   // from parentWidget() on every frame.
-  rhi_canvas->setPlot(plot_);
+  if (rhi_canvas != nullptr) {
+    rhi_canvas->setPlot(plot_);
+#ifndef PJ_TARGET_WASM
+    // A plot must stay usable: on a GPU failure the desktop falls back to the
+    // raster canvas (the browser keeps the canvas's banner). Queued: the canvas
+    // can emit from inside its render(), and the swap deletes it.
+    connect(rhi_canvas, &QRhiWidget::renderFailed, this, &PlotWidgetBase::fallBackToRasterCanvas, Qt::QueuedConnection);
 #endif
+  }
 
   auto* layout = new QHBoxLayout(this);
   layout->setContentsMargins(
@@ -288,6 +288,64 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
 PlotWidgetBase::~PlotWidgetBase() {
   delete plot_;
   plot_ = nullptr;
+}
+
+void PlotWidgetBase::fallBackToRasterCanvas() {
+  QWidget* failed = plot_->canvas();
+  // QRhiWidget reports "No QRhi" on every paint attempt: swap once.
+  if (failed == nullptr || qobject_cast<QwtPlotCanvas*>(failed) != nullptr) {
+    return;
+  }
+  // setCanvas() deletes the failed canvas. A context menu or modal dialog
+  // opened from one of its events runs a nested loop that still owns that
+  // event, so wait until it closes; the banner shows meanwhile.
+  // ponytail: a QDrag::exec loop is not detected; poll it too if drags from the canvas ever block.
+  if (QApplication::activePopupWidget() != nullptr || QApplication::activeModalWidget() != nullptr) {
+    // One retry chain, however many failures arrive meanwhile.
+    if (!std::exchange(fallback_retry_pending_, true)) {
+      QTimer::singleShot(100, this, [this] {
+        fallback_retry_pending_ = false;
+        fallBackToRasterCanvas();
+      });
+    }
+    return;
+  }
+  static bool logged = false;
+  if (!std::exchange(logged, true)) {
+    qWarning("PlotWidgetBase: the GPU plot canvas failed; falling back to the raster canvas");
+  }
+  QwtPlotCanvas* canvas = newRasterCanvas(failed->palette());
+  canvas->setObjectName(failed->objectName());
+  canvas->setMouseTracking(failed->hasMouseTracking());
+  canvas->setAcceptDrops(failed->acceptDrops());
+  canvas->setFocusPolicy(failed->focusPolicy());
+  // The interaction tools are children of the canvas, and setCanvas() deletes
+  // the old one: move them over disabled, then re-enable them after the plot's
+  // own filter so every canvas event filter keeps its original order (the
+  // legend's Ctrl+wheel in eventFilter() must still run before the magnifier).
+  const auto move_disabled = [canvas](auto* tool) {
+    const bool enabled = tool->isEnabled();
+    tool->setEnabled(false);
+    tool->setParent(canvas);
+    return enabled;
+  };
+  const bool magnifier_enabled = move_disabled(plot_->magnifier);
+  const bool panner1_enabled = move_disabled(plot_->panner1);
+  const bool panner2_enabled = move_disabled(plot_->panner2);
+  const bool zoomer_enabled = move_disabled(plot_->zoomer);
+  plot_->setCanvas(canvas);
+  plot_->magnifier->setEnabled(magnifier_enabled);
+  plot_->panner1->setEnabled(panner1_enabled);
+  plot_->panner2->setEnabled(panner2_enabled);
+  plot_->zoomer->setEnabled(zoomer_enabled);
+  canvas->installEventFilter(this);
+  for (const QPointer<QObject>& filter : hover_filters_) {
+    if (filter != nullptr) {
+      canvas->installEventFilter(filter);
+    }
+  }
+  plot_->updateLayout();
+  plot_->replot();
 }
 
 void PlotWidgetBase::refreshCanvasBackground() {
@@ -500,11 +558,9 @@ void PlotWidgetBase::setLegendSize(int size) {
 
 void PlotWidgetBase::setLegendAlignment(Qt::Alignment alignment) {
   plot_->legend->setAlignmentInCanvas(alignment);
-#ifdef PJ_TARGET_WASM
   // The retained QRhi buffers need an explicit dirty signal after the item
-  // mutation. Preserve the native Qwt repaint behavior exactly as before.
+  // mutation.
   replot();
-#endif
 }
 
 void PlotWidgetBase::setLegendVisible(bool visible) {
@@ -637,7 +693,7 @@ void PlotWidgetBase::setLineWidth(LineWidth width) {
   line_width_ = width;
   // Re-apply the current style at the new width so every curve gets the
   // style-correct pen (Lines use lineWidthValue, Dots use the larger
-  // dotWidthValue, Lines+Dots symbols are resized) — the same treatment a new
+  // dotWidthValue, Lines+Dots dot widths follow) — the same treatment a new
   // curve gets from addCurve(). A plain pen-width loop would miss that.
   updateCurvesStyle();
 }
@@ -647,6 +703,16 @@ void PlotWidgetBase::replot() {
     plot_->zoomer->setZoomBase(false);
   }
   plot_->replot();
+}
+
+void PlotWidgetBase::replotOverlays() {
+  if (auto* canvas = qobject_cast<PlotRhiCanvas*>(plot_->canvas()); canvas != nullptr) {
+    canvas->setOverlayOnlyReplot(true);
+    replot();
+    canvas->setOverlayOnlyReplot(false);
+    return;
+  }
+  replot();
 }
 
 void PlotWidgetBase::removeAllCurves() {
@@ -668,10 +734,9 @@ void PlotWidgetBase::setStyle(QwtPlotCurve* curve, CurveStyle style) {
 }
 
 void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
-  // kLinesAndDots draws plain Lines plus dots at each sample. On desktop the
-  // dots are PlotCurve's batched drawDots pass; on WASM PlotRhiCanvas builds
-  // its dot geometry from an explicit symbol instead (it never paints
-  // per-point through QPainter, so the symbol path is harmless there).
+  // kLinesAndDots draws plain Lines plus dots at each sample: PlotCurve's
+  // batched drawDots pass on the QPainter canvases, square dot geometry of the
+  // same width in PlotRhiCanvas.
   if (auto* plot_curve = dynamic_cast<PlotCurve*>(curve); plot_curve != nullptr) {
     plot_curve->setDotWidth(0.0);
   }
@@ -682,16 +747,10 @@ void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
       break;
     case kLinesAndDots: {
       curve->setStyle(QwtPlotCurve::Lines);
-#ifdef PJ_TARGET_WASM
-      const QColor color = curve->pen().color();
-      const int dot_size = static_cast<int>(std::round(dotWidthValue(lineWidth())));
-      curve->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, color, QPen(color), QSize(dot_size, dot_size)));
-#else
       if (auto* plot_curve = dynamic_cast<PlotCurve*>(curve); plot_curve != nullptr) {
         plot_curve->setDotWidth(dotWidthValue(lineWidth()));
       }
       curve->setSymbol(nullptr);
-#endif
       break;
     }
     case kDots:
@@ -723,8 +782,8 @@ QColor PlotWidgetBase::paletteColor(int index) {
   return colorFromIndex(index);
 }
 
-void PlotWidgetBase::setOpenGlDisabledOverride(bool disabled) {
-  g_opengl_disabled_override = disabled;
+void PlotWidgetBase::setGpuCanvasDisabledOverride(bool disabled) {
+  g_gpu_canvas_disabled_override = disabled;
 }
 
 QWidget* PlotWidgetBase::canvasWidget() const {
@@ -739,6 +798,7 @@ void PlotWidgetBase::installHoverFilter(QObject* filter) {
   if (filter == nullptr || plot_ == nullptr) {
     return;
   }
+  hover_filters_.emplace_back(filter);
   if (QWidget* canvas = plot_->canvas(); canvas != nullptr) {
     canvas->installEventFilter(filter);
   }

@@ -9,6 +9,7 @@ TopicDemandTracker::TopicDemandTracker(QObject* parent) : QObject(parent) {}
 
 std::vector<QString> TopicDemandTracker::computeActive(const DatasetState& state) {
   std::set<QString> active(state.infra);
+  active.insert(state.derived_inputs.begin(), state.derived_inputs.end());
   active.insert(state.forced.begin(), state.forced.end());
   for (const auto& [name, count] : state.ref_counts) {
     if (count > 0) {
@@ -43,10 +44,19 @@ void TopicDemandTracker::deliver(DatasetId dataset_id, std::vector<QString> acti
   emitting_ = false;
 }
 
+bool TopicDemandTracker::hasAnyReference(DatasetId dataset_id) const {
+  const auto it = datasets_.find(dataset_id);
+  return it != datasets_.end() && !it->second.ref_counts.empty();  // a count reaching 0 is erased
+}
+
 void TopicDemandTracker::addReference(DatasetId dataset_id, const QString& topic_name) {
   DatasetState& state = datasets_[dataset_id];
+  const bool was_referenced = !state.ref_counts.empty();
   ++state.ref_counts[topic_name];
   recomputeAndEmit(dataset_id, state);
+  if (!was_referenced) {
+    emit referenceDemandChanged(dataset_id);
+  }
 }
 
 void TopicDemandTracker::removeReference(DatasetId dataset_id, const QString& topic_name) {
@@ -62,19 +72,32 @@ void TopicDemandTracker::removeReference(DatasetId dataset_id, const QString& to
   if (--rc_it->second == 0) {
     state.ref_counts.erase(rc_it);
   }
+  const bool referenced = !state.ref_counts.empty();
   recomputeAndEmit(dataset_id, state);
+  if (!referenced) {
+    emit referenceDemandChanged(dataset_id);
+  }
 }
 
 void TopicDemandTracker::setInfrastructureTopics(DatasetId dataset_id, const std::vector<QString>& topic_names) {
-  if (topic_names.empty() && datasets_.find(dataset_id) == datasets_.end()) {
+  replaceTier(dataset_id, &DatasetState::infra, topic_names);
+}
+
+void TopicDemandTracker::setDerivedInputTopics(DatasetId dataset_id, const std::vector<QString>& topic_names) {
+  replaceTier(dataset_id, &DatasetState::derived_inputs, topic_names);
+}
+
+void TopicDemandTracker::replaceTier(
+    DatasetId dataset_id, std::set<QString> DatasetState::* tier, const std::vector<QString>& names) {
+  if (names.empty() && datasets_.find(dataset_id) == datasets_.end()) {
     return;  // avoid materializing phantom state for a dataset we know nothing about
   }
   DatasetState& state = datasets_[dataset_id];
-  std::set<QString> next(topic_names.begin(), topic_names.end());
-  if (next == state.infra) {
+  std::set<QString> next(names.begin(), names.end());
+  if (next == state.*tier) {
     return;
   }
-  state.infra = std::move(next);
+  state.*tier = std::move(next);
   recomputeAndEmit(dataset_id, state);
 }
 
@@ -110,9 +133,13 @@ void TopicDemandTracker::clearDataset(DatasetId dataset_id) {
   }
   const bool had_active = !it->second.last_emitted.empty();
   const bool had_forced = !it->second.forced.empty();
+  const bool had_references = !it->second.ref_counts.empty();
   datasets_.erase(it);
   if (had_forced) {
     emit forcedTopicsChanged(dataset_id);
+  }
+  if (had_references) {
+    emit referenceDemandChanged(dataset_id);
   }
   if (had_active) {
     deliver(dataset_id, {});

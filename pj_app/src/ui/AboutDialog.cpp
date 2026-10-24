@@ -22,6 +22,9 @@ AboutDialog::AboutDialog(QWidget* parent) : Dialog(parent), ui_(new Ui::AboutDia
   // LoadSvg caches a 64x64 render; the logo shows at that native size.
   ui_->logoLabel->setPixmap(loadSvg(u":/resources/svg/plotjuggler.svg"_s, currentTheme()));
   ui_->versionLabel->setText(tr("Version %1").arg(QApplication::applicationVersion()));
+#ifndef PJ_TARGET_WASM
+  ui_->noticesLabel->hide();
+#endif
 
   // The frameless Dialog chrome otherwise opens at its 320x120 base minimum and
   // clips the content. Lock the box to the content's hint so it opens showing

@@ -35,14 +35,18 @@ const REQUIRED_ARTIFACTS = [
   'qtloader.js',
   'qtlogo.svg',
 ];
+// Every build writes it (cmake/PjWasmNotices.cmake). Packaged beside the module, and again at the deployment root,
+// where the About dialog opens it by this name (pj_app/src/ui/AboutDialog.ui).
+const NOTICES = 'THIRD_PARTY_NOTICES.txt';
 const CONTENT_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.svg', 'image/svg+xml'],
+  ['.txt', 'text/plain; charset=utf-8'],
   ['.wasm', 'application/wasm'],
 ]);
-const COMPRESSIBLE_TYPES = new Set(['.html', '.js', '.svg', '.wasm']);
+const COMPRESSIBLE_TYPES = new Set(['.html', '.js', '.svg', '.txt', '.wasm']);
 const MINIMUM_COMPRESSED_SIZE = 1024;
 const BROTLI_QUALITY = 9;
 const BROTLI_WINDOW = 22;
@@ -185,13 +189,16 @@ function deploymentHeaders(bundlePath) {
 /manifest.json
   Cache-Control: no-cache
 
+/${NOTICES}
+  Cache-Control: no-cache
+
 /${bundlePath}/*
   Cache-Control: public, max-age=31536000, immutable
 `;
 }
 
 async function validateSource(sourceRoot) {
-  const required = ['plotjuggler4.html', ...REQUIRED_ARTIFACTS];
+  const required = ['plotjuggler4.html', ...REQUIRED_ARTIFACTS, NOTICES];
   await Promise.all(required.map(async fileName => {
     const candidate = path.join(sourceRoot, fileName);
     try {
@@ -265,7 +272,7 @@ export async function packageWasm(options) {
   await validateReplaceableOutput(outputRoot);
   await validateSource(sourceRoot);
 
-  const sourceAssets = await Promise.all(REQUIRED_ARTIFACTS.map(async fileName => ({
+  const sourceAssets = await Promise.all([...REQUIRED_ARTIFACTS, NOTICES].map(async fileName => ({
     fileName,
     contents: await readFile(path.join(sourceRoot, fileName)),
   })));
@@ -294,6 +301,9 @@ export async function packageWasm(options) {
         COMPRESSIBLE_TYPES.has(path.extname(asset.fileName)),
       ));
     }
+
+    const notices = sourceAssets.find(asset => asset.fileName === NOTICES);
+    files.push(await writeAsset(stagingRoot, NOTICES, notices.contents, true));
 
     let entrypoint = await readFile(path.join(sourceRoot, 'plotjuggler4.html'), 'utf8');
     for (const fileName of REQUIRED_ARTIFACTS.filter(name => name !== 'plotjuggler4.wasm')) {

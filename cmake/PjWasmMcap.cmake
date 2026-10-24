@@ -14,9 +14,9 @@ if(NOT EXISTS "${zstd_SOURCE_DIR}/lib/zstd.h")
 endif()
 
 pj_wasm_require_official_plugin_sources(_pj_mcap_dir data_load_mcap
-        mcap_source.cpp mcap_dialog.hpp mcap_helpers.hpp manifest.json dialog_mcap.ui
+        mcap_source.cpp mcap_dialog.hpp mcap_helpers.hpp mcap_dataset_metadata.hpp manifest.json dialog_mcap.ui
         contrib/mcap/reader.hpp contrib/mcap/parallel_reader.hpp
-        contrib/mcap/message_byte_store.hpp)
+        contrib/mcap/message_byte_store.hpp contrib/mcap/unchunked_payload_store.hpp)
 
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedUi.cmake")
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedManifest.cmake")
@@ -33,8 +33,7 @@ target_link_libraries(pj_wasm_mcap_source PRIVATE
     plotjuggler_sdk::plugin_sdk
     nlohmann_json::nlohmann_json
     LZ4::lz4_static
-    zstd::libzstd_static
-    pj_wasm_array_policy)
+    zstd::libzstd_static)
 
 pj_embed_manifest(pj_wasm_mcap_source
     MANIFEST_FILE "${_pj_mcap_dir}/manifest.json"

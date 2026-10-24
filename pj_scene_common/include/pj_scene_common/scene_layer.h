@@ -7,8 +7,11 @@
 #include <QObject>
 #include <QString>
 #include <QWidget>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -61,6 +64,55 @@ struct SceneLayerContext {
 /// this value still cannot be confused with another layer's no-sample state).
 inline constexpr uint64_t kNoSampleRenderKey = 0x0D15EA5EDEADBEEFULL;
 
+/// `renderKey()` of a single-topic layer: the SequentialUID of the store entry
+/// active at `time`, or kNoSampleRenderKey when there is none (or no store).
+/// Metadata-only (latestEntryIdAt never resolves payload bytes), and the UID
+/// rather than the stamp, so a same-stamp replacement entry still changes it.
+[[nodiscard]] uint64_t latestEntryRenderKey(const ObjectStore* store, ObjectTopicId topic_id, PJ::Timepoint time);
+
+/// The writers of one layer's row warning. Each owns a part; the shown text is the non-empty parts joined one per
+/// line in enum order, so no writer overwrites another.
+class SceneWarningParts {
+ public:
+  enum class Part : std::size_t {
+    kData,        ///< decode and admission problems of the layer's own data
+    kRender,      ///< a GPU-side failure
+    kDerived,     ///< why a derived topic shows nothing: a missing input or an error (D6)
+    kAnnotation,  ///< annotations hidden because they are not paired with the shown image (Scene2D)
+  };
+
+  /// Returns true when the joined text changed (the caller then notifies).
+  bool set(Part part, QString text);
+  [[nodiscard]] const QString& text(Part part) const {
+    return parts_[static_cast<std::size_t>(part)];
+  }
+  [[nodiscard]] const QString& combined() const {
+    return combined_;
+  }
+
+ private:
+  std::array<QString, 4> parts_;
+  QString combined_;
+};
+
+/// What a scene shows beside a layer on an on-demand derived topic (docs/derived_objects/ARCHITECTURE.md §17), from
+/// its node's state. Every field is empty for any other topic.
+struct DerivedTopicPresentation {
+  QString warning;  ///< why it shows nothing: the node's missing input or error, a fault
+  /// Not a fault: "behind 0.4 s" while the shown result lags the one the current request produces (D30, the
+  /// scheduler's lag, never the cursor minus a stamp), "computing…" before any result is known, and a finding's
+  /// computation time in display seconds ("computed at 12.4 s", D26).
+  QString status;
+  std::optional<Timestamp> lag;            ///< set, and positive, while a newer result computes
+  bool computing = false;                  ///< the node's newest request has not settled
+  std::optional<Timestamp> finding_stamp;  ///< a finding's real stamp: its store entry sits at kFindingTimestamp
+
+  bool operator==(const DerivedTopicPresentation&) const = default;
+};
+
+/// The presentation of `topic_id`; empty when `session` is null or the topic is no on-demand output. GUI thread.
+[[nodiscard]] DerivedTopicPresentation derivedTopicPresentation(SessionManager* session, ObjectTopicId topic_id);
+
 /// Backend-neutral contract for one object topic in a layered scene.
 ///
 /// Implementations own the per-topic adapter state and expose changes through
@@ -95,6 +147,24 @@ class ISceneLayer : public QObject {
 
   /// Moves the layer to the current tracker Timepoint after dock-level clamping.
   virtual void setTrackerTime(PJ::Timepoint time) = 0;
+
+  /// `setTrackerTime` after the store changed under an unchanged `time` (a derived result landed): a layer that
+  /// skips a repeated time overrides it to drop that memo first, only when the entry it shows changed. Returns
+  /// whether the layer may draw something new (the dock then forgets its last painted key).
+  virtual bool refreshAt(PJ::Timepoint time) {
+    setTrackerTime(time);
+    return true;
+  }
+
+  /// The row warning: the parts its writers set (SceneWarningParts), joined.
+  [[nodiscard]] const QString& warning() const {
+    return warning_parts_.combined();
+  }
+  /// Sets the derived part of the warning: why a derived topic shows nothing. The dock sets it from the node's
+  /// state when the layer is added and on every state change, never per frame.
+  void setDerivedWarning(QString text) {
+    setWarningPart(SceneWarningParts::Part::kDerived, std::move(text));
+  }
 
   /// Cheap fingerprint of what this layer would render at `time` — its active
   /// data sample plus any transform that positions it. The dock combines the keys
@@ -134,6 +204,18 @@ class ISceneLayer : public QObject {
   void configurationChanged();
   void repaintRequested();
   void warningChanged(bool warn, QString reason);
+
+ protected:
+  void setWarningPart(SceneWarningParts::Part part, QString text);
+  [[nodiscard]] const SceneWarningParts& warningParts() const {
+    return warning_parts_;
+  }
+  /// After `warning()` changed: emits warningChanged, which the dock relays to the row. A family that combines the
+  /// warning with its own row state overrides it.
+  virtual void onWarningChanged();
+
+ private:
+  SceneWarningParts warning_parts_;
 };
 
 }  // namespace PJ

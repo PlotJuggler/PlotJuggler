@@ -202,6 +202,8 @@ struct CameraState {
   float fov_y{glm::radians(45.0f)};      ///< Vertical field of view (perspective).
   float ortho_scale{5.0f};               ///< Half-height of the ortho frustum (world units).
   bool perspective{true};                ///< Projection kind.
+
+  friend bool operator==(const CameraState&, const CameraState&) = default;
 };
 
 // JSON (de)serialization of CameraState, for layout persistence. Round-trips all
@@ -225,7 +227,7 @@ class ICamera {
   // View matrix for CAMERA-RELATIVE rendering: same orientation as viewMatrix(),
   // but eye and focal are expressed relative to `render_origin` (subtracted in
   // DOUBLE precision before the float cast). Pair it with geometry whose model
-  // matrices are offset by the SAME origin (see FrameContext::render_origin) and a
+  // matrices are offset by the SAME origin (the render origin of the view's frame) and a
   // camera sitting at large world coordinates — e.g. "Follow a frame" parking the
   // pivot on a far frame in a UTM/GPS map — no longer loses the eye→geometry delta
   // to float32 cancellation (which made the whole scene swim on zoom). With

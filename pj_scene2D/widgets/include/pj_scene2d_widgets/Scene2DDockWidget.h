@@ -14,6 +14,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_scene2d_core/media_frame.h"
 #include "pj_scene_common/scene_dock_widget.h"
 
 class QEvent;
@@ -24,6 +25,7 @@ namespace PJ {
 
 class CompositeMediaSource;
 class MediaViewerWidget;
+class Scene2DLayer;
 class SessionManager;
 
 /// 2D scene dock on top of pj_scene_common's layered SceneDockWidget.
@@ -52,6 +54,8 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Adds a 2D render layer for the topic. Returns false when the object type is
   /// unsupported or layer attach fails; success also updates the dock title.
   bool setImageTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  /// Full-frame (image/depth/video) layers, in draw order; an interactive drop leaves at most one.
+  [[nodiscard]] std::vector<ObjectTopicId> backgroundTopics() const;
   /// Forwards the global point-inspector toggle to the viewer if it already exists;
   /// a pre-create call is intentionally not latched.
   void setPointInspectorEnabled(bool enabled);
@@ -70,6 +74,8 @@ class Scene2DDockWidget : public SceneDockWidget {
   [[nodiscard]] size_t compositeLayerCountForTesting() const noexcept;
   /// Mirrors the visible CompositeMediaSource layer order after syncViewLayers().
   [[nodiscard]] std::vector<ObjectTopicId> compositeTopicOrderForTesting() const;
+  /// Polls the composite as the viewer does, without a GPU (nullopt: nothing new, or no composite).
+  [[nodiscard]] std::optional<MediaFrame> takeCompositeFrameForTesting();
   /// True while the empty-state placeholder (the greyed image icon) should be
   /// shown instead of the GPU viewer — i.e. there are no visible layers.
   [[nodiscard]] bool emptyPlaceholderActiveForTesting() const noexcept {
@@ -84,8 +90,7 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Workspace XML tag for the 2D scene dock.
   [[nodiscard]] QString xmlTag() const override;
   [[nodiscard]] bool acceptsStateChildTag(const QString& tag) const override;
-  /// Builds the native QRhi bootstrap where required plus the real
-  /// MediaViewerWidget, fronted by a stacked empty-state placeholder shown until
+  /// Builds the real MediaViewerWidget, fronted by a stacked empty-state placeholder shown until
   /// the first layer arrives.
   QWidget* createSceneView() override;
   /// Re-tints the placeholder icon when the palette/theme changes.
@@ -97,6 +102,12 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Rebuilds the visible-layer CompositeMediaSource in draw order and repoints
   /// the viewer before the old composite is destroyed.
   void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) override;
+  /// Pairs `layer`'s contribution to `composite` (tagged `identity`) with its store topic, the cadence of its entries
+  /// and its row warning (CompositeMediaSource::setLayerPairing); its annotations are checked only when the topic is
+  /// an on-demand derived one.
+  static void setLayerPairing(
+      CompositeMediaSource& composite, SessionManager& session, ObjectTopicId topic, const void* identity,
+      Scene2DLayer* layer);
   /// Repaints only the viewer; the layer list UI is owned by the base dock.
   void refreshView() override;
   /// Re-applies an explicit saved Image-vs-Depth concrete kind when a deferred
@@ -109,8 +120,6 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Resolves saved layer identities that are already available and primes the
   /// encoding-aware factory with their explicit concrete kind.
   void primeRestoreLayerKinds(const QDomElement& root);
-  /// Full-frame (image/depth/video) layers, in draw order.
-  [[nodiscard]] std::vector<ObjectTopicId> backgroundTopics() const;
   /// Makes `topic_id` the only background, drawn beneath the overlays.
   void promoteBackground(ObjectTopicId topic_id);
   void primeRestoreLayerKind(const QDomElement& layer_element);
@@ -132,10 +141,6 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Returns raw nanoseconds because CompositeMediaSource is the core-side seam.
   [[nodiscard]] std::optional<int64_t> seedTimestampNs(const std::vector<ISceneLayer*>& ordered_layers) const;
 
-  // Native-only zero-size QRhiWidget kept as a child so Qt 6.8 creates an
-  // RHI-backed backing store on first show(); the browser deliberately leaves
-  // this null. See TECHNICAL_NOTES.md "QRhiWidget Multi-Instance Lifecycle".
-  MediaViewerWidget* bootstrap_ = nullptr;
   // The real viewer is non-owning here; Qt parent ownership is the container made
   // by createSceneView(), while composite_ owns the source it polls.
   MediaViewerWidget* viewer_ = nullptr;

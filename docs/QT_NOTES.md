@@ -1,38 +1,44 @@
 # Qt version notes (for AI agents and humans)
 
 **PJ4 builds against the Qt version pinned in [`../versions.env`](../versions.env)
-(currently 6.11.1).** Install it with [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh).
+(`PJ_QT_VERSION`).** Install it with [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh).
 
-> **Read this if your training data predates ~2025.** Qt 6.9, 6.10 and 6.11
+> **Read this if your training data predates ~2025.** Qt 6.9, 6.10, 6.11 and 6.12
 > shipped *after* the knowledge cutoff of most current models. If you "know" PJ4
 > is on Qt 6.8, that is stale — this file is the delta. Don't reach for a 6.8-era
 > workaround for something later Qt fixed, and don't assume an API you don't
 > recognize doesn't exist. When unsure about a Qt symbol, check the installed
 > headers under `.qt/<PJ_QT_VERSION>/gcc_64/include/` rather than guessing from memory.
 
-## Why 6.11 (a non-LTS) and not 6.12 LTS
+## Why 6.12 (LTS)
 
-We want the newest stable features now. 6.11.1 (released 2026-05-13) is the
-latest stable; 6.11.2 isn't out until ~Aug 2026. The next **LTS** is **6.12**
-(Qt's LTS cadence is now every 4th minor / ~2 years from 6.8 on, with 5 years of
-support) — beta as of mid-2026, final ~autumn 2026. **Plan: ride 6.11.x now, then
-settle on 6.12 LTS when it ships.** Qt 6 guarantees source/binary compatibility
-across the whole 6.x series, so 6.8 → 6.11 → 6.12 is low-risk for a pure-Widgets
-app like PJ4.
+6.12.0 is the LTS: Qt's cadence is every 4th minor (~2 years from 6.8 on), with 5
+years of support. Every channel moves together: `PJ_QT_VERSION` in `versions.env`, the
+`qt6-main` pin in `pixi.toml`, and `PJ_EMSCRIPTEN_VERSION` (the 6.12 WebAssembly kit
+targets Emscripten 5.0.5). Qt 6 keeps source/binary compatibility across the 6.x
+series, but `<rhi/qrhi.h>` has no cross-minor guarantee, so a channel never mixes minors.
 
 ## What PJ4 actually uses (so you can judge relevance)
 
 PJ4 is a **Qt Widgets** desktop app. It links Widgets, Core, Gui, Network, Xml,
-OpenGLWidgets, Svg/SvgWidgets, Concurrent, UiTools, Charts, and **GuiPrivate**
-(private headers — version-sensitive). It does **not** use QML / Qt Quick /
-Qt Quick 3D, and **not** Qt Multimedia (video goes through FFmpeg directly).
+Svg/SvgWidgets, Concurrent, UiTools, and **GuiPrivate** (private headers —
+version-sensitive). No PJ4 code uses `QOpenGLWidget` outside display tests, and
+the Qwt build leaves out `QwtPlotOpenGLCanvas`; OpenGLWidgets is still a required
+kit module and ships with the app, because `Qt6UiTools` depends on it (and the
+pixi path's prebuilt Qwt links it, see `3rdparty/qwt/README.PJ4.md`).
+It does **not** use QML / Qt Quick / Qt Quick 3D, and **not** Qt Multimedia
+(video goes through FFmpeg directly).
 
-Graphics split — important:
-- **`pj_scene2D`** `MediaViewerWidget` is a **`QRhiWidget`** → it *does* go through
-  Qt's RHI. QRhi changes can matter here.
-- **`pj_scene3D`** renders with **raw `QOpenGLWidget`** (its own HDR FBO / SSAO /
-  EDL / AgX passes), **not** QRhi. QRhi additions are latent for scene3D unless we
-  ever port it.
+Graphics — important: **every GPU widget goes through Qt's RHI**: the `pj_scene2D` `MediaViewerWidget`, the
+`pj_scene3D` view (its own HDR / SSAO / EDL / AgX passes on `QRhiWidget`) and the
+plot canvas (`PlotRhiCanvas`), on the native API (OpenGL on Linux, D3D11 on
+Windows, Metal on macOS, WebGL2 in the browser). QRhi changes matter to all
+three, and `<rhi/qrhi.h>` has no cross-minor compatibility guarantee, so every
+channel stays on the pinned minor.
+The Qt 6.11 behaviours the QRhi code works around (grab-only frames, the OpenGL
+depth resolve and multisample textures, the Metal fallback, `QRhiWidget` pipeline
+caches) are in `pj_scene3D/docs/TECHNICAL_NOTES.md` §3; the 6.12 upgrade
+checklist is in `pj_scene3D/docs/QRHI_NEXT.md`.
 
 ## New APIs worth reaching for (added 6.9–6.11)
 
@@ -78,7 +84,7 @@ Prefer these over hand-rolled equivalents. Names are exact.
 - Per-request TCP keep-alive on `QNetworkRequest` (6.11; default idle close after
   2 min); `QSslCertificate::fromFile()` (6.10).
 
-**QRhi** (matters for `pj_scene2D`'s `QRhiWidget`, not scene3D)
+**QRhi** (matters for every GPU widget: Scene3D, Scene2D, the plot canvas)
 - D3D11/12 vblank watcher thread → lower CPU/latency (6.9); integer & depth
   texture formats (6.9); `QRhi::enumerateAdapters()` (6.10). Mostly Windows-side
   but the RHI path is shared.
@@ -139,8 +145,8 @@ before the first namespace/code.
 QML / Qt Quick / Qt Quick 3D (incl. SSGI/SSR/motion vectors), Qt Multimedia &
 the PipeWire backend, Qt WebEngine, Qt Canvas Painter, FlexboxLayout, Lottie /
 VectorImage, Qt Graphs (the Charts/DataViz successor), Qt XR. These dominate the
-6.9–6.12 headlines but touch nothing in PJ4 (pure Widgets + raw OpenGL + Qwt +
-FFmpeg). scene3D's photorealism is hand-written OpenGL, *not* Qt Quick 3D.
+6.9–6.12 headlines but touch nothing in PJ4 (pure Widgets + QRhi + Qwt +
+FFmpeg). scene3D's photorealism is hand-written QRhi passes, *not* Qt Quick 3D.
 
 ## See also
 

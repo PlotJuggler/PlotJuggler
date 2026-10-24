@@ -3,7 +3,7 @@
 #
 # Dual-mode:
 #  - IN-TREE (PJ4 app): builds pj_scripting_core (the Luau engine + whole-series
-#    marker analysis) AND pj_scripting (the SISO DataProcessor/DerivedEngine
+#    marker analysis) AND pj_scripting (the SISO DataProcessor/IncrementalEngine
 #    adapter) AND the tests.
 #  - STANDALONE (Conan, `conan create`): builds ONLY pj_scripting_core against the
 #    Conan plotjuggler_sdk::base + Luau + kissfft, and installs it. The SDK-only
@@ -174,20 +174,49 @@ if(_PJS_STANDALONE)
   return()
 endif()
 
-# --- pj_scripting: the DataProcessor/DerivedEngine adapter (in-tree only) ------
-# The SISO streaming path that couples the engine to pj_datastore's DerivedEngine.
+# --- pj_scripting: the DataProcessor/IncrementalEngine adapter (in-tree only) ------
+# The SISO streaming path that couples the engine to pj_datastore's IncrementalEngine.
 # Marker analysis does NOT use this; it stays out of the shareable core.
 # Luau lives in pj_scripting_core (linked PUBLIC below); python is desktop-only.
 set(PJ_SCRIPTING_SOURCES
   src/lua_siso_transform.cpp
   src/lua_mimo_transform.cpp
   src/filter_catalogue.cpp
+  # Native object operations (point clouds, scene entities, image annotations) for the object-script binders; pj_base only.
+  src/native/point_cloud_ops.cpp
+  src/native/point_cloud_builder.cpp
+  src/native/voxel_grid_ops.cpp
+  src/native/scene_entities_ops.cpp
+  src/native/image_annotations_ops.cpp
+  src/native/image_ops.cpp
+  src/native/depth_ops.cpp
+  # The Luau object-script engine (compile, run, field reads, pj.tf).
+  src/object_script.cpp
+  src/object_binder.cpp
+  # The language-neutral half of an on-demand run (output binding), shared by the Luau and Python runners.
+  src/script_contract.cpp
+  # The JSON summary of an object output an evaluation report carries.
+  src/object_summary.cpp
+  # One run's media state: the injected decoder, the image inputs, the decodes, the annotations' pairing.
+  src/script_media.cpp
+  # A recipe's language picks its on-demand compiler and runner (Luau or Python).
+  src/on_demand_script.cpp
 )
-if(EMSCRIPTEN)
-  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp)
+if(EMSCRIPTEN AND PJ_WASM_WITH_PYTHON)
+  # The on-demand lane only (cmake/PjWasmPython.cmake): Python filters take the GIL on the commit thread, unbounded,
+  # which the browser main thread must never do, so the filter engine stays unavailable.
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp src/python_sandbox.cpp
+       src/python_object_script.cpp src/python_object_binder.cpp)
+elseif(EMSCRIPTEN)
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp src/python_object_script_unavailable.cpp)
 else()
-  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp)
+  # The Python filter engine and the on-demand Python lane share one interpreter and its hardening.
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp src/python_sandbox.cpp src/python_object_script.cpp
+       src/python_object_binder.cpp)
 endif()
+
+# Header-only; the browser build fetches it too (PjWasmDependencies.cmake). Not needed by the standalone core above.
+find_package(tsl-robin-map REQUIRED)
 
 add_library(pj_scripting STATIC ${PJ_SCRIPTING_SOURCES})
 target_compile_features(pj_scripting PUBLIC cxx_std_20)
@@ -197,11 +226,16 @@ if(PJ_ASSERT_THROWS)
 endif()
 target_link_libraries(pj_scripting
   PUBLIC
-    pj_scripting_core             # Luau engine + marker analysis (brings Luau::VM/Compiler transitively)
-    pj_datastore  # DataProcessor base + ProcessorSisoAdapter + ISISOTransform (formerly pj_proc)
+    pj_scripting_core             # Luau engine + marker analysis
+    pj_datastore  # DataProcessor base + ProcessorSisoAdapter + ISISOTransform
+    pj_tf         # object_script.h: the TF snapshot a script reads (pj.tf)
+  PRIVATE
+    Luau::VM                      # object_script.cpp / object_binder.cpp
+    Luau::Compiler
+    tsl::robin_map                # python_sandbox.cpp: the allocation cap's block table
 )
 
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN OR PJ_WASM_WITH_PYTHON)
   target_link_libraries(pj_scripting PRIVATE
     pybind11::embed               # Python backend (embedded CPython) — python_engine.cpp only
     cpython::embed                # libpython for the embedded interpreter
@@ -210,6 +244,10 @@ endif()
 
 if(NOT EMSCRIPTEN)
   target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="${_pj_python_home_define}")
+elseif(PJ_WASM_WITH_PYTHON)
+  # The stdlib zip is embedded at /lib/python314.zip; pybind11 reports Python errors by throwing.
+  target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="/")
+  target_compile_options(pj_scripting PRIVATE -fexceptions)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -245,6 +283,35 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(builtin_golden_test PRIVATE
     BUILTIN_FILTERS_PATH="${CMAKE_SOURCE_DIR}/resources/filters/builtin_filters.luau")
   add_test(NAME BuiltinGoldenTest COMMAND builtin_golden_test)
+
+  # --- native object operations: their headers are private to src/ ---
+  pj_add_test_runner(pj_scripting_native_tests
+    MAIN plain WARNINGS
+    SOURCES tests/native_ops_test.cpp tests/image_ops_test.cpp
+    LIBS pj_scripting)
+  target_include_directories(pj_scripting_native_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+  # --- the object-script engine; its lazy-list test drives the private binder directly ---
+  pj_add_test_runner(pj_scripting_object_tests
+    MAIN plain
+    SOURCES tests/object_script_test.cpp tests/object_summary_test.cpp
+    LIBS pj_scripting Luau::VM Luau::Compiler)
+  target_include_directories(pj_scripting_object_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+  # --- the on-demand Python lane and its sandbox (private header python_sandbox.h); desktop only ---
+  if(NOT EMSCRIPTEN)
+    pj_add_test_runner(pj_scripting_python_tests
+      MAIN plain WARNINGS
+      SOURCES tests/python_sandbox_test.cpp tests/python_object_script_test.cpp
+      LIBS pj_scripting pj_scripting_python_test_probe pybind11::embed cpython::embed)
+    target_include_directories(pj_scripting_python_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+    # Python probes (compiler runs, a held GIL) for tests outside this directory, which cannot see the CPython target.
+    add_library(pj_scripting_python_test_probe STATIC tests/python_test_probe.cpp)
+    target_include_directories(pj_scripting_python_test_probe PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_compile_features(pj_scripting_python_test_probe PUBLIC cxx_std_20)
+    target_link_libraries(pj_scripting_python_test_probe PRIVATE cpython::embed)
+  endif()
 
   # --- M5: filter catalogue ---
   add_executable(filter_catalogue_test tests/filter_catalogue_test.cpp)

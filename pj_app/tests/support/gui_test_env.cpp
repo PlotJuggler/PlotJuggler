@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "gui_test_env.h"
 
+#include <chrono>
+
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_runtime/BatchEngine.h"
 
 namespace pj_app_test {
 
 void GuiTestEnvironment::SetUp() {
-  PJ::PlotWidgetBase::setOpenGlDisabledOverride(true);
+  PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(true);
+  // A layout load waits a bounded time for each marker rule; under ctest -j that run may
+  // outlive the 8 ms budget, so every case waits for it to finish instead. A test of the
+  // bounded wait sets the production budget itself.
+  PJ::BatchEngine::setCreateBudgetForTest(std::chrono::seconds(30));
 }
 
 bool isTestSuiteSelected(std::string_view suite_name) {

@@ -67,7 +67,7 @@ modules there too.
   The `cpython/*:shared=True` override matches Windows CI and produces
   `python3XX.dll` — the local default is static on MSVC and the installer
   would then fail to find the runtime.
-- **Qt 6.11.1 msvc2022_64** — for `windeployqt.exe`. Auto-detected under `.qt`
+- **Qt 6.12.0 msvc2022_64** — for `windeployqt.exe`. Auto-detected under `.qt`
   (the `scripts/install_qt6.sh` / aqt layout); otherwise pass `-QtDir`.
 - **Qt Installer Framework tools** — for `binarycreator.exe`. Install via the Qt
   Maintenance Tool, or `aqt install-tool --outputdir .qt windows desktop tools_ifw`.

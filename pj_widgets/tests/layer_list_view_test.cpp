@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "pj_widgets/ConfigPanelHost.h"
+#include "pj_widgets/ElidingLabel.h"
 #include "pj_widgets/LayerListView.h"
 using namespace Qt::StringLiterals;
 
@@ -189,6 +190,23 @@ TEST(LayerListViewTest, SetOrderKeepsWarningAndSelectionWithoutEmittingReordered
   auto* list = view.findChild<QListWidget*>();
   ASSERT_NE(list, nullptr);
   EXPECT_EQ(list->item(2)->toolTip(), u"bad"_s);
+}
+
+// A row's status (a derived layer's lag) follows its name, is not a warning, and survives a reorder.
+TEST(LayerListViewTest, SetRowStatusFollowsTheNameAndSurvivesAReorder) {
+  PJ::LayerListView view;
+  view.setRows({{.id = 1, .name = u"a"_s, .visible = true}, {.id = 2, .name = u"b"_s, .visible = true}});
+  view.setRowStatus(2, u"behind 0.4 s"_s);
+  view.setOrder(ids({2, 1}));
+  auto* list = view.findChild<QListWidget*>();
+  ASSERT_NE(list, nullptr);
+  EXPECT_EQ(list->item(0)->toolTip(), u"b  ·  behind 0.4 s"_s);
+  auto* label = dynamic_cast<PJ::ElidingLabel*>(list->itemWidget(list->item(0))->findChild<QLabel*>());
+  ASSERT_NE(label, nullptr);
+  EXPECT_EQ(label->fullText(), u"b  ·  behind 0.4 s"_s);
+  EXPECT_TRUE(label->styleSheet().isEmpty()) << "a status is not a warning";
+  view.setRowStatus(2, {});
+  EXPECT_EQ(label->fullText(), u"b"_s);
 }
 
 TEST(LayerListViewTest, SetOrderDoesNotInventASelection) {

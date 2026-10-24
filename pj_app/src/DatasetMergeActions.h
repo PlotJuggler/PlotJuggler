@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QString>
-#include <optional>
+#include <functional>
 #include <vector>
 
 #include "pj_base/types.hpp"  // PJ::DatasetId
@@ -25,10 +25,13 @@ class AppSession;
 /// Confirm-then-merge entry point shared by the Source Timeline footer and the
 /// curve tree's context menu. Filters `ids` to the data-bearing datasets; if ≥2
 /// remain, shows the destructive-merge warning (composeDatasetMergeWarning) as a
-/// modal question parented to `parent`. On confirm, runs AppSession::mergeDatasets
-/// and returns the surviving anchor id. Returns nullopt on fewer than two
-/// data-bearing datasets, on cancel/Esc, or a no-op merge.
-[[nodiscard]] std::optional<DatasetId> confirmAndMergeDatasets(
-    QWidget* parent, AppSession& session, const std::vector<DatasetId>& ids);
+/// question parented to `parent`. On confirm, runs AppSession::mergeDatasets and
+/// passes the surviving anchor id to `on_merged`, which never runs on fewer than
+/// two data-bearing datasets, on cancel/Esc, or a no-op merge. The browser's
+/// question is non-blocking, so `on_merged` may run after this returns and
+/// `session` must outlive the dialog.
+void confirmAndMergeDatasets(
+    QWidget* parent, AppSession& session, const std::vector<DatasetId>& ids,
+    std::function<void(DatasetId anchor)> on_merged);
 
 }  // namespace PJ

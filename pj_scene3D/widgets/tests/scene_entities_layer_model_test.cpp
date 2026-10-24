@@ -3,8 +3,8 @@
 
 // Model-path tests for SceneEntitiesLayer (ModelPrimitive / glTF meshes):
 // stateful entity replay (replace-by-id, deletions, lifetime expiry) and the
-// TF × pose × scale draw-call composition. The marker path is GL-rendered and
-// covered by scene_entities_decode_test at the core layer.
+// TF × pose × scale draw-call composition. The marker path is covered by
+// marker_geometry_test and the render harness.
 
 #include <gtest/gtest.h>
 
@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "mesh_import.h"  // maxConcurrentMeshLoads
 #include "mock_parser_support.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/time.hpp"
@@ -36,9 +37,8 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
-#include "pj_scene3d_widgets/render_pass.h"
+#include "pj_tf/tf_buffer.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -84,7 +84,7 @@ void registerParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id) {
 pj::scene3d::Scene3DLayerContext makeContext(PJ::SessionManager& session) {
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  ctx.tf_buffer = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
   return ctx;
 }
 
@@ -801,7 +801,35 @@ TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender
   EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
 }
 
-TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale) {
+// Rapidly replacing one entity's model source must not stack imports: a
+// superseded import keeps its slot until its worker finishes, so the imports
+// still running never exceed maxConcurrentMeshLoads(), and every one settles.
+TEST(SceneEntitiesLayerModelTest, RapidModelReplacementStaysWithinImportBound) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  constexpr int kReplacements = 12;
+  for (int index = 1; index <= kReplacements; ++index) {
+    PJ::sdk::SceneEntity entity = makeEntity("car", 10 * index);
+    entity.models.front().data.push_back(static_cast<uint8_t>(index));  // new source bytes each batch
+    pushSceneEntities(session, topic_id, 10 * index, batchWithEntities({entity}));
+  }
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  for (int index = 1; index <= kReplacements; ++index) {
+    layer.setTrackerTime(PJ::fromRaw(10 * index));
+    ASSERT_LE(layer.modelImportsOutstandingForTest(), pj::scene3d::maxConcurrentMeshLoads())
+        << "after replacement " << index;
+  }
+  EXPECT_TRUE(pumpUntil([&] { return layer.modelImportsOutstandingForTest() == 0; }, std::chrono::seconds(10)))
+      << "superseded imports never settled";
+}
+
+// The layer hands the view a FRAME-LOCAL draw (frame_id + pose ×
+// scale); the view applies TF. Applying TF here too would double-transform.
+TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id);
@@ -819,29 +847,23 @@ TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale
   pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(ctx.tf_buffer->setTransform(
-      pj::scene3d::StampedTransform{
+      pj::tf::StampedTransform{
           .stamp = PJ::fromRaw(0),
           .parent_frame = "world",
           .child_frame = "base_link",
-          .transform = pj::scene3d::Transform({10.0, 20.0, 30.0}, {1.0, 0.0, 0.0, 0.0}),
+          .transform = pj::tf::Transform({10.0, 20.0, 30.0}, {1.0, 0.0, 0.0, 0.0}),
       }));
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(10));
 
-  const std::string fixed_frame = "world";
-  const pj::scene3d::FrameContext frame_ctx{*ctx.tf_buffer, fixed_frame, PJ::fromRaw(10)};
-  const auto draws = layer.modelDrawCallsForFrame(frame_ctx);
-
+  const auto& draws = layer.modelDrawCalls();
   ASSERT_EQ(draws.size(), 1u);
-  const glm::mat4 expected = glm::mat4(ctx.tf_buffer->lookupTransform("world", "base_link", PJ::fromRaw(10)).matrix()) *
-                             poseToMat4(primitive.pose) * glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 3.0f, 4.0f));
-  expectMatrixNear(draws.front().model, expected);
-  EXPECT_EQ(draws.front().kind, pj::scene3d::MeshRenderPass::GeometryKind::kMesh);
-  EXPECT_FALSE(draws.front().use_vertex_color);
-  EXPECT_NEAR(draws.front().color.r, 25.0f / 255.0f, 1e-6f);
-  EXPECT_NEAR(draws.front().color.g, 51.0f / 255.0f, 1e-6f);
-  EXPECT_NEAR(draws.front().color.b, 76.0f / 255.0f, 1e-6f);
-  EXPECT_NEAR(draws.front().color.a, 102.0f / 255.0f, 1e-6f);
+  EXPECT_EQ(draws.front().frame_id, "base_link");
+  const glm::mat4 expected = poseToMat4(primitive.pose) * glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 3.0f, 4.0f));
+  expectMatrixNear(glm::mat4(draws.front().model), expected);
+  EXPECT_FALSE(draws.front().use_material);
+  EXPECT_NEAR(draws.front().override_color.r, 25.0f / 255.0f, 1e-6f);
+  EXPECT_NEAR(draws.front().override_color.a, 102.0f / 255.0f, 1e-6f);
 }
 
 // H.8: a DATA-SUPPLIED http(s) model URL must not be fetched without the
@@ -924,6 +946,48 @@ TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
   EXPECT_GT(repaints, 0) << "async local-URL mesh load never landed";
   EXPECT_TRUE(layer.remoteFetchNotice().isEmpty())
       << "local file URL tripped the remote gate: " << layer.remoteFetchNotice().toStdString();
+}
+
+// A local-file fetch's completion is queued at fetch() time. Superseding its
+// model aborts the fetcher, and destroying the layer before the event loop runs
+// must take that queued completion with it: the callback captures the layer.
+// The steps run without pumping events in between; an application event filter
+// then reports any delivery that still reaches a fetcher (under ASan, the
+// delivery itself is the use-after-free).
+TEST(SceneEntitiesLayerModelTest, AbortedFetchCompletionDiesWithTheLayer) {
+  isolateSettings();
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const QString fixture = QString(PJ_SCENE3D_FIXTURES_DIR) + u"/meshes/cube.stl"_s;
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities(
+          {makeUrlEntity("car", 10, QUrl::fromLocalFile(fixture).toString().toStdString(), "model/stl")}));
+  pushSceneEntities(session, topic_id, 20, batchWithEntities({makeEntity("car", 20)}));  // same key, embedded bytes
+
+  class FetcherDeliveries : public QObject {
+   public:
+    int count = 0;
+
+   protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+      if (event->type() == QEvent::MetaCall && watched->inherits("pj::scene3d::UrlFetcher")) {
+        ++count;
+      }
+      return false;
+    }
+  } deliveries;
+  QCoreApplication::instance()->installEventFilter(&deliveries);
+
+  auto layer = std::make_unique<pj::scene3d::SceneEntitiesLayer>(topic_id, u"/scene_entities"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer->attach(ctx));         // t=10: the local-file fetch queues its completion
+  layer->setTrackerTime(PJ::fromRaw(20));  // supersedes the fetched model: the fetcher is aborted
+  layer.reset();                           // destroyed before the queued completion runs
+  pumpUntil([] { return false; }, std::chrono::milliseconds(200));
+  QCoreApplication::instance()->removeEventFilter(&deliveries);
+  EXPECT_EQ(deliveries.count, 0) << "an aborted fetcher outlived its layer and delivered its completion";
 }
 
 // A URL record exists BEFORE its bytes do (pending fetch, future default-

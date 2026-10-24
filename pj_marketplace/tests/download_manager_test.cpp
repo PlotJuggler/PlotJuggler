@@ -292,12 +292,14 @@ TEST(DownloadManagerTest, InvalidUrlEmitsFailed) {
   QSignalSpy failed_spy(&dm, &PJ::DownloadManager::failed);
   QSignalSpy started_spy(&dm, &PJ::DownloadManager::started);
 
-  const int id = dm.fetch(QUrl("http://255.255.255.255/nonexistent"), {}, {});
+  // An unsupported scheme is rejected by QNetworkAccessManager without touching the network; a dead IP
+  // address fails fast on some CI runners and waits for the connect timeout on others.
+  const int id = dm.fetch(QUrl("pj-unsupported-scheme://example/nonexistent"), {}, {});
 
-  EXPECT_TRUE(waitForSignal(started_spy));
+  ASSERT_TRUE(waitForSignal(started_spy));
   EXPECT_EQ(started_spy.first().at(0).toInt(), id);
 
-  EXPECT_TRUE(waitForSignal(failed_spy));
+  ASSERT_TRUE(waitForSignal(failed_spy));
   EXPECT_EQ(failed_spy.first().at(0).toInt(), id);
   EXPECT_FALSE(failed_spy.first().at(1).toString().isEmpty());
 }
@@ -434,7 +436,7 @@ TEST(DownloadManagerTest, BareSha256PrefixFailsAsMalformedNotMismatch) {
 
   dm.fetch(server.url(), u"sha256:"_s, tmp.path());
 
-  EXPECT_TRUE(waitForSignal(failed_spy));
+  ASSERT_TRUE(waitForSignal(failed_spy));
   EXPECT_TRUE(finished_spy.isEmpty());
   const QString reason = failed_spy.first().at(1).toString();
   EXPECT_TRUE(reason.contains("Malformed", Qt::CaseInsensitive))
@@ -458,7 +460,7 @@ TEST(DownloadManagerTest, ChecksumMismatchEmitsFailed) {
 
   dm.fetch(server.url(), u"sha256:0000000000000000000000000000000000000000000000000000000000000000"_s, tmp.path());
 
-  EXPECT_TRUE(waitForSignal(failed_spy));
+  ASSERT_TRUE(waitForSignal(failed_spy));
   EXPECT_TRUE(finished_spy.isEmpty());
   EXPECT_TRUE(failed_spy.first().at(1).toString().contains("Checksum"));
 }
@@ -514,7 +516,7 @@ TEST(DownloadManagerTest, CancelEmitsCancelled) {
   QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
   dm.cancel(id);
 
-  EXPECT_TRUE(waitForSignal(cancelled_spy, 2000));
+  ASSERT_TRUE(waitForSignal(cancelled_spy, 2000));
   EXPECT_EQ(cancelled_spy.first().at(0).toInt(), id);
   EXPECT_TRUE(failed_spy.isEmpty());
   EXPECT_TRUE(finished_spy.isEmpty());
@@ -605,7 +607,7 @@ TEST(DownloadManagerTest, CancelDuringExtractEmitsCancelled) {
         }
       });
 
-  EXPECT_TRUE(waitForSignal(cancelled_spy, 10000));
+  ASSERT_TRUE(waitForSignal(cancelled_spy, 10000));
   EXPECT_EQ(cancelled_spy.first().at(0).toInt(), id);
   EXPECT_TRUE(finished_spy.isEmpty());
   EXPECT_TRUE(failed_spy.isEmpty());

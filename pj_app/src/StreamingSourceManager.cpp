@@ -300,6 +300,9 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   for (const auto& [streaming_dataset_id, _catchup_sess] : sessions_) {
     const auto filter_inputs = session_manager_.createReader().listTopics(streaming_dataset_id);
     (void)session_manager_.dataProcessorService().advanceOnCommit(filter_inputs);
+    // A marker rule whose inputs changed only during the pause would keep drawing
+    // pre-pause data: mark it stale, and the batch engine's brake re-runs it.
+    session_manager_.recomputeMarkersForChanged(filter_inputs, streaming_dataset_id);
   }
   // DataEngine::flushTo moves chunks without trimming; re-trim the merged primary
   // to the window (objects are already trimmed by ObjectStore::flushTo). Scope the
@@ -315,12 +318,7 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   // play" semantics.
   for (const auto& [dataset_id, _] : sessions_) {
     const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
-    QVector<TopicId> ids;
-    ids.reserve(static_cast<qsizetype>(topic_ids.size()));
-    for (const TopicId id : topic_ids) {
-      ids.push_back(id);
-    }
-    session_manager_.notifyIngest(std::move(ids), /*live=*/true);
+    session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/true, dataset_id);
   }
 }
 
@@ -606,57 +604,7 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
     // Retention enforcement piggybacks on the same UI-thread hop so
     // `retention_seconds_` stays UI-thread-only (no atomic needed). Trim
     // runs before notifyIngest so consumers observe the post-trim engine.
-    QMetaObject::invokeMethod(
-        this,
-        [this, dataset_id]() {
-          const auto window_ns = static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL;
-          // Apply the budget on every tick: cheap (one map iteration per
-          // session) and idempotent. Solves the cold-start problem where the
-          // plugin creates new object topics mid-stream (post-startSession)
-          // and would otherwise miss the budget set by setObjectRetentionBudget.
-          if (auto session_it = sessions_.find(dataset_id); session_it != sessions_.end()) {
-            session_it->second->runtime_host->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
-          }
-          // Run eager filters over the freshly committed input BEFORE retention
-          // can evict it (the streaming correctness order, plan §5/D6): a stateful
-          // node must consume every sample before it ages out of the window. On
-          // the UI thread here, serialized with the Filter Editor's own
-          // apply/update and with the retention trim just below. While paused the
-          // writes land in the secondary engine (no DerivedEngine); the resume
-          // catch-up advances the whole buffered tail before re-trimming.
-          if (!paused_) {
-            const auto filter_inputs = session_manager_.createReader().listTopics(dataset_id);
-            (void)session_manager_.dataProcessorService().advanceOnCommit(filter_inputs);
-          }
-
-          // Trim the engine currently being written: B while paused (bounds the
-          // tail), the primary while live. The frozen engine is never touched,
-          // preserving the primary snapshot for scrub-back. Scope the trim to THIS
-          // streaming dataset so a file the user loaded into the same engine keeps
-          // its full history.
-          if (paused_) {
-            secondary_data_engine_->enforceRetention(window_ns, dataset_id);
-          } else {
-            session_manager_.dataEngine().enforceRetention(window_ns, dataset_id);
-          }
-
-          const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
-          QVector<TopicId> ids;
-          ids.reserve(static_cast<qsizetype>(topic_ids.size()));
-          for (const TopicId id : topic_ids) {
-            ids.push_back(id);
-          }
-          // Re-run whole-series marker generators over the freshly committed samples.
-          // The streaming write host commits straight to the engine, bypassing
-          // SessionManager::commitChunks, so this is the live-data marker recompute
-          // hook (cheap no-op when no generators exist). Paused writes land in the
-          // secondary engine with no DerivedEngine, matching the filter-advance gate.
-          if (!paused_) {
-            session_manager_.recomputeMarkersForChanged(topic_ids, dataset_id);
-          }
-          session_manager_.notifyIngest(std::move(ids), /*live=*/!paused_);
-        },
-        Qt::QueuedConnection);
+    QMetaObject::invokeMethod(this, [this, dataset_id]() { onIngestTick(dataset_id); }, Qt::QueuedConnection);
     QThread::msleep(kPollPeriodMs);
   }
 
@@ -664,6 +612,67 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
   sess->runtime_host->flushAll();
 
   QMetaObject::invokeMethod(this, [this, dataset_id]() { onWorkerFinished(dataset_id); }, Qt::QueuedConnection);
+}
+
+void StreamingSourceManager::ingestTickForTests(DatasetId dataset_id) {
+  onIngestTick(dataset_id);
+}
+
+void StreamingSourceManager::onIngestTick(DatasetId dataset_id) {
+  const auto window_ns = static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL;
+  // Apply the budget on every tick: cheap (one map iteration per
+  // session) and idempotent. Solves the cold-start problem where the
+  // plugin creates new object topics mid-stream (post-startSession)
+  // and would otherwise miss the budget set by setObjectRetentionBudget.
+  if (const auto session_it = sessions_.find(dataset_id); session_it != sessions_.end()) {
+    session_it->second->runtime_host->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
+  }
+  const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
+  // Run eager filters over the freshly committed input BEFORE retention
+  // can evict it (the streaming correctness order, plan §5/D6): a stateful
+  // node must consume every sample before it ages out of the window. On
+  // the UI thread here, serialized with the Filter Editor's own
+  // apply/update and with the retention trim just below. Deliberately EVERY
+  // topic of the dataset: rows reach it through more than the poll's write
+  // hosts (a toolbox commits straight to the engine, the terminal flush runs
+  // after the last tick), and a node with nothing new is cheap
+  // (docs/derived_objects/ARCHITECTURE.md §16 has the measured cost). While
+  // paused the writes land in the secondary engine (no IncrementalEngine);
+  // the resume catch-up in onPauseToggled advances the whole buffered tail
+  // before re-trimming.
+  if (!paused_) {
+    (void)session_manager_.dataProcessorService().advanceOnCommit(topic_ids);
+  }
+
+  // Trim the engine currently being written: B while paused (bounds the
+  // tail), the primary while live. The frozen engine is never touched,
+  // preserving the primary snapshot for scrub-back. Scope the trim to THIS
+  // streaming dataset so a file the user loaded into the same engine keeps
+  // its full history.
+  if (paused_) {
+    secondary_data_engine_->enforceRetention(window_ns, dataset_id);
+  } else {
+    session_manager_.dataEngine().enforceRetention(window_ns, dataset_id);
+  }
+
+  // Mark stale the whole-series marker generators whose inputs moved (the
+  // session drops the listed topics that did not). The streaming write host
+  // commits straight to the engine, bypassing SessionManager::commitChunks, so
+  // this is the live-data marker recompute hook (cheap no-op when no
+  // generators exist). The per-topic stamp filter inside (newest timestamp,
+  // row count, retention floor, series generation) is what sees a
+  // retention-only change on a quiet topic. Paused writes land in the
+  // secondary engine with no IncrementalEngine, matching the filter-advance gate.
+  if (!paused_) {
+    session_manager_.recomputeMarkersForChanged(topic_ids, dataset_id);
+  }
+  // The processors write their outputs into this dataset through the engine, so
+  // no write host reports them and a plot of a filtered curve refreshes only
+  // through this list; a retention trim also moves topics that received no row.
+  // Never skipped when nothing changed: `live` alone drives the object-only
+  // consumers (Scene2D / Scene3D docks), and the dataset it names reaches the
+  // on-demand live edge even when it has no scalar topic.
+  session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/!paused_, dataset_id);
 }
 
 void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {

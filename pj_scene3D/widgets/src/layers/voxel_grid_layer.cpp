@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <any>
 #include <cmath>
+#include <exception>
 #include <glm/glm.hpp>
+#include <limits>
+#include <new>
 #include <optional>
 
 #include "layer_xml_validation.h"
@@ -19,8 +22,12 @@
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/grid_map_view.h"       // finiteRange
 #include "pj_scene3d_core/pointcloud_convert.h"  // findField (shared field lookup)
-#include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_scene3d_core/pose_math.h"
+#include "pj_scene3d_core/tf/object_placement.h"
+#include "pj_scene3d_core/voxel_grid_budget.h"
+#include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -31,9 +38,13 @@ namespace pj::scene3d {
 namespace {
 Q_LOGGING_CATEGORY(lcVoxel, "pj.scene3d.voxel_grid")
 
-glm::vec3 toGlmCellSize(const PJ::sdk::Vector3& v) {
-  return glm::vec3(static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z));
+constexpr const char* kNoFieldSetting = "\x01";  // sentinel != any real "" / name
+
+bool finitePositiveCellSize(const PJ::sdk::Vector3& size) {
+  return std::isfinite(size.x) && std::isfinite(size.y) && std::isfinite(size.z) && size.x > 0.0 && size.y > 0.0 &&
+         size.z > 0.0;
 }
+
 }  // namespace
 
 VoxelGridLayer::VoxelGridLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
@@ -80,42 +91,51 @@ QDomElement VoxelGridLayer::xmlSaveState(QDomDocument& doc) const {
   return el;
 }
 
-bool VoxelGridLayer::xmlLoadState(const QDomElement& element) {
+std::optional<VoxelGridLayer::ParsedSettings> VoxelGridLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "voxel_grid"_L1 || !detail::isLeafPayload(element)) {
-    return false;
+    return std::nullopt;
   }
-  bool mode_ok = false;
-  bool threshold_ok = false;
-  bool auto_range_ok = false;
-  bool range_lo_ok = false;
-  bool range_hi_ok = false;
-  bool colormap_ok = false;
-  bool opacity_ok = false;
-  const int mode = element.attribute(u"draw_mode"_s, u"1"_s).toInt(&mode_ok);
-  const double threshold = element.attribute(u"threshold"_s, u"0"_s).toDouble(&threshold_ok);
-  const int auto_range = element.attribute(u"auto_range"_s, u"1"_s).toInt(&auto_range_ok);
-  const double range_lo = element.attribute(u"range_lo"_s, u"0"_s).toDouble(&range_lo_ok);
-  const double range_hi = element.attribute(u"range_hi"_s, u"1"_s).toDouble(&range_hi_ok);
-  const int colormap = element.attribute(u"colormap"_s, u"0"_s).toInt(&colormap_ok);
-  const double opacity = element.attribute(u"opacity"_s, u"1"_s).toDouble(&opacity_ok);
-  if (!mode_ok || mode < 0 || mode > 3 || !threshold_ok || !std::isfinite(threshold) || !auto_range_ok ||
-      (auto_range != 0 && auto_range != 1) || !range_lo_ok || !std::isfinite(range_lo) || !range_hi_ok ||
-      !std::isfinite(range_hi) || range_lo > range_hi || !colormap_ok || colormap < 0 ||
-      colormap >= PJ::kColormapCount || !opacity_ok || !std::isfinite(opacity) || opacity < 0.0 || opacity > 1.0) {
+  ParsedSettings settings;
+  settings.field = element.attribute(u"field"_s).toStdString();
+  constexpr double kLowest = std::numeric_limits<double>::lowest();
+  constexpr double kMax = std::numeric_limits<double>::max();
+  int mode = 1;
+  int colormap = 0;
+  if (!detail::parseBoundedInt(element, "draw_mode", 1, 0, 3, mode) ||
+      !detail::parseFiniteDouble(element, "threshold", 0.0, kLowest, kMax, settings.threshold) ||
+      !detail::parseZeroOne(element, "auto_range", true, settings.auto_range) ||
+      !detail::parseFiniteDouble(element, "range_lo", 0.0, kLowest, kMax, settings.range_lo) ||
+      !detail::parseFiniteDouble(element, "range_hi", 1.0, kLowest, kMax, settings.range_hi) ||
+      settings.range_lo > settings.range_hi ||
+      !detail::parseBoundedInt(element, "colormap", 0, 0, PJ::kColormapCount - 1, colormap) ||
+      !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, settings.opacity)) {
+    return std::nullopt;
+  }
+  settings.draw_mode = static_cast<VoxelDrawMode>(mode);
+  settings.colormap = static_cast<PJ::Colormap>(colormap);
+  return settings;
+}
+
+bool VoxelGridLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
+}
+
+bool VoxelGridLayer::xmlLoadState(const QDomElement& element) {
+  const auto settings = parseSettings(element);
+  if (!settings.has_value()) {
     return false;
   }
   // active_field_name_ is restored verbatim; if the named field is absent when a
   // grid arrives, resolveField() falls back to the default and adopts the saved
   // name later once a grid carrying it appears (late-arrival safe).
-  setActiveField(element.attribute(u"field"_s));
-  uploaded_field_setting_ = "\x01";  // force a re-pack on the next render
-  setDrawMode(static_cast<VoxelDrawMode>(mode));
-  setThreshold(threshold);
-  setAutoRange(auto_range != 0);
-  setManualRange(range_lo, range_hi);
-  setColormap(static_cast<PJ::Colormap>(colormap));
-  setOpacity(opacity);
-  pushDisplayParamsToPass();
+  setActiveField(QString::fromStdString(settings->field));
+  uploaded_field_setting_ = kNoFieldSetting;  // force a re-pack on the next render
+  setDrawMode(settings->draw_mode);
+  setThreshold(settings->threshold);
+  setAutoRange(settings->auto_range);
+  setManualRange(settings->range_lo, settings->range_hi);
+  setColormap(settings->colormap);
+  setOpacity(settings->opacity);
   return true;
 }
 
@@ -125,16 +145,20 @@ bool VoxelGridLayer::attach(const PJ::SceneLayerContext& ctx) {
     qCWarning(lcVoxel) << "attach: session is null";
     return false;
   }
-  ctx_ = scene3d_ctx;
-  if (!scene3d_ctx.session->parserBindingForObjectTopic(topic_id_)) {
-    qCWarning(lcVoxel) << "attach: no parser for voxel-grid topic" << topic_id_.id;
+  // A parser-backed topic, or a parser-less canonical one (resolveObject()).
+  if (!scene3d_ctx.session->parserBindingForObjectTopic(topic_id_) &&
+      !hasCanonical3DCodec(PJ::sdk::BuiltinObjectType::kVoxelGrid)) {
+    qCWarning(lcVoxel) << "attach: no parser or canonical codec for voxel-grid topic" << topic_id_.id;
     return false;
   }
+  ctx_ = scene3d_ctx;
   resetStreamingState();
-  pushDisplayParamsToPass();
+  disconnect(reload_connection_);
+  reload_connection_ = connect(
+      ctx_.session, &PJ::SessionManager::datasetAboutToBeReplaced, this, &VoxelGridLayer::onDatasetAboutToBeReplaced);
   // Streaming-tolerant attach (matches OccupancyGridLayer): the topic may have no
   // sample yet (layout restore at stream start, catalog drag). bootstrap() only
-  // pre-warms source_frame_ + the default field; renderAt() self-heals later, so a
+  // pre-warms source_frame_ + the default field; updateAt() self-heals later, so a
   // failure must NOT drop the layer.
   if (!bootstrap()) {
     qCWarning(lcVoxel) << "attach: bootstrap deferred for voxel-grid topic" << topic_id_.id
@@ -144,28 +168,43 @@ bool VoxelGridLayer::attach(const PJ::SceneLayerContext& ctx) {
 }
 
 void VoxelGridLayer::detach() {
-  pass_.clearGrid();
+  disconnect(reload_connection_);
+  reload_connection_ = {};
+  clearVolume();
   resetStreamingState();
+  setDataWarning({});
+  noteRenderSuccess();
+  requested_time_.reset();
+  tracker_dirty_ = false;
 }
 
 void VoxelGridLayer::resetStreamingState() {
-  cached_grid_.reset();
-  cached_grid_uid_ = {};
   uploaded_uid_ = {};
-  uploaded_field_setting_ = "\x01";
+  uploaded_field_setting_ = kNoFieldSetting;
+  budget_.reset();
+}
+
+void VoxelGridLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
+  if (ctx_.session == nullptr || ctx_.session->objectStore().descriptor(topic_id_).dataset_id != dataset_id) {
+    return;
+  }
+  clearVolume();
+  resetStreamingState();
+  tracker_dirty_ = true;
+  setDataWarning({});
+  noteRenderSuccess();
+  emit repaintRequested();
 }
 
 bool VoxelGridLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
-  if (!first.has_value() || first->payload.bytes.empty()) {
+  if (!first.has_value() || first->payload.bytes.empty() ||
+      static_cast<std::uint64_t>(first->payload.bytes.size()) > kSceneLimits.max_voxel_wire_bytes) {
     return false;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
-  if (!binding) {
-    return false;
-  }
-  auto obj = parseLocked(binding, first->timestamp, first->payload);
+  auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kVoxelGrid, first->timestamp, first->payload);
   if (!obj.has_value()) {
     qCWarning(lcVoxel) << "bootstrap: parseObject failed:" << QString::fromStdString(obj.error());
     return false;
@@ -174,12 +213,9 @@ bool VoxelGridLayer::bootstrap() {
   if (grid == nullptr) {
     return false;
   }
-  source_frame_ = grid->frame_id;
+  updateSourceFrame(grid->frame_id);
+  populateFields(*grid);
   resolveField(*grid);  // pre-warm resolved_field_name_ + value_kind_ for the config UI
-  if (!source_frame_.empty()) {
-    emit sourceFrameChanged(QString::fromStdString(source_frame_));
-    emit fallbackFramesChanged(fallbackFrames());
-  }
   return true;
 }
 
@@ -204,18 +240,44 @@ const PJ::sdk::PointField* VoxelGridLayer::resolveField(const PJ::sdk::VoxelGrid
   return field;
 }
 
-void VoxelGridLayer::renderAt(int64_t time_ns) {
-  if (ctx_.session == nullptr) {
+void VoxelGridLayer::populateFields(const PJ::sdk::VoxelGrid& grid) {
+  QStringList fields;
+  fields.reserve(static_cast<qsizetype>(grid.fields.size()));
+  for (const PJ::sdk::PointField& field : grid.fields) {
+    fields.push_back(QString::fromStdString(field.name));
+  }
+  available_fields_ = std::move(fields);
+}
+
+void VoxelGridLayer::clearVolume() {
+  // Swap, not clear(): clear() keeps the capacity, which a hidden, detached or
+  // rejected layer would keep pinned (the browser heap is tight).
+  std::vector<float>{}.swap(scalar_volume_);
+  std::vector<std::uint8_t>{}.swap(rgba_volume_);
+  columns_ = 0;
+  rows_ = 0;
+  slices_ = 0;
+  source_bounds_ = {};
+  ++texture_revision_;
+}
+
+void VoxelGridLayer::updateSourceFrame(const std::string& frame) {
+  if (frame == source_frame_) {
     return;
   }
-  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
-  if (!binding) {
-    return;
+  source_frame_ = frame;
+  emit sourceFrameChanged(QString::fromStdString(source_frame_));
+  emit fallbackFramesChanged(fallbackFrames());
+}
+
+bool VoxelGridLayer::updateAt(int64_t time_ns) {
+  if (ctx_.session == nullptr) {
+    return false;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
   // Fast path, checked metadata-first (latestEntryIdAt — no payload resolve, so
   // an unchanged grid never pays a cold refetch of an evicted pool seed): the
-  // same grid + same field setting is already on the GPU. No parse, no pack, no
+  // same grid + same field setting is already packed. No parse, no pack, no
   // upload — the scrub/replay contract (zero per-voxel CPU work). Shared by the
   // gate and the post-resolve re-check (a racing insert can change the pick).
   const auto already_uploaded = [this](PJ::SequentialUID uid) {
@@ -223,108 +285,122 @@ void VoxelGridLayer::renderAt(int64_t time_ns) {
   };
   const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
   if (entry_id.has_value() && already_uploaded(entry_id->uid)) {
-    return;
+    return false;
   }
   auto entry = entry_id.has_value() ? store.latestAt(topic_id_, time_ns) : std::nullopt;
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     // No sample at/before this time (scrubbed before the first sample, or a gap).
-    // Clear the pass AND invalidate the upload memo: otherwise scrubbing back onto
-    // the same store entry would hit the fast-path above, skip the re-upload, and
-    // leave the (now-cleared) pass empty — the grid would silently never return.
-    pass_.clearGrid();
+    // Clear the volume AND invalidate the upload memo: otherwise scrubbing back onto
+    // the same store entry would hit the fast-path above, skip the re-pack, and
+    // leave the volume empty — the grid would silently never return.
+    const bool changed = hasVolume() || !dataWarning().isEmpty();
+    clearVolume();
     uploaded_uid_ = {};
-    uploaded_field_setting_ = "\x01";
-    return;
+    uploaded_field_setting_ = kNoFieldSetting;
+    setDataWarning({});
+    return changed;
   }
   if (already_uploaded(entry->sequential_uid)) {
-    return;
+    return false;
   }
-
-  // Reuse the parse memo when only the field changed; otherwise decode + cache.
-  const PJ::sdk::VoxelGrid* grid = nullptr;
-  if (cached_grid_.has_value() && entry->sequential_uid == cached_grid_uid_) {
-    grid = &*cached_grid_;
-  } else {
-    auto obj = parseLocked(binding, entry->timestamp, entry->payload);
-    if (!obj.has_value()) {
-      qCWarning(lcVoxel) << "renderAt: parseObject failed:" << QString::fromStdString(obj.error());
-      return;
-    }
-    const auto* parsed = obj->object.get<PJ::sdk::VoxelGrid>();
-    if (parsed == nullptr) {
-      return;
-    }
-    cached_grid_ = *parsed;  // copy carries the anchor → bytes stay alive past the call
-    cached_grid_uid_ = entry->sequential_uid;
-    grid = &*cached_grid_;
-  }
-
-  if (grid->frame_id != source_frame_) {
-    source_frame_ = grid->frame_id;
-    emit sourceFrameChanged(QString::fromStdString(source_frame_));
-    emit fallbackFramesChanged(fallbackFrames());
-  }
-
-  // Untrusted wire dims: a corrupt grid can declare far more voxels than its
-  // payload backs (see kMaxRenderableVoxels). Packing refuses it and the pass
-  // would drop it silently, so surface a layer-row warning and skip the work
-  // rather than leave the user staring at an empty view with no explanation.
-  const uint64_t voxels = voxelCount(*grid);
-  if (voxels > kMaxRenderableVoxels) {
-    qCWarning(lcVoxel) << "renderAt: voxel count" << voxels << "exceeds render cap" << kMaxRenderableVoxels
-                       << "— grid not displayed (corrupt/unsupported dimensions)";
-    setStatusWarning(tr("Voxel grid too large to display: %1 voxels (corrupt or unsupported dimensions)").arg(voxels));
-    pass_.clearGrid();
-    uploaded_uid_ = entry->sequential_uid;
-    uploaded_field_setting_ = active_field_name_;
-    return;
-  }
-  setStatusWarning(QString());  // a renderable-sized grid arrived → clear any notice
-
-  const PJ::sdk::PointField* field = resolveField(*grid);
-  if (field == nullptr) {
-    pass_.clearGrid();
-    uploaded_uid_ = entry->sequential_uid;
-    uploaded_field_setting_ = active_field_name_;
-    return;
-  }
-
-  VoxelGridUpload upload;
-  upload.frame_id = grid->frame_id;
-  upload.origin = grid->origin;
-  upload.cell_size = toGlmCellSize(grid->cell_size);
-  upload.column_count = grid->column_count;
-  upload.row_count = grid->row_count;
-  upload.slice_count = grid->slice_count;
-  upload.kind = value_kind_;
-  if (value_kind_ == VoxelValueKind::kScalar) {
-    upload.scalar = packScalarField(*grid, *field);
-  } else {
-    upload.rgba = packRgbaField(*grid, *field);
-  }
-  pass_.setGrid(std::move(upload));
-
+  // Every exit below marks this sample packed, so a bad one is not retried per frame.
   uploaded_uid_ = entry->sequential_uid;
   uploaded_field_setting_ = active_field_name_;
+  const auto fail = [this](QString warning) {
+    clearVolume();
+    setDataWarning(std::move(warning));
+    return true;
+  };
+
+  if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_voxel_wire_bytes) {
+    return fail(tr("Voxel-grid payload is %1 MiB; the limit is %2 MiB")
+                    .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
+                    .arg(kSceneLimits.max_voxel_wire_bytes / kMiB));
+  }
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kVoxelGrid, entry->timestamp, entry->payload);
+  if (!obj.has_value()) {
+    qCWarning(lcVoxel) << "updateAt: parseObject failed:" << QString::fromStdString(obj.error());
+    return fail(tr("Voxel grid could not be decoded: %1").arg(QString::fromStdString(obj.error())));
+  }
+  const PJ::sdk::VoxelGrid* grid = obj->object.get<PJ::sdk::VoxelGrid>();  // valid while obj lives
+  if (grid == nullptr) {
+    return fail(tr("This layer accepts VoxelGrid samples only"));
+  }
+
+  updateSourceFrame(grid->frame_id);
+  render_stamp_ = objectStamp(grid->timestamp_ns, entry->payload_stamp_shift);
+  populateFields(*grid);
+
+  // Untrusted wire dims: a corrupt grid can declare far more voxels than its
+  // payload backs (see kMaxRenderableVoxels). Packing refuses it, so surface a
+  // layer-row warning and skip the work rather than leave the user staring at an
+  // empty view with no explanation.
+  const uint64_t voxels = pj::scene3d::voxelCount(*grid);
+  if (voxels > kMaxRenderableVoxels) {
+    qCWarning(lcVoxel) << "updateAt: voxel count" << voxels << "exceeds render cap" << kMaxRenderableVoxels
+                       << "— grid not displayed (corrupt/unsupported dimensions)";
+    return fail(tr("Voxel grid too large to display: %1 voxels (corrupt or unsupported dimensions)").arg(voxels));
+  }
+  if (!voxelDimensionsFit(grid->column_count, grid->row_count, grid->slice_count)) {
+    return fail(tr("Voxel grid is %1 x %2 x %3 (%4 voxels); the layer limit is %5")
+                    .arg(
+                        QString::number(grid->column_count), QString::number(grid->row_count),
+                        QString::number(grid->slice_count), QString::number(voxels),
+                        QString::number(kSceneLimits.max_voxels_per_layer)));
+  }
+  if (!finitePositiveCellSize(grid->cell_size) || !finitePose(grid->origin)) {
+    return fail(tr("Voxel grid has an invalid cell size or origin pose"));
+  }
+  const PJ::sdk::PointField* field = resolveField(*grid);
+  if (field == nullptr) {
+    return fail(tr("Voxel grid has no displayable fields"));
+  }
+
+  std::vector<float> scalar;
+  std::vector<std::uint8_t> rgba;
+  try {
+    if (value_kind_ == VoxelValueKind::kScalar) {
+      scalar = packScalarField(*grid, *field);
+    } else {
+      rgba = packRgbaField(*grid, *field);
+    }
+  } catch (const std::bad_alloc&) {
+    return fail(tr("Not enough memory to pack this voxel grid"));
+  } catch (const std::exception& error) {
+    return fail(tr("Voxel-grid packing failed: %1").arg(QString::fromUtf8(error.what())));
+  }
+  const bool complete = value_kind_ == VoxelValueKind::kScalar ? scalar.size() == voxels : rgba.size() == voxels * 4U;
+  if (!complete) {
+    return fail(tr("Voxel grid field layout could not be packed"));
+  }
+
+  scalar_volume_ = std::move(scalar);
+  rgba_volume_ = std::move(rgba);
+  origin_ = grid->origin;
+  cell_size_ = glm::vec3(
+      static_cast<float>(grid->cell_size.x), static_cast<float>(grid->cell_size.y),
+      static_cast<float>(grid->cell_size.z));
+  columns_ = grid->column_count;
+  rows_ = grid->row_count;
+  slices_ = grid->slice_count;
+  source_bounds_ = voxelGridBounds(*grid);
+  const FiniteRange range = value_kind_ == VoxelValueKind::kScalar ? finiteRange(scalar_volume_) : FiniteRange{};
+  automatic_range_ = range.valid ? std::pair<float, float>{range.lo, range.hi} : std::pair<float, float>{0.0f, 1.0f};
+  ++texture_revision_;
+  setDataWarning({});
+  return true;
 }
 
 void VoxelGridLayer::setFixedFrame(const QString& frame) {
-  // The grid is frame-relative; the pass places it per-frame via FrameContext.
-  Q_UNUSED(frame);
+  // The grid is frame-relative; the renderer places it per-frame.
+  fixed_frame_ = frame.toStdString();
   emit repaintRequested();
 }
 
-void VoxelGridLayer::setStatusWarning(const QString& reason) {
-  if (status_warning_ == reason) {
-    return;
-  }
-  status_warning_ = reason;
-  emit statusWarningChanged();  // dock re-combines this into the layer-row warning
-}
-
 void VoxelGridLayer::setTrackerTime(PJ::Timepoint time) {
-  Q_UNUSED(time);  // render() reads frame_ctx.time via the tracker_dirty_ path
   tracker_dirty_ = true;
+  requested_time_ = time;
   emit repaintRequested();
 }
 
@@ -333,49 +409,69 @@ void VoxelGridLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-  pass_.setVisible(visible);
+  // Release the packed volume while hidden; un-hiding re-packs. Its bounds
+  // stay: a hidden layer still counts in the camera's scene bounds.
+  if (!visible_) {
+    budget_.reset();
+    const AABB bounds = source_bounds_;
+    clearVolume();
+    source_bounds_ = bounds;
+    uploaded_uid_ = {};
+    uploaded_field_setting_ = kNoFieldSetting;
+  } else if (requested_time_.has_value()) {
+    tracker_dirty_ = true;
+  }
   emit visibilityChanged(visible);
   emit repaintRequested();
 }
 
-void VoxelGridLayer::initializeGL() {
-  pass_.initializeGL();
+bool VoxelGridLayer::drainPendingUpdate() {
+  if (!visible_ || !tracker_dirty_ || !requested_time_.has_value()) {
+    return false;
+  }
+  tracker_dirty_ = false;
+  return updateAt(PJ::toRaw(*requested_time_));
 }
 
-void VoxelGridLayer::releaseGL() {
-  pass_.releaseGL();
+std::uint64_t VoxelGridLayer::renderKey(PJ::Timepoint time) const {
+  const std::uint64_t key =
+      PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
+  return foldFrameTransformIntoKey(
+      key, ctx_.tf_buffer.get(), fixed_frame_, source_frame_, render_stamp_, time, placementHold());
 }
 
-void VoxelGridLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return;
+bool VoxelGridLayer::prepareForRender(std::uint64_t remaining_view_voxels) {
+  // The budget_ candidate: the sample at the playhead (settings changes reset the latch).
+  const auto candidate = [this] {
+    return PJ::latestEntryRenderKey(
+        ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_,
+        requested_time_.value_or(PJ::Timepoint{}));
+  };
+  bool released = false;
+  if (budget_.blocked(remaining_view_voxels, candidate, released)) {
+    return false;
   }
-  if (tracker_dirty_) {
-    tracker_dirty_ = false;
-    renderAt(PJ::toRaw(frame_ctx.time));
+  if (released) {
+    uploaded_uid_ = {};
+    uploaded_field_setting_ = kNoFieldSetting;
+    tracker_dirty_ = true;
   }
-  pass_.render(view_params, frame_ctx);
+  const bool changed = drainPendingUpdate();
+  if (!hasVolume() || voxelCount() <= remaining_view_voxels) {
+    return changed;
+  }
+  budget_.reject(voxelCount(), candidate());
+  setDataWarning(tr("Layer needs %1 voxels; only %2 remain in this view's budget")
+                     .arg(QString::number(voxelCount()), QString::number(remaining_view_voxels)));
+  clearVolume();
+  uploaded_uid_ = {};
+  uploaded_field_setting_ = kNoFieldSetting;
+  return true;
 }
 
-std::optional<AABB> VoxelGridLayer::worldBounds() const {
-  if (!cached_grid_.has_value()) {
-    return std::nullopt;
-  }
-  const AABB box = voxelGridBounds(*cached_grid_);
-  if (!box.valid) {
-    return std::nullopt;
-  }
-  return box;
-}
-
-void VoxelGridLayer::pushDisplayParamsToPass() {
-  pass_.setDrawMode(draw_mode_);
-  pass_.setThreshold(static_cast<float>(threshold_));
-  pass_.setAutoRange(auto_range_);
-  pass_.setManualRange(static_cast<float>(manual_lo_), static_cast<float>(manual_hi_));
-  pass_.setColormap(colormap_);
-  pass_.setOpacity(static_cast<float>(opacity_));
-  pass_.setVisible(visible_);
+void VoxelGridLayer::rejectVolumeForRender(QString warning) {
+  noteRenderFailure(std::move(warning));
+  clearVolume();
 }
 
 void VoxelGridLayer::setActiveField(const QString& field_name) {
@@ -384,7 +480,8 @@ void VoxelGridLayer::setActiveField(const QString& field_name) {
     return;
   }
   active_field_name_ = next;
-  tracker_dirty_ = true;  // force renderAt → re-pack with the new field
+  tracker_dirty_ = true;  // force updateAt → re-pack with the new field
+  budget_.reset();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -394,7 +491,6 @@ void VoxelGridLayer::setDrawMode(VoxelDrawMode mode) {
     return;
   }
   draw_mode_ = mode;
-  pass_.setDrawMode(mode);
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -404,7 +500,6 @@ void VoxelGridLayer::setThreshold(double threshold) {
     return;
   }
   threshold_ = threshold;
-  pass_.setThreshold(static_cast<float>(threshold));
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -414,7 +509,6 @@ void VoxelGridLayer::setAutoRange(bool on) {
     return;
   }
   auto_range_ = on;
-  pass_.setAutoRange(on);
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -425,7 +519,6 @@ void VoxelGridLayer::setManualRange(double lo, double hi) {
   }
   manual_lo_ = lo;
   manual_hi_ = hi;
-  pass_.setManualRange(static_cast<float>(lo), static_cast<float>(hi));
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -435,7 +528,6 @@ void VoxelGridLayer::setColormap(PJ::Colormap colormap) {
     return;
   }
   colormap_ = colormap;
-  pass_.setColormap(colormap);
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -446,7 +538,6 @@ void VoxelGridLayer::setOpacity(double opacity) {
     return;
   }
   opacity_ = clamped;
-  pass_.setOpacity(static_cast<float>(opacity_));
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -470,14 +561,12 @@ QWidget* VoxelGridLayer::createConfigWidget(QWidget* parent) {
 
   // Field selector — populated from the last decoded grid's fields.
   auto* field_combo = new PJ::ComboBox(container);
-  if (cached_grid_.has_value()) {
-    for (const PJ::sdk::PointField& f : cached_grid_->fields) {
-      field_combo->addItem(QString::fromStdString(f.name), QString::fromStdString(f.name));
-    }
-    const int idx = field_combo->findData(QString::fromStdString(resolved_field_name_));
-    if (idx >= 0) {
-      field_combo->setCurrentIndex(idx);
-    }
+  for (const QString& name : available_fields_) {
+    field_combo->addItem(name, name);
+  }
+  const int field_idx = field_combo->findData(QString::fromStdString(resolved_field_name_));
+  if (field_idx >= 0) {
+    field_combo->setCurrentIndex(field_idx);
   }
   field_combo->setEnabled(field_combo->count() > 0);
   form->addRow(tr("Field:"), field_combo);

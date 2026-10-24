@@ -1,10 +1,9 @@
 // The key light and Lambert response every point-cloud solid shades with.
 //
-// SHARED SOURCE OF TRUTH. Both backends consume this file: the desktop GL passes get it
-// as a constexpr string_view through the generated cube_shader_sources.h and concatenate
-// it into their programs at runtime, while the browser's .vert/.frag #include it directly
-// (qsb honours GL_GOOGLE_include_directive). Keep it free of uniforms, builtins and
-// version-specific syntax — the two backends differ completely on all three.
+// SHARED SOURCE OF TRUTH. The QRhi .vert/.frag shaders #include it directly (qsb honours
+// GL_GOOGLE_include_directive); scene3d_shader_constants_test reads it to check
+// cube_mesh.h's C++ mirrors of its constants against the GLSL. Keep it free of uniforms,
+// builtins and version-specific syntax.
 //
 // It is shared rather than copied because a cube, a sphere imposter and a voxel sitting
 // side by side have to be lit identically, and nothing else enforces that.

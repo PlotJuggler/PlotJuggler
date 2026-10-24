@@ -19,7 +19,6 @@ namespace PJ {
 
 class RangeSlider : public QWidget {
   Q_OBJECT
-  Q_ENUMS(RangeSliderTypes)
 
  public:
   enum Option { kNoHandle = 0x0, kLeftHandle = 0x1, kRightHandle = 0x2, kDoubleHandles = kLeftHandle | kRightHandle };

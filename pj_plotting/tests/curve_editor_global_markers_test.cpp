@@ -52,7 +52,7 @@ QString keyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
 
 // Registers `scope`'s bare marker object topic where the overlay reads it for
 // `dataset_id` (the dataset itself, or the shared dataset for the ALL-DATASETS
-// scope) the same way MarkerService::publishMarkerSet does (that method is
+// scope) the same way BatchEngine::publishMarkerSet does (that method is
 // private; this mirrors its ObjectStore calls). Notification is kept separate
 // (publishScopeTopic) so a test can pin what the footer shows before it.
 void registerScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {

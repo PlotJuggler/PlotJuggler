@@ -162,9 +162,15 @@ class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
     loaded_value_ = element.attribute(u"value"_s);
     return true;
   }
+  void finishRestore() override {
+    ++finish_count_;
+  }
 
   int loadCount() const {
     return load_count_;
+  }
+  int finishCount() const {
+    return finish_count_;
   }
   QString loadedValue() const {
     return loaded_value_;
@@ -174,6 +180,7 @@ class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
   QString tag_;
   QString value_;
   int load_count_ = 0;
+  int finish_count_ = 0;
   QString loaded_value_;
 };
 
@@ -532,10 +539,12 @@ TEST(DockWidgetPlaceholderTest, ObjectWidgetClipboardPasteRequiresSameFamilyTag)
   ASSERT_TRUE(QMetaObject::invokeMethod(&same_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
   EXPECT_EQ(same_family_widget->loadCount(), 1);
   EXPECT_EQ(same_family_widget->loadedValue(), u"camera"_s);
+  EXPECT_EQ(same_family_widget->finishCount(), 1) << "a paste is a restore with no shell to settle it";
   EXPECT_EQ(same_family_undo, 1);
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&other_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
   EXPECT_EQ(other_family_widget->loadCount(), 0);
+  EXPECT_EQ(other_family_widget->finishCount(), 0);
 }
 
 TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboardXml) {
@@ -573,6 +582,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboard
   EXPECT_EQ(target.plotWidget(), nullptr);
   EXPECT_EQ(pasted_widget->loadCount(), 1);
   EXPECT_EQ(pasted_widget->loadedValue(), u"camera"_s);
+  EXPECT_EQ(pasted_widget->finishCount(), 1);
   EXPECT_EQ(undo_count, 1);
 }
 

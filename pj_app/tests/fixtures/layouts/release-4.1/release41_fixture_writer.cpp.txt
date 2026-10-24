@@ -1,0 +1,334 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+//
+// Throwaway writer (never committed on release-4.1): builds one synthetic session
+// with every derived-object kind release-4.1 can persist and writes it through the
+// REAL save paths — MainWindow::saveLayoutToPath (source-bound and generic) and
+// MainWindow::xmlSaveState(kHistory). Output directory: $PJ_FIXTURE_OUT_DIR.
+
+#include <gtest/gtest.h>
+
+#include <QApplication>
+#include <QDir>
+#include <QDomDocument>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "MainWindow.h"
+#include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/builtin/point_cloud_codec.hpp"
+#include "pj_datastore/object_store.hpp"
+#include "pj_datastore/writer.hpp"
+#include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotDocker.h"
+#include "pj_plotting/PlotWidget.h"
+#include "pj_plotting/TabbedPlotWidget.h"
+#include "pj_runtime/AppSession.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/MarkerService.h"
+#include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#include "pj_widgets/VisualizationKind.h"
+
+using namespace Qt::StringLiterals;
+
+namespace PJ {
+
+// Reuses a MainWindow friend name: this file builds into its own executable.
+class MainWindowHistoryExemptTestPeer {
+ public:
+  [[nodiscard]] static AppSession& session(MainWindow& window) {
+    return *window.session_;
+  }
+  static void saveLayout(MainWindow& window, const QString& path, bool include_data_source) {
+    window.saveLayoutToPath(path, include_data_source);
+  }
+  [[nodiscard]] static QDomDocument historySnapshot(const MainWindow& window) {
+    return window.xmlSaveState(MainWindow::SnapshotScope::kHistory);
+  }
+  static void requestFamily(MainWindow& window, DockWidget* dock, VisualizationKind kind) {
+    window.onObjectFamilyRequested(dock, kind);
+  }
+};
+
+}  // namespace PJ
+
+namespace {
+
+using Peer = PJ::MainWindowHistoryExemptTestPeer;
+
+constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+// The saved paths are rewritten to this fake absolute root. The data files must
+// exist while saving (a <fileInfo> is written only for a file that does), so the
+// session points at real files under a temporary root first.
+constexpr const char* kFakeRoot = "/pj-fixtures";
+
+// A Luau transform class whose id must equal the transform's id.
+std::string transformScript(const std::string& id, const std::string& expression) {
+  return "-- pj-script: luau\nreturn { id=\"" + id + "\", name=\"" + id +
+         "\", output=\"same\",\n"
+         "  create = function(p) return { calculate = function(t, v) return " +
+         expression + " end } end }\n";
+}
+
+std::string markerScript(const std::string& series_name) {
+  return "local s = series(\"" + series_name +
+         "\")\n"
+         "if s ~= nil then\n"
+         "  for i = 0, s:size() - 1 do createMarker(s:at(i).t) end\n"
+         "end\n";
+}
+
+PJ::DatasetId addDataset(PJ::AppSession& app, const std::string& source_name) {
+  auto domain = app.sessionManager().dataEngine().createTimeDomain(source_name);
+  EXPECT_TRUE(domain.has_value());
+  auto dataset = app.sessionManager().dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = source_name, .time_domain_id = *domain});
+  EXPECT_TRUE(dataset.has_value());
+  return *dataset;
+}
+
+PJ::TopicId addScalarTopic(PJ::AppSession& app, PJ::DatasetId dataset, const std::string& topic, double scale) {
+  PJ::DataWriter writer = app.sessionManager().dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(dataset, topic, PJ::NumericType::kFloat64);
+  EXPECT_TRUE(handle.has_value());
+  for (int index = 0; index < 5; ++index) {
+    writer.appendScalar(*handle, (index + 1) * kSecond, scale * (index - 2));
+  }
+  EXPECT_FALSE(app.sessionManager().commitChunks(writer.flushAll()).empty());
+  return handle->topic_id;
+}
+
+// A float32 xyz cloud of eight points at t = 1 s.
+std::vector<uint8_t> smallCloud() {
+  std::vector<float> xyz;
+  for (int index = 0; index < 8; ++index) {
+    xyz.insert(
+        xyz.end(), {static_cast<float>(index & 1), static_cast<float>((index >> 1) & 1),
+                    static_cast<float>((index >> 2) & 1)});
+  }
+  using DT = PJ::sdk::PointField::Datatype;
+  PJ::sdk::PointCloud cloud;
+  cloud.frame_id = "map";
+  cloud.fields = {{"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}};
+  cloud.point_step = 12;
+  cloud.width = static_cast<uint32_t>(xyz.size() / 3);
+  cloud.height = 1;
+  cloud.row_step = cloud.point_step * cloud.width;
+  cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(xyz.data()), xyz.size() * sizeof(float));
+  cloud.timestamp_ns = kSecond;
+  return PJ::serializePointCloud(cloud);
+}
+
+// The live catalog key of `topic`'s value column in `dataset`, or empty.
+QString keyOf(PJ::AppSession& app, PJ::DatasetId dataset, const QString& topic) {
+  app.catalogModel().rebuildFromDatastore();
+  for (const PJ::CurveDescriptor& curve : app.catalogModel().curves()) {
+    if (curve.dataset_id == dataset && curve.topic_name == topic) {
+      return curve.name;
+    }
+  }
+  return {};
+}
+
+PJ::TopicId topicIdOf(PJ::AppSession& app, PJ::DatasetId dataset, const QString& topic) {
+  app.catalogModel().rebuildFromDatastore();
+  for (const PJ::CurveDescriptor& curve : app.catalogModel().curves()) {
+    if (curve.dataset_id == dataset && curve.topic_name == topic) {
+      return curve.topic_id;
+    }
+  }
+  return 0;
+}
+
+PJ::PlotWidget* boundPlot(PJ::AppSession& app, PJ::PlotDocker* docker) {
+  PJ::DockWidget* dock = docker->plotAt(0);
+  if (dock->plotWidget() == nullptr) {
+    dock->setPlotWidget(new PJ::PlotWidget(&app.sessionManager(), &app.catalogModel(), dock));
+  }
+  return dock->plotWidget();
+}
+
+QString touch(const QString& path) {
+  EXPECT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
+  QFile file(path);
+  EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+  return QFileInfo(path).canonicalFilePath();
+}
+
+// `bytes` with every occurrence of the temporary root replaced by kFakeRoot.
+QByteArray relocated(QByteArray bytes, const QString& real_root) {
+  bytes.replace(real_root.toUtf8(), QByteArray(kFakeRoot));
+  EXPECT_FALSE(bytes.contains(real_root.toUtf8()));
+  return bytes;
+}
+
+QByteArray readFile(const QString& path) {
+  QFile file(path);
+  EXPECT_TRUE(file.open(QIODevice::ReadOnly));
+  return file.readAll();
+}
+
+void writeFile(const QString& path, const QByteArray& bytes) {
+  QFile file(path);
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  ASSERT_EQ(file.write(bytes), bytes.size());
+}
+
+TEST(Release41FixtureWriter, WritesLayouts) {
+  const QString out_dir = qEnvironmentVariable("PJ_FIXTURE_OUT_DIR");
+  ASSERT_FALSE(out_dir.isEmpty()) << "set PJ_FIXTURE_OUT_DIR";
+  ASSERT_TRUE(QDir().mkpath(out_dir));
+
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  QTemporaryDir work_dir;
+  ASSERT_TRUE(work_dir.isValid());
+  const QString path_a = touch(work_dir.filePath(u"pj-fixtures/data/fixture-a.mcap"_s));
+  const QString path_b = touch(work_dir.filePath(u"pj-fixtures/data/fixture-b.mcap"_s));
+  const QString real_root = QFileInfo(work_dir.filePath(u"pj-fixtures"_s)).canonicalFilePath();
+  const QString layout_dir = work_dir.filePath(u"layouts"_s);
+  ASSERT_TRUE(QDir().mkpath(layout_dir));
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = Peer::session(window);
+  PJ::SessionManager& session = app.sessionManager();
+
+  // --- datasets: two source-bound files with non-zero alignment offsets ---
+  const PJ::DatasetId dataset_a = addDataset(app, "fixture-a.mcap");
+  const PJ::DatasetId dataset_b = addDataset(app, "fixture-b.mcap");
+  addScalarTopic(app, dataset_a, "/sensor", 1.0);
+  const PJ::TopicId imu = addScalarTopic(app, dataset_a, "/imu", 0.5);
+  addScalarTopic(app, dataset_b, "/sensor", 2.0);
+  addScalarTopic(app, dataset_b, "/odom", 3.0);
+  const auto points = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset_a, .topic_name = "/points", .metadata_json = R"({"builtin_object_type":"kPointCloud"})"});
+  ASSERT_TRUE(points.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*points, kSecond, smallCloud()).has_value());
+  app.catalogModel().rebuildFromDatastore();
+  session.setDatasetSourcePath(dataset_a, path_a);
+  session.setDatasetSourcePath(dataset_b, path_b);
+  session.recordLoadedSource(path_a, QString{}, u"MCAP Loader"_s, u"{}"_s, u"mcap-loader"_s);
+  session.recordLoadedSource(path_b, QString{}, u"MCAP Loader"_s, u"{}"_s, u"mcap-loader"_s);
+  session.setDisplayOffset(dataset_a, PJ::DisplayOffset{PJ::Duration{2'500'000'000LL}});
+  session.setDisplayOffset(dataset_b, PJ::DisplayOffset{PJ::Duration{-1'250'000'000LL}});
+
+  // --- transforms: T1 on A, T2 reads T1, T3 history-exempt on B ---
+  PJ::DataProcessorService& processors = session.dataProcessorService();
+  auto t1 = processors.upsertTransform(
+      "fixture-toolbox", "t1", {"/imu"}, {"t1_scaled"}, transformScript("t1", "v * 10.0"), R"({"gain":10})");
+  ASSERT_TRUE(t1.has_value()) << t1.error();
+  auto t2 = processors.upsertTransform("fixture-toolbox", "t2", {"t1_scaled"}, {"t2_negated"}, transformScript("t2", "-v"), "{}");
+  ASSERT_TRUE(t2.has_value()) << t2.error();
+  auto t3 = processors.upsertTransform(
+      "fixture-assistant", "t3", {"/odom"}, {"t3_exempt"}, transformScript("t3", "-v"), "{}", /*ephemeral=*/false,
+      /*input_column_index=*/0, /*history_exempt=*/true);
+  ASSERT_TRUE(t3.has_value()) << t3.error();
+  app.catalogModel().rebuildFromDatastore();
+
+  // --- filters: one on A's raw series, one on a transform output ---
+  auto f1 = processors.applyFilter(imu, dataset_a, "absolute", "imu_abs");
+  ASSERT_TRUE(f1.has_value()) << f1.error();
+  const PJ::TopicId t1_topic = topicIdOf(app, dataset_a, u"t1_scaled"_s);
+  ASSERT_NE(t1_topic, 0U);
+  auto f2 = processors.applyFilter(t1_topic, dataset_a, "absolute", "t1_abs");
+  ASSERT_TRUE(f2.has_value()) << f2.error();
+  app.catalogModel().rebuildFromDatastore();
+
+  // --- marker generators ---
+  PJ::MarkerService& markers = session.markerService();
+  PJ::MarkerService::GeneratorRecipe on_a;
+  on_a.id = "fixture-toolbox/rule/a-sensor";
+  on_a.dataset_id = dataset_a;
+  on_a.inputs = {"/sensor/value"};
+  on_a.outputs = {"a_sensor_markers"};
+  on_a.script = markerScript("/sensor/value");
+  on_a.params_json = R"({"threshold":1.5})";
+  ASSERT_TRUE(markers.upsertGenerator(on_a).has_value());
+
+  PJ::MarkerService::GeneratorRecipe all_datasets;
+  all_datasets.id = "fixture-toolbox/rule/all";
+  all_datasets.all_datasets = true;
+  all_datasets.inputs = {"/sensor/value"};
+  all_datasets.outputs = {std::string(PJ::kAllDatasetsMarkerTopic)};
+  all_datasets.script = markerScript("/sensor/value");
+  ASSERT_TRUE(markers.upsertGenerator(all_datasets).has_value());
+
+  PJ::MarkerService::GeneratorRecipe on_t1;
+  on_t1.id = "fixture-toolbox/rule/t1";
+  on_t1.dataset_id = dataset_a;
+  on_t1.inputs = {"t1_scaled/value"};
+  on_t1.outputs = {"t1_markers"};
+  on_t1.script = markerScript("t1_scaled/value");
+  ASSERT_TRUE(markers.upsertGenerator(on_t1).has_value());
+
+  PJ::MarkerService::GeneratorRecipe declared;
+  declared.id = "fixture-toolbox/rule/declared";
+  declared.dataset_id = dataset_a;
+  declared.inputs = {"/sensor/value"};
+  declared.declared_inputs = {"fixture-a.mcap:/sensor/value"};
+  declared.outputs = {"declared_markers"};
+  declared.script = markerScript("fixture-a.mcap:/sensor/value");
+  ASSERT_TRUE(markers.upsertGenerator(declared).has_value());
+
+  PJ::MarkerService::GeneratorRecipe exempt;
+  exempt.id = "fixture-assistant/rule/odom";
+  exempt.dataset_id = dataset_b;
+  exempt.inputs = {"/odom/value"};
+  exempt.outputs = {"odom_markers"};
+  exempt.script = markerScript("/odom/value");
+  exempt.history_exempt = true;
+  ASSERT_TRUE(markers.upsertGenerator(exempt).has_value());
+  session.notifyMarkersChanged();
+  app.catalogModel().rebuildFromDatastore();
+
+  // --- plots: curves on filter/transform outputs; one hidden marker scope ---
+  auto* tabs = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabs, nullptr);
+  PJ::PlotWidget* first = boundPlot(app, tabs->currentTab());
+  for (const QString& topic : {u"imu_abs"_s, u"t1_scaled"_s, u"t2_negated"_s, u"/sensor"_s}) {
+    const QString key = keyOf(app, dataset_a, topic);
+    ASSERT_FALSE(key.isEmpty()) << topic.toStdString();
+    ASSERT_NE(first->addCurve(key), nullptr) << topic.toStdString();
+  }
+  PJ::PlotDocker* second_tab = tabs->addTab(u"fixture-derived"_s);
+  ASSERT_NE(second_tab, nullptr);
+  PJ::PlotWidget* second = boundPlot(app, second_tab);
+  ASSERT_NE(second->addCurve(keyOf(app, dataset_a, u"t1_abs"_s)), nullptr);
+  ASSERT_NE(second->addCurve(keyOf(app, dataset_b, u"t3_exempt"_s)), nullptr);
+  ASSERT_NE(second->addCurve(keyOf(app, dataset_b, u"/sensor"_s)), nullptr);
+  QCoreApplication::processEvents();
+  second->setDatasetMarkerScopeVisible(dataset_b, PJ::MarkerScope::kAllDatasets, false);
+
+  // --- one single-dataset 3D scene dock ---
+  PJ::PlotDocker* scene_tab = tabs->addTab(u"fixture-scene"_s);
+  ASSERT_NE(scene_tab, nullptr);
+  Peer::requestFamily(window, scene_tab->plotAt(0), PJ::VisualizationKind::kScene3D);
+  auto* scene = qobject_cast<PJ::Scene3DDockWidget*>(scene_tab->plotAt(0)->objectWidget()->widget());
+  ASSERT_NE(scene, nullptr);
+  ASSERT_TRUE(scene->addTopic(*points, PJ::sdk::BuiltinObjectType::kPointCloud, u"points"_s));
+  QCoreApplication::processEvents();
+
+  for (const auto& [name, source_bound] : {std::pair{u"source_bound.pj4.xml"_s, true}, {u"generic.pj4.xml"_s, false}}) {
+    const QString saved = QDir(layout_dir).filePath(name);
+    Peer::saveLayout(window, saved, source_bound);
+    writeFile(QDir(out_dir).filePath(name), relocated(readFile(saved), real_root));
+  }
+  writeFile(
+      QDir(out_dir).filePath(u"history_snapshot.xml"_s),
+      relocated(Peer::historySnapshot(window).toByteArray(2), real_root));
+  // The writer session's ids, for the README (history snapshots carry raw ids only).
+  writeFile(
+      QDir(out_dir).filePath(u"writer_dataset_ids.txt"_s),
+      u"fixture-a.mcap=%1\nfixture-b.mcap=%2\n"_s.arg(dataset_a).arg(dataset_b).toUtf8());
+}
+
+}  // namespace

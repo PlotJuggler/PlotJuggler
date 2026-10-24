@@ -32,7 +32,7 @@ upgrade. That single fact decided the hosting question: the binding cost is
 | **Cloudflare R2** | **Chosen.** Egress is not metered. Storage for a realistic number of retained releases sits inside the free tier. |
 | JFrog Artifactory | Implemented first (commit `1401613`), then replaced. PlotJuggler already runs `plotjuggler.jfrog.io` for the `plotjuggler-conan` remote, so the account, DNS, anonymous-read policy and CI credential story all existed — but every user download meters against the plan quota. The Conan remote survives that because its traffic is mostly cached CI; an apt repository's is not. |
 | GitHub Pages | Rejected outright. The ~1 GB site limit cannot hold even a handful of releases at this package size. |
-| Launchpad PPA | Not applicable. PPAs build from source on Launchpad; PJ4 pins Qt 6.11.1 and much of the Conan graph is not packaged by Debian at all — which is *why* this is a vendor `.deb`. |
+| Launchpad PPA | Not applicable. PPAs build from source on Launchpad; PJ4 pins Qt 6.12.0 and much of the Conan graph is not packaged by Debian at all — which is *why* this is a vendor `.deb`. |
 | Cloudsmith / packagecloud | Viable (they handle signing and CDN) but quota'd, and they solve a problem R2 does not have. |
 
 ### Rejected: metadata-only hosting with redirects to GitHub Releases

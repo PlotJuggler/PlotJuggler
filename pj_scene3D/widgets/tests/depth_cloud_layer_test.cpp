@@ -14,6 +14,7 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QImage>
+#include <QSemaphore>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -25,6 +26,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/image.hpp"
+#include "pj_base/time.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
@@ -33,6 +35,12 @@ using namespace Qt::StringLiterals;
 namespace {
 
 using namespace pj::scene3d::test;
+
+// The layer back-projects on the thread pool: wait for the queued result before
+// asserting on it.
+void settle(pj::scene3d::DepthCloudLayer& layer) {
+  ASSERT_TRUE(pumpUntil([&] { return !layer.decodeInFlightForTest(); }, std::chrono::seconds(10)));
+}
 
 constexpr std::string_view kDepthSchema = "mock/depth_image";
 constexpr std::string_view kInfoSchema = "mock/camera_info";
@@ -145,6 +153,12 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitCameraInfoCamB(PJ::Timestamp ts, PJ::sdk
   return makeCameraInfo(ts, "camB", 200.0);  // fx=fy=200 (half the X/Y spread of camA)
 }
 
+// Frame "cam" CameraInfo whose focal length changes with the sample: fx=fy=100
+// before t=60, 200 from it, so a re-projection has a new X/Y spread to show.
+PJ::Expected<PJ::sdk::ObjectRecord> emitCameraInfoRefocused(PJ::Timestamp ts, PJ::sdk::PayloadView /*p*/) {
+  return makeCameraInfo(ts, "cam", ts < 60 ? 100.0 : 200.0);
+}
+
 // Bumped once per CameraInfo parse, so a test can assert intrinsics are resolved
 // from a latched CameraInfo once and cached, not re-parsed on every depth frame.
 std::atomic<int> g_camera_info_parse_count{0};
@@ -182,11 +196,13 @@ TEST(DepthCloudLayer, BackProjects32FC1UsingCameraInfoIntrinsics) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
+  settle(layer);
 
   // attach() renders the first sample: 4 valid pixels -> 4 back-projected points.
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
   EXPECT_EQ(layer.sourceFrameForTest(), u"cam"_s);
+  EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(100)) << "the drawn image's own stamp (TF R6)";
 }
 
 // RealSense compressedDepth arrives as a BARE PNG (no signature). toDepthView must
@@ -224,6 +240,7 @@ TEST(DepthCloudLayer, BackProjectsBarePngCompressedDepth) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
+  settle(layer);
 
   // The bare PNG decodes (16UC1 mm) and back-projects to 4 points (== the 32FC1 case).
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
@@ -260,6 +277,7 @@ TEST(DepthCloudLayer, UnchangedSampleDoesNotResolvePayload) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));  // renders the first frame (t=100)
+  settle(layer);
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   const int fetches_after_attach = *fetch_count;
   ASSERT_GT(fetches_after_attach, 0);
@@ -270,6 +288,7 @@ TEST(DepthCloudLayer, UnchangedSampleDoesNotResolvePayload) {
   pushLazyCounting(store, depth, 60, std::vector<uint8_t>{0x01}, old_fetch_count);
 
   layer.renderAtForTest(100);  // same sample already on the GPU -> metadata-only skip
+  settle(layer);
   EXPECT_EQ(*fetch_count, fetches_after_attach) << "unchanged sample resolved payload bytes on a later tick";
   EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older sample must not be resolved at all";
 }
@@ -295,21 +314,33 @@ TEST(DepthCloudLayer, CameraInfoOnlyUpdateReprojects) {
   session.registerObjectTopicParser(info, makeBoundHandle(kInfoSchema, []() noexcept -> void* {
                                       return new CountingObjectParser(
                                           kInfoSchema, PJ::sdk::BuiltinObjectType::kCameraInfo,
-                                          &g_camera_info_parse_count, &emitCameraInfo);
+                                          &g_camera_info_parse_count, &emitCameraInfoRefocused);
                                     }));
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));  // renders t=100 with intrinsics from info@50
+  settle(layer);
   ASSERT_EQ(layer.lastPointCountForTest(), 4U);
   ASSERT_EQ(g_camera_info_parse_count.load(), 1);
+  // max X = (1-0.5)*z_max/fx = 0.5*4/100 = 0.02 with info@50's fx=100.
+  const auto before = layer.worldBounds();
+  ASSERT_TRUE(before.has_value());
+  ASSERT_NEAR(before->max.x, 0.02f, 2e-3f);
 
-  // CameraInfo-only update at/before the playhead: a new camera-topic entry.
+  // CameraInfo-only update at/before the playhead: a new camera-topic entry
+  // with fx=fy=200, which halves the X/Y spread of the same depth pixels.
   ASSERT_TRUE(store.pushOwned(info, 60, std::vector<uint8_t>{0x02}).has_value());
   layer.renderAtForTest(100);  // depth sample unchanged
+  settle(layer);
   EXPECT_EQ(g_camera_info_parse_count.load(), 2) << "new CameraInfo was not re-resolved (stale calibration)";
   EXPECT_EQ(layer.lastPointCountForTest(), 4U) << "re-projection did not run";
+  const auto after = layer.worldBounds();
+  ASSERT_TRUE(after.has_value());
+  EXPECT_NEAR(after->max.x, 0.01f, 2e-3f) << "points kept the old intrinsics' coordinates";
+  EXPECT_NEAR(after->max.y, 0.01f, 2e-3f) << "points kept the old intrinsics' coordinates";
+  EXPECT_NEAR(after->max.z, before->max.z, 1e-4f) << "depth changed without a new depth sample";
 }
 
 TEST(DepthCloudLayer, CachesIntrinsicsAcrossFramesNotReparsedPerFrame) {
@@ -339,8 +370,11 @@ TEST(DepthCloudLayer, CachesIntrinsicsAcrossFramesNotReparsedPerFrame) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));  // renders the first frame (t=100)
+  settle(layer);
   layer.renderAtForTest(200);
+  settle(layer);
   layer.renderAtForTest(300);
+  settle(layer);
 
   // All three frames share the same latched CameraInfo: it is parsed once and the
   // intrinsics cached, NOT re-parsed (and the whole topic list re-scanned) per frame.
@@ -376,6 +410,7 @@ TEST(DepthCloudLayer, PrefersCameraInfoMatchingFrameIdAmongMany) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
+  settle(layer);
 
   // frame_id="camB" must select camB's intrinsics (fx=200), never camA's (fx=100).
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
@@ -415,6 +450,7 @@ TEST(DepthCloudLayer, RefusesIntrinsicsAmongMultipleCamerasWithNoFrameMatch) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
+  settle(layer);
 
   // Two cameras, neither frame matches "camX": refuse rather than pair the wrong one.
   EXPECT_EQ(layer.lastPointCountForTest(), 0U);
@@ -444,6 +480,7 @@ TEST(DepthCloudLayer, FallsBackToLoneCameraOnFrameMismatch) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
+  settle(layer);
 
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
 }
@@ -462,6 +499,7 @@ TEST(DepthCloudLayer, ColorImageProducesNoPoints) {
   ctx.session = &session;
   pj::scene3d::DepthCloudLayer layer(color, u"color"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
+  settle(layer);
 
   // A non-depth encoding produces no geometry and no pushed sample.
   EXPECT_EQ(layer.lastPointCountForTest(), 0U);
@@ -476,6 +514,110 @@ TEST(IsDepthEncoding, OnlyDepthCarriers) {
   EXPECT_FALSE(pj::scene3d::isDepthEncoding("mono16"));  // grayscale camera, not depth
   EXPECT_FALSE(pj::scene3d::isDepthEncoding("jpeg"));
   EXPECT_FALSE(pj::scene3d::isDepthEncoding(""));
+}
+
+// A session with a depth topic (samples at `depth_stamps`) and a latched
+// CameraInfo at 50, parsers bound.
+struct DepthRig {
+  explicit DepthRig(std::vector<int64_t> depth_stamps) {
+    PJ::ObjectStore& store = session.objectStore();
+    depth = registerTypedTopic(store, "/cam/depth/image", "kImage");
+    info = registerTypedTopic(store, "/cam/depth/camera_info", "kCameraInfo");
+    EXPECT_TRUE(store.pushOwned(info, 50, std::vector<uint8_t>{0x02}).has_value());
+    for (const int64_t stamp : depth_stamps) {
+      EXPECT_TRUE(store.pushOwned(depth, stamp, std::vector<uint8_t>{0x01}).has_value());
+    }
+    session.registerObjectTopicParser(depth, makeBoundHandle(kDepthSchema, []() noexcept -> void* {
+                                        return new CountingObjectParser(
+                                            kDepthSchema, PJ::sdk::BuiltinObjectType::kImage, nullptr, &emitDepthImage);
+                                      }));
+    session.registerObjectTopicParser(info, makeBoundHandle(kInfoSchema, []() noexcept -> void* {
+                                        return new CountingObjectParser(
+                                            kInfoSchema, PJ::sdk::BuiltinObjectType::kCameraInfo, nullptr,
+                                            &emitCameraInfo);
+                                      }));
+    ctx.session = &session;
+  }
+  PJ::SessionManager session;
+  PJ::ObjectTopicId depth;
+  PJ::ObjectTopicId info;
+  pj::scene3d::Scene3DLayerContext ctx;
+};
+
+// Holds every back-projection on the worker until released; releases on scope
+// exit so no worker is left blocked.
+struct ProjectionGate {
+  explicit ProjectionGate(pj::scene3d::DepthCloudLayer& layer) {
+    layer.setBackprojectGateForTest([hold = hold] { hold->acquire(); });
+  }
+  ~ProjectionGate() {
+    release();
+  }
+  void release() {
+    hold->release(64);
+  }
+  std::shared_ptr<QSemaphore> hold = std::make_shared<QSemaphore>(0);
+};
+
+// Projecting 200 with 300 queued behind it, the tracker returns to 200: the
+// running projection is wanted again, so the queued 300 must not start and paint
+// over it while the playhead sits on 200.
+TEST(DepthCloudLayer, ReturnToRunningProjectionDropsQueuedSample) {
+  DepthRig rig({100, 200, 300});
+  pj::scene3d::DepthCloudLayer layer(rig.depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
+  ASSERT_TRUE(layer.attach(rig.ctx));
+  settle(layer);
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+
+  ProjectionGate gate(layer);
+  layer.renderAtForTest(200);  // starts, held on the worker
+  layer.renderAtForTest(300);  // waits behind it
+  layer.renderAtForTest(200);  // back onto the running sample
+  gate.release();
+  settle(layer);
+  QCoreApplication::processEvents();
+  settle(layer);
+  EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{200}) << "the abandoned queued sample was painted";
+}
+
+// Projecting 200 while 100 is displayed, the tracker returns to 100: the running
+// projection is obsolete and its result must not replace the displayed sample.
+TEST(DepthCloudLayer, ReturnToDisplayedSampleDiscardsRunningProjection) {
+  DepthRig rig({100, 200});
+  pj::scene3d::DepthCloudLayer layer(rig.depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
+  ASSERT_TRUE(layer.attach(rig.ctx));
+  settle(layer);
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+
+  ProjectionGate gate(layer);
+  layer.renderAtForTest(200);  // starts, held on the worker
+  layer.renderAtForTest(100);  // back onto the displayed sample
+  gate.release();
+  settle(layer);
+  EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100}) << "an obsolete projection was painted";
+}
+
+// A dataset replacement swaps the bytes under the stable topic id: the drawn
+// cloud and any projection of the old bytes must go, and the next drain projects
+// the replacement.
+TEST(DepthCloudLayer, DatasetReplacementDropsGeometryAndProjections) {
+  DepthRig rig({100, 200});
+  pj::scene3d::DepthCloudLayer layer(rig.depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
+  ASSERT_TRUE(layer.attach(rig.ctx));
+  settle(layer);
+  ASSERT_EQ(layer.lastPointCountForTest(), 4U);
+
+  ProjectionGate gate(layer);
+  layer.renderAtForTest(200);  // an old-bytes projection still running at the swap
+  emit rig.session.datasetAboutToBeReplaced(rig.session.objectStore().descriptor(rig.depth).dataset_id);
+  gate.release();
+  settle(layer);
+  EXPECT_EQ(layer.lastPointCountForTest(), 0U) << "the replaced dataset's cloud is still drawn";
+  EXPECT_EQ(layer.lastPushedStampForTest(), std::nullopt) << "a pre-replacement projection landed";
+
+  layer.renderAtForTest(100);
+  settle(layer);
+  EXPECT_EQ(layer.lastPointCountForTest(), 4U) << "the replacement was not projected";
 }
 
 }  // namespace

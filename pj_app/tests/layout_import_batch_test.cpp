@@ -47,6 +47,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/SourceCacheStore.h"
 #include "pj_runtime/SourceCaptureService.h"
+#include "pj_runtime/XmlCdata.h"
 #include "support/fake_import_provider.h"
 #include "support/loader_test_support.h"
 using namespace Qt::StringLiterals;
@@ -70,8 +71,8 @@ constexpr const char* kMockManifestId = "mock-file-source";
 // A statically registered file source claiming ".mcap", so a host-cache
 // artifact can be loaded through the real FileLoader in-process (the real
 // MCAP loader is an external plugin). Content-agnostic: writes one record.
-constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
-constexpr const char* kStaticMcapManifestId = "static-mcap-source";
+[[maybe_unused]] constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
+[[maybe_unused]] constexpr const char* kStaticMcapManifestId = "static-mcap-source";
 
 // Test knob: a true makes every StaticMcapSource import fail, modelling a
 // cached artifact the stock loader cannot ingest (the quarantine trigger).
@@ -147,13 +148,13 @@ struct SourceSpec {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, spec.plugin_name);
     plugin.setAttribute(u"manifest_id"_s, spec.plugin_manifest);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, u"{}"_s);
+    PJ::appendJsonAsCdata(doc, plugin, u"{}"_s);
     file_info.appendChild(plugin);
     if (!spec.descriptor.isEmpty()) {
       QDomElement materialize = doc.createElement(u"materialize"_s);
       materialize.setAttribute(u"provider"_s, spec.provider);
       materialize.setAttribute(u"identity"_s, spec.identity);
-      PJ::layout_xml::appendJsonAsCdata(doc, materialize, spec.descriptor);
+      PJ::appendJsonAsCdata(doc, materialize, spec.descriptor);
       file_info.appendChild(materialize);
     }
     wrapper.appendChild(file_info);

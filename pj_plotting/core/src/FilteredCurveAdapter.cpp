@@ -97,6 +97,7 @@ void FilteredCurveAdapter::onDisplayOffsetChanged() {
 
 void FilteredCurveAdapter::invalidate() {
   filtered_dirty_ = true;
+  bumpContentRevision();
 }
 
 void FilteredCurveAdapter::ensureFiltered() const {

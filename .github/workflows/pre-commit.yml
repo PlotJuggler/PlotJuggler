@@ -1,11 +1,22 @@
 name: Pre-commit
 
+# Its own workflow, not a Linux CI job: Linux CI skips docs-only pull requests,
+# which still need linting.
 on:
-  workflow_call:
+  pull_request:
+    branches: [main, main-4.x, development, 'release-*']
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main, main-4.x, development, 'release-*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pre-commit:
     name: pre-commit
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read

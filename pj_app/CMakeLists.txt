@@ -46,6 +46,8 @@ add_library(pj_app_shell OBJECT
     src/StreamingSourceManager.h
     src/PluginPlotTabsController.cpp
     src/PluginPlotTabsController.h
+    src/PluginSceneViewsController.cpp
+    src/PluginSceneViewsController.h
     src/SourceTimelineController.cpp
     src/SourceTimelineController.h
     src/DatasetMergeActions.cpp
@@ -60,6 +62,8 @@ add_library(pj_app_shell OBJECT
     src/LayoutImportBatch.h
     src/IngestProgressController.cpp
     src/IngestProgressController.h
+    src/SeriesProgressController.cpp
+    src/SeriesProgressController.h
     src/IngestProgressWiring.cpp
     src/IngestProgressWiring.h
     src/MainWindow.cpp
@@ -110,6 +114,10 @@ add_library(pj_app_shell OBJECT
 
 if(TARGET pj_scene2d_widgets)
     target_sources(pj_app_shell PRIVATE
+        src/SceneImageDecoder.cpp
+        src/SceneImageDecoder.h
+        src/SceneVideoFrameSource.cpp
+        src/SceneVideoFrameSource.h
         src/ui/Scene2DConfigPanel.cpp
         src/ui/Scene2DConfigPanel.h)
 endif()
@@ -136,6 +144,7 @@ if(EMSCRIPTEN)
             target_sources(pj_app_shell PRIVATE
                 tests/wasm_scene3d_acceptance_probes.cpp
                 tests/wasm_scene3d_acceptance_probes.h)
+            target_link_libraries(pj_app_shell PRIVATE pj_scene3d_widgets_testing)
         endif()
         if(TARGET pj_wasm_mcap_source AND NOT TARGET pj_wasm_ros_parser)
             target_sources(pj_app_shell PRIVATE tests/wasm_mcap_probe_parser.cpp)
@@ -208,6 +217,30 @@ if(TARGET pj_wasm_dummy_stream)
     target_link_libraries(pj_app_shell PUBLIC pj_wasm_dummy_stream)
     target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_DUMMY_STREAM_PLUGIN)
 endif()
+if(TARGET pj_wasm_json_parser)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_json_parser)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_JSON_PLUGIN)
+endif()
+if(TARGET pj_wasm_data_tamer)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_data_tamer)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_DATA_TAMER_PLUGIN)
+endif()
+if(TARGET pj_wasm_3d_loader)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_3d_loader)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_3D_LOADER_PLUGIN)
+endif()
+if(TARGET pj_wasm_quaternion)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_quaternion)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_QUATERNION_PLUGIN)
+endif()
+if(TARGET pj_wasm_fft)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_fft)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_FFT_PLUGIN)
+endif()
+if(TARGET pj_wasm_anomaly_detector)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_anomaly_detector)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_ANOMALY_DETECTOR_PLUGIN)
+endif()
 
 if(EMSCRIPTEN)
     qt_add_executable(pj_app
@@ -276,6 +309,21 @@ if(EMSCRIPTEN)
         QT_WASM_INITIAL_MEMORY "256MB")
     target_compile_options(pj_app PRIVATE -fexceptions)
     target_link_options(pj_app PRIVATE -fexceptions -sALLOW_MEMORY_GROWTH=1)
+    if(PJ_WASM_WITH_PYTHON)
+        # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
+        # the main thread waits on it never starts.
+        set_target_properties(pj_app PROPERTIES QT_WASM_PTHREAD_POOL_SIZE 7)
+        target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_PYTHON)
+        if(PJ_WASM_ENABLE_INGRESS_PROBE)
+            # The stdlib probe runs Python outside the sandbox; the symbols come through pj_scripting's link.
+            target_sources(pj_app_shell PRIVATE tests/wasm_python_stdlib_probe.cpp)
+            target_include_directories(pj_app_shell SYSTEM PRIVATE
+                $<TARGET_PROPERTY:cpython::embed,INTERFACE_INCLUDE_DIRECTORIES>)
+        endif()
+    endif()
+    # Next to plotjuggler4.js, where scripts/package_wasm.mjs packages it with the module.
+    include(${CMAKE_SOURCE_DIR}/cmake/PjWasmNotices.cmake)
+    pj_wasm_write_notices("${CMAKE_CURRENT_BINARY_DIR}/THIRD_PARTY_NOTICES.txt" "${PJ_WASM_PYTHON_NOTICES}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -319,10 +367,38 @@ if(PJ_BUILD_TESTS)
         LIBS Qt6::Widgets Qt6::Xml
     )
     set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
+    # pj_runtime's include tree only for the header-only XmlCdata.h and
+    # SavedSeriesPath.h LayoutXml uses; the runner does not link pj_runtime.
     target_include_directories(pj_app_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/raster/ipc
+        ${CMAKE_SOURCE_DIR}/pj_runtime/include
     )
+
+    # The codecs on-demand scripts decode through, compiled standalone over Scene2D's core; turbojpeg and libpng
+    # encode the image fixtures, FFmpeg demuxes the video one (run from the source root, where it lives).
+    if(TARGET pj_scene2d_widgets AND NOT EMSCRIPTEN)
+        find_package(libjpeg-turbo REQUIRED)
+        find_package(PNG REQUIRED)
+        include(${CMAKE_SOURCE_DIR}/pj_scene2D/cmake/PjScene2DFfmpeg.cmake)
+        pj_scene2d_find_ffmpeg(PJ_APP_HAS_FFMPEG PJ_APP_FFMPEG_TARGETS PJ_APP_FFMPEG_SOURCE)
+        set(PJ_APP_MEDIA_TEST_SOURCES
+            tests/scene_image_decoder_test.cpp src/SceneImageDecoder.cpp src/SceneImageDecoder.h
+            src/SceneVideoFrameSource.cpp src/SceneVideoFrameSource.h)
+        if(PJ_APP_HAS_FFMPEG)
+            list(APPEND PJ_APP_MEDIA_TEST_SOURCES tests/scene_video_frame_source_test.cpp)
+        endif()
+        pj_add_test_runner(pj_app_media_codec_tests
+            MAIN plain WARNINGS
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            SOURCES ${PJ_APP_MEDIA_TEST_SOURCES}
+            LIBS pj_scene2d_core pj_scripting libjpeg-turbo::libjpeg-turbo PNG::PNG ${PJ_APP_FFMPEG_TARGETS})
+        target_include_directories(pj_app_media_codec_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/pj_scene2D/tests)
+        if(MSVC)
+            target_compile_options(pj_app_media_codec_tests PRIVATE /wd4611)  # test_png_io.h's libpng setjmp
+        endif()
+    endif()
 
     # Guards the meme splash pool against its two silent failure modes: a meme
     # present in resources/memes/ but absent from resources.qrc is invisible at
@@ -381,6 +457,12 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/streaming_pause_target_test.cpp)
 
+    # One streaming poll tick through the extracted ingestTickForTests seam: eager
+    # processors advance over every topic of the dataset and the ingest
+    # announcement names them all.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/streaming_ingest_tick_test.cpp)
+
     # Curve-list drag policy: an object topic no view can display (CameraInfo,
     # ...) must be drag-inert with a "why" tooltip; displayable ones keep
     # dragging.
@@ -408,11 +490,61 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_marker_generator_restore_test.cpp)
 
+    # A running marker rule puts a computing note on the plots that display it.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_marker_status_test.cpp)
+
+    # Generators and transform inputs carry their dataset like a curve: a
+    # layout-relative path in a source-bound layout, nothing in a generic one.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_layout_dataset_paths_test.cpp)
+
     # The Custom Series list is derived from DataProcessorService, not accumulated
     # from plugin announcements — the paths that announce nothing are a layout
     # restore and a withdrawal through the data-processors ABI.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_custom_series_test.cpp)
+
+    # The Custom Topics panel through the shell: listed recipes, row names, owner gates on edit and delete, the
+    # declared editor's "+", the row glyph following the node state, and the coalesced refresh.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_custom_topics_test.cpp)
+
+    # Layouts saved by a release-4.1 build restore through the real load paths and
+    # save back to the same <data_processors> block.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_release41_layout_test.cpp)
+    set_source_files_properties(tests/main_window_release41_layout_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_RELEASE41_LAYOUT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/layouts/release-4.1")
+    # ... and so do the on-demand recipes of layouts saved by the derived-objects prototype.
+    set_property(SOURCE tests/main_window_release41_layout_test.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS PJ_PROTOTYPE_LAYOUT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/layouts/prototype")
+
+    # On-demand recipes through undo and redo: deletion, exemption, previews.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_on_demand_restore_test.cpp)
+
+    # The Custom Topics editor through the shell: the toolbox declaring `custom_topics_editor` opens from "+" and its
+    # preview frame embeds a scene view. The fixture toolbox is staged into the test's extensions directory.
+    add_library(custom_topics_editor_fixture_plugin SHARED tests/custom_topics_editor_fixture.cpp)
+    target_compile_features(custom_topics_editor_fixture_plugin PRIVATE cxx_std_20)
+    target_link_libraries(custom_topics_editor_fixture_plugin PRIVATE plotjuggler_sdk::plugin_sdk)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(custom_topics_editor_fixture_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_editor_integration_test.cpp)
+    set_source_files_properties(tests/main_window_editor_integration_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_CUSTOM_TOPICS_EDITOR_FIXTURE_PATH="$<TARGET_FILE:custom_topics_editor_fixture_plugin>")
+
+    # A hand-made 3D view filled by a user drop frames its first content; a
+    # restored layout keeps its saved fixed frame and camera (SCN-16).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_scene3d_drop_framing_test.cpp)
+
+    # The 2D scene panel's layer rows carry each layer's warning from the start.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/scene2d_config_panel_test.cpp)
 
     # Window frame: the system title bar by default, the frameless custom one
     # only when Preferences -> Appearance opts in (bar contents, the double-click
@@ -745,7 +877,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/ingest_progress_controller_test.cpp)
 
-    # WARNINGS: all 22 merged tests carried PJ_WARNING_FLAGS before
+    # A series replay as a progress entry of its topic: the linger, and the stop by topic.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/series_progress_controller_test.cpp)
+
     pj_add_test_runner(pj_app_gui_tests
         MAIN gui WARNINGS
         SOURCES ${PJ_APP_GUI_TEST_SOURCES} tests/support/gui_test_env.cpp
@@ -754,4 +889,73 @@ if(PJ_BUILD_TESTS)
         LIBS pj_app_shell pj_resources Qt6::Test
     )
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
+    # $<TARGET_FILE:...> in a compile definition creates no build-order dependency.
+    add_dependencies(pj_app_gui_tests custom_topics_editor_fixture_plugin)
+    # on_demand_test_utils.h: the fake script run and clouds shared with pj_runtime's tests.
+    target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
+
+    # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,
+    # floating-window close and DPR changes, plus the mixed-API negative case.
+    # Needs a real display (skips on offscreen). Runs on every
+    # backend of the platform plus OpenGL at DPR 2 (RHI_BACKENDS, cmake/PjTests.cmake).
+    if(NOT EMSCRIPTEN)
+        find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS OpenGLWidgets)
+        pj_add_test_runner(rhi_dock_lifecycle_test
+            MAIN gui WARNINGS RHI_BACKENDS DPR2
+            SOURCES tests/rhi_dock_lifecycle_test.cpp
+            LIBS qt_advanced_docking pj_widgets $<TARGET_NAME_IF_EXISTS:pj_scene2d_widgets> pj_resources
+                 Qt6::OpenGLWidgets Qt6::Test
+            TIMEOUT 60
+        )
+        # The same matrix with the real widgets: a plot, a Scene3D point cloud and
+        # the Scene2D media viewer (plus its failure state) in one dock manager.
+        if(TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
+            pj_add_test_runner(rhi_mixed_dock_test
+                MAIN gui WARNINGS RHI_BACKENDS DPR2
+                SOURCES tests/rhi_mixed_dock_test.cpp
+                LIBS pj_mixed_layout_fixture pj_scene3d_widgets_testing pj_resources Qt6::Test
+                TIMEOUT 60
+            )
+        endif()
+        # The packaging smokes' render check (packaging/smoke/render_check.sh) on this
+        # tree's app: the fixture's plots, Scene3D view and media viewer must all come
+        # up on OpenGL. Needs a display, hence the qrhi-opengl label, and runs the
+        # built app, so build pj_app first (CI does). Linux only: Windows runs the
+        # same check on the installed app (windows-release.yml).
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
+            add_test(NAME scene3d_rhi_app_smoke
+                COMMAND sh ${CMAKE_SOURCE_DIR}/packaging/smoke/render_check.sh $<TARGET_FILE:pj_app>)
+            # Skipped (77) without a display, as the gtest display passes are,
+            # unless PJ_REQUIRE_GPU_TESTS=1.
+            set_tests_properties(scene3d_rhi_app_smoke PROPERTIES
+                LABELS qrhi-opengl TIMEOUT 120 SKIP_RETURN_CODE 77
+                ENVIRONMENT "PJ_RENDER_BACKEND=OpenGL;PJ_RENDER_SKIP_WITHOUT_DISPLAY=1")
+        endif()
+    endif()
+endif()
+
+# The mixed-layout fixture (tests/mixed_layout_fixture.h): a plot, a Scene3D view
+# and a media viewer in one dock manager, through public APIs only. EXCLUDE_FROM_ALL: built for its consumers only,
+# rhi_mixed_dock_test above and mixed_layout_benchmark below.
+if(NOT EMSCRIPTEN AND TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
+    add_library(pj_mixed_layout_fixture STATIC EXCLUDE_FROM_ALL
+        tests/mixed_layout_fixture.cpp
+        tests/mixed_layout_fixture.h
+    )
+    target_include_directories(pj_mixed_layout_fixture PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(pj_mixed_layout_fixture PUBLIC
+        qt_advanced_docking pj_plotting pj_scene2d_widgets pj_scene3d_widgets Qt6::Widgets Qt6::Xml)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(pj_mixed_layout_fixture PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+
+    # Mixed-layout budgets (a dev demo, no ctest), same gate as the root demos.
+    if(PJ_BUILD_DEMOS)
+        add_executable(mixed_layout_benchmark benchmarks/mixed_layout_benchmark.cpp)
+        target_link_libraries(mixed_layout_benchmark PRIVATE
+            pj_mixed_layout_fixture pj_scene3d_widgets_testing pj_resources pj_bench_probes)
+        if(DEFINED PJ_WARNING_FLAGS)
+            target_compile_options(mixed_layout_benchmark PRIVATE ${PJ_WARNING_FLAGS})
+        endif()
+    endif()
 endif()

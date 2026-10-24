@@ -4,6 +4,7 @@
 
 #include <qwt_plot.h>
 
+#include <QPoint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,14 +13,13 @@ class QEvent;
 class QObject;
 class QwtPlotGrid;
 class QwtPlotItem;
-class QwtPlotPanner;
 class QwtPlotZoomer;
 
 namespace PJ {
 
 /// Lightweight chart widget that renders named XY line series inside a QFrame.
 /// Created and managed by the widget binding layer — plugin authors never touch
-/// this directly. Built on the vendored Qwt (not Qt Charts), so the dialog host
+/// this directly. Built on Qwt (not Qt Charts), so the dialog host
 /// carries no Qt6::Charts dependency; the dialog-protocol chart API
 /// (setChartSeries / onChartViewChanged) is unaffected.
 class ChartPreviewWidget : public QwtPlot {
@@ -59,6 +59,7 @@ class ChartPreviewWidget : public QwtPlot {
 
   /// Enable or disable interactive navigation: zoom (rubber band + mouse wheel), pan
   /// (middle-drag or Ctrl+left-drag), and a background grid. All are off until enabled.
+  /// Wheel zoom-out stops at the data extent (the fitted view). Panning redraws live.
   /// When enabled, viewChanged() is emitted whenever the user zooms or pans.
   void setZoomEnabled(bool enabled);
 
@@ -68,19 +69,25 @@ class ChartPreviewWidget : public QwtPlot {
   void viewChanged(double x_min, double x_max, double y_min, double y_max);
 
  protected:
-  /// Wheel zoom is implemented here because the plot *canvas* (a child widget),
-  /// not this widget, receives wheel events — a wheelEvent() override never fires.
+  /// Wheel zoom and panning are implemented here because the plot *canvas* (a child
+  /// widget), not this widget, receives the mouse events — overrides here never fire.
+  /// Panning moves the axes on every mouse move and replots: QwtPlotPanner instead drags
+  /// a snapshot of the canvas, which leaves the axes behind and smears until release.
   bool eventFilter(QObject* obj, QEvent* event) override;
 
  private:
   QwtPlotZoomer* zoomer_ = nullptr;
-  QwtPlotGrid* grid_ = nullptr;           // background grid, shown only while interactive
-  QwtPlotPanner* panner_ = nullptr;       // middle-drag pan
-  QwtPlotPanner* panner_ctrl_ = nullptr;  // Ctrl+left-drag pan
+  QwtPlotGrid* grid_ = nullptr;  // background grid, shown only while interactive
   bool zoom_enabled_ = false;
+  bool panning_ = false;
+  QPoint pan_last_pos_;                     // canvas coordinates of the previous pan step
   std::vector<QwtPlotItem*> marker_items_;  // overlay items owned here (detached+deleted on replace)
 
   void emitViewChanged();
+  /// Ends a pan in progress and restores the canvas cursor; no-op when not panning.
+  void endPan();
+  /// Moves the view by a canvas-pixel delta on both axes (a positive dx shows earlier x).
+  void panBy(int dx, int dy);
 };
 
 }  // namespace PJ

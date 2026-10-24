@@ -41,10 +41,39 @@ YuvColorSpace mapColorSpace(AVColorSpace cs, int height) noexcept {
   }
 }
 
-// MPEG (studio/limited) is the default for video; only an explicit JPEG/PC tag
-// means full range.
-YuvColorRange mapColorRange(AVColorRange r) noexcept {
-  return (r == AVCOL_RANGE_JPEG) ? YuvColorRange::kFull : YuvColorRange::kLimited;
+// MPEG (studio/limited) is the default for video; an explicit JPEG/PC tag, or one
+// of the deprecated YUVJ pixel formats some decoders still emit, means full range.
+YuvColorRange mapColorRange(AVColorRange range, AVPixelFormat format) noexcept {
+  switch (format) {
+    case AV_PIX_FMT_YUVJ420P:
+    case AV_PIX_FMT_YUVJ422P:
+    case AV_PIX_FMT_YUVJ444P:
+    case AV_PIX_FMT_YUVJ440P:
+    case AV_PIX_FMT_YUVJ411P:
+      return YuvColorRange::kFull;
+    default:
+      return (range == AVCOL_RANGE_JPEG) ? YuvColorRange::kFull : YuvColorRange::kLimited;
+  }
+}
+
+// Has `context` read and write samples of the same range, so sws_scale only
+// repacks. By default it squeezes a YUVJ (full-range) source into a limited
+// one, while the frame keeps its full-range tag for the GPU matrix.
+void keepRange(SwsContext* context, bool full_range) {
+  int* inverse_table = nullptr;
+  int source_range = 0;
+  int* table = nullptr;
+  int destination_range = 0;
+  int brightness = 0;
+  int contrast = 0;
+  int saturation = 0;
+  if (sws_getColorspaceDetails(
+          context, &inverse_table, &source_range, &table, &destination_range, &brightness, &contrast, &saturation) <
+      0) {
+    return;
+  }
+  const int range = full_range ? 1 : 0;
+  sws_setColorspaceDetails(context, inverse_table, range, table, range, brightness, contrast, saturation);
 }
 
 // Open an FFmpeg hardware-device context for `type`, or nullptr if none works.
@@ -401,12 +430,13 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   auto src_fmt = static_cast<AVPixelFormat>(sw_frame->format);
 
   // Carry the codec-signalled colorimetry so the GPU builds the right YUV→RGB
-  // matrix (BT.601 vs BT.709) and range scale (limited vs full). Previously this
-  // was dropped and the shader hardcoded full-range BT.709, washing out / hue-
-  // shifting limited-range and SD content. sws_scale below only repacks the pixel
-  // layout, so these tags stay valid for the converted output too.
-  const YuvColorSpace color_space = mapColorSpace(sw_frame->colorspace, h);
-  const YuvColorRange color_range = mapColorRange(sw_frame->color_range);
+  // matrix (BT.601 vs BT.709) and range scale (limited vs full). Read it from the
+  // decoded frame: a hardware download fills `sw_frame` with pixels, not frame
+  // properties. sws_scale below only repacks the pixel layout (keepRange), so these
+  // tags stay valid for the converted output too.
+  const YuvColorSpace color_space = mapColorSpace(frame->colorspace, h);
+  const YuvColorRange color_range = mapColorRange(frame->color_range, src_fmt);
+  const bool full_range = color_range == YuvColorRange::kFull;
 
   // Output YUV420P — no color conversion on CPU. The GPU shader applies the
   // YUV→RGB matrix selected from color_space/color_range above.
@@ -487,14 +517,19 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   }
 
   // Any other format (P010, YUV422, etc.) — convert to YUV420P via sws_scale
-  if (sws_ctx_ == nullptr || w != sws_src_w_ || h != sws_src_h_ || static_cast<int>(src_fmt) != sws_src_fmt_) {
+  if (sws_ctx_ == nullptr || w != sws_src_w_ || h != sws_src_h_ || static_cast<int>(src_fmt) != sws_src_fmt_ ||
+      full_range != sws_full_range_) {
     if (sws_ctx_ != nullptr) {
       sws_freeContext(sws_ctx_);
     }
     sws_ctx_ = sws_getContext(w, h, src_fmt, w, h, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (sws_ctx_ != nullptr) {
+      keepRange(sws_ctx_, full_range);
+    }
     sws_src_w_ = w;
     sws_src_h_ = h;
     sws_src_fmt_ = static_cast<int>(src_fmt);
+    sws_full_range_ = full_range;
   }
 
   if (sws_ctx_ == nullptr) {
@@ -525,6 +560,56 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   result.color_space = color_space;
   result.color_range = color_range;
   return result;
+}
+
+bool convertToRgb24(const DecodedFrame& frame, uint8_t* out) {
+  const bool nv12 = frame.format == PixelFormat::kNV12;
+  if ((!nv12 && frame.format != PixelFormat::kYUV420P) || !frame.isValid() || out == nullptr) {
+    return false;
+  }
+  const int width = frame.width;
+  const int height = frame.height;
+  // Nearest chroma (each pixel reads its 2x2 block): the shader's sampling. SWS_POINT alone is swscale's unscaled
+  // converter, within 3 levels per channel of the shader's matrix (2 at full range) at 0.6 ms per 1080p YUV420P frame
+  // (2.6 ms NV12, which swscale converts with its generic scaler); the exact rounding is within 1 at 11-13 ms. The
+  // unscaled converter's x86 kernel writes 16 pixels at a time, so at any other width it leaves a row's last pixels
+  // unwritten or writes past the frame, and swscale takes it only at an even height: any other frame takes the exact
+  // path, NV12 included, whose bound was measured on the same frames. (Without SWS_POINT, NV12's chroma is
+  // interpolated.)
+  const bool fast = width % 16 == 0 && height % 2 == 0;
+  const int flags = fast ? SWS_POINT : SWS_POINT | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP;
+  const int* coefficients =
+      sws_getCoefficients(frame.color_space == YuvColorSpace::kBt709 ? SWS_CS_ITU709 : SWS_CS_ITU601);
+  const int source_range = frame.color_range == YuvColorRange::kFull ? 1 : 0;
+  const int chroma_width = (width + 1) / 2;
+  const size_t luma_size = static_cast<size_t>(width) * static_cast<size_t>(height);
+  const size_t chroma_size = static_cast<size_t>(chroma_width) * static_cast<size_t>((height + 1) / 2);
+  const uint8_t* base = frame.pixels->data();
+  const int strides[3] = {width, nv12 ? chroma_width * 2 : chroma_width, nv12 ? 0 : chroma_width};
+  const int destination_stride[1] = {width * 3};
+  // Converts `rows` rows from `first_row` (even) as a frame of their own.
+  const auto convertRows = [&](int first_row, int rows) {
+    SwsContext* context = sws_getContext(
+        width, rows, nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P, width, rows, AV_PIX_FMT_RGB24, flags, nullptr,
+        nullptr, nullptr);
+    if (context == nullptr) {
+      return false;
+    }
+    sws_setColorspaceDetails(context, coefficients, source_range, coefficients, 1, 0, 1 << 16, 1 << 16);
+    const size_t chroma_offset = static_cast<size_t>(first_row / 2) * static_cast<size_t>(strides[1]);
+    const uint8_t* planes[3] = {
+        base + static_cast<size_t>(first_row) * static_cast<size_t>(width), base + luma_size + chroma_offset,
+        nv12 ? nullptr : base + luma_size + chroma_size + chroma_offset};
+    uint8_t* destination[1] = {out + static_cast<size_t>(first_row) * static_cast<size_t>(destination_stride[0])};
+    const int converted = sws_scale(context, planes, strides, 0, rows, destination, destination_stride);
+    sws_freeContext(context);
+    return converted == rows;
+  };
+  // swscale stretches an odd height's ceil(h/2) chroma rows over its h rows, where each chroma row belongs to two
+  // luma rows (the last one cropped), so from about mid-frame odd rows read the next chroma row. The even part
+  // converts as is; the last row converts alone, reading its own chroma row.
+  const int even_rows = height - height % 2;
+  return (even_rows == 0 || convertRows(0, even_rows)) && (even_rows == height || convertRows(even_rows, 1));
 }
 
 }  // namespace PJ

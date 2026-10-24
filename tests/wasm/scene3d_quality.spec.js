@@ -37,6 +37,12 @@ test('Scene3D quality passes activate and recover independently', async ({ page 
     models.quality.shadow.active);
   const baseline = active.docks[0].models;
   expect(baseline.quality.shadow).toMatchObject({ ready: true, fit: true, size: 2048 });
+  // Shadow casters: one draw per model call (each fixture model has one
+  // submesh, so as many as the colour draws). The fixture's marker layer has
+  // every solid family resolvable, and markers cast none.
+  const solidFamilies = ['cubes', 'spheres', 'cylinders', 'arrows']
+    .filter(family => baseline.markers.families[family] > 0).length;
+  expect(solidFamilies).toBe(4);
   expect(baseline.quality.shadow.draws).toBe(baseline.models.draws);
   expect(active.docks[0].readback.rgbSum).toBeGreaterThan(0);
 

@@ -7,6 +7,9 @@
 
 namespace PJ::scripting {
 
+/// Largest script source an engine compiles: the compilers run on the host heap, outside a script's caps.
+inline constexpr std::size_t kMaxSourceBytes = std::size_t{1} << 20;
+
 /// Per-VM execution budget for an untrusted filter script. Filters run IN-PROCESS
 /// on the commit thread, so a runaway loop or unbounded allocation would stall
 /// ingest/render or exhaust memory — these limits make that a recoverable error
@@ -23,6 +26,12 @@ struct BudgetLimits {
   /// Peak live bytes a single VM may hold; the allocator returns null past this,
   /// which Luau surfaces as a catchable out-of-memory error.
   std::size_t mem_bytes = 64ull << 20;  ///< 64 MiB / VM
+
+  /// Python: the wall clock of one on-demand run, and of a filter's module evaluation plus `create()`. The timeout
+  /// lands at the next bytecode, never inside a native call.
+  std::uint64_t python_watchdog_millis = 2000;
+  /// Python filters: the wall clock of one `calculate()` or `reset()`, which runs on the GUI thread once per row.
+  std::uint64_t python_call_millis = 250;
 };
 
 }  // namespace PJ::scripting

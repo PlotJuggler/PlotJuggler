@@ -36,7 +36,7 @@ namespace pj::scene3d {
 // Outcome of a resolveUri() call. Unresolved tracking is per-call (carried out
 // in the return value), NOT resolver-global: the resolver is dock-shared across
 // robot layers, so a global tally would let one layer's load wipe/pollute a
-// sibling's (review M.29). The layer collects `package`/`issue` into its own
+// sibling's. The layer collects `package`/`issue` into its own
 // per-model set.
 struct ResolvedMesh {
   bool resolved{false};

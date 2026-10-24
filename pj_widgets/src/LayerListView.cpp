@@ -91,14 +91,15 @@ class LayerRowWidget : public QWidget {
         .name = full_name_,
         .visible = eye_->isChecked(),
         .warn = is_warning_,
-        .warning_reason = warning_reason_};
+        .warning_reason = warning_reason_,
+        .status = status_};
   }
 
   [[nodiscard]] QString effectiveToolTip() const {
     if (is_warning_ && !warning_reason_.isEmpty()) {
       return warning_reason_;
     }
-    return full_name_;
+    return shownText();
   }
 
   void setVisibleState(bool visible) {
@@ -112,8 +113,14 @@ class LayerRowWidget : public QWidget {
 
   void setDisplayName(const QString& name) {
     full_name_ = name;
-    name_->setFullText(name);
-    name_->setToolTip(effectiveToolTip());
+    applyText();
+  }
+
+  void setStatus(const QString& status) {
+    if (status_ != status) {
+      status_ = status;
+      applyText();
+    }
   }
 
   void setWarningState(bool is_warning, const QString& reason) {
@@ -217,6 +224,16 @@ class LayerRowWidget : public QWidget {
   }
 
  private:
+  // The name, then the status: the left-eliding label keeps the status in view.
+  [[nodiscard]] QString shownText() const {
+    return status_.isEmpty() ? full_name_ : full_name_ + u"  ·  "_s + status_;
+  }
+
+  void applyText() {
+    name_->setFullText(shownText());
+    name_->setToolTip(effectiveToolTip());
+  }
+
   [[nodiscard]] theme::Theme frameworkTheme() const {
     return theme::themeFor(current_theme_.contains("light"));
   }
@@ -246,6 +263,7 @@ class LayerRowWidget : public QWidget {
   int row_height_;
   QString full_name_;
   QString warning_reason_;
+  QString status_;
   bool is_warning_ = false;
   ElidingLabel* name_ = nullptr;
   QToolButton* eye_ = nullptr;
@@ -500,6 +518,17 @@ void LayerListView::setRowWarning(qint64 id, bool warn, const QString& reason) {
   }
 }
 
+void LayerListView::setRowStatus(qint64 id, const QString& status) {
+  const auto it = items_.find(id);
+  if (it == items_.end()) {
+    return;
+  }
+  if (auto* row = qobject_cast<LayerRowWidget*>(list_->itemWidget(it->second))) {
+    row->setStatus(status);
+    it->second->setToolTip(row->effectiveToolTip());
+  }
+}
+
 void LayerListView::setCurrentId(qint64 id) {
   const auto it = items_.find(id);
   if (it == items_.end()) {
@@ -541,6 +570,7 @@ void LayerListView::installRowWidget(QListWidgetItem* item, const LayerRow& row)
   if (row.warn) {
     row_widget->setWarningState(true, row.warning_reason);
   }
+  row_widget->setStatus(row.status);
   item->setSizeHint(QSize(0, kDefaultRowHeight));
   item->setData(kLayerIdRole, QVariant::fromValue(static_cast<qlonglong>(row.id)));
   item->setToolTip(row_widget->effectiveToolTip());

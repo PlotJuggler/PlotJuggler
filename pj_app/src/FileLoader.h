@@ -18,6 +18,7 @@
 #include <unordered_map>
 
 #include "LoadInput.h"
+#include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/types.hpp"
 #include "pj_runtime/SessionManager.h"
 
@@ -27,16 +28,13 @@ class QThread;
 class QDialog;
 QT_END_NAMESPACE
 
-namespace pj::scene3d {
-class TransformService;
-}  // namespace pj::scene3d
-
 namespace PJ::sdk {
 class ObjectIngestPolicyResolver;
 }  // namespace PJ::sdk
 
 namespace PJ {
 
+class TransformService;
 class CatalogModel;
 class BrowserFileStore;
 class DataSourceRuntimeHost;
@@ -180,6 +178,13 @@ class FileLoader : public QObject {
     file_picker_ = std::move(picker);
   }
 
+  // Load failures (data-source-load-failed) and the loading plugin's warnings/errors
+  // (data-source-message) go here; unset = console log only. MainWindow passes its
+  // QtDiagnosticBridge sink. A load already in flight keeps the sink its hosts got.
+  void setDiagnosticSink(DiagnosticSink sink) {
+    diagnostic_sink_ = std::move(sink);
+  }
+
   // Programmatic entry point. ENQUEUES the load and returns immediately; the
   // bool now means "accepted/enqueued", NOT "loaded" — a single-instance load
   // runs progressively on a worker thread, so completion is asynchronous and
@@ -263,11 +268,10 @@ class FileLoader : public QObject {
   // BEFORE tearing down the session/datastore; also invoked by the destructor.
   void joinForShutdown();
 
-  // 3D TF ingest is triggered at load time through this service (owned by the
-  // app shell, not the domain-neutral runtime). When unset, TF ingest is
-  // skipped — non-3D builds simply never set it.
+  // TF ingest is triggered at load time through this service (owned by the app
+  // shell). When unset, TF ingest is skipped — non-3D builds simply never set it.
 #ifdef PJ_WITH_SCENE3D
-  void setTransformService(pj::scene3d::TransformService* service) {
+  void setTransformService(PJ::TransformService* service) {
     transform_service_ = service;
   }
 #endif
@@ -484,16 +488,21 @@ class FileLoader : public QObject {
   // load) — then only the count is tracked and no dialog is shown.
   void reportLoadWarning(QWidget* parent, const QString& reason);
 
+  // Logs the failure (`log_text` when given, else `reason`) and reports one
+  // data-source-load-failed error (never for a user cancel). GUI thread.
+  void logLoadFailure(const QString& identity, const QString& reason, const QString& log_text = {}) const;
+
   SessionManager& session_;
   ExtensionCatalogService& extensions_;
   CatalogModel& catalog_;
   FilePicker file_picker_;
+  DiagnosticSink diagnostic_sink_;
   std::shared_ptr<BrowserFileStore> browser_file_store_;
 #ifdef PJ_TARGET_WASM
   QHash<QString, QString> browser_content_sha256_;
 #endif
 #ifdef PJ_WITH_SCENE3D
-  pj::scene3d::TransformService* transform_service_ = nullptr;
+  PJ::TransformService* transform_service_ = nullptr;
 #endif
 
   // --- Sequential async load queue (single-instance loads run on a worker) ---

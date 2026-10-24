@@ -25,14 +25,38 @@ function(pj_wasm_finalize_official_plugin_targets)
     endforeach()
 endfunction()
 
-if(NOT EMSCRIPTEN OR NOT (PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF))
+if(NOT EMSCRIPTEN)
     return()
-endif()
-if(NOT PJ_OFFICIAL_PLUGINS_SOURCE_DIR)
-    message(FATAL_ERROR "WASM parser plugins require the pinned official-plugin source population")
 endif()
 
 set(_pj_wasm_common_dir "${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/common")
+
+if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)
+    # Header-only DataTamer schema/snapshot parser shared by parser_ros and
+    # parser_data_tamer.
+    add_library(pj_wasm_data_tamer_parser INTERFACE)
+    target_include_directories(pj_wasm_data_tamer_parser SYSTEM INTERFACE
+        "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
+endif()
+
+if(PJ_WASM_WITH_ANOMALY_DETECTOR)
+    # UI-free "preview a plot + run a generator" engine of the generator toolboxes.
+    add_library(pj_wasm_toolbox_preview STATIC
+        "${_pj_wasm_common_dir}/toolbox_preview/series_catalog.cpp"
+        "${_pj_wasm_common_dir}/toolbox_preview/series_types.cpp"
+        "${_pj_wasm_common_dir}/toolbox_preview/ephemeral_preview.cpp")
+    target_compile_features(pj_wasm_toolbox_preview PUBLIC cxx_std_20)
+    target_include_directories(pj_wasm_toolbox_preview PUBLIC
+        "${_pj_wasm_common_dir}/toolbox_preview/include")
+    target_link_libraries(pj_wasm_toolbox_preview PUBLIC
+        plotjuggler_sdk::plugin_sdk
+        nlohmann_json::nlohmann_json)
+    pj_wasm_finalize_official_plugin_targets(pj_wasm_toolbox_preview)
+endif()
+
+if(NOT (PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF))
+    return()
+endif()
 
 # Shared by parser_ros and parser_protobuf. Keep these targets independent of
 # either feature so protobuf remains buildable with ROS disabled and vice versa.
@@ -42,8 +66,15 @@ target_compile_features(pj_wasm_laser_scan PUBLIC cxx_std_20)
 target_include_directories(pj_wasm_laser_scan PUBLIC
     "${_pj_wasm_common_dir}/laser_scan/include")
 target_link_libraries(pj_wasm_laser_scan PUBLIC plotjuggler_sdk::plugin_sdk)
-target_compile_options(pj_wasm_laser_scan PRIVATE ${PJ_WARNING_FLAGS})
-set_target_properties(pj_wasm_laser_scan PROPERTIES POSITION_INDEPENDENT_CODE ON)
+pj_wasm_finalize_official_plugin_targets(pj_wasm_laser_scan)
+
+add_library(pj_wasm_grid_map STATIC
+    "${_pj_wasm_common_dir}/grid_map/grid_map_transcoder.cpp")
+target_compile_features(pj_wasm_grid_map PUBLIC cxx_std_20)
+target_include_directories(pj_wasm_grid_map PUBLIC
+    "${_pj_wasm_common_dir}/grid_map/include")
+target_link_libraries(pj_wasm_grid_map PUBLIC plotjuggler_sdk::plugin_sdk)
+pj_wasm_finalize_official_plugin_targets(pj_wasm_grid_map)
 
 add_library(pj_wasm_pointcloud_color INTERFACE)
 target_compile_features(pj_wasm_pointcloud_color INTERFACE cxx_std_20)

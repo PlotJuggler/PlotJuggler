@@ -16,6 +16,8 @@
 #include <QApplication>
 #include <QMouseEvent>
 #include <QPointF>
+#include <QWheelEvent>
+#include <utility>
 
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
@@ -53,4 +55,56 @@ TEST(SceneViewWidgetMouseGesture, LostReleaseSelfHealsOnNextMove) {
       << "camera must not keep zooming once its button is no longer physically held";
   EXPECT_EQ(presentation_changes, 1)
       << "the interrupted gesture must still commit exactly once, like a normal release would";
+}
+
+// The documented drag mapping: middle-drag and shift+left-drag pan (the focal
+// moves, the radius stays), right-drag zooms (the radius changes, the focal stays).
+TEST(SceneViewWidgetMouseGesture, DragMapping) {
+  const auto drag = [](SceneViewWidget& view, Qt::MouseButton button, Qt::KeyboardModifiers modifiers) {
+    const QPointF from(200.0, 100.0);
+    const QPointF to(230.0, 150.0);
+    QMouseEvent press(QEvent::MouseButtonPress, from, from, from, button, button, modifiers);
+    QApplication::sendEvent(&view, &press);
+    QMouseEvent move(QEvent::MouseMove, to, to, to, Qt::NoButton, button, modifiers);
+    QApplication::sendEvent(&view, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, to, to, to, button, Qt::NoButton, modifiers);
+    QApplication::sendEvent(&view, &release);
+  };
+  for (const auto& [button, modifiers] :
+       {std::pair{Qt::MiddleButton, Qt::KeyboardModifiers{Qt::NoModifier}},
+        std::pair{Qt::LeftButton, Qt::KeyboardModifiers{Qt::ShiftModifier}}}) {
+    SceneViewWidget view;
+    view.resize(400, 300);
+    const auto before = view.camera().state();
+    drag(view, button, modifiers);
+    EXPECT_NE(view.camera().state().focal, before.focal) << "pan must move the focal (button " << button << ")";
+    EXPECT_FLOAT_EQ(view.camera().state().radius, before.radius);
+  }
+  SceneViewWidget view;
+  view.resize(400, 300);
+  const auto before = view.camera().state();
+  drag(view, Qt::RightButton, Qt::NoModifier);
+  EXPECT_NE(view.camera().state().radius, before.radius) << "right-drag must zoom";
+  EXPECT_EQ(view.camera().state().focal, before.focal);
+}
+
+// A wheel event with no vertical ticks (a horizontal-only scroll) still runs the
+// zoom with zero ticks, so the radius is clamped to its limits and the change is
+// reported. 0.001 is a valid saved radius below the 0.002 minimum.
+TEST(SceneViewWidgetMouseGesture, ZeroTickWheelReachesTheCamera) {
+  SceneViewWidget view;
+  view.resize(400, 300);
+  auto state = view.camera().state();
+  state.radius = 0.001f;
+  view.camera().adoptState(state);
+  ASSERT_FLOAT_EQ(view.camera().state().radius, 0.001f);
+
+  int presentation_changes = 0;
+  QObject::connect(&view, &SceneViewWidget::presentationChanged, [&] { ++presentation_changes; });
+  const QPointF pos(200.0, 150.0);
+  QWheelEvent wheel(pos, pos, QPoint(), QPoint(120, 0), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+  QApplication::sendEvent(&view, &wheel);
+
+  EXPECT_FLOAT_EQ(view.camera().state().radius, 0.002f);
+  EXPECT_EQ(presentation_changes, 1);
 }

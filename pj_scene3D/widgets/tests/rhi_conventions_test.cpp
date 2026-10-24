@@ -42,6 +42,14 @@ TEST(RhiConventionsTest, D3dAndMetalFlipV) {
   EXPECT_EQ(toTexture(kD3dOrMetal, {1.0F, -1.0F, 1.0F}), QVector3D(1.0F, 1.0F, 1.0F));
 }
 
+// A quad showing a render-target texture flips it only on OpenGL, where the
+// framebuffer's row 0 is its bottom row.
+TEST(RhiConventionsTest, OnlyOpenGlRenderTargetsAreBottomUp) {
+  EXPECT_TRUE(renderTargetIsBottomUp(kOpenGl));
+  EXPECT_FALSE(renderTargetIsBottomUp(kVulkan));
+  EXPECT_FALSE(renderTargetIsBottomUp(kD3dOrMetal));
+}
+
 // The inverse is what SSAO/EDL use to rebuild clip space from (uv, depth).
 TEST(RhiConventionsTest, InverseRoundTrips) {
   for (const RhiConventions& conventions : {kOpenGl, kVulkan, kD3dOrMetal}) {
@@ -110,6 +118,17 @@ TEST(RhiConventionsTest, UpInViewMatchesTheBackendsRowOrder) {
       EXPECT_EQ(textureVSign(conventions) > 0.0F, v > 0.5F);
     }
   }
+}
+
+TEST(RhiConventionsTest, D3d11ThreeDTextureLimitFollowsTheFeatureLevel) {
+  EXPECT_EQ(d3d11Max3dTextureSize(0xc100), 2048);  // 12_1
+  EXPECT_EQ(d3d11Max3dTextureSize(0xb000), 2048);  // 11_0
+  EXPECT_EQ(d3d11Max3dTextureSize(0xa000), 2048);  // 10_0
+  EXPECT_EQ(d3d11Max3dTextureSize(0x9300), 256);   // 9_3
+  EXPECT_EQ(d3d11Max3dTextureSize(0x9100), 256);   // 9_1
+  EXPECT_EQ(d3d11Max3dTextureSize(0), 256);        // not reported: the floor
+  EXPECT_EQ(kDocumentedMax3dTextureSize, 2048);
+  EXPECT_EQ(kGuaranteedMax3dTextureSize, 256);
 }
 
 }  // namespace

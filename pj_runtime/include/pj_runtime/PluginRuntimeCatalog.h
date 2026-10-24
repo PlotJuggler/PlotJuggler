@@ -61,6 +61,9 @@ struct RuntimeToolboxPlugin {
   std::string name;
   std::string id;
   std::string version;
+  std::string badge;  ///< the manifest's optional short label for what it creates; empty when undeclared
+  /// The manifest lists `custom_topics_editor` in its `capabilities` tags: the editor of the host's Custom Topics.
+  bool custom_topics_editor = false;
   uint64_t capabilities = 0;
   std::filesystem::file_time_type loaded_mtime;
 };

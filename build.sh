@@ -35,7 +35,7 @@ usage() {
     "" \
     "The same settings are accepted as PJ_BUILD_TESTS, PJ_BUILD_DEMOS," \
     "PJ_BUILD_WIDGET_DEMOS, PJ_BUILD_MARKETPLACE_APP, PJ_BUILD_TARGET, PJ_DEBUG_INFO," \
-    "PJ_COMPRESS_DEBUG and PJ_SANITIZE environment variables (how CI and the" \
+    "PJ_COMPRESS_DEBUG, PJ_SANITIZE and PJ_BUILD_JOBS environment variables (how CI and the" \
     "container wrapper drive this script); an option always wins over the variable." \
     "PJ_DRY_RUN=1 prints the lane, build directory and CMake arguments without building."
 }
@@ -226,6 +226,11 @@ CMAKE_CCACHE_ARGS=()
 if command -v ccache &>/dev/null; then
   CMAKE_CCACHE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=ccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
 fi
+# mold links the dozens of test executables several times faster than GNU ld;
+# CMake older than 3.29 ignores CMAKE_LINKER_TYPE and keeps its default linker.
+if command -v mold &>/dev/null; then
+  CMAKE_CCACHE_ARGS+=("-DCMAKE_LINKER_TYPE=MOLD")
+fi
 
 # The PJ_* variables below come from the options parsed above or, for CI and
 # the container wrapper, from the environment. Release/packaging pipelines skip
@@ -316,10 +321,24 @@ else
   CMAKE_ARGS+=("-DPJ_VERSION=${PJ_VERSION:-${PJ_APP_VERSION}}" "-DPJ_INSTALLATION=${PJ_INSTALLATION:-source}")
 fi
 
+# Compile jobs: one per core, but no more than available memory allows. A heavy C++
+# translation unit (Qt + gtest + the scene libraries) peaks near 1.5 GiB, so one job
+# per core can exhaust a 32 GB machine during a full rebuild. PJ_BUILD_JOBS overrides.
+if [[ -z "${PJ_BUILD_JOBS:-}" ]]; then
+  PJ_BUILD_JOBS="$(nproc)"
+  mem_avail_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || true)"
+  if [[ -n "${mem_avail_kib}" ]]; then
+    mem_jobs=$(( mem_avail_kib / (1536 * 1024) ))
+    (( mem_jobs < 1 )) && mem_jobs=1
+    (( mem_jobs < PJ_BUILD_JOBS )) && PJ_BUILD_JOBS="${mem_jobs}"
+  fi
+fi
+
 # Share the actual configure arguments with the preview, before requiring Qt,
 # creating build artifacts, or contacting Conan/remotes.
 if [[ "${PJ_DRY_RUN:-0}" == "1" ]]; then
   printf 'Sanitizer lane: %s\nBuild directory: %s\n' "${PJ_SANITIZE}" "${BUILD_DIR}"
+  printf 'Compile jobs: %s\n' "${PJ_BUILD_JOBS}"
   printf 'cmake'
   printf ' %q' "${CMAKE_ARGS[@]}"
   printf '\n'
@@ -410,7 +429,7 @@ cmake "${CMAKE_ARGS[@]}"
 ln -sf "${BUILD_REL}/compile_commands.json" "$SCRIPT_DIR/compile_commands.json"
 
 if [[ "$MSAN" == "1" ]]; then
-  cmake --build "$BUILD_DIR" --target "${MSAN_TARGETS[@]}" -j "$(nproc)"
+  cmake --build "$BUILD_DIR" --target "${MSAN_TARGETS[@]}" -j "${PJ_BUILD_JOBS}"
 
   # An uninstrumented dependency slipping into the closure is the failure this
   # lane cannot survive, and it is silent: the build succeeds and the reports
@@ -445,7 +464,7 @@ if [[ "$MSAN" == "1" ]]; then
 fi
 
 if [[ "$TSAN" == "1" ]]; then
-  cmake --build "$BUILD_DIR" --target "${PJ_BUILD_TARGET:-all}" -j "$(nproc)"
+  cmake --build "$BUILD_DIR" --target "${PJ_BUILD_TARGET:-all}" -j "${PJ_BUILD_JOBS}"
 
   # Run under ctest so the per-test CMake TIMEOUT catches a deadlock regression,
   # and so TSan's non-zero exit (it dies on the first report under halt_on_error)
@@ -474,4 +493,4 @@ fi
 
 # PJ_BUILD_TARGET: packaging builds set it to pj_app so only the shipped closure
 # (app + pj-plugin-check, which pj_app depends on) is linked; `all` is the dev default.
-cmake --build "$BUILD_DIR" --target "${PJ_BUILD_TARGET:-all}" -j "$(nproc)"
+cmake --build "$BUILD_DIR" --target "${PJ_BUILD_TARGET:-all}" -j "${PJ_BUILD_JOBS}"

@@ -23,6 +23,8 @@ struct LayerRow {
   // also preserved across drag-reorder). setRowWarning() mutates it live.
   bool warn = false;
   QString warning_reason = {};
+  /// A short state shown after the name, never a fault (e.g. "behind 0.4 s"); empty for none.
+  QString status = {};
 };
 
 class LayerListView : public QWidget {
@@ -41,6 +43,7 @@ class LayerListView : public QWidget {
   void setRowVisible(qint64 id, bool visible);
   void setRowName(qint64 id, const QString& name);
   void setRowWarning(qint64 id, bool warn, const QString& reason = {});
+  void setRowStatus(qint64 id, const QString& status);
   void setCurrentId(qint64 id);
   [[nodiscard]] std::optional<qint64> currentId() const;
   [[nodiscard]] std::vector<qint64> order() const;

@@ -4,7 +4,8 @@
 
 #include <algorithm>
 
-#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_core/tf/object_placement.h"
+#include "pj_tf/tf_buffer.h"
 
 namespace pj::scene3d {
 
@@ -39,14 +40,16 @@ TrailPolyline buildTfFrameTrail(
     std::size_t max_points) {
   TrailPolyline trail;
   std::vector<TimePoint> stamps;
-  tf.chainSampleTimes(fixed, frame, lo, hi, stamps);
+  // Entry clock: the trail is drawn against the cursor (past/future split, live
+  // append), and its head must meet the frame's triad, which sits at the cursor.
+  tf.chainSampleTimes(fixed, frame, lo, hi, pj::tf::Clock::kEntry, stamps);
   if (stamps.empty()) {
     return trail;
   }
   const std::vector<std::size_t> kept = decimateEvenly(stamps.size(), max_points);
   trail.reserve(kept.size());
   for (const std::size_t index : kept) {
-    const auto transform = tf.tryLookupTransform(fixed, frame, stamps[index]);
+    const auto transform = tf.tryLookupTransform(fixed, frame, stamps[index], pj::tf::Clock::kEntry);
     if (!transform.has_value()) {
       continue;  // edge not yet published at this stamp -> gap (bridged by the strip)
     }
@@ -64,7 +67,8 @@ TrailPolyline buildPoseTopicTrail(
       trail.push_back(TrailPoint{sample.t, sample.local_pos});
       continue;
     }
-    const auto transform = tf.tryLookupTransform(fixed, sample.frame_id, sample.t);
+    // Placed like the pose triads themselves, so the trail meets the current pose.
+    const auto transform = placeObject(tf, fixed, sample.frame_id, sample.object_stamp, sample.t);
     if (!transform.has_value()) {
       continue;
     }

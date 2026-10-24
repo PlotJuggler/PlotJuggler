@@ -1,0 +1,50 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="generic" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="4d7c2a51-0000-4000-8000-000000000001" tab_name="tab1">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockSplitter count="2" orientation="|" sizes="0.50059312;0.49940688">
+            <DockSplitter count="2" orientation="-" sizes="0.50074963;0.49925037">
+              <DockArea id="4d7c2a51-0000-4000-8000-000000000002" name="...">
+                <plot id="4d7c2a51-0000-4000-8000-000000000003" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+                  <range bottom="-1.049999" left="0.000000" left_ns="0" right="10.000000" right_ns="10000000000" top="1.049999" x_basis="absolute"/>
+                  <curve color="#1f77b4" field="value" markers_visible="true" topic="test/sin" visible="true"/>
+                </plot>
+              </DockArea>
+              <DockArea id="4d7c2a51-0000-4000-8000-000000000004" name="...">
+                <plot id="4d7c2a51-0000-4000-8000-000000000005" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+                  <range bottom="-1.049995" left="0.000000" left_ns="0" right="10.000000" right_ns="10000000000" top="1.050000" x_basis="absolute"/>
+                  <curve color="#d62728" field="value" markers_visible="true" topic="test/cos" visible="true"/>
+                </plot>
+              </DockArea>
+            </DockSplitter>
+            <DockSplitter count="2" orientation="-" sizes="0.50074963;0.49925037">
+              <DockArea id="4d7c2a51-0000-4000-8000-000000000006" name="...">
+                <scene3d camera_model="orbit" camera_state="{&quot;azimuth&quot;:0.0,&quot;elevation&quot;:0.5235987901687622,&quot;focal&quot;:[0.0,0.0,0.0],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:5.0,&quot;perspective&quot;:true,&quot;radius&quot;:5.0}" fixed_frame="" fixed_frame_mode="auto_root" follow_frame="" version="1">
+                  <scene_controls axes_visible="true" collision_opacity="0.40000001" collisions_visible="true" gizmo_opacity="1" gizmo_size_m="0.15000001" grid_divisions="10" grid_extent_m="10" grid_style="0" grid_visible="true" mesh_opacity="1" meshes_visible="true" tf_parent_lines="true"/>
+                </scene3d>
+              </DockArea>
+              <DockArea id="4d7c2a51-0000-4000-8000-000000000007" name="...">
+                <scene2d version="1">
+                  <layer display_name="test/image" layer_kind="image" object_type="kImage" order="0" topic_name="test/image" visible="true">
+                    <scene2d_layer rectify_enabled="true"/>
+                  </layer>
+                  <view pan_x="0" pan_y="0" zoom="1"/>
+                </scene2d>
+              </DockArea>
+            </DockSplitter>
+          </DockSplitter>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+  <data_processors/>
+  <right_panel_state splitter_sizes="1278,0" style="0" width="1"/>
+  <left_panel_state sources_tab="file" streaming_buffer="5" streaming_source=""/>
+  <curve_list_state custom_filter="" datasets_filter="" show_topics="true" show_values="false"/>
+  <chrome_state main_splitter_sizes="400,844"/>
+  <source_timeline name_column_width="49" scroll_left_ns="0" scroll_top_px="0" snap="true" zoom="9.9999999999999995e-08"/>
+  <pinned_toolboxes/>
+</root>

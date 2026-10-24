@@ -1,0 +1,1 @@
+Mesa llvmpipe (LLVM 21.1.8, 256 bits) 4.5 (Compatibility Profile) Mesa 26.0.3-1ubuntu1

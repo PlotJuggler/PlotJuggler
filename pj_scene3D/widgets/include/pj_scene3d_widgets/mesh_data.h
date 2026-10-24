@@ -3,8 +3,8 @@
 #pragma once
 
 // CPU-side mesh + material data model produced by the mesh loader
-// (src/mesh_loader.h) and consumed by MeshRenderPass. Pure data, no GL:
-// buffer/texture upload lives in the render pass.
+// (src/mesh_loader.h) and consumed by the view's model pass. Pure data, no GPU:
+// buffer/texture upload lives in the pass.
 
 #include <QString>
 #include <cstddef>
@@ -37,14 +37,14 @@ struct Vertex {
 // encoded PNG/JPEG form). `key` is a stable cache key used by the renderer's
 // per-context texture cache: the absolute path for external maps, a content hash
 // for embedded ones (so identical embedded textures dedup and the key survives
-// GL-context recreation). Empty when the material lacks this map.
+// a QRhi recreation). Empty when the material lacks this map.
 // The source only describes content; the renderer owns upload policy and infers
-// each slot's color space (see textureColorSpaceForSlot in mesh_render_pass.h):
+// each slot's color space (ModelRhiPass):
 // base-color/emissive are color data, metallic-roughness/normal/occlusion are
 // linear data.
 // Embedded `bytes` stay resident on the owning MeshData for the mesh's lifetime
 // (copied once per distinct Material and shared by its SubMeshes) so the renderer can
-// re-decode them after a GL-context loss — memory traded for context-recreation
+// re-decode them for a new QRhi — memory traded for QRhi-recreation
 // robustness, fine for the usual handful of textured submeshes.
 struct TextureSource {
   QString path;

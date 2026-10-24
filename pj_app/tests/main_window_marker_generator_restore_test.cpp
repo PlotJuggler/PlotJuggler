@@ -15,6 +15,7 @@
 #include <QTemporaryDir>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MainWindow.h"
@@ -23,8 +24,8 @@
 #include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 
@@ -62,8 +63,11 @@ constexpr const char* kSeriesKey = "sensor/value";
 constexpr const char* kGeneratorId = "toolbox-anomaly-detector/rule/sensor";
 
 // A layout carrying one marker generator over `series_key`, shaped exactly as
-// MainWindow::saveDataProcessors writes it.
-QDomDocument layoutWithGenerator(PJ::DatasetId dataset_id, const QString& source_name, const QString& script) {
+// DerivedObjects::save writes it. `window`, when set, adds the
+// `window_start_ns`/`window_end_ns` attributes (raw ns, inclusive).
+QDomDocument layoutWithGenerator(
+    PJ::DatasetId dataset_id, const QString& source_name, const QString& script,
+    std::optional<std::pair<PJ::Timestamp, PJ::Timestamp>> window = std::nullopt) {
   QDomDocument doc;
   QDomElement root = doc.createElement(u"root"_s);
   doc.appendChild(root);
@@ -76,6 +80,10 @@ QDomDocument layoutWithGenerator(PJ::DatasetId dataset_id, const QString& source
   gen.setAttribute(u"all_datasets"_s, u"0"_s);
   gen.setAttribute(u"dataset_id"_s, QString::number(dataset_id));
   gen.setAttribute(u"dataset_source"_s, source_name);
+  if (window.has_value()) {
+    gen.setAttribute(u"window_start_ns"_s, QString::number(window->first));
+    gen.setAttribute(u"window_end_ns"_s, QString::number(window->second));
+  }
   processors.appendChild(gen);
 
   QDomElement input = doc.createElement(u"input"_s);
@@ -177,7 +185,7 @@ TEST(MainWindowMarkerGeneratorRestoreTest, RestoresGeneratorBySourceWhenIdsSwap)
 
   EXPECT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, doc.documentElement()));
 
-  const std::vector<PJ::MarkerService::GeneratorRecipe> recipes = app.sessionManager().markerService().recipes();
+  const std::vector<PJ::BatchEngine::GeneratorRecipe> recipes = app.sessionManager().batchEngine().recipes();
   ASSERT_EQ(recipes.size(), 1U);
   EXPECT_EQ(recipes.front().dataset_id, dataset_b);
   EXPECT_TRUE(publishedMarkers(app, dataset_b).has_value());
@@ -255,6 +263,46 @@ TEST(MainWindowMarkerGeneratorRestoreTest, GeneratorReplaysUnderTheSnapshotsDisp
   EXPECT_EQ(
       pj_test::markerTimes(app, PJ::kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic, "test/global-rule"),
       (std::vector<PJ::Timestamp>{80 * kSecond, 180 * kSecond}));
+}
+
+// A generator's window round-trips through restore and save: only the sample inside
+// it publishes, the restored recipe keeps the raw-ns bounds, and saving writes them.
+TEST(MainWindowMarkerGeneratorRestoreTest, WindowRoundTripsThroughLayoutRestore) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = PJ::MainWindowMarkerGeneratorTestPeer::session(window);
+
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "run.csv");
+  ASSERT_NE(dataset, 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, kTopic, /*first_ts=*/100, /*second_ts=*/200), 0U);
+
+  const QDomDocument doc = layoutWithGenerator(
+      dataset, u"run.csv"_s,
+      uR"(
+        local s = series("sensor/value")
+        for i = 0, s:size() - 1 do
+          createMarker(s:at(i).t, s:at(i).v, {label="sample"})
+        end
+      )"_s,
+      std::pair<PJ::Timestamp, PJ::Timestamp>{100, 100});
+
+  EXPECT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, doc.documentElement()));
+
+  const std::optional<PJ::sdk::PlotMarkers> markers = publishedMarkers(app, dataset);
+  ASSERT_TRUE(markers.has_value()) << "the restored generator published nothing";
+  EXPECT_EQ(markers->markers.size(), 1U) << "only the sample at t=100 falls inside [100,100]";
+  EXPECT_EQ(markers->markers.front().t_start, 100);
+
+  const std::vector<PJ::BatchEngine::GeneratorRecipe> recipes = app.sessionManager().batchEngine().recipes();
+  ASSERT_EQ(recipes.size(), 1U);
+  ASSERT_TRUE(recipes.front().window.has_value()) << "the layout's window attributes did not round-trip";
+  EXPECT_EQ(recipes.front().window->first, 100);
+  EXPECT_EQ(recipes.front().window->second, 100);
+
+  const QByteArray saved = PJ::MainWindowMarkerGeneratorTestPeer::captureWorkspace(window).xml;
+  EXPECT_TRUE(saved.contains(R"(window_start_ns="100")")) << saved.constData();
+  EXPECT_TRUE(saved.contains(R"(window_end_ns="100")")) << saved.constData();
 }
 
 }  // namespace

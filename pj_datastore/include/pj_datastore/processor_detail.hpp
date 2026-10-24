@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "pj_base/span.hpp"
-#include "pj_datastore/column_buffer.hpp"   // PJ::StorageKind
-#include "pj_datastore/derived_engine.hpp"  // PJ::VarValue
+#include "pj_datastore/column_buffer.hpp"       // PJ::StorageKind
+#include "pj_datastore/incremental_engine.hpp"  // PJ::VarValue
 
 namespace PJ::proc::detail {
 

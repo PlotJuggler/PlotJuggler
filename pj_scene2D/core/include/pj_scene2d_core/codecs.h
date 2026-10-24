@@ -49,6 +49,24 @@ enum class ImageContainer : uint8_t {
   return ImageContainer::kUnknown;
 }
 
+/// What a JPEG's first SOF segment or a PNG's IHDR declares; 0 x 0 when it declares none.
+struct ImageHeader {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t components = 0;  ///< a JPEG's; 0 for a PNG
+  /// A JPEG libjpeg buffers whole before it outputs a row: progressive, or a first scan without every component (or
+  /// no scan found).
+  bool multi_scan = false;
+};
+
+/// Reads the header of `data` without decoding it, for a caller that bounds what a codec allocates before running
+/// it. `container` is what `sniffImageContainer` found; any other (kUnknown) yields an empty header.
+[[nodiscard]] ImageHeader peekImageHeader(const uint8_t* data, size_t size, ImageContainer container) noexcept;
+
+/// A conservative, not exact, bound on what decoding `header` allocates beside its output and the input: row
+/// pointers, row buffers, the library's state, and for a multi-scan JPEG the whole-image coefficient buffer.
+[[nodiscard]] size_t codecWorkspaceBound(const ImageHeader& header, ImageContainer container) noexcept;
+
 /// JPEG → RGB888 via turbojpeg.
 class JpegCodec : public CodecStage {
  public:

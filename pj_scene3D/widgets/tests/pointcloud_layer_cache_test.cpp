@@ -28,16 +28,18 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/builtin/point_cloud_codec.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -55,6 +57,24 @@ std::atomic<int> g_zero_stamp_parser_calls{0};
 std::atomic<int> g_mixed_parser_calls{0};
 std::atomic<int> g_metadata_gate_parser_calls{0};
 
+// A raw cloud in frame "lidar" holding one float32 xyz point, stamped `ts`, over static storage.
+PJ::sdk::PointCloud singlePointCloud(PJ::Timestamp ts) {
+  static const float k_point[3] = {1.0f, 2.0f, 3.0f};
+  PJ::sdk::PointCloud cloud;
+  cloud.timestamp_ns = ts;
+  cloud.frame_id = "lidar";
+  cloud.width = 1;
+  cloud.height = 1;
+  cloud.point_step = 12;
+  cloud.row_step = 12;
+  cloud.fields = {
+      PJ::sdk::PointField{"x", 0, PJ::sdk::PointField::Datatype::kFloat32, 1},
+      PJ::sdk::PointField{"y", 4, PJ::sdk::PointField::Datatype::kFloat32, 1},
+      PJ::sdk::PointField{"z", 8, PJ::sdk::PointField::Datatype::kFloat32, 1}};
+  cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(k_point), sizeof(k_point));
+  return cloud;
+}
+
 // Minimal dual-mode emit. The raw cloud is a single float32 xyz point over a
 // static buffer (no anchor needed); at/after the threshold a CompressedPointCloud
 // with a bogus codec id (decode always fails). Per-parse counting is handled by
@@ -69,20 +89,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitMixedCloud(PJ::Timestamp ts, PJ::sdk::Pa
     cloud.data = PJ::Span<const uint8_t>(k_blob, sizeof(k_blob));
     return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
   }
-  static const float k_point[3] = {1.0f, 2.0f, 3.0f};
-  PJ::sdk::PointCloud cloud;
-  cloud.timestamp_ns = ts;
-  cloud.frame_id = "lidar";
-  cloud.width = 1;
-  cloud.height = 1;
-  cloud.point_step = 12;
-  cloud.row_step = 12;
-  cloud.fields = {
-      PJ::sdk::PointField{"x", 0, PJ::sdk::PointField::Datatype::kFloat32, 1},
-      PJ::sdk::PointField{"y", 4, PJ::sdk::PointField::Datatype::kFloat32, 1},
-      PJ::sdk::PointField{"z", 8, PJ::sdk::PointField::Datatype::kFloat32, 1}};
-  cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(k_point), sizeof(k_point));
-  return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
+  return PJ::sdk::ObjectRecord{.ts = ts, .object = singlePointCloud(ts)};
 }
 
 PJ::ObjectTopicId registerCloudTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_id) {
@@ -217,20 +224,20 @@ TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
                                     }));
 
   // world←lidar at two stamps with DIFFERENT translations (same orientation).
-  auto tf = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  auto tf = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
   ASSERT_TRUE(tf->setTransform(
-                    pj::scene3d::StampedTransform{
+                    pj::tf::StampedTransform{
                         .stamp = PJ::fromRaw(100),
                         .parent_frame = "world",
                         .child_frame = "lidar",
-                        .transform = pj::scene3d::Transform(glm::dvec3{1.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                        .transform = pj::tf::Transform(glm::dvec3{1.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
                   .has_value());
   ASSERT_TRUE(tf->setTransform(
-                    pj::scene3d::StampedTransform{
+                    pj::tf::StampedTransform{
                         .stamp = PJ::fromRaw(200),
                         .parent_frame = "world",
                         .child_frame = "lidar",
-                        .transform = pj::scene3d::Transform(glm::dvec3{9.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                        .transform = pj::tf::Transform(glm::dvec3{9.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
                   .has_value());
 
   pj::scene3d::Scene3DLayerContext ctx;
@@ -245,6 +252,68 @@ TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
   const uint64_t k_t250 = layer.renderKey(PJ::fromRaw(250));  // TF@200 (x=9) → changed
   EXPECT_EQ(k_t150, k_t180) << "same sample + same transform must coalesce";
   EXPECT_NE(k_t150, k_t250) << "a transform change at the same sample must reopen the gate";
+}
+
+// TF R6: the layer reports its cloud's own header stamp on the dataset clock, which
+// the view places it at. A time-shifted merge moves the store timestamp and records
+// payload_stamp_shift, while the serialized cloud keeps its original stamp.
+TEST(PointCloudLayerPlacement, RenderStampIsTheCloudsOwnStampOnTheDatasetClock) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  (void)registerObjectTopic(session, "/anchor", /*dataset_id=*/1);
+  const PJ::ObjectTopicId topic_id = registerObjectTopic(session, "/cloud", /*dataset_id=*/2);
+  const PJ::sdk::PointCloud cloud = singlePointCloud(960);  // measured 40 ns before it was logged
+  ASSERT_TRUE(store.pushOwned(topic_id, /*logged=*/1000, PJ::serializePointCloud(cloud)).has_value());
+  constexpr PJ::Timestamp kShift = 5000;
+  ASSERT_TRUE(store.mergeDatasets(/*anchor_id=*/1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = kShift}})
+                  .has_value());
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.renderAtForTest(1000 + kShift);
+  ASSERT_EQ(layer.renderFrameId(), "lidar");
+  EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(960 + kShift));
+}
+
+// TF R6: in live streaming the lidar stopped after its cloud at 1 s, so the object
+// store keeps that cloud while TF (a 10 s window) runs on to 12 s and evicts the
+// sample at 1 s. The layer keeps the cloud where it was captured, so the render key
+// (the placement it draws with) does not move.
+TEST(PointCloudLayerPlacement, EvictedTfSampleKeepsTheCloudWhereItWasCaptured) {
+  constexpr PJ::Timestamp kMillisecond = 1'000'000;
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const PJ::ObjectTopicId topic_id = registerObjectTopic(session, "/cloud");
+  ASSERT_TRUE(
+      store.pushOwned(topic_id, 1000 * kMillisecond, PJ::serializePointCloud(singlePointCloud(1000 * kMillisecond)))
+          .has_value());
+  auto tf = std::make_shared<pj::tf::TransformBuffer>(std::chrono::seconds(10));
+  const auto feed_until = [&tf](int64_t first_ms, int64_t last_ms) {
+    for (int64_t time = first_ms; time <= last_ms; time += 500) {
+      ASSERT_TRUE(tf->setTransform(
+                        pj::tf::StampedTransform{
+                            .stamp = PJ::fromRaw(time * kMillisecond),
+                            .parent_frame = "world",
+                            .child_frame = "lidar",
+                            .transform = pj::tf::Transform(
+                                glm::dvec3{static_cast<double>(time) / 1000.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                      .has_value());
+    }
+  };
+  feed_until(0, 2000);
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  ctx.tf_buffer = tf;
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setFixedFrame(u"world"_s);
+  const uint64_t captured = layer.renderKey(PJ::fromRaw(2000 * kMillisecond));
+
+  feed_until(2500, 12000);
+  EXPECT_EQ(layer.renderKey(PJ::fromRaw(12000 * kMillisecond)), captured);
 }
 
 // L.20: stamp 0 is data, not a sentinel — attach renders it and refreshNow()

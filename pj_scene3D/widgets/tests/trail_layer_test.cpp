@@ -1,10 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Headless TrailLayer tests (no GL, no session): renderKey coalescing and split
+// Headless TrailLayer tests (no GPU, no session): renderKey coalescing and split
 // counts, timeRange sentinel, XML round-trip (style-only load), synchronous TF
-// rebuild against a hand-fed TransformBuffer, and live-edge append with the
-// ring cap. GUI-thread-only Qt pieces run under a QCoreApplication.
+// rebuild against a hand-fed TransformBuffer, the renderer's fixed-frame
+// adoption with its async rebuild, and live-edge append with the ring cap. GUI-thread-only Qt pieces run under a
+// QCoreApplication.
 
 #include "pj_scene3d_widgets/layers/trail_layer.h"
 
@@ -20,11 +21,13 @@
 #include <vector>
 
 #include "pj_base/time.hpp"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_widgets/render_pass.h"
+#include "pj_tf/tf_buffer.h"
 
 namespace pj::scene3d {
 namespace {
+
+using pj::tf::StampedTransform;
+using pj::tf::Transform;
 
 using namespace std::chrono_literals;
 using namespace Qt::StringLiterals;
@@ -209,25 +212,28 @@ TEST(TrailLayerTest, RenderSelfHealsFixedFrameAndAsyncRebuildLands) {
   TrailLayer layer(PJ::ObjectTopicId{42}, TrailSource::tfFrame(u"base"_s));
   layer.injectContextForTest(buffer);
 
-  // The PRODUCTION rebuild entry point: render() adopts the fixed frame from
-  // the FrameContext and launches the ASYNC rebuild (the GL pass is
-  // uninitialized, so render() touches no GL).
-  const std::string fixed_frame = "odom";
-  const FrameContext frame_ctx{*buffer, fixed_frame, tp(20ns), glm::dvec3(0.0)};
-  ViewParams view_params;
-  layer.render(view_params, frame_ctx);
+  // The PRODUCTION rebuild entry point: the renderer's once-per-frame
+  // syncFixedFrame() adopts the view's fixed frame and launches the ASYNC
+  // rebuild; the adopting frame must not draw the stale polyline.
+  const uint64_t revision_before = layer.buildRevision();
+  EXPECT_FALSE(layer.syncFixedFrame("odom"));
   spinUntil([&layer]() { return layer.pointCountForTest() > 0; });
   ASSERT_EQ(layer.pointCountForTest(), 2U);
   EXPECT_TRUE(layer.statusWarning().isEmpty());
+  EXPECT_NE(layer.buildRevision(), revision_before);
+  // The retained CPU polyline the renderer draws, in the fixed frame.
+  ASSERT_EQ(layer.points().size(), 2U);
+  EXPECT_EQ(layer.points()[0], glm::dvec3(1.0, 0.0, 0.0));
+  EXPECT_EQ(layer.points()[1], glm::dvec3(2.0, 0.0, 0.0));
+  EXPECT_TRUE(layer.syncFixedFrame("odom")) << "an unchanged fixed frame draws without a rebuild";
 
   // Latest-wins: adopting a DISCONNECTED fixed frame mid-flight must end on
   // the newest parameters — an empty trail plus a warning, never the stale one.
-  const std::string mars = "mars";
-  const FrameContext mars_ctx{*buffer, mars, tp(20ns), glm::dvec3(0.0)};
-  layer.render(view_params, mars_ctx);
-  layer.render(view_params, mars_ctx);  // second call while possibly inflight: coalesced
+  EXPECT_FALSE(layer.syncFixedFrame("mars"));
+  EXPECT_TRUE(layer.syncFixedFrame("mars"));  // second frame while possibly inflight: coalesced
   spinUntil([&layer]() { return !layer.statusWarning().isEmpty(); });
   EXPECT_EQ(layer.pointCountForTest(), 0U);
+  EXPECT_TRUE(layer.points().empty());
   EXPECT_FALSE(layer.statusWarning().isEmpty());
 }
 
@@ -250,6 +256,29 @@ TEST(TrailLayerTest, EmptyTrailRevivesWhenTfDataArrives) {
   spinUntil([&layer]() { return layer.pointCountForTest() > 0; });
   EXPECT_EQ(layer.pointCountForTest(), 2U);
   EXPECT_TRUE(layer.statusWarning().isEmpty());
+}
+
+// The buffer the trail holds can have its whole history replaced behind the same
+// handle (a reload commit, an invalidation, a merge rebuild): that is not an
+// extension of the trail, so the next tick rebuilds it instead of appending to a
+// tail built on the old history.
+TEST(TrailLayerTest, ReplacedTfHistoryRebuildsTheTrail) {
+  auto buffer = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  (void)buffer->setTransform(stampedAt(10ns, "odom", "base", 1.0));
+  (void)buffer->setTransform(stampedAt(20ns, "odom", "base", 2.0));
+
+  TrailLayer layer(PJ::ObjectTopicId{42}, TrailSource::tfFrame(u"base"_s));
+  layer.injectContextForTest(buffer);
+  layer.rebuildNowForTest(u"odom"_s);
+  ASSERT_EQ(layer.timeRange().min, tp(10ns));
+
+  buffer->clear();
+  (void)buffer->setTransform(stampedAt(15ns, "odom", "base", 5.0));
+  (void)buffer->setTransform(stampedAt(25ns, "odom", "base", 6.0));
+  layer.setTrackerTime(tp(25ns));
+  spinUntil([&layer]() { return layer.timeRange().min == tp(15ns); });
+  EXPECT_EQ(layer.timeRange().min, tp(15ns)) << "the trail kept samples of the replaced history";
+  EXPECT_EQ(layer.pointCountForTest(), 2U);
 }
 
 }  // namespace

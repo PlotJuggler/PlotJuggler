@@ -1,0 +1,205 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+//
+// Throwaway writer (never committed on the prototype): builds one session with the
+// on-demand recipes the prototype 766b20eeb can persist and writes it through its
+// REAL save paths — MainWindow::saveLayoutToPath (source-bound and generic) and
+// MainWindow::xmlSaveState(kHistory). Output directory: $PJ_FIXTURE_OUT_DIR.
+
+#include <gtest/gtest.h>
+
+#include <QApplication>
+#include <QDir>
+#include <QDomDocument>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
+#include <array>
+#include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "MainWindow.h"
+#include "dataset_test_helpers.h"
+#include "pj_base/buffer_anchor.hpp"
+#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/builtin/point_cloud.hpp"
+#include "pj_datastore/object_store.hpp"
+#include "pj_runtime/AppSession.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/OnDemandService.h"
+#include "pj_runtime/SessionManager.h"
+#include "pj_scripting/object_script.h"
+
+using namespace Qt::StringLiterals;
+
+namespace PJ {
+
+// Reuses a MainWindow friend name: this file builds into its own executable.
+class MainWindowOnDemandRestoreTestPeer {
+ public:
+  [[nodiscard]] static AppSession& session(MainWindow& window) {
+    return *window.session_;
+  }
+  static void saveLayout(MainWindow& window, const QString& path, bool include_data_source) {
+    window.saveLayoutToPath(path, include_data_source);
+  }
+  [[nodiscard]] static QDomDocument historySnapshot(const MainWindow& window) {
+    return window.xmlSaveState(MainWindow::SnapshotScope::kHistory);
+  }
+};
+
+}  // namespace PJ
+
+namespace {
+
+using Peer = PJ::MainWindowOnDemandRestoreTestPeer;
+using PJ::OnDemandService;
+using PJ::sdk::PointCloud;
+using PJ::sdk::PointField;
+
+constexpr PJ::Timestamp kSec = 1'000'000'000LL;
+constexpr const char* kFakeRoot = "/pj-fixtures";
+
+constexpr const char* kCropScript = R"LUAU(
+  local inputs, params = ...
+  local cropped = inputs.cloud:crop_box{min={-5,-5,params.zmin}, max={5,5,inputs.threshold}}
+  return { cropped = cropped }
+)LUAU";
+
+OnDemandService::Recipe cropRecipe(std::string owner, std::string id) {
+  OnDemandService::Recipe recipe;
+  recipe.owner_plugin = std::move(owner);
+  recipe.user_id = std::move(id);
+  recipe.language = "luau";
+  recipe.script = kCropScript;
+  recipe.params_json = R"({"zmin": -5})";
+  recipe.inputs = {"cloud", "threshold"};
+  recipe.outputs = {PJ::scripting::OutputSpec{
+      "cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud}};
+  return recipe;
+}
+
+PointCloud makeCloud(const std::vector<float>& zs, PJ::Timestamp timestamp_ns) {
+  PointCloud cloud;
+  cloud.width = static_cast<uint32_t>(zs.size());
+  cloud.height = 1;
+  cloud.point_step = 16;
+  cloud.row_step = cloud.point_step * cloud.width;
+  cloud.is_dense = true;
+  cloud.frame_id = "base_link";
+  cloud.fields = {
+      PointField{.name = "x", .offset = 0, .datatype = PointField::Datatype::kFloat32, .count = 1},
+      PointField{.name = "y", .offset = 4, .datatype = PointField::Datatype::kFloat32, .count = 1},
+      PointField{.name = "z", .offset = 8, .datatype = PointField::Datatype::kFloat32, .count = 1},
+      PointField{.name = "intensity", .offset = 12, .datatype = PointField::Datatype::kFloat32, .count = 1},
+  };
+  cloud.timestamp_ns = timestamp_ns;
+  std::vector<uint8_t> bytes(static_cast<size_t>(cloud.point_step) * zs.size());
+  for (size_t i = 0; i < zs.size(); ++i) {
+    const std::array<float, 4> point{0.0f, 0.0f, zs[i], 0.0f};
+    std::memcpy(bytes.data() + i * cloud.point_step, point.data(), sizeof(float) * 4);
+  }
+  PJ::sdk::PayloadView view = PJ::sdk::makePayloadView(std::move(bytes));
+  cloud.data = view.bytes;
+  cloud.anchor = view.anchor;
+  return cloud;
+}
+
+QString touch(const QString& path) {
+  EXPECT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
+  QFile file(path);
+  EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+  return QFileInfo(path).canonicalFilePath();
+}
+
+QByteArray relocated(QByteArray bytes, const QString& real_root) {
+  bytes.replace(real_root.toUtf8(), QByteArray(kFakeRoot));
+  EXPECT_FALSE(bytes.contains(real_root.toUtf8()));
+  return bytes;
+}
+
+QByteArray readFile(const QString& path) {
+  QFile file(path);
+  EXPECT_TRUE(file.open(QIODevice::ReadOnly));
+  return file.readAll();
+}
+
+void writeFile(const QString& path, const QByteArray& bytes) {
+  QFile file(path);
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  ASSERT_EQ(file.write(bytes), bytes.size());
+}
+
+TEST(PrototypeFixtureWriter, WritesLayouts) {
+  const QString out_dir = qEnvironmentVariable("PJ_FIXTURE_OUT_DIR");
+  ASSERT_FALSE(out_dir.isEmpty()) << "set PJ_FIXTURE_OUT_DIR";
+  ASSERT_TRUE(QDir().mkpath(out_dir));
+
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  QTemporaryDir work_dir;
+  ASSERT_TRUE(work_dir.isValid());
+  const QString path_a = touch(work_dir.filePath(u"pj-fixtures/data/fixture-a.mcap"_s));
+  const QString real_root = QFileInfo(work_dir.filePath(u"pj-fixtures"_s)).canonicalFilePath();
+  const QString layout_dir = work_dir.filePath(u"layouts"_s);
+  ASSERT_TRUE(QDir().mkpath(layout_dir));
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = Peer::session(window);
+  PJ::SessionManager& session = app.sessionManager();
+
+  // --- one source-bound dataset: a threshold series and a point cloud at 5 s ---
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "fixture-a.mcap", /*own_time_domain=*/true);
+  ASSERT_NE(dataset, 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "threshold", 0, 1), 0U);
+  PJ::ObjectStore& store = session.objectStore();
+  const auto cloud = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset, .topic_name = "cloud", .metadata_json = R"({"builtin_object_type":"kPointCloud"})"});
+  ASSERT_TRUE(cloud.has_value());
+  const auto bytes = PJ::serializeBuiltinObject(PJ::sdk::BuiltinObject(makeCloud({0.5f, 1.5f}, 5 * kSec)));
+  ASSERT_TRUE(bytes.has_value());
+  ASSERT_TRUE(store.pushOwned(*cloud, 5 * kSec, *bytes).has_value());
+  app.catalogModel().rebuildFromDatastore();
+  session.setDatasetSourcePath(dataset, path_a);
+  session.recordLoadedSource(path_a, QString{}, u"MCAP Loader"_s, u"{}"_s, u"mcap-loader"_s);
+
+  // --- on-demand recipes ---
+  OnDemandService& on_demand = session.onDemandService();
+  // A chain: crop (labelled) feeds downstream (query_time off).
+  auto crop = cropRecipe("fixture-toolbox", "crop");
+  crop.label = "Crop box";
+  ASSERT_TRUE(on_demand.upsert(crop).has_value());
+  auto downstream = cropRecipe("fixture-toolbox", "downstream");
+  downstream.inputs = {"fixture-toolbox/crop/cropped"};
+  downstream.script = "local inputs = ... return {cropped = inputs['fixture-toolbox/crop/cropped']}";
+  downstream.params_json = "{}";
+  downstream.query_time = false;
+  ASSERT_TRUE(on_demand.upsert(downstream).has_value());
+  // A pinned finding.
+  auto finding = cropRecipe("fixture-toolbox", "finding");
+  finding.pinned_t = 5 * kSec;
+  ASSERT_TRUE(on_demand.upsert(finding).has_value());
+  // A history-exempt recipe of another plugin.
+  auto exempt = cropRecipe("fixture-assistant", "exempt");
+  exempt.history_exempt = true;
+  ASSERT_TRUE(on_demand.upsert(exempt).has_value());
+  // Outputs learned from a trial (infer_outputs="1").
+  auto inferred = cropRecipe("fixture-toolbox", "inferred");
+  inferred.infer_outputs = true;
+  ASSERT_TRUE(on_demand.upsert(inferred).has_value());
+  app.catalogModel().rebuildFromDatastore();
+  QCoreApplication::processEvents();
+
+  for (const auto& [name, source_bound] : {std::pair{u"source_bound.pj4.xml"_s, true}, {u"generic.pj4.xml"_s, false}}) {
+    const QString saved = QDir(layout_dir).filePath(name);
+    Peer::saveLayout(window, saved, source_bound);
+    writeFile(QDir(out_dir).filePath(name), relocated(readFile(saved), real_root));
+  }
+  writeFile(
+      QDir(out_dir).filePath(u"history_snapshot.xml"_s),
+      relocated(Peer::historySnapshot(window).toByteArray(2), real_root));
+}
+
+}  // namespace

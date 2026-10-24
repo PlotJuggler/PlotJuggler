@@ -13,10 +13,10 @@ namespace pj::scene3d {
 
 void appendTriadArms(const glm::mat4& base, const PoseTriadStyle& style, std::vector<PoseTriadInstance>& out) {
   // The unit arrow points +X. Rotate +X -> +Y (+90 deg about +Z) and +X -> +Z
-  // (-90 deg about +Y) — same convention as renderTriadBound, so pose triads
-  // look identical to the TF "Frames" gizmos. Per-axis colors mirror
-  // AxisRenderPass (desaturated R/G/B). Both are pure viewer conventions, kept
-  // here so the expansion stays GL-free and unit-testable.
+  // (-90 deg about +Y) — same convention as the view's frame triads, so pose triads
+  // look identical to the TF "Frames" gizmos, with the same desaturated R/G/B
+  // per-axis colors. Both are pure viewer conventions, kept here so the
+  // expansion stays GPU-free and unit-testable.
   static const std::array<glm::mat4, 3> k_arm = {{
       glm::mat4(1.0f),
       glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f)),

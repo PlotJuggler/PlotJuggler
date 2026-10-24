@@ -5,8 +5,10 @@
 // Readers for the per-owner marker publish model. A marker topic is a FAMILY of
 // object topics on one dataset — the bare `__markers__/<key>` (a direct write, no
 // owner) plus one `__markers__/<key>#<owner>` per generator — and what a plot draws
-// is their union. These helpers read the store the way the overlay does, so a test
-// asserts on the drawn result rather than on which topic carried it.
+// is their union. `markerFamily` finds the members by the host-minted NAME, a
+// deliberately independent oracle for production, which finds them by metadata
+// (`scanMarkerTopics`): a test asserts on the drawn result without leaning on the code
+// under test.
 
 #include <gtest/gtest.h>
 

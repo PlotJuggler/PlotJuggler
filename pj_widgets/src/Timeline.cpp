@@ -37,6 +37,7 @@
 #include <utility>
 
 #include "TimelineItems.h"
+#include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/Hatch.h"
 #include "pj_widgets/Scrollbar.h"
@@ -764,11 +765,10 @@ void Timeline::setTracks(const std::vector<TimelineTrack>& tracks) {
   // INDEPENDENT (XOR of per-track hashes) so a pure reorder leaves it unchanged.
   quint64 sig = 0;
   for (const TimelineTrack& t : all_tracks_) {
-    quint64 h = 1469598103934665603ULL;  // FNV-1a offset basis
-    const auto mix = [&h](quint64 v) { h = (h ^ v) * 1099511628211ULL; };
-    mix(t.id);
-    mix(static_cast<quint64>(t.t_min_ns));
-    mix(static_cast<quint64>(t.t_max_ns));
+    std::uint64_t h = kFnv1aOffsetBasis;
+    h = fnv1aMix(h, t.id);
+    h = fnv1aMix(h, static_cast<std::uint64_t>(t.t_min_ns));
+    h = fnv1aMix(h, static_cast<std::uint64_t>(t.t_max_ns));
     sig ^= h;
   }
   if (sig != raw_data_sig_) {

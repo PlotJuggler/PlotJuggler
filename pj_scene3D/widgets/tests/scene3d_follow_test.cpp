@@ -6,9 +6,9 @@
 // to keep the frame in place while orbit/zoom stay world-referenced.
 //
 // View-level tests drive a bare SceneViewWidget against a hand-built TransformBuffer
-// (no parser, no GL — the follow math is Qt/GL-free); dock-level tests cover the
+// (no parser, no GPU — the follow math is Qt/GPU-free); dock-level tests cover the
 // forwarding slot + per-dock layout persistence. Headless like the other dock tests:
-// the GL view defers all GL to initializeGL().
+// the view touches no GPU until it is shown.
 
 #include <gtest/gtest.h>
 
@@ -26,20 +26,20 @@
 #include "mock_parser_support.h"  // pumpUntil
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene3d_core/camera/camera.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
 
 using pj::scene3d::SceneViewWidget;
-using pj::scene3d::StampedTransform;
-using pj::scene3d::TimePoint;
-using pj::scene3d::TransformBuffer;
+using pj::tf::StampedTransform;
+using pj::tf::TimePoint;
+using pj::tf::TransformBuffer;
 
 PJ::Timepoint at(int64_t ns) {
   return PJ::Timepoint{std::chrono::nanoseconds(ns)};
@@ -211,7 +211,7 @@ TEST(Scene3DFollow, RecenterOnFollowFrameCentersCameraOnTarget) {
 // --- Dock: the follow target round-trips through layout XML. ---
 TEST(Scene3DFollow, DockFollowFrameRoundTripsThroughLayout) {
   PJ::SessionManager save_session;
-  pj::scene3d::TransformService save_tf(save_session);
+  PJ::TransformService save_tf(save_session);
   PJ::Scene3DDockWidget save_dock;
   save_dock.setSessionManager(&save_session);
   save_dock.setTransformService(&save_tf);
@@ -226,7 +226,7 @@ TEST(Scene3DFollow, DockFollowFrameRoundTripsThroughLayout) {
   EXPECT_EQ(state.attribute(u"follow_frame"_s), u"base_link"_s);
 
   PJ::SessionManager load_session;
-  pj::scene3d::TransformService load_tf(load_session);
+  PJ::TransformService load_tf(load_session);
   PJ::Scene3DDockWidget load_dock;
   load_dock.setSessionManager(&load_session);
   load_dock.setTransformService(&load_tf);

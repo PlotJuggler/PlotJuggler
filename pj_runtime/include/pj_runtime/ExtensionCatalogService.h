@@ -146,6 +146,38 @@ class ExtensionCatalogService : public QObject {
   // Same lifetime and threading rules as findParserByEncoding.
   const LoadedToolbox* findToolbox(QStringView id) const;
 
+  // Short label naming the Toolbox `id` on a tab watermark or a Custom Topics row badge: its manifest `badge`, else
+  // the toolbox name, else the id; empty when no such toolbox is loaded. Same lifetime and threading rules as
+  // findToolbox.
+  [[nodiscard]] QString toolboxBadge(QStringView id) const;
+  // The toolbox's display name, or `id` itself when it is not loaded. Same rules as findToolbox.
+  [[nodiscard]] QString toolboxDisplayName(QStringView id) const;
+
+  // The id of the loaded toolbox whose manifest lists `custom_topics_editor` in its `capabilities`: the editor of
+  // the host's Custom Topics (the "+" opens it, and its recipes are the only ones the panel lets the user edit or
+  // delete). When several declare it, one wins (see pickCustomTopicsEditor) and one warning names the rest. Empty
+  // when none does. Resolved by the constructor and by every reload() that changed the catalog, so this is a plain
+  // read. Same lifetime and threading rules as findToolbox.
+  [[nodiscard]] const QString& customTopicsEditorId() const noexcept {
+    return custom_topics_editor_id_;
+  }
+  // Test seam: names the editor of a catalog that loaded no plugin declaring it.
+  void setCustomTopicsEditorIdForTest(const QString& plugin_id) {
+    custom_topics_editor_id_ = plugin_id;
+  }
+  // The one ownership predicate: `owner` is the Custom Topics editor. False for everyone when none is declared.
+  // The static form serves a holder of the id that has no catalog at hand (the Custom Topics panel).
+  [[nodiscard]] static bool isEditorOwner(const QString& editor_id, const QString& owner) noexcept {
+    return !editor_id.isEmpty() && owner == editor_id;
+  }
+  [[nodiscard]] bool isCustomTopicsEditor(const QString& owner) const noexcept {
+    return isEditorOwner(custom_topics_editor_id_, owner);
+  }
+  // The editor among `declarers` (the toolboxes declaring `custom_topics_editor`, in scan order): `current` while it
+  // is still one of them, else the first. A reload appends an updated plugin after the others, so first-scanned
+  // alone would hand the editor to another plugin on every update. Empty when there is no declarer.
+  [[nodiscard]] static QString pickCustomTopicsEditor(const QString& current, const QStringList& declarers);
+
   // [thread-safe] The set of encodings the loaded parsers accept, returned by
   // value (a snapshot copy) so a caller never holds a reference into the
   // catalog vector across a reload(). Sorted, de-duplicated.
@@ -254,6 +286,11 @@ class ExtensionCatalogService : public QObject {
   // set, so no resolution can run against a catalog the claims do not describe.
   // Caller holds routing_mutex_ and catalog_mutex_ (exclusive).
   void rebuildParserClaims();
+
+  // Picks the `custom_topics_editor` toolbox into custom_topics_editor_id_ (see customTopicsEditorId). Run
+  // wherever the toolbox list changes.
+  void resolveCustomTopicsEditor();
+  QString custom_topics_editor_id_;
 
   // Host-derived trust tier for one loaded parser (spec §4): statically linked
   // or seeded-bundled → kBundled; loaded from a user-explicit (authoritative)

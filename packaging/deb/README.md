@@ -28,7 +28,7 @@ and Conan runtime is installed under `/opt/plotjuggler4`, with only a launcher
 in `/usr/bin` plus a desktop entry and icon. `lintian` reports bundled
 libraries; that is inherent, not a defect to fix.
 
-A distro-native package is not achievable: `versions.env` pins Qt 6.11.1 and no
+A distro-native package is not achievable: `versions.env` pins Qt 6.12.0 and no
 Ubuntu release ships it, and much of the Conan graph (mcap, cloudini, nanoarrow,
 nanocdr, backward-cpp) is not packaged by Debian at all.
 
@@ -110,7 +110,8 @@ non-ELF requirement the `DT_NEEDED` scan structurally cannot see.
 `smoke_test.sh` installs the package in a bare container and runs it:
 
 ```bash
-docker run --rm -v "$PWD/deb:/pkg:ro" ubuntu:22.04 sh /pkg/smoke_test.sh
+docker run --rm -v "$PWD/deb:/pkg:ro" -v "$PWD/packaging:/packaging:ro" \
+  ubuntu:22.04 sh /packaging/deb/smoke_test.sh
 ```
 
 It checks what a static dependency list cannot: `apt install` succeeding proves
@@ -123,7 +124,9 @@ otherwise mask a missing GUI dependency); runs `--selftest-python`
 (display-free, and proves the wrapper's `PYTHONHOME` reaches the bundled
 stdlib); and finally a real GUI startup under Xvfb — the bundled Qt ships only
 the `xcb` platform plugin, so an X server is required, and this phase is what
-covers `dlopen`'d libraries that `ldd` cannot see.
+covers `dlopen`'d libraries that `ldd` cannot see. Last, the render check
+(`packaging/smoke/render_check.sh`, see [`packaging/README.md`](../README.md#render-check))
+proves the plots, the Scene3D view and the media viewer draw through QRhi.
 
 Release CI runs it on `ubuntu:22.04` and `ubuntu:24.04`, and the `.deb` is
 attached to a GitHub Release only after it passes. The same container then

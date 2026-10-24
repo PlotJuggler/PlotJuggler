@@ -6,7 +6,7 @@
 #include <optional>
 #include <string>
 
-#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_tf/tf_buffer.h"
 
 namespace pj::scene3d {
 
@@ -22,11 +22,11 @@ void buildTfConnectionSegments(
     // Both endpoints resolved into the fixed frame at `time`. Skip the edge
     // entirely if either side can't resolve, so a frame still streaming in (or a
     // disconnected subtree) never produces a half-anchored line.
-    const auto child_w = tf.tryLookupTransform(fixed_frame, frame, time);
+    const auto child_w = tf.tryLookupTransform(fixed_frame, frame, time, pj::tf::Clock::kEntry);
     if (!child_w.has_value()) {
       continue;
     }
-    const auto parent_w = tf.tryLookupTransform(fixed_frame, *parent, time);
+    const auto parent_w = tf.tryLookupTransform(fixed_frame, *parent, time, pj::tf::Clock::kEntry);
     if (!parent_w.has_value()) {
       continue;
     }

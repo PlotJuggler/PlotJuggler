@@ -42,6 +42,7 @@ class Scene2DLayer : public ISceneLayer {
   bool attach(const SceneLayerContext& ctx) override;
   void detach() override;
   void setTrackerTime(PJ::Timepoint time) override;
+  bool refreshAt(PJ::Timepoint time) override;
   // Fingerprints the active media sample at `time` so the dock skips the per-tick
   // repaint when the displayed frame is unchanged (no re-composite of a static
   // image). A NEW sample's async decode repaints via the frame-ready callback,
@@ -58,6 +59,11 @@ class Scene2DLayer : public ISceneLayer {
     return borrowedSource();
   }
   [[nodiscard]] std::optional<int64_t> lastTrackerTimeNs() const noexcept;
+  /// Sets the annotation part of the row warning: why this layer's annotations are hidden (not paired with the
+  /// shown image), empty once they are shown. GUI thread.
+  void setAnnotationWarning(const QString& warning) {
+    setWarningPart(SceneWarningParts::Part::kAnnotation, warning);
+  }
 
  protected:
   /// Non-null only after attach() stores the session and before detach() clears it;
@@ -70,6 +76,7 @@ class Scene2DLayer : public ISceneLayer {
   [[nodiscard]] sdk::BuiltinObjectType objectType() const noexcept;
   [[nodiscard]] QString displayName() const;
 
+  [[nodiscard]] SequentialUID shownUidAt(PJ::Timepoint time) const;
   void setSource(std::unique_ptr<MediaSource> source);
   [[nodiscard]] MediaSource* borrowedSource() const noexcept;
   /// Builds the worker-thread -> GUI-thread repaint trampoline used by async
@@ -89,6 +96,7 @@ class Scene2DLayer : public ISceneLayer {
   ObjectStore* store_ = nullptr;
   std::unique_ptr<MediaSource> source_;
   std::optional<int64_t> last_tracker_time_ns_;
+  SequentialUID shown_uid_;  ///< the entry shown at last_tracker_time_ns_ (invalid: none)
   QMetaObject::Connection dataset_replace_connection_;
   // replaceDataset keeps ObjectTopicId and often sample timestamps stable. Fold
   // this generation into renderKey so the post-load tracker seed cannot coalesce

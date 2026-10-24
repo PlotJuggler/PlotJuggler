@@ -88,7 +88,7 @@ QDomElement addXyCurve(QDomDocument& doc, QDomElement& plot, const SeriesPath& x
 // nullopt when unresolvable/ambiguous. The identity assertion most resolver tests
 // need.
 std::optional<PJ::DatasetId> resolvedDataset(PJ::CatalogModel& catalog, const SeriesPath& path) {
-  const auto key = PJ::resolveSeriesPath(catalog, path);
+  const auto key = catalog.resolveCurveKey(path);
   if (!key.has_value()) {
     return std::nullopt;
   }
@@ -98,7 +98,7 @@ std::optional<PJ::DatasetId> resolvedDataset(PJ::CatalogModel& catalog, const Se
 
 void rebindAgainstCatalog(QDomDocument& doc, PJ::CatalogModel& catalog) {
   const QList<SeriesPath> unresolved = PJ::layout_xml::rebindCurveKeys(
-      doc, [&catalog](const SeriesPath& path) { return PJ::resolveSeriesPath(catalog, path); });
+      doc, [&catalog](const SeriesPath& path) { return catalog.resolveCurveKey(path); });
   (void)unresolved;
 }
 
@@ -199,8 +199,7 @@ TEST(PendingDisplayBinderTest, PlaceholderCompletionPreservesPopulatedPlotZoom) 
       late_dataset, {PJ::AdvertisedTopic{u"/late"_s, PJ::sdk::BuiltinObjectType::kNone}});
 
   PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
-  const auto ready_key =
-      PJ::resolveSeriesPath(app_session.catalogModel(), SeriesPath{u"/ready"_s, u"value"_s, ready_dataset});
+  const auto ready_key = app_session.catalogModel().resolveCurveKey(SeriesPath{u"/ready"_s, u"value"_s, ready_dataset});
   ASSERT_TRUE(ready_key.has_value());
   ASSERT_NE(plot.addCurve(*ready_key), nullptr);
   plot.setZoomRectangle(QRectF(12.0, -4.0, 3.0, 8.0), /*emit_signal=*/false);
@@ -376,7 +375,7 @@ TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArri
   EXPECT_TRUE(binder.empty());
   ASSERT_EQ(plot.curveList().size(), 2U);
 
-  const auto late_key = PJ::resolveSeriesPath(app_session.catalogModel(), late);
+  const auto late_key = app_session.catalogModel().resolveCurveKey(late);
   ASSERT_TRUE(late_key.has_value());
   PJ::PlotWidget::CurveInfo* info = plot.curveFromTitle(*late_key);
   ASSERT_NE(info, nullptr);
@@ -553,7 +552,7 @@ TEST(ResolveSeriesPathTest, UnqualifiedAmbiguousPathIsRejected) {
   ASSERT_NE(addScalarTopic(app_session, *dataset_b, "/speed"), 0U);
 
   const SeriesPath ambiguous{u"/speed"_s, u"value"_s};
-  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), ambiguous).has_value())
+  EXPECT_FALSE(app_session.catalogModel().resolveCurveKey(ambiguous).has_value())
       << "an unqualified duplicate path must stay unresolved instead of binding the first dataset";
 }
 
@@ -583,13 +582,13 @@ TEST(ResolveSeriesPathTest, IntendedDatasetMissingSeriesNeverStealsSibling) {
   ASSERT_NE(addScalarTopic(app_session, *dataset_a, "/speed"), 0U);
 
   const SeriesPath saved_b{u"/speed"_s, u"value"_s, *dataset_b, u"same.mcap"_s};
-  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), saved_b).has_value())
+  EXPECT_FALSE(app_session.catalogModel().resolveCurveKey(saved_b).has_value())
       << "the intended dataset exists but lacks the series - never steal dataset A's field";
 }
 
 // FIX B: a data-processor recipe saved from dataset 2 must restore its input onto
 // dataset 2, never dataset 1's same-named field. restoreDataProcessors resolves the
-// input through the same resolveSeriesPath that a plotted curve uses, keyed by the
+// input through the same resolveCurveKey that a plotted curve uses, keyed by the
 // saved input_dataset_id/source; this pins the three cases MainWindow relies on.
 TEST(ResolveSeriesPathTest, ProcessorInputQualifierBindsToItsOwnDataset) {
   PJ::AppSession app_session;
@@ -608,7 +607,7 @@ TEST(ResolveSeriesPathTest, ProcessorInputQualifierBindsToItsOwnDataset) {
 
   // Legacy (qualifiers stripped) with BOTH datasets loaded: ambiguous -> no restore.
   const SeriesPath legacy{u"/imu"_s, u"value"_s};
-  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), legacy).has_value())
+  EXPECT_FALSE(app_session.catalogModel().resolveCurveKey(legacy).has_value())
       << "a legacy unqualified processor input must not first-match onto either dataset";
 }
 
@@ -626,7 +625,7 @@ TEST(ResolveSeriesPathTest, ProcessorInputLegacyUnqualifiedBindsWhenSingleDatase
 
 // FIX D: a dataset whose source file is deleted from disk after loading must still
 // resolve by its full path. isSamePath()/canonicalFilePath() return empty for a
-// missing file, so both resolveSeriesPath's path scan and SessionManager's
+// missing file, so both resolveCurveKey's path scan and SessionManager's
 // path_matches now short-circuit on normalized-string equality first.
 TEST(ResolveSeriesPathTest, DeletedSourceFileStillResolvesByPath) {
   QTemporaryDir dir;
@@ -665,7 +664,7 @@ TEST(ResolveSeriesPathTest, DeletedSourceFileStillResolvesByPath) {
 
 // FIX D, binder path-scan leg: after a fan-out reload the saved raw source label no
 // longer names any dataset, so resolveDatasetIdentity returns nullopt and
-// resolveSeriesPath falls to its own physical-path scan. That scan used isSamePath,
+// resolveCurveKey falls to its own physical-path scan. That scan used isSamePath,
 // which fails on a deleted file; the normalized-equality short-circuit rescues it.
 TEST(ResolveSeriesPathTest, DeletedSourceFileResolvesThroughBinderPathScan) {
   QTemporaryDir dir;
@@ -694,7 +693,7 @@ TEST(ResolveSeriesPathTest, DeletedSourceFileResolvesThroughBinderPathScan) {
   ASSERT_NE(addScalarTopic(app_session, *intended, "/speed"), 0U);
 
   // id=0 (stripped), source no longer exists -> identity resolver returns nullopt,
-  // exercising resolveSeriesPath's own path-scan leg, which must match by path.
+  // exercising resolveCurveKey's own path-scan leg, which must match by path.
   const SeriesPath by_path{u"/speed"_s, u"value"_s, 0, u"old_run.mcap"_s, intended_path};
   EXPECT_EQ(resolvedDataset(app_session.catalogModel(), by_path), *intended)
       << "the binder path scan must match a deleted-on-disk source by normalized-path equality";
@@ -730,7 +729,7 @@ TEST(ResolveSeriesPathTest, DuplicateRawSourceFallbackIsAmbiguousBeforePathLooku
   // External XML strips the unvalidated id (id=0); its duplicate source-only
   // fallback must remain unresolved rather than pick the first named match.
   const SeriesPath portable{u"/speed"_s, u"value"_s, 0, u"same.mcap"_s};
-  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), portable).has_value());
+  EXPECT_FALSE(app_session.catalogModel().resolveCurveKey(portable).has_value());
 }
 
 TEST(ResolveSeriesPathTest, QualifiedIdentityNeverFallsBackToAnUnrelatedUniquePath) {
@@ -741,11 +740,11 @@ TEST(ResolveSeriesPathTest, QualifiedIdentityNeverFallsBackToAnUnrelatedUniquePa
   ASSERT_NE(addScalarTopic(app_session, *unrelated, "/speed"), 0U);
 
   const SeriesPath missing_source{u"/speed"_s, u"value"_s, 999, u"missing.mcap"_s};
-  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), missing_source).has_value())
+  EXPECT_FALSE(app_session.catalogModel().resolveCurveKey(missing_source).has_value())
       << "a qualified identity whose source/path no longer exists must not steal an unrelated unique candidate";
 
   const SeriesPath stale_id_without_source{u"/speed"_s, u"value"_s, 999, QString()};
-  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), stale_id_without_source).has_value())
+  EXPECT_FALSE(app_session.catalogModel().resolveCurveKey(stale_id_without_source).has_value())
       << "a bare stale id (no portable qualifier) resolves to nothing once reminted";
 
   const SeriesPath legacy_unqualified{u"/speed"_s, u"value"_s};

@@ -101,7 +101,9 @@
               </item>
              </layout>
             </widget>
-            <widget class="PJ::TabbedPlotWidget" name="tabbedPlotWidget" native="true"/>
+            <widget class="QStackedWidget" name="centralAreaStack">
+             <widget class="PJ::TabbedPlotWidget" name="tabbedPlotWidget" native="true"/>
+            </widget>
            </widget>
           </item>
           <item>

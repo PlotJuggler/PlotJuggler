@@ -271,11 +271,10 @@ TEST(Scene3DLayerXmlValidation, PosesInFrameRejectsMalformedPayloadTransactional
         element.appendChild(payload_doc.createElement(u"trail"_s));
       });
 
-  // The one nested payload this layer owns. The browser build has no trail
-  // renderer and instead accepts-and-ignores this element so a desktop-saved
-  // layout still restores its poses (WasmPosesInFrameLayer::parseSettings), so
-  // the tag name and the single-child rule are a CROSS-PLATFORM contract, not a
-  // desktop detail. tests/wasm/scene3d_data.spec.js drives the browser half.
+  // The one nested payload this layer owns, shared by every build: a
+  // desktop-saved layout restores its trail in the browser too, so the tag name
+  // and the single-child rule are a CROSS-PLATFORM contract.
+  // tests/wasm/scene3d_data.spec.js drives the browser half.
   QDomDocument trail_doc;
   QDomElement with_trail = trail_doc.importNode(valid, true).toElement();
   trail_doc.appendChild(with_trail);

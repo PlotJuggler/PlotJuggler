@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# pj_scene3d_core - geometry/scene core, no Qt or GL dependency
+# pj_scene3d_core - geometry/scene core, no Qt or GL dependency. TF types
+# (Transform/TransformBuffer) come from the pj_tf leaf.
 # ---------------------------------------------------------------------------
 
 find_package(glm REQUIRED)
@@ -7,7 +8,6 @@ find_package(nlohmann_json REQUIRED)
 
 if(EMSCRIPTEN)
   # Expose only the backend-neutral slice used by the product QRhi view and its
-  # canonical point-cloud, pose-array, occupancy, voxel, marker, and robot-model
   # layers. Compressed canonical clouds add only the existing transcoder when
   # their explicit browser dependency option is enabled. The native branch
   # below is unchanged.
@@ -15,6 +15,7 @@ if(EMSCRIPTEN)
     src/camera/camera.cpp
     src/camera/camera_math.cpp
     src/depth_backproject.cpp
+    src/grid_map_view.cpp
     src/occupancy_grid_reconstructor.cpp
     src/pointcloud_convert.cpp
     src/poses_in_frame_render.cpp
@@ -22,8 +23,8 @@ if(EMSCRIPTEN)
     src/scene_entities_decode.cpp
     src/scene_entities_model_state.cpp
     src/shadow_camera.cpp
-    src/tf/tf_buffer.cpp
     src/tf/tf_connections.cpp
+    src/trail_sampling.cpp
     src/version.cpp
     src/voxel_grid_view.cpp
     src/voxel_grid_value.cpp
@@ -38,7 +39,7 @@ if(EMSCRIPTEN)
     ${PJ_WARNING_FLAGS}
   )
   target_link_libraries(pj_scene3d_core
-    PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
+    PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json pj_tf
   )
   if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
     if(NOT TARGET draco::draco OR NOT TARGET cloudini::cloudini)
@@ -69,7 +70,6 @@ add_library(pj_scene3d_core STATIC
   src/scene_entities_decode.cpp
   src/scene_entities_model_state.cpp
   src/shadow_camera.cpp
-  src/tf/tf_buffer.cpp
   src/tf/tf_connections.cpp
   src/trail_sampling.cpp
   src/version.cpp
@@ -83,7 +83,7 @@ target_compile_options(pj_scene3d_core PRIVATE
   ${PJ_WARNING_FLAGS}
 )
 target_link_libraries(pj_scene3d_core
-  PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
+  PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json pj_tf
   PRIVATE draco::draco cloudini::cloudini
 )
 
@@ -95,9 +95,6 @@ if(PJ_BUILD_TESTS)
     ../tests/depth_backproject_test.cpp
     ../tests/pointcloud_convert_test.cpp
     ../tests/pointcloud_budget_test.cpp
-    ../tests/pointcloud_fast_path_predicate_test.cpp
-    ../tests/pointcloud_bounds_scan_equivalence_test.cpp
-    ../tests/aabb_gpu_key_test.cpp
     ../tests/aabb_axis_range_test.cpp
     ../tests/frame_picking_test.cpp
     ../tests/camera_near_far_test.cpp
@@ -108,24 +105,22 @@ if(PJ_BUILD_TESTS)
     ../tests/poses_budget_test.cpp
     ../tests/model_budget_test.cpp
     ../tests/scene_entities_budget_test.cpp
-    ../tests/scene_entities_decode_test.cpp
     ../tests/scene_entities_model_state_test.cpp
     ../tests/frustum_cull_test.cpp
     ../tests/cube_draw_policy_test.cpp
     ../tests/shadow_camera_test.cpp
-    ../tests/tf_buffer_test.cpp
-    ../tests/tf_buffer_hierarchy_test.cpp
     ../tests/tf_connections_test.cpp
     ../tests/trail_sampling_test.cpp
+    ../tests/object_placement_test.cpp
     ../tests/robot_model_bridges_test.cpp
     ../tests/grid_map_view_test.cpp
     ../tests/voxel_grid_view_test.cpp
     ../tests/voxel_grid_value_test.cpp
     ../tests/voxel_grid_budget_test.cpp
+    ../tests/scene_limits_test.cpp
   )
   # pointcloud_codecs_test drives the Draco + Cloudini *encoders* directly to build
   # fixtures, so it links them explicitly (pj_scene3d_core links them PRIVATE).
-  # WARNINGS: all 34 merged tests carried PJ_WARNING_FLAGS before
   pj_add_test_runner(pj_scene3d_core_tests
     MAIN core WARNINGS
     SOURCES ${PJ_SCENE3D_CORE_TESTS} ../tests/pointcloud_codecs_test.cpp

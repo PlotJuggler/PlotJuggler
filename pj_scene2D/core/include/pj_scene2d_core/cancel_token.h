@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <utility>
 
 namespace PJ {
 
@@ -15,8 +17,13 @@ namespace PJ {
 /// See ARCHITECTURE.md §3.3.
 class CancelToken {
  public:
-  [[nodiscard]] bool isCancelled() const noexcept {
-    return flag_.load(std::memory_order_relaxed);
+  CancelToken() = default;
+  /// A token that is also cancelled once `poll` says so (a caller's own check, e.g. a script run's), asked on every
+  /// `isCancelled` from the decoding thread.
+  explicit CancelToken(std::function<bool()> poll) : poll_(std::move(poll)) {}
+
+  [[nodiscard]] bool isCancelled() const {
+    return flag_.load(std::memory_order_relaxed) || (poll_ && poll_());
   }
 
   void cancel() noexcept {
@@ -25,6 +32,7 @@ class CancelToken {
 
  private:
   std::atomic<bool> flag_{false};
+  std::function<bool()> poll_;
 };
 
 using CancelTokenPtr = std::shared_ptr<CancelToken>;

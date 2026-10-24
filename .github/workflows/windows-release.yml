@@ -357,11 +357,12 @@ jobs:
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
             -DPJ_INSTALLATION=windows \
+            -DPJ_BUILD_TESTS=OFF \
             "${launcher_args[@]}"
 
-          # This release only packages the application. Building the default ALL
-          # target also compiles the repository's test executables, which are not
-          # consumed by the installer and needlessly delays the registry smoke test.
+          # This release only packages the application. PJ_BUILD_TESTS=OFF also
+          # keeps the widgets' test-only fault injection (the PJ_RHI_TEST_HOOKS
+          # definition) out of the shipped binaries.
           cmake --build build --config RelWithDebInfo --target pj_app --parallel
 
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
@@ -396,6 +397,36 @@ jobs:
             -OutDir dist `
             -CleanReleaseName:($env:GITHUB_REF_TYPE -eq "tag") `
             @updateArgs
+
+      - name: Install, render-check and uninstall the installer
+        # The shipped payload's only run before upload: a silent IFW install, the
+        # render check (packaging/smoke/render_check.sh: the fixture's plots, Scene3D
+        # view and media viewer must all render on D3D11) on the installed exe with
+        # PATH cut down to System32, so every DLL must come from the install, then
+        # the uninstall. The runner has no GPU: QSG_RHI_PREFER_SOFTWARE_RENDERER picks
+        # WARP (the flag Qt's widget backing store honours), and a GUI-subsystem exe
+        # sends qInfo to OutputDebugString unless QT_FORCE_STDERR_LOGGING is set.
+        shell: bash
+        env:
+          QT_FORCE_STDERR_LOGGING: "1"
+          QSG_RHI_PREFER_SOFTWARE_RENDERER: "1"
+          PJ_RENDER_BACKEND: D3D11
+        run: |
+          set -euo pipefail
+          installers=(dist/*.exe)
+          installer="${installers[0]}"
+          prefix="$(cygpath -u "${RUNNER_TEMP}")/pj4-smoke"
+          # bash waits for a GUI-subsystem child, unlike PowerShell.
+          "${installer}" install --root "$(cygpath -w "${prefix}")" \
+            --accept-licenses --default-answer --confirm-command
+          exe="${prefix}/bin/PlotJuggler4.exe"
+          test -f "${exe}" || { echo "::error::the install has no bin/PlotJuggler4.exe"; exit 1; }
+          sh packaging/smoke/render_check.sh env "PATH=$(cygpath -S)" "${exe}"
+          "${prefix}/maintenancetool.exe" purge --default-answer --confirm-command
+          if [[ -e "${exe}" ]]; then
+            echo "::error::bin/PlotJuggler4.exe survived the uninstall"
+            exit 1
+          fi
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

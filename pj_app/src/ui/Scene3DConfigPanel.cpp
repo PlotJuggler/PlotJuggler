@@ -26,13 +26,11 @@
 #include <vector>
 
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #ifdef PJ_TARGET_WASM
 #include "FileSelectionService.h"
-#include "pj_scene3d_widgets/wasm/robot_model_layer_wasm.h"
-#else
-#include "pj_scene3d_widgets/layers/robot_model_layer.h"
-#include "pj_scene3d_widgets/layers/trail_layer.h"
 #endif
+#include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene_common/layer_params.h"
@@ -619,7 +617,6 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       qOverload<double>(&DoubleScrubber::valueChanged));
   addGridRow(tm_grid, tm_row, tr("Collision opacity"), collision_opacity_, collision_eye_);
 
-#ifndef PJ_TARGET_WASM
   // Last row: unlike the rows above it does not edit existing scene state, it
   // creates a new trail layer.
   trail_frame_combo_ = new ComboBox;
@@ -640,7 +637,6 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       bound_dock_->addTrailLayer(pj::scene3d::TrailSource::tfFrame(frame));
     }
   });
-#endif  // PJ_TARGET_WASM: trails are native-only
 
   // Pin both grids' label column to the widest label across BOTH sections, read
   // back from the labels just added (no separate string list to keep in sync).
@@ -703,7 +699,7 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   shading.mesh_opacity = static_cast<float>(mesh_opacity_->value());
   shading.collisions_visible = collision_eye_->isChecked();
   shading.collision_opacity = static_cast<float>(collision_opacity_->value());
-  view->update();
+  view->invalidateContent();
 }
 
 void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
@@ -810,6 +806,7 @@ void Scene3DConfigPanel::onAddModelClicked() {
   switch (model_source_combo_->currentIndex()) {
     case 0: {  // File
 #ifdef PJ_TARGET_WASM
+      // Browser policy: the sandbox grants the URDF's bytes, never a path.
       QPointer<Scene3DConfigPanel> self(this);
       QPointer<Scene3DDockWidget> dock(bound_dock_);
       FileSelectionService::selectFileContent(
@@ -981,19 +978,6 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   if (bound_dock_ != nullptr) {
     ObjectTopicId topic_id;
     topic_id.id = topic_id_value;
-#ifdef PJ_TARGET_WASM
-    if (auto* robot = qobject_cast<pj::scene3d::WasmRobotModelLayer*>(bound_dock_->layerFor(topic_id))) {
-      const QString status = robot->statusText();
-      if (!status.isEmpty()) {
-        name->setToolTip(status);
-      }
-      connect(
-          robot, &pj::scene3d::WasmRobotModelLayer::statusTextChanged, name,
-          [name, tooltip](const QString& status_text) {
-            name->setToolTip(status_text.isEmpty() ? tooltip : status_text);
-          });
-    }
-#else
     if (auto* robot = qobject_cast<pj::scene3d::RobotModelLayer*>(bound_dock_->layerFor(topic_id))) {
       const QString status = robot->statusText();
       if (!status.isEmpty()) {
@@ -1004,7 +988,6 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
             name->setToolTip(status_text.isEmpty() ? tooltip : status_text);
           });
     }
-#endif
   }
 }
 
@@ -1084,8 +1067,11 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
   connect(dock, &SceneDockWidget::layerRemoved, this, &Scene3DConfigPanel::onLayerRemoved);
   connect(dock, &SceneDockWidget::layerVisibilityChanged, this, &Scene3DConfigPanel::onLayerVisibilityChanged);
   connect(dock, &SceneDockWidget::layerWarningChanged, this, &Scene3DConfigPanel::onLayerWarningChanged);
+  connect(dock, &SceneDockWidget::layerStatusChanged, this, [this](ObjectTopicId topic_id, const QString& status) {
+    layer_list_->setRowStatus(static_cast<qint64>(topic_id.id), status);
+  });
   // Keep the follow combo in step with the dock's frame set and follow target.
-  connect(dock, &Scene3DDockWidget::availableFramesChanged, this, [this](const QList<pj::scene3d::FrameRow>&) {
+  connect(dock, &Scene3DDockWidget::availableFramesChanged, this, [this](const QList<pj::tf::FrameRow>&) {
     populateFollowCombo();
     populateTrailCombo();
   });
@@ -1174,6 +1160,7 @@ void Scene3DConfigPanel::rebuildLayerList() {
   for (const LayerRow& row : rows) {
     const auto warning = bound_dock_->orphanState(topicFromRowId(row.id));
     layer_list_->setRowWarning(row.id, warning.is_orphan, warning.reason);
+    layer_list_->setRowStatus(row.id, bound_dock_->layerStatus(topicFromRowId(row.id)));
   }
   updateSelectedLayerPane();
 }
@@ -1200,6 +1187,7 @@ void Scene3DConfigPanel::onLayerAdded(ObjectTopicId topic_id) {
   layer_list_->addRow(rowFromLayerInfo(info));
   const auto warning = bound_dock_->orphanState(topic_id);
   layer_list_->setRowWarning(static_cast<qint64>(topic_id.id), warning.is_orphan, warning.reason);
+  layer_list_->setRowStatus(static_cast<qint64>(topic_id.id), bound_dock_->layerStatus(topic_id));
   // A new same-family sibling can enable the apply-to-family button.
   updateParamsToolbarState();
 }
