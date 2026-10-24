@@ -45,7 +45,7 @@ If PJ3 has it → port it. If PJ3 genuinely doesn't → say so explicitly and ge
 | PJ3 | PJ4 |
 |---|---|
 | `PlotDataMapRef` reads | `DatastoreCurveAdapter` over `pj_datastore::DataReader` |
-| `TransformsMap` | `TransformRegistry` (`pj_runtime`) |
+| `TransformsMap` | `DataProcessorService` (`pj_runtime`) |
 | Direct main-window state | `pj_runtime` services: `CatalogModel`, `SessionManager`, `PlaybackEngine` |
 | Widget↔widget time sync | `IDataWidget::onTrackerTime(double)` contract |
 

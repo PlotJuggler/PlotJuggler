@@ -67,7 +67,12 @@ Rerun `./build.sh` for incremental builds. To omit the test suite, use
 
 Scene3D, the plots and the media viewer render through QRhi: OpenGL on Linux,
 D3D11 on Windows, Metal on macOS; `PJ_GRAPHICS_API=opengl|vulkan|d3d11|d3d12|metal`
-overrides the API at run time.
+overrides the API at run time. There is no other GPU renderer to select at configure
+time.
+
+Launch through `./run.sh`: it clears `QT_IM_MODULE`, because otherwise the IBus
+platform input context can be loaded from a system (older) Qt install and crash under
+the pinned Qt runtime.
 
 File loaders, streamers and toolboxes are distributed separately. Open
 **File → Marketplace** to install them after launching your source build.
@@ -109,12 +114,157 @@ The script exits non-zero when any step failed (`<out>/status_*`). `--check` pri
 environment variables (emsdk and Qt WebAssembly locations, build jobs, lock
 file).
 
+## Build internals
+
+`build.sh` (options: `./build.sh --help`):
+
+1. Checks for `.qt/<PJ_QT_VERSION>/gcc_64/` and tells you to run
+   `./scripts/install_qt6.sh` if it is missing.
+2. Registers the PlotJuggler Conan remote (`scripts/configure_conan_remote.sh`, also
+   called by CI) and runs `conan install ... --output-folder=build --build=missing`
+   with `compiler.cppstd=20` from `conanfile.txt`.
+3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and
+   `CMAKE_PREFIX_PATH=./.qt/<PJ_QT_VERSION>/gcc_64`.
+4. Builds with `cmake --build build -j<jobs>`: one job per core, capped at one per
+   1.5 GiB of available memory so a full rebuild cannot exhaust RAM (`PJ_BUILD_JOBS`
+   overrides).
+
+`ccache` is used automatically when installed, and so is the `mold` linker
+(`-DCMAKE_LINKER_TYPE=MOLD`, CMake 3.29+), which links the many test executables several
+times faster than GNU ld.
+
+**System libraries.** The Conan FFmpeg build needs `libva-dev` and `libdrm-dev` on the
+build host: `conanfile.txt` enables `ffmpeg/*:with_vaapi=True` / `with_libdrm=True` for
+VAAPI hardware video decode (the `FfmpegDecoder` GPU path, which falls back to software
+without a usable GPU driver), and the recipe's `vaapi/system` and `libdrm` wrappers
+resolve `libva` / `libva-drm` through `pkg-config`. End users only need the `libva2`
+runtime, which packaging pulls in; CI installs the `-dev` packages in
+[`linux-ci.yml`](../.github/workflows/linux-ci.yml).
+
+**The SDK.** `plotjuggler_sdk` recipes and prebuilt binaries live on PlotJuggler's JFrog
+Conan remote (anonymous read). Build paths without Conan (WebAssembly, pixi) fetch the
+pinned release tag from GitHub and build the SDK in-tree (see the root
+`CMakeLists.txt`). `pj_datastore` is added right after the SDK is resolved, so the
+`plotjuggler_sdk::base` and `pj_internal_fmt` targets it links already exist; its Conan
+dependencies (`nanoarrow`, `tsl-robin-map`, `benchmark`) are in the root
+`conanfile.txt`.
+
+**Local-SDK mode.** `./build.sh --sdk-local[=PATH]` builds `plotjuggler_sdk` from a
+local working tree (default: the `../plotjuggler_sdk` sibling checkout) instead of the
+pinned Conan package, so an unreleased SDK change needs no release: editing an SDK header
+and re-running `./build.sh` is one incremental rebuild. Dev-only: not reproducible,
+refused in CI, and never a way to merge; merged code always builds from a released pin.
+
+**Tests.** `enable_testing()` is wired at the top level, so `ctest` covers every module.
+Per-module gtest runners are registered with `gtest_discover_tests` in
+[`cmake/PjTests.cmake`](../cmake/PjTests.cmake), one process per case, under ctest names
+`<runner>.<Suite>.<Case>`. `test.sh` forces `QT_QPA_PLATFORM=offscreen` because many
+widget tests create a `QApplication` without choosing a platform and would otherwise
+open windows.
+
+**Build tree size and debug info.** `./build.sh --minimal` builds what the packaging
+pipeline compiles (app closure only, no tests, demos or debug info); `--no-tests`,
+`--no-demos`, `--target NAME`, `--debug-info LEVEL` and `--no-compress-debug` select the
+pieces individually. For Linux RelWithDebInfo builds, `PJ_DEBUG_INFO=none|lines|full|split`
+selects no debug info, line/backtrace info, full DWARF, or DWARF in `.dwo` sidecars, and
+`PJ_COMPRESS_DEBUG=ON|OFF` controls zlib compression
+([`cmake/PjDebugInfo.cmake`](../cmake/PjDebugInfo.cmake)). `build.sh` defaults to `split`
+and `ON` on Linux; its options, or the same names as environment variables (how CI and
+the container wrapper drive it), override either knob.
+[`packaging/appimage/build_in_docker.sh`](../packaging/appimage/build_in_docker.sh)
+defaults to `PJ_DEBUG_INFO=none`, so the AppImage ships without DWARF, and the Conan
+static archives in the builder image are stripped of DWARF; pass `--with-tests` to it to
+build the full suite and demos, then filter a module inside the builder image with
+`ctest -R '^pj_runtime_tests\.' --test-dir build`. Linux GNU/Clang builds use thin
+archives, and `resources.qrc` is compiled once as `pj_resources`.
+[`scripts/build_tree_size.sh`](../scripts/build_tree_size.sh) `<build-dir>` reports bytes
+by artifact class in decimal GB.
+
+**Dock icon.** A dev build shows a generic gear in the GNOME/Wayland dock because no
+`plotjuggler4.desktop` is installed (Wayland resolves the icon through app_id → desktop
+file → icon theme, never the window icon). `scripts/install_desktop_entry.sh` registers a
+user-local entry pointing at this checkout's `run.sh` (`--uninstall` removes it); the
+`.deb` and integrated AppImages ship their own entry.
+
+## Versions
+
+[`versions.env`](../versions.env) is the single source of truth for `PJ_APP_VERSION`,
+`PJ_QT_VERSION` and `PJ_APPIMAGE_ARCH`; never write a version or architecture literal
+elsewhere, and change one by editing `versions.env` and nothing else. Consumers:
+
+- bash scripts `source "<anchor>/versions.env"` by absolute path;
+- the Windows PowerShell scripts parse its `KEY=VALUE` lines themselves
+  (`scripts/windows/PjWindowsCommon.ps1`);
+- CMake reads it with `pj_read_versions()` in
+  [`cmake/PjVersions.cmake`](../cmake/PjVersions.cmake), which stamps
+  `cmake/pj_version.h.in` for `main.cpp` and feeds `find_package(Qt6 …)`;
+- CI uses a `Read versions` step (`source ./versions.env` → `$GITHUB_ENV`);
+- Docker gets `--build-arg`s from `build_in_docker.sh`.
+
+Only the app version is overridable per build (`-DPJ_VERSION=<v>` or the `PJ_VERSION`
+environment variable; release CI stamps the git tag); `PJ_QT_VERSION` and
+`PJ_APPIMAGE_ARCH` are hard pins. The Qt platform dir tokens (`gcc_64`, `msvc2022_64`)
+are a separate namespace: leave them literal, never derive them from
+`PJ_APPIMAGE_ARCH`. Windows CI installs Qt inline because `scripts/install_qt6.sh`
+installs the `gcc_64` build.
+
+## Portability
+
+Linux and Windows are shipped targets. macOS is not yet, but
+[`macos-ci.yml`](../.github/workflows/macos-ci.yml) builds and tests on macOS arm64
+(AppleClang, Scene3D on Metal) nightly when the default branch moved, and on demand
+(`gh workflow run "macOS CI" --ref <branch>`). AppleClang's `-Wunused-const-variable` and
+`-Wunused-lambda-capture` catch platform-conditional code GCC accepts, and macOS temp
+dirs sit behind the `/var -> /private/var` symlink, so tests must compare canonical paths.
+
+Windows packaging: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows
+artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own
+LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt plus the
+FFmpeg/Qt DLLs `pj_app` needs) is in scope: `windows-ci.yml` resolves DLLs through `PATH`
+at test time, which is not a shippable layout.
+
+## Third-party dependencies
+
+Vendored dependencies live in `3rdparty/<name>/` (the PJ3 convention) and are added from
+the top-level `CMakeLists.txt`, mostly with `add_subdirectory`. They are explicitly
+vendored: do not take them from Conan or system packages.
+
+- **Qt-Advanced-Docking-System**: the docking framework used by `pj_app`.
+- **nanocdr**: added with `add_subdirectory`.
+- **doomgeneric**: a C engine whose sources are globbed directly into the
+  `pj-raster-helper` target. With `raster/helper` it forms an optional, GPL-isolated
+  standalone executable that PlotJuggler never links. It is off by default: the target is
+  built only with `-DPJ_BUILD_RASTER_HELPER=ON` (and only when the vendored source is
+  checked out). The Linux release (`linux-appimage-release.yml`) turns it on
+  (`PJ_BUILD_RASTER_HELPER=ON ./build.sh`) and stages the helper with
+  `packaging/appimage/build_appimage.sh --retro-wad`, so the AppImage and the `.deb` ship
+  it under `3rdparty/retro/` next to the app binary.
+
+**Qwt is external, not vendored**: `3rdparty/qwt/` holds only CMake glue. The default
+build fetches the official release tarball (SHA-256 pinned) and compiles it unmodified on
+every path, pixi included (`-DPJ_SYSTEM_QWT=ON` can link conda-forge's prebuilt `qwt` once
+it is built against the pinned `qt6-main`). Never patch Qwt sources: behavior PJ3 carried
+as Qwt patches lives in the app, namely axis tick-label formatting in `pj_plotting`'s
+`PlotScaleDraw` (twin in `pj_dialog_host`'s chart preview) and the "Lines and Dots" curve
+style in `pj_plotting`'s `PlotCurve` (Lines plus one batched, pixel-weeded `drawDots`
+pass; `PlotRhiCanvas` builds the same square dots as geometry). See
+`3rdparty/qwt/README.PJ4.md`.
+
+Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `date`) are vendored
+on the same pattern when a module needs them, decided case by case.
+
+Everything else (GLM, assimp, FFmpeg, the Lua runtime, ...) comes from Conan, including
+**backward-cpp** (`backward-cpp/1.6`): `pj_app` links `Backward::Backward` and installs a
+`backward::SignalHandling` crash handler in `main.cpp` for symbolized stack traces. Its
+default `dw` backend pulls `elfutils` from Conan, so rich traces need no system `-dev`
+packages.
+
 ## Windows setup
 
 Windows builds use the same Conan + CMake flow through three root entry points,
 `build.bat`, `run.bat` and `test.bat`: thin shims over `scripts\windows\build.ps1`,
 `run.ps1` and `test.ps1`, which run under the Windows PowerShell 5.1 that ships
-with Windows. They mirror `build.sh` / `run.sh` / `test.sh` (same options, same
+with Windows and share `scripts\windows\PjWindowsCommon.ps1`. They mirror `build.sh` / `run.sh` / `test.sh` (same options, same
 `PJ_*` variables, same `build\` tree) and reproduce the Windows CI job: VS 2022
 MSVC 14.4x, Conan with every profile setting pinned (`compiler.version=194`),
 Ninja Multi-Config, RelWithDebInfo with `/Z7` embedded debug info. A local
