@@ -3,17 +3,21 @@
 //
 // Display contract for PJ::MessageBox: a button label that is wider than the
 // dialog's bounded width must wrap to multiple lines rather than clip, while a
-// short label is left untouched (rendered identically to before). The dialog
-// must always respect its maximum width.
+// short label is left untouched. The dialog must always respect its maximum
+// width, and a multi-line word-wrapped body must not clip.
 
 #include "pj_widgets/MessageBox.h"
 
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QFontMetrics>
+#include <QLabel>
 #include <QList>
 #include <QPoint>
 #include <QPushButton>
+#include <QTimer>
 #include <algorithm>
 
 #include "pj_widgets/FrameworkTokens.h"
@@ -43,6 +47,74 @@ QList<int> buttonGaps(PJ::MessageBox& dlg) {
     gaps.push_back(buttons[i]->mapTo(&dlg, QPoint(0, 0)).y() - prev_bottom);
   }
   return gaps;
+}
+
+// The body label is reachable by its objectName (no test-only accessor needed).
+QLabel* bodyLabelOf(PJ::MessageBox& box) {
+  return box.findChild<QLabel*>(u"pjMessageBoxBody"_s);
+}
+
+// Regression: the styled card breaks heightForWidth propagation, so a verbose
+// question() body (e.g. the destructive dataset-merge confirmation) opened one
+// line tall unless the dialog grows to the wrapped height on first show.
+TEST(MessageBoxTest, MultiLineBodyIsNotClipped) {
+  PJ::MessageBox dlg;
+  dlg.setTitle(u"Merge datasets"_s);
+  dlg.setText(QStringLiteral(
+      "Merging datasets is a destructive operation. Do you wish to proceed?\n\n"
+      "Datasets run1, run2 overlap in time.\n"
+      "Datasets run1, run2 have colliding data.\n"
+      "Datasets run1, run2 contain object topics that will be dropped."));
+  dlg.addButton(u"Merge"_s, PJ::MessageBox::kDestructiveRole);
+  dlg.addButton(u"Cancel"_s, PJ::MessageBox::kCancelRole);
+  realize(dlg);
+
+  QLabel* body = bodyLabelOf(dlg);
+  ASSERT_NE(body, nullptr);
+  ASSERT_GT(body->width(), 0);
+  EXPECT_GE(body->height(), body->heightForWidth(body->width()))
+      << "body height " << body->height() << " < wrapped height " << body->heightForWidth(body->width());
+  // Sanity: the text genuinely wrapped to several lines.
+  const QFontMetrics fm(body->font());
+  EXPECT_GT(body->height(), fm.height() * 3);
+}
+
+TEST(MessageBoxTest, ShortBodyAlsoFits) {
+  PJ::MessageBox dlg;
+  dlg.setTitle(u"Heads up"_s);
+  dlg.setText(u"All good."_s);
+  dlg.addButton(u"OK"_s, PJ::MessageBox::kPrimaryRole);
+  realize(dlg);
+
+  QLabel* body = bodyLabelOf(dlg);
+  ASSERT_NE(body, nullptr);
+  ASSERT_GT(body->width(), 0);
+  EXPECT_GE(body->height(), body->heightForWidth(body->width()));
+}
+
+// Desktop runs questionAsync modally: the continuation has the clicked index
+// and checkbox state before the call returns.
+TEST(MessageBoxTest, QuestionAsyncAnswersBeforeReturningOnDesktop) {
+  QTimer::singleShot(0, []() {
+    auto* box = qobject_cast<PJ::MessageBox*>(QApplication::activeModalWidget());
+    ASSERT_NE(box, nullptr);
+    box->findChild<QCheckBox*>()->setChecked(true);
+    const auto buttons = box->findChildren<QPushButton*>(u"pjMessageBoxButton"_s);
+    ASSERT_EQ(buttons.size(), 2);
+    buttons[1]->click();
+  });
+  int choice = -2;
+  bool dont_show_again = false;
+  PJ::MessageBox::questionAsync(
+      nullptr, u"Title"_s, u"Body"_s,
+      {{u"Remove"_s, PJ::MessageBox::kDestructiveRole}, {u"Keep"_s, PJ::MessageBox::kCancelRole}},
+      [&](int answer, bool checked) {
+        choice = answer;
+        dont_show_again = checked;
+      },
+      /*show_dont_show_again=*/true);
+  EXPECT_EQ(choice, 1);
+  EXPECT_TRUE(dont_show_again);
 }
 
 TEST(MessageBoxTest, ShortLabelIsNotWrapped) {

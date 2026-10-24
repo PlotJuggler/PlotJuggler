@@ -200,9 +200,6 @@ jobs:
         run: pixi run sccache --show-stats
         continue-on-error: true
 
-      # Qt needs a display for the widget/GL tests; wrap ctest in a virtual
-      # framebuffer. conda's Qt ships its own xcb platform plugin + libs, so
-      # xvfb (the display) is the only extra piece the runner needs.
       # Runs the Qt-free CORE test suite only (~155 tests). The widget/GL test
       # families (pj_scene3D/widgets, pj_scene2D/widgets, pj_widgets, plotting-GL)
       # need a GL context that conda's Qt cannot bring up on this GPU-less runner

@@ -227,7 +227,7 @@ endif()
 target_link_libraries(pj_scripting
   PUBLIC
     pj_scripting_core             # Luau engine + marker analysis
-    pj_datastore  # DataProcessor base + ProcessorSisoAdapter + ISISOTransform (formerly pj_proc)
+    pj_datastore  # DataProcessor base + ProcessorSisoAdapter + ISISOTransform
     pj_tf         # object_script.h: the TF snapshot a script reads (pj.tf)
   PRIVATE
     Luau::VM                      # object_script.cpp / object_binder.cpp

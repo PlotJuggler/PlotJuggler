@@ -279,7 +279,7 @@ if(NOT EMSCRIPTEN)
     add_subdirectory(resources)
 endif()
 # pj_datastore: columnar store + IncrementalEngine + the data-processor execution
-# substrate (DataProcessor base + ProcessorSisoAdapter, formerly pj_proc).
+# substrate (DataProcessor base + ProcessorSisoAdapter).
 add_subdirectory(pj_datastore)
 
 # The MemorySanitizer lane stops here, and the cut is load-bearing rather than an

@@ -87,7 +87,7 @@ target_link_libraries(pj_plotting PUBLIC
     pj_scripting  # PUBLIC: public headers (FilterEditorPanel.h, ParameterForm.h) expose pj_scripting types
     pj_widgets    # PUBLIC: XYCurveDialog.h (a public header) derives from PJ::Dialog
   PRIVATE
-    pj_datastore  # DataProcessor (applyBatch preview) — formerly pj_proc
+    pj_datastore  # DataProcessor (applyBatch preview)
 )
 
 target_sources(pj_plotting PRIVATE shaders/pj_plot_rhi_shaders.qrc)

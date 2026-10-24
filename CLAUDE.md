@@ -85,7 +85,7 @@ Further comment hygiene:
 Every PJ4 module (anything matching `pj_*/`) owns:
 
 - `<module>/CLAUDE.md` — one-paragraph purpose + pointer to the module's `docs/` and key headers. The entry point for an agent landing in that subtree.
-- **Size budget:** a module CLAUDE.md stays under ~10 KB (purpose, invariants/pitfalls, one line per key header, tests, pointers); detail goes to the module's `docs/` or the header doc-comments.
+- **Keep it lean:** a module CLAUDE.md holds what an agent needs before touching the code (purpose, invariants and pitfalls, one line per key header, tests, pointers). Judge each line by its value to that agent, not by a size limit; reference detail goes to the module's `docs/` or the header doc-comments.
 - `<module>/docs/` — module-local intent docs. Minimum content depends on module complexity:
   - **Trivial / structurally obvious** (e.g. `pj_widgets`, `pj_dialog_host`): CLAUDE.md only; no `docs/` required.
   - **Standard module**: `docs/REQUIREMENTS.md` (the WHAT).
@@ -101,7 +101,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_runtime` | [CLAUDE.md](./pj_runtime/CLAUDE.md) | [docs/](./pj_runtime/docs): ARCHITECTURE; derived objects |
 | `pj_tf` | [CLAUDE.md](./pj_tf/CLAUDE.md) | — |
 | `pj_widgets` | [CLAUDE.md](./pj_widgets/CLAUDE.md) | — |
-| `pj_plotting` | [CLAUDE.md](./pj_plotting/CLAUDE.md) | — |
+| `pj_plotting` | [CLAUDE.md](./pj_plotting/CLAUDE.md) | [docs/](./pj_plotting/docs): ARCHITECTURE |
 | `pj_dialog_host` | [CLAUDE.md](./pj_dialog_host/CLAUDE.md) | — |
 | `pj_scene_common` | [CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
 | `pj_scene2D` | [CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs): REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES |

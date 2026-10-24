@@ -1416,7 +1416,8 @@ mode does. It renders in every build, the browser included.
   (`aiProcess_CalcTangentSpace`) and a per-`SubMesh` `Material` (glTF 2.0
   metallic-roughness, read via assimp's material abstraction). Each map
   (`TextureSource`) is an external file path OR inline bytes for embedded glTF/GLB
-  `*N` images (still PNG/JPEG-encoded), keyed by content hash. Sources without PBR
+  `*N` images (still PNG/JPEG-encoded; raw embedded RGBA, `mHeight > 0`, is
+  skipped), keyed by content hash. Sources without PBR
   factors fall back to `MeshShadingParams`.
 - **Rendering** is the model pass (see "Per-family passes and caches"). Primitives come from
   unit box/cylinder/sphere geometry (URDF cylinder is Z-aligned; sizes ride the

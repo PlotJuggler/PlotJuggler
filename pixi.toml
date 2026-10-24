@@ -55,8 +55,8 @@ libarchive = "3.8.*"             # shared (conda-forge has no static); conanfile
 libjpeg-turbo = "3.*"
 libpng = "1.6.*"
 backward-cpp = "1.6.*"
-draco = "*"                      # conan pinned 1.5.6 only for assimp source-build graph conflict
-assimp = "*"                     # conda-forge is 6.x vs conan 5.4.3 — API risk to verify
+draco = "*"                      # conanfile.txt pins draco to what its assimp recipe requires; conda resolves its own
+assimp = "*"                     # keep the same major as the assimp pin in conanfile.txt
 
 # --- local channel (gaps vs conda-forge; see recipes/) ------------------------
 luau = "0.700.*"

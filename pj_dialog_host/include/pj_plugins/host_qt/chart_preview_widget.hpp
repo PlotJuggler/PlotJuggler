@@ -19,7 +19,7 @@ namespace PJ {
 
 /// Lightweight chart widget that renders named XY line series inside a QFrame.
 /// Created and managed by the widget binding layer — plugin authors never touch
-/// this directly. Built on the vendored Qwt (not Qt Charts), so the dialog host
+/// this directly. Built on Qwt (not Qt Charts), so the dialog host
 /// carries no Qt6::Charts dependency; the dialog-protocol chart API
 /// (setChartSeries / onChartViewChanged) is unaffected.
 class ChartPreviewWidget : public QwtPlot {

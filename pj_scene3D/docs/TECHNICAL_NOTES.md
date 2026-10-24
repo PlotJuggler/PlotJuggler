@@ -365,6 +365,12 @@ opengl on macOS. `DPR2` adds `<runner>.opengl_dpr2.*` at `QT_SCALE_FACTOR=2`
 `-L qrhi` every pass (labels are regular expressions), `-LE qrhi` none. Every macOS
 `.opengl` case gets 5x the timeout (Apple's software GL).
 
+**Shared mains and file-local environments.** The headless runners use the shared
+test mains, which keep the application on the stack so it dies before Qt
+Network's exit handlers. Per-suite setup lives in file-local GoogleTest
+environments: they prepare the Cloudini blob, preserve the fixed-frame settings
+application name, and redirect the model caches to temporary directories.
+
 | Runner | What it covers | DPR 2 |
 |---|---|---|
 | `scene3d_rhi_render_test` | the harness: orientation, occlusion, translucency, shadows, HDR/SSAO/EDL, presentation, reparent, depth resolve vs replay | the `Presentation*` cases |
