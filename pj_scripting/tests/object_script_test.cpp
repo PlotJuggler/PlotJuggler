@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // The Luau object-script engine: compile, run, output binding, field reads, the point-cloud methods
-// and pj.tf (docs/derived_objects/SCENARIOS.md, rows REC, LUA, CACHE, TFL, BUD).
+// and pj.tf (docs/archive/derived_objects/SCENARIOS.md, rows REC, LUA, CACHE, TFL, BUD).
 
 #include "pj_scripting/object_script.h"
 

@@ -1,7 +1,11 @@
 # Derived objects: scenario catalog
 
+> **Archived.** This catalog maps the prototype's tests to the behaviours they encode. Its row IDs
+> (GAP-02, OWN-07, STR-05, ...) are still cited by tests and production comments, so keep them intact.
+> It is no longer maintained: its counts, statuses and slice references describe the carving, not the code.
+
 Every use case and corner case that the prototype's tests encode, made explicit. The point
-is that no slice of the carve (see [CARVING.md](CARVING.md)) drops a scenario silently.
+is that no slice of the carve (tracked in a since-deleted carving tracker) drops a scenario silently.
 Each scenario is either ported, changed by a named decision, or deliberately deferred.
 
 - **Source.** Branch `feat/derived-objects-editor-host` (PJ4 #697, #698 and #699), compared
@@ -12,9 +16,9 @@ Each scenario is either ported, changed by a named decision, or deliberately def
 - **Rows.** One per scenario. Near-duplicates (Luau and Python twins, fixtures run twice)
   share a row. "Expected behaviour" is what the prototype's test asserts today.
 - **Decision references.**
-  - D-numbers are in [REQUIREMENTS.md](REQUIREMENTS.md).
+  - D-numbers are in [REQUIREMENTS.md](../../derived_objects/REQUIREMENTS.md).
   - N-numbers and P-numbers point at the review notes and the proposals page.
-    [ARCHITECTURE.md](ARCHITECTURE.md) holds the resulting design: N1 §14, N3/N5 §12,
+    [ARCHITECTURE.md](../../derived_objects/ARCHITECTURE.md) holds the resulting design: N1 §14, N3/N5 §12,
     N6 §11, N7 §9, N8 §15, N9 §8, N10 §13.
 
 ## How to use it while carving

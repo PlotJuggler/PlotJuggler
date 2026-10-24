@@ -273,7 +273,8 @@ class IncrementalEngine {
   /// one that never gapped. Like nodeError(), does not take lockEngine() itself.
   [[nodiscard]] std::vector<Gap> gaps(PJ::NodeId node_id) const;
 
-  // Full history recompute: clear output, reset transform, replay all input.
+  /// Full history recompute of `node_id` and its downstream: detach the outputs, reset the
+  /// transform and replay all input; a failed replay restores the detached outputs.
   PJ::Status recomputeBatch(PJ::NodeId node_id);
 
   /// Reset and replay the union of every root's downstream graph once in

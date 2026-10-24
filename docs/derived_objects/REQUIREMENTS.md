@@ -1,13 +1,9 @@
 # Derived objects: requirements
 
-**Status.** These are the agreed requirements (decisions D1-D30). They were revised
-on 2026-10-10 with evidence from the functional prototype (pull requests #697, #698 and
-#699). A decision changes when evidence shows a better approach; the change is recorded
-here explicitly, with its reason. [ARCHITECTURE.md](ARCHITECTURE.md) describes the delivered
-design. [SCENARIOS.md](SCENARIOS.md) lists the behaviours and corner cases that every
-change must keep. The discovery material (user stories US1-US12, candidate requirements C1-C12, the planning
-notebook and the review notes) lives on the `planning/lua-derived-object-dag` branch, in
-`docs/`.
+**Status.** These are the agreed requirements (decisions D1-D30). Code and docs cite the
+D-numbers. [README.md](README.md) introduces the feature and [ARCHITECTURE.md](ARCHITECTURE.md)
+describes the design as built. The discovery material (user stories US1-US12, candidate
+requirements C1-C12) lives on the `planning/lua-derived-object-dag` branch, in `docs/`.
 
 ## Purpose
 
@@ -53,10 +49,10 @@ The IDs below identify decisions for subsequent discussion, not implementation t
 | D4 | Declare every required source binding before execution. Support arbitrary input counts and mixtures of canonical objects, numeric timeseries, string timeseries and compatible upstream results. Hidden runtime topic discovery inside Lua is outside this contract. |
 | D5 | Resolve each source independently using its closest sample **at or before the requested scene/query time**. There is no primary input whose timestamp becomes the clock for the other inputs. |
 | D6 | The executor calls Lua only after **all required inputs** have been found. Missing input means no result: clear the affected display and identify the missing source. Do not present the previous geometry as a valid current result. |
-| D7 | A node belongs to exactly one dataset, with one time domain and that dataset's TF buffer. Mixing data from two datasets in one function is not an intended feature, not a deferred one (revised 2026-10-10). A recipe whose inputs span datasets is rejected. Comparing recordings works as it always has in PlotJuggler: one series per dataset on the same plot. What is not supported is one derived function reading from two datasets (wording added 2026-10-13). |
+| D7 | A node belongs to exactly one dataset, with one time domain and that dataset's TF buffer. Mixing data from two datasets in one function is not an intended feature, not a deferred one. A recipe whose inputs span datasets is rejected. Comparing recordings works as it always has in PlotJuggler: one series per dataset on the same plot. What is not supported is one derived function reading from two datasets. |
 | D8 | Configure output names upfront, consistent with the named timeseries-transform workflow. The working agreement is also to declare each output's fixed type upfront. Exact metadata syntax is not frozen. |
 | D9 | Support SISO, MISO and MIMO with independent input/output types. A function can return multiple canonical objects, numbers and strings in one evaluation. |
-| D10 | Numeric and string outputs are queryable results and can feed this DAG. A numeric output of a function with object inputs can also be a plottable series: one value per entry of its object inputs over the history (its sampling clock is the union of those inputs' entry timestamps), recomputed when the function or its inputs change, and computed only while the series is displayed or explicitly requested (D1). Which engine computes the series is an implementation choice. Revised 2026-10-10 from "no plottable series in v1", on the evidence of the prototype's series mode and the need for per-entry measures over a recording. |
+| D10 | Numeric and string outputs are queryable results and can feed this DAG. A numeric output of a function with object inputs can also be a plottable series: one value per entry of its object inputs over the history (its sampling clock is the union of those inputs' entry timestamps), recomputed when the function or its inputs change, and computed only while the series is displayed or explicitly requested (D1). Which engine computes the series is an implementation choice. |
 | D11 | Lua implements the algorithm and its math. Native bindings provide safe object access/construction and supporting geometry operations. |
 | D12 | Expose a read-only TF lookup capability to the script. The script chooses transforms and the output frame; the host does not impose an output frame or automatically align inputs before the call. A small geometry helper library is desired. |
 | D13 | Point clouds need native point access helpers; authors must not unpack canonical `data[]` manually. |
@@ -138,36 +134,24 @@ from **Z span (`max_z - min_z`)**, with the frame and units explained to the per
 
 ## Scene2D extension constraint
 
-D24 is confirmed. The following are **proposed checks of that constraint**, not
-additional accepted v1 algorithms or bindings. Detailed examples are in
-the Scene2D discovery probes (`lua_3d_user_stories.md` on the planning branch).
+D24 asks that Scene2D support grow incrementally, without a deep architectural refactor. These
+workflows are the checks of that constraint:
 
-| Future workflow | What the initial architecture must leave possible |
+| Workflow | What the architecture must leave possible |
 |---|---|
-| Image + scalar threshold → Image + count | Add pixel access/builders and Lua helpers to the same typed function model; scalar changes invalidate results even when the image sample is unchanged. |
-| Image + recorded state → ImageAnnotations + report | Produce genuine pixel-space annotations with a target image, without requiring a 3D frame, TF lookup or open viewer. |
-| Image + annotations + CameraInfo → cropped image + matching annotations/calibration | Preserve relationships between outputs of one MIMO evaluation; distinguish image coordinates from world coordinates. |
-| Depth image + CameraInfo → PointCloud + ImageAnnotations + measurement | Mix 2D and 3D types in one DAG and one AI invocation; route outputs independently to compatible viewers. |
-| Video → decoded image measurement at T | Allow source-specific resolution/decoding with a stable result identity; keep algorithm statefulness separate from codec implementation state. |
+| Image + scalar threshold → Image + count | Pixel access and builders in the same typed function model; scalar changes invalidate results even when the image sample is unchanged. |
+| Image + recorded state → ImageAnnotations + report | Genuine pixel-space annotations with a target image, without a 3D frame, TF lookup or open viewer. |
+| Image + annotations + CameraInfo → cropped image + matching annotations/calibration | Relationships between outputs of one MIMO evaluation; image coordinates distinct from world coordinates. |
+| Depth image + CameraInfo → PointCloud + ImageAnnotations + measurement | 2D and 3D types mixed in one DAG and one AI invocation, outputs routed independently to compatible viewers. |
+| Video → decoded image measurement at T | Source-specific decoding with a stable result identity; algorithm statefulness separate from codec state. |
 
-The proposed shared contract covers named typed values, declared dependencies,
-query time, immutable evaluation results, cache invalidation and explicit-time AI
-execution. Object access/construction, decoding and viewer adaptation remain
-specific to the supported type. Extending the existing canonical type handling is
-sufficient; a new general-purpose type/plugin framework is not required by D24.
-
-Scene2D adds questions that should not be hidden by a universal “scene object” API:
-raw versus rectified pixels; image encoding/depth units; annotation target and
-coordinate space; and compressed-video presentation time versus packet storage
-time. In particular, an image has a coordinate frame but an image annotation uses
-pixel coordinates; neither should inherit mandatory 3D pose semantics.
-
-Recommended separation: analysis consumes defined data representations, independent
-of viewer zoom, colormap, rectification settings or preview quality. Explicit image
-conversion/rectification functions may use declared calibration inputs. Decoders
-can be reused without turning the viewer's pending-frame mailbox into the DAG's
-result API. Missing data, pending work and a valid empty result retain their own
-meanings across both scene families.
+The shared contract covers named typed values, declared dependencies, query time, immutable
+evaluation results, cache invalidation and explicit-time AI execution. Object access and
+construction, decoding and viewer adaptation stay specific to each type. An image has a
+coordinate frame but an image annotation uses pixel coordinates; neither inherits mandatory 3D
+pose semantics. Analysis consumes defined data representations, independent of viewer zoom,
+colormap, rectification settings or preview quality; missing data, pending work and a valid empty
+result keep their own meanings in both scene families.
 
 ## Deferred scope
 
@@ -183,26 +167,22 @@ Python is not deferred: D29 makes Lua (Luau) and Python both desired languages.
 
 ## Still open
 
-These are not accepted requirements. Resolve them through the continuing
-discussion. The planning notebook and the review notes, on the planning branch, give recommendations and examples.
+These are not accepted requirements.
 
 | Topic | Decision still needed |
 |---|---|
-| Story validation and success criteria — partly settled | D28 settles v1's minimum scope: US1 + US5 as the required walkthrough, US2-US4/US6-US11 as prioritized extensions, US12 deferred entirely. Essential outcomes and responsiveness expectations for that walkthrough remain open. |
-| Inspector presentation — partly settled | D26 settles session lifetime and computation-time labelling. Define moving-frame behavior, exact time-label presentation, replacement/ownership and layout persistence; do not reopen retention through scrubbing or automatic cursor movement. |
-| Function authoring | Exact function signature, declared aliases/types, instance bindings, parameter representation and reusable script/library packaging. No dedicated Filters-style UI is required. |
-| Python specifics | D29 settles that Python is wanted, and D18 applies to it: Python in the browser is a goal, gated on feasibility. The candidate path is CPython 3.14's tier-3 Emscripten target, statically linked into the threaded WebAssembly build (static linking is the only supported embedding; a pthreads build is possible and the deployment already serves the required isolation headers). A spike proved it (2026-10-21): the browser build links CPython 3.14.8 behind `PJ_WASM_WITH_PYTHON`, on by default in every browser build since slice P-d, production included (since slice P-c a GUI-thread compile no longer waits on a busy interpreter; what remains is in ARCHITECTURE §14). The trust model is decided (2026-10-18): Python runs in-process with cooperative limits, documented as not a security boundary; isolation would need a separate process. In the one long-lived interpreter, D2 is to hold for on-demand scripts through a fresh namespace per call and read-only module copies (ARCHITECTURE §14); filters keep their real modules and builtins (the compatible profile, decided 2026-10-20). Still to decide: acceptable throughput while the GIL serializes Python functions, and Windows packaging. |
-| Cloud details | Index convention, supported coordinate/attribute encodings, organized-cloud filtering, preset conversion and heterogeneous merge policy. |
-| Timing details | Sample timestamp exposure, output timestamp policy, optional staleness limits, TF lookup time and display/raw-time conversion boundary. The TF clock question (header stamps against the dataset's entry clock) is settled by two timestamps per sample (ARCHITECTURE.md, TF R6). |
-| API coverage | Exact initial builtin binding set, compressed-cloud normalization and zero-source functions. Required examples do not imply complete bindings for every builtin in the first release. D24 requires incremental Scene2D extension, not full 2D coverage in v1. |
-| Future 2D semantics | Pixel representations and access presets, raw/rectified coordinates, annotation/image pairing, calibration updates and video presentation-time selection. Record constraints now; defer detailed APIs until the corresponding stories enter scope. |
-| Implementation/performance | D30 settles scheduling and cancellation. Results stay in the ObjectStore, and each derived topic's window is a ring that evicts and never refuses (decided 2026-10-14; ARCHITECTURE.md §9). One global byte budget bounds all on-demand results (ARCHITECTURE.md §9). Still open: representative workload targets. |
+| Success criteria | D28 settles the minimum walkthrough (US1 + US5); essential outcomes and responsiveness expectations for it, and representative workload targets, remain open. |
+| Function packaging | Reusable script and library packaging. No dedicated Filters-style UI is required. |
+| Python | Acceptable throughput while the GIL serializes Python functions, and Windows packaging of the interpreter. The trust model is settled (ARCHITECTURE §14). |
+| Cloud details | Heterogeneous merge policy and compressed-cloud normalization. |
+| Timing details | Optional staleness limits on resolved inputs. |
+| API coverage | Zero-source functions, and how far the builtin binding set extends beyond the required examples. |
+| Future 2D semantics | Raw versus rectified pixel coordinates and calibration updates. |
 
-The prototype's measurements (GUI-thread freeze, evaluation cost, streaming plateau) are
-summarized in ARCHITECTURE.md. No delivery-time estimate exists.
+The measurements that bound the design are in ARCHITECTURE §19.
 
 ## How this document changes
 
 Accepted behaviour lives here; the design lives in ARCHITECTURE.md. A decision changes when
-evidence shows a better approach: record the new wording, the date and the evidence in the
-decision's row. Do not silently turn a recommendation into an agreement.
+evidence shows a better approach: record the new wording and the evidence in the decision's
+row. Do not silently turn a recommendation into an agreement.

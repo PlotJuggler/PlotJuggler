@@ -1,8 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Media for on-demand recipes (docs/derived_objects/SCENARIOS.md, rows MED-01..04, MED-06..10, MED-21, GAP-26):
-// the real Luau run through OnDemandService, the decoder the session is given, and the annotations' pairing as stored.
+// Media for on-demand recipes (docs/archive/derived_objects/SCENARIOS.md, rows MED-01..04, MED-06..10, MED-21,
+// GAP-26): the real Luau run through OnDemandService, the decoder the session is given, and the annotations' pairing
+// as stored.
 // A raw-only fake stands in for the codec, which pj_app owns (its tests: pj_app/tests/scene_image_decoder_test.cpp).
 
 #include <gtest/gtest.h>

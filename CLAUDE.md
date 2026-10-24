@@ -112,7 +112,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (QRhi renderer, layers, cameras, URDF/mesh), [TECHNICAL_NOTES](./pj_scene3D/docs/TECHNICAL_NOTES.md) (backend quirks, Qt bugs, limits, goldens, CI lanes), [QRHI_NEXT](./pj_scene3D/docs/QRHI_NEXT.md) (GL deletion, P6 performance, pinned-Qt follow-ups) |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN; [derived_objects/ARCHITECTURE](./docs/derived_objects/ARCHITECTURE.md) (the `IncrementalEngine` and the derived-topic ring) |
 | `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs) — FILTER_CLASS; [derived_objects/ARCHITECTURE](./docs/derived_objects/ARCHITECTURE.md) (scripts and outputs, Python sandbox) |
-| Derived objects (cross-module: `pj_datastore`, `pj_runtime`, `pj_scripting`, `pj_scene*`, `pj_app`) | [docs/derived_objects/ARCHITECTURE.md](./docs/derived_objects/ARCHITECTURE.md) | [REQUIREMENTS](./docs/derived_objects/REQUIREMENTS.md) |
+| Derived objects (cross-module: `pj_datastore`, `pj_runtime`, `pj_scripting`, `pj_scene*`, `pj_app`) | [docs/derived_objects/README.md](./docs/derived_objects/README.md) | [ARCHITECTURE](./docs/derived_objects/ARCHITECTURE.md), [REQUIREMENTS](./docs/derived_objects/REQUIREMENTS.md) |
 | `plotjuggler_sdk` (Conan package) | [github.com/PlotJuggler/plotjuggler_sdk](https://github.com/PlotJuggler/plotjuggler_sdk) | the SDK repo owns its own `CLAUDE.md` + `docs/` tree |
 
 ### Freshness discipline

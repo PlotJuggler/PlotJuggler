@@ -1,8 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// SceneImageDecoder, the codec on-demand scripts decode through (docs/derived_objects/SCENARIOS.md, rows MED-11,
-// MED-12, BUD-12, GAP-26): the raw encodings, Scene2D's JPEG and PNG codecs, and the charges taken before either runs.
+// SceneImageDecoder, the codec on-demand scripts decode through (docs/archive/derived_objects/SCENARIOS.md, rows
+// MED-11, MED-12, BUD-12, GAP-26): the raw encodings, Scene2D's JPEG and PNG codecs, and the charges taken before
+// either runs.
 
 #include <gtest/gtest.h>
 #include <turbojpeg.h>

@@ -1,9 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// SceneVideoFrameSource, what an on-demand script's `video:frame_at(t)` decodes through (docs/derived_objects/
-// SCENARIOS.md, rows MED-13, MED-14, CON-13): the frame presented at a time over Scene2D's streaming decoder, a topic
-// id reused after a clear, and a dataset retired while a call is in flight.
+// SceneVideoFrameSource, what an on-demand script's `video:frame_at(t)` decodes through
+// (docs/archive/derived_objects/SCENARIOS.md, rows MED-13, MED-14, CON-13): the frame presented at a time over
+// Scene2D's streaming decoder, a topic id reused after a clear, and a dataset retired while a call is in flight.
 
 #include <gtest/gtest.h>
 

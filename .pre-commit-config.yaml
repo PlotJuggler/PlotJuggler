@@ -38,12 +38,6 @@ repos:
         entry: scripts/pre-commit/check-canonical-chrome.py
         language: python
         types_or: [c++, c]
-      - id: check-derived-objects-scenario-counts
-        name: Check the derived-objects SCENARIOS.md summary counts (fix with --fix)
-        entry: scripts/derived_objects_scenario_counts.py --check
-        language: python
-        files: ^docs/derived_objects/SCENARIOS\.md$
-        pass_filenames: false
 
   # CPP hooks
   - repo: https://github.com/pre-commit/mirrors-clang-format

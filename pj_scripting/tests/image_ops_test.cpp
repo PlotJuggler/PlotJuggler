@@ -1,8 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Native image and depth operations over decoded pixels, and one run's media state (docs/derived_objects/SCENARIOS.md,
-// rows MED-01, MED-19, MED-20, MED-21, BUD-22, BUD-23).
+// Native image and depth operations over decoded pixels, and one run's media state
+// (docs/archive/derived_objects/SCENARIOS.md, rows MED-01, MED-19, MED-20, MED-21, BUD-22, BUD-23).
 
 #include "native/image_ops.h"
 
