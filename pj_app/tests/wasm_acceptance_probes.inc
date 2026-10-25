@@ -6,9 +6,13 @@
 // Keeping it out of the shell source makes the production ownership boundary
 // explicit while preserving same-translation-unit access to probe helpers.
 
+#include <emscripten/val.h>
+
 #include <QCheckBox>
+#include <QDirIterator>
 #include <qwt_plot.h>
 #include <functional>
+#include <string>
 
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/CurveTreeView.h"
@@ -255,6 +259,96 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_supersede_source_layout_picker
   qWarning("PJ_WASM_SOURCE_LAYOUT_SUPERSEDE_FAILED no main window");
 }
 
+// Opens globalThis.pjWasmProbeLayoutUrl through MainWindow::loadLayoutFromUrl,
+// the entry point a preset deep link and the preset dialog use.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_load_layout_url() {
+  const QUrl url(QString::fromStdString(emscripten::val::global("pjWasmProbeLayoutUrl").as<std::string>()));
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      QMetaObject::invokeMethod(
+          main_window, [main_window, url]() { main_window->loadLayoutFromUrl(url); }, Qt::QueuedConnection);
+      return;
+    }
+  }
+  qWarning("PJ_WASM_LAYOUT_URL_FAILED no main window");
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_cancel_layout_url() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      QMetaObject::invokeMethod(
+          main_window, [main_window]() { main_window->cancelLayoutFromUrl(); }, Qt::QueuedConnection);
+      return;
+    }
+  }
+  qWarning("PJ_WASM_LAYOUT_URL_FAILED no main window");
+}
+
+// The welcome presets dialog as the user sees it: one line per entry (its
+// thumbnail state, Open button center, enabled), then the dialog line with the
+// Cancel, Retry and Upload centers (-1,-1 when hidden) and the status text.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_presets_dialog() {
+  PJ::MainWindow* main_window = nullptr;
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* candidate = qobject_cast<PJ::MainWindow*>(widget)) {
+      main_window = candidate;
+      break;
+    }
+  }
+  auto* dialog = main_window != nullptr ? main_window->findChild<PJ::WelcomePresetsDialog*>() : nullptr;
+  const auto center = [main_window](const QWidget* widget) {
+    return widget != nullptr && widget->isVisible()
+               ? main_window->mapFromGlobal(widget->mapToGlobal(widget->rect().center()))
+               : QPoint(-1, -1);
+  };
+  const auto child = [dialog](const QString& name) {
+    return dialog != nullptr ? dialog->findChild<QWidget*>(name) : nullptr;
+  };
+  if (dialog != nullptr) {
+    const QList<QLabel*> thumbnails = dialog->findChildren<QLabel*>(u"labelPresetThumbnail"_s);
+    for (const QPushButton* open : dialog->findChildren<QPushButton*>(u"buttonOpenPreset"_s)) {
+      const QString id = open->property("presetId").toString();
+      QString thumbnail;
+      for (const QLabel* label : thumbnails) {
+        if (label->property("presetId").toString() == id) {
+          thumbnail = label->property("thumbnail").toString();
+        }
+      }
+      const QPoint open_center = center(open);
+      qInfo(
+          "PJ_WASM_PRESETS_ENTRY id=%s thumbnail=%s open=%d,%d enabled=%d", qPrintable(id), qPrintable(thumbnail),
+          open_center.x(), open_center.y(), open->isEnabled() ? 1 : 0);
+    }
+  }
+  const auto* status = qobject_cast<QLabel*>(child(u"labelStatus"_s));
+  const QPoint cancel = center(child(u"buttonCancel"_s));
+  const QPoint retry = center(child(u"buttonRetry"_s));
+  const QPoint upload = center(child(u"buttonUpload"_s));
+  qInfo(
+      "PJ_WASM_PRESETS_DIALOG visible=%d cancel=%d,%d retry=%d,%d upload=%d,%d status=%s",
+      dialog != nullptr && dialog->isVisible() ? 1 : 0, cancel.x(), cancel.y(), retry.x(), retry.y(), upload.x(),
+      upload.y(), status != nullptr && status->isVisible() ? qPrintable(status->text()) : "");
+}
+
+// Reports whether File → Presets is offered, and triggers it when it is.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_open_presets() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    auto* main_window = qobject_cast<PJ::MainWindow*>(widget);
+    if (main_window == nullptr) {
+      continue;
+    }
+    auto* action = main_window->findChild<QAction*>(u"actionPresets"_s);
+    qInfo(
+        "PJ_WASM_PRESETS_ACTION present=%d visible=%d enabled=%d", action != nullptr ? 1 : 0,
+        action != nullptr && action->isVisible() ? 1 : 0, action != nullptr && action->isEnabled() ? 1 : 0);
+    if (action != nullptr && action->isVisible() && action->isEnabled()) {
+      action->trigger();
+    }
+    return;
+  }
+  qWarning("PJ_WASM_PRESETS_ACTION_FAILED no main window");
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_buttons() {
   PJ::MainWindow* main_window = nullptr;
   for (QWidget* widget : QApplication::topLevelWidgets()) {
@@ -449,6 +543,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dataset_count() {
     }
   }
   qWarning("PJ_WASM_DATASET_COUNT_FAILED no main window");
+}
+
+// Counts the files staged in MEMFS (uploads and preset downloads alike): each
+// stays until the last lease on it (a loaded dataset, a pending replay) is gone.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_staged_files() {
+  int count = 0;
+  qint64 bytes = 0;
+  QDirIterator staged(u"/pj_uploads"_s, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+  while (staged.hasNext()) {
+    bytes += staged.nextFileInfo().size();
+    ++count;
+  }
+  qInfo("PJ_WASM_STAGED_FILES count=%d bytes=%lld", count, static_cast<long long>(bytes));
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_streaming_state() {
@@ -1542,6 +1649,20 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_message_box() {
       "PJ_WASM_MESSAGE_BOX_DONE present=1 title=%s count=%d", title != nullptr ? qPrintable(title->text()) : "", count);
 }
 
+// Counts every visible top-level dialog (message boxes and plugin dialogs alike)
+// and names them by window title, so a test can prove an action opened none.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_visible_dialogs() {
+  QStringList titles;
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (qobject_cast<QDialog*>(widget) != nullptr && widget->isVisible()) {
+      titles << widget->windowTitle();
+    }
+  }
+  qInfo(
+      "PJ_WASM_VISIBLE_DIALOGS count=%lld titles=%s", static_cast<long long>(titles.size()),
+      qPrintable(titles.join(u'|')));
+}
+
 // Reports whether Preferences is open, where its OK button is, and the plot
 // precision it would commit.
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_preferences_dialog() {
@@ -1578,15 +1699,24 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportLayoutPersistenceProbe = () => Module._pj_wasm_test_report_layout_persistence();
   globalThis.pjWasmReportSourceLayoutDecisionProbe = () => Module._pj_wasm_test_report_source_layout_decision();
   globalThis.pjWasmSupersedeSourceLayoutPickerProbe = () => Module._pj_wasm_test_supersede_source_layout_picker();
+  globalThis.pjWasmLoadLayoutUrlProbe = (url) => {
+    globalThis.pjWasmProbeLayoutUrl = url;
+    Module._pj_wasm_test_load_layout_url();
+  };
+  globalThis.pjWasmCancelLayoutUrlProbe = () => Module._pj_wasm_test_cancel_layout_url();
+  globalThis.pjWasmReportPresetsDialogProbe = () => Module._pj_wasm_test_report_presets_dialog();
+  globalThis.pjWasmOpenPresetsProbe = () => Module._pj_wasm_test_open_presets();
   globalThis.pjWasmReportDialogButtonsProbe = () => Module._pj_wasm_test_report_dialog_buttons();
   globalThis.pjWasmReportPreferencesActionProbe = () => Module._pj_wasm_test_report_preferences_action();
   globalThis.pjWasmReportMenuButtonsProbe = () => Module._pj_wasm_test_report_menu_buttons();
   globalThis.pjWasmReportMessageBoxProbe = () => Module._pj_wasm_test_report_message_box();
+  globalThis.pjWasmReportVisibleDialogsProbe = () => Module._pj_wasm_test_report_visible_dialogs();
   globalThis.pjWasmReportPreferencesDialogProbe = () => Module._pj_wasm_test_report_preferences_dialog();
   globalThis.pjWasmReportCsvDialogControlsProbe = () => Module._pj_wasm_test_report_csv_dialog_controls();
   globalThis.pjWasmReportIngestControlsProbe = () => Module._pj_wasm_test_report_ingest_controls();
   globalThis.pjWasmReportLayoutSnapshotProbe = () => Module._pj_wasm_test_report_layout_snapshot();
   globalThis.pjWasmReportDatasetCountProbe = () => Module._pj_wasm_test_report_dataset_count();
+  globalThis.pjWasmReportStagedFilesProbe = () => Module._pj_wasm_test_report_staged_files();
   globalThis.pjWasmReportCurveRowsProbe = () => Module._pj_wasm_test_report_curve_rows();
   globalThis.pjWasmReportPlaceholderIconsProbe = () => Module._pj_wasm_test_report_placeholder_icons();
   globalThis.pjWasmReportStreamingStateProbe = () => Module._pj_wasm_test_report_streaming_state();

@@ -5,8 +5,10 @@
 
 #include <QLoggingCategory>
 #include <QMetaObject>
+#include <QSet>
 #include <QSettings>
 #include <QThread>
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -60,15 +62,11 @@ QString pluginConfigKey(const std::string& plugin_id) {
   return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
 }
 
-// Looks up a streaming plugin by display name. Returns nullptr when no
-// streaming plugin matches — caller surfaces the error.
-const LoadedDataSource* resolveStreamSource(const ExtensionCatalogService& extensions, const QString& plugin_id) {
-  for (const auto* ds : extensions.streamSources()) {
-    if (QString::fromStdString(ds->name) == plugin_id) {
-      return ds;
-    }
-  }
-  return nullptr;
+// Looks up a streaming plugin by its manifest id (when one is given), then by
+// display name. Returns nullptr when none matches — the caller surfaces the error.
+const LoadedDataSource* resolveStreamSource(
+    const ExtensionCatalogService& extensions, const QString& manifest_id, const QString& plugin_id) {
+  return findDataSourceByIdentity(extensions.streamSources(), manifest_id, plugin_id);
 }
 
 }  // namespace
@@ -78,6 +76,14 @@ const LoadedDataSource* resolveStreamSource(const ExtensionCatalogService& exten
 struct StreamingSourceManager::StreamingSession {
   std::string plugin_id;    ///< display name, as shown in the streaming combo
   std::string manifest_id;  ///< the plugin's stable manifest id, for provenance
+  /// The dataset is "[stream] <label>": the layout record's source_name, else the plugin name.
+  QString label;
+  /// The layout record this session started from; empty for an interactive start.
+  QString layout_id;
+  /// What a source-bound save writes back: the layout's template, or the
+  /// configuration the dialog produced. Set before the worker starts and never
+  /// after, so the GUI thread reads it without calling into the plugin.
+  QString config_template;
   DatasetId dataset_id = 0;
   DataSourceHandle handle;
   /// handle.capabilities(), read once after start(): a plugin call, and the
@@ -162,10 +168,7 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
 
   rememberSkippedLazy(*sess);
   sessions_.erase(it);
-  for (const ObjectTopicId topic_id : secondary_object_store_->listTopics(dataset_id)) {
-    secondary_object_store_->removeTopic(topic_id);
-  }
-  secondary_data_engine_->removeDataset(dataset_id);
+  removeSecondaryDataset(dataset_id);
   // After erase: clearDataset's activeTopicsChanged emission finds no session for
   // this id in onActiveTopicsChanged and is silently ignored, instead of pushing
   // one redundant empty set through a handle about to be destroyed.
@@ -347,25 +350,18 @@ void StreamingSourceManager::flushSecondaryIntoPrimary() {
   }
 }
 
-void StreamingSourceManager::startSession(const QString& plugin_id) {
-  const LoadedDataSource* source_ptr = resolveStreamSource(extensions_, plugin_id);
-  if (source_ptr == nullptr) {
-    qCWarning(lcStream) << "Stream plugin not found:" << plugin_id;
-    emit setupError(tr("Stream plugin '%1' not found.").arg(plugin_id));
-    return;
-  }
-  const LoadedDataSource& source = *source_ptr;
+std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager::createSession(
+    const LoadedDataSource& source, const QString& label, QString& error) {
   const QString source_name = QString::fromStdString(source.name);
-
   DataSourceHandle handle = source.library.createHandle();
   if (!handle.valid()) {
     qCWarning(lcStream) << "createHandle failed for" << source_name;
-    emit setupError(tr("Plugin '%1': createHandle failed.").arg(source_name));
-    return;
+    error = tr("Plugin '%1': createHandle failed.").arg(source_name);
+    return nullptr;
   }
 
   DataEngine& engine = session_manager_.dataEngine();
-  const QString display_name = u"[stream] %1"_s.arg(source_name);
+  const QString display_name = u"[stream] %1"_s.arg(label);
 
   // One TimeDomain per stream so each is independently time-shiftable on the
   // Source Timeline. DUAL-ENGINE: the secondary (pause/tail buffer) must hold
@@ -374,21 +370,21 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   // between streams). Relying on counter order would desync them.
   auto td_or = engine.createTimeDomain(display_name.toStdString());
   if (!td_or.has_value()) {
-    emit setupError(tr("Could not create the time domain."));
-    return;
+    error = tr("Could not create the time domain.");
+    return nullptr;
   }
   const TimeDomainId td_id = *td_or;
   auto mirrored_td = secondary_data_engine_->createTimeDomain(display_name.toStdString(), td_id);
   if (!mirrored_td.has_value() || *mirrored_td != td_id) {
-    emit setupError(tr("secondary time domain lockstep failed."));
-    return;
+    error = tr("secondary time domain lockstep failed.");
+    return nullptr;
   }
 
   auto dataset_or =
       engine.createDataset(DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id});
   if (!dataset_or.has_value()) {
-    emit setupError(tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error())));
-    return;
+    error = tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error()));
+    return nullptr;
   }
   const DatasetId dataset_id = static_cast<DatasetId>(*dataset_or);
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
@@ -404,8 +400,9 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   auto mirrored_dataset = secondary_data_engine_->createDataset(
       DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id}, dataset_id);
   if (!mirrored_dataset.has_value()) {
-    emit setupError(tr("secondary createDataset failed: %1").arg(QString::fromStdString(mirrored_dataset.error())));
-    return;
+    error = tr("secondary createDataset failed: %1").arg(QString::fromStdString(mirrored_dataset.error()));
+    discardDataset(dataset_id);
+    return nullptr;
   }
 
   // Capture the plugin's DSO token BEFORE moving `handle` into the session. The
@@ -418,6 +415,7 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   auto session = std::make_unique<StreamingSession>(std::move(handle));
   session->plugin_id = source.name;
   session->manifest_id = source.id;
+  session->label = label;
   session->dataset_id = dataset_id;
   session->runtime_host = std::make_unique<DataSourceRuntimeHost>(
       engine, extensions_, dataset_id, source_handle, session_manager_.objectStore(), source.name,
@@ -457,17 +455,50 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
 
   ServiceRegistryBuilder registry;
   if (auto status = session->runtime_host->registerServices(registry); !status) {
-    emit streamError(
-        dataset_id,
-        tr("Plugin '%1': service registration failed: %2").arg(source_name, QString::fromStdString(status.error())));
-    return;
+    error = tr("Plugin '%1': service registration failed: %2").arg(source_name, QString::fromStdString(status.error()));
+    session.reset();
+    discardDataset(dataset_id);
+    return nullptr;
   }
-
   if (auto status = session->handle.bind(registry.view()); !status) {
-    emit streamError(
-        dataset_id, tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
+    error = tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error()));
+    session.reset();
+    discardDataset(dataset_id);
+    return nullptr;
+  }
+  return session;
+}
+
+void StreamingSourceManager::removeSecondaryDataset(DatasetId dataset_id) {
+  for (const ObjectTopicId topic_id : secondary_object_store_->listTopics(dataset_id)) {
+    secondary_object_store_->removeTopic(topic_id);
+  }
+  secondary_data_engine_->removeDataset(dataset_id);
+}
+
+void StreamingSourceManager::discardDataset(DatasetId dataset_id) {
+  removeSecondaryDataset(dataset_id);
+  session_manager_.evictDatasetObjects(dataset_id);
+  catalog_.removeDataset(dataset_id, /*tombstone=*/false);
+  session_manager_.removeDataset(dataset_id);
+}
+
+void StreamingSourceManager::startSession(const QString& plugin_id) {
+  const LoadedDataSource* source_ptr = resolveStreamSource(extensions_, {}, plugin_id);
+  if (source_ptr == nullptr) {
+    qCWarning(lcStream) << "Stream plugin not found:" << plugin_id;
+    emit setupError(tr("Stream plugin '%1' not found.").arg(plugin_id));
     return;
   }
+  const LoadedDataSource& source = *source_ptr;
+  const QString source_name = QString::fromStdString(source.name);
+  QString error;
+  std::unique_ptr<StreamingSession> session = createSession(source, source_name, error);
+  if (session == nullptr) {
+    emit setupError(error);
+    return;
+  }
+  const DatasetId dataset_id = session->dataset_id;
 
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source.name);
@@ -531,22 +562,63 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
     }
   }
   persisted_settings.setValue(config_key, QString::fromStdString(config));
+  session->config_template = QString::fromStdString(config);
 
+  if (!launchSession(std::move(session), error)) {
+    emit streamError(dataset_id, error);
+  }
+}
+
+DatasetId StreamingSourceManager::startFromLayout(
+    const layout_xml::StreamingSourceRef& source, const QString& expanded_config, QString* error) {
+  QString unused_error;
+  QString& message = error != nullptr ? *error : unused_error;
+  message.clear();
+  const LoadedDataSource* plugin = resolveStreamSource(extensions_, source.plugin_manifest_id, source.plugin_id);
+  if (plugin == nullptr) {
+    message = tr("Stream plugin '%1' is not installed.")
+                  .arg(source.plugin_id.isEmpty() ? source.plugin_manifest_id : source.plugin_id);
+    return 0;
+  }
+  const QString label = source.source_name.isEmpty() ? QString::fromStdString(plugin->name) : source.source_name;
+  std::unique_ptr<StreamingSession> session = createSession(*plugin, label, message);
+  if (session == nullptr) {
+    return 0;
+  }
+  const DatasetId dataset_id = session->dataset_id;
+  session->layout_id = source.id;
+  session->config_template = source.plugin_config_json;
+  if (auto status = session->handle.loadConfig(expanded_config.toStdString()); !status) {
+    message = tr("Plugin '%1' refused the saved configuration: %2")
+                  .arg(QString::fromStdString(plugin->name), QString::fromStdString(status.error()));
+    session.reset();
+    discardDataset(dataset_id);
+    return 0;
+  }
+  if (!launchSession(std::move(session), message)) {
+    discardDataset(dataset_id);
+    return 0;
+  }
+  return dataset_id;
+}
+
+bool StreamingSourceManager::launchSession(std::unique_ptr<StreamingSession> session, QString& error) {
+  const DatasetId dataset_id = session->dataset_id;
   // Apply the current pause state to this session's write hosts BEFORE start(),
   // so a source added mid-pause writes into the secondary tail buffer from its
-  // very first sample. This is the latest safe seam: the modal source dialog
-  // above runs a nested event loop where the user could toggle pause, so we read
-  // paused_ AFTER it returns; and start() is the plugin's "go" signal, so setting
-  // the target before it closes the window for a push-model plugin that delivers
-  // from its own thread inside start(). From here on, startSession runs
+  // very first sample. This is the latest safe seam: an interactive start's modal
+  // source dialog runs a nested event loop where the user could toggle pause, so
+  // paused_ is read AFTER it returns; and start() is the plugin's "go" signal, so
+  // setting the target before it closes the window for a push-model plugin that
+  // delivers from its own thread inside start(). From here on, the start runs
   // synchronously (no event loop), so paused_ cannot change before the worker
   // starts; onPauseToggled keeps every live session in step thereafter.
   applyWriteTargetsForCurrentPauseState(*session->runtime_host);
 
   if (auto status = session->handle.start(); !status) {
-    emit streamError(
-        dataset_id, tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
-    return;
+    error = tr("Plugin '%1': start failed: %2")
+                .arg(QString::fromStdString(session->plugin_id), QString::fromStdString(status.error()));
+    return false;
   }
 
   session->capabilities = session->handle.capabilities();
@@ -564,7 +636,10 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
 
   // QThread::create runs the lambda as the thread's run(); no Qt event loop
   // needed in the worker — we only post back via QueuedConnection.
-  session->worker.reset(QThread::create([this, dataset_id]() { workerLoop(dataset_id); }));
+  // The worker gets its session, never a sessions_ lookup: the GUI thread inserts and erases other
+  // sessions while it runs. The session outlives the worker (it is erased only after the join).
+  StreamingSession* const worker_session = session.get();
+  session->worker.reset(QThread::create([this, worker_session]() { workerLoop(*worker_session); }));
 
   QThread* worker_ptr = session->worker.get();
   sessions_.emplace(dataset_id, std::move(session));
@@ -574,14 +649,65 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   // Publish the new session's retention window so history-retaining consumers
   // (the 3D TF buffer) can bound themselves in step with the ObjectStore.
   emit retentionWindowChanged(dataset_id, static_cast<qint64>(retention_seconds_) * 1'000'000'000LL);
+  return true;
 }
 
-void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
-  auto it = sessions_.find(dataset_id);
-  if (it == sessions_.end()) {
-    return;
+std::vector<std::pair<DatasetId, QString>> StreamingSourceManager::layoutIds() const {
+  std::vector<DatasetId> dataset_ids;
+  dataset_ids.reserve(sessions_.size());
+  for (const auto& [dataset_id, unused_session] : sessions_) {
+    (void)unused_session;
+    dataset_ids.push_back(dataset_id);
   }
-  StreamingSession* sess = it->second.get();
+  std::sort(dataset_ids.begin(), dataset_ids.end());
+  std::vector<std::pair<DatasetId, QString>> ids;
+  ids.reserve(dataset_ids.size());
+  QSet<QString> taken;
+  for (const DatasetId dataset_id : dataset_ids) {
+    const QString& layout_id = sessions_.at(dataset_id)->layout_id;
+    const QString base = layout_id.isEmpty() ? u"stream"_s : layout_id;
+    QString id = base;
+    for (int suffix = 2; taken.contains(id); ++suffix) {
+      id = u"%1-%2"_s.arg(base).arg(suffix);
+    }
+    taken.insert(id);
+    ids.emplace_back(dataset_id, std::move(id));
+  }
+  return ids;
+}
+
+QList<layout_xml::StreamingSourceRef> StreamingSourceManager::layoutSources() const {
+  QList<layout_xml::StreamingSourceRef> sources;
+  for (const auto& [dataset_id, id] : layoutIds()) {
+    const StreamingSession& session = *sessions_.at(dataset_id);
+    layout_xml::StreamingSourceRef source;
+    source.id = id;
+    source.source_name = session.label;
+    source.plugin_id = QString::fromStdString(session.plugin_id);
+    source.plugin_manifest_id = QString::fromStdString(session.manifest_id);
+    source.plugin_config_json = session.config_template;
+    source.dataset.display_offset_ns = session_manager_.sourceDisplayOffset(dataset_id).value.count();
+    source.dataset.has_display_offset = true;
+    sources.push_back(std::move(source));
+  }
+  return sources;
+}
+
+QString StreamingSourceManager::layoutSourceId(DatasetId dataset_id) const {
+  if (!sessions_.contains(dataset_id)) {
+    return {};
+  }
+  for (const auto& [session_dataset, id] : layoutIds()) {
+    if (session_dataset == dataset_id) {
+      return id;
+    }
+  }
+  return {};
+}
+
+void StreamingSourceManager::workerLoop(StreamingSession& session) {
+  const DatasetId dataset_id = session.dataset_id;
+  StreamingSession* sess = &session;
 
   while (!sess->runtime_host->stopRequested()) {
     if (auto status = sess->handle.poll(); !status) {

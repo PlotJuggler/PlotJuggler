@@ -6,12 +6,15 @@
 #include <QDir>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QDomNodeList>
 #include <QFile>
 #include <QFileInfo>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <array>
 #include <cstdint>
+#include <string>
 
 #include "LayoutXml.h"
 #include "pj_runtime/XmlCdata.h"
@@ -232,15 +235,54 @@ TEST(ExtractDataSource, CanonicalBrowserContentFingerprintIsOptionalAndValidated
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().content_sha256, QLatin1StringView(kSha256));
 
+  EXPECT_FALSE(refs.front().content_sha256_malformed);
+
   file_info.setAttribute(u"content_sha256"_s, u"ABCDEF"_s);
   refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   ASSERT_EQ(refs.size(), 1);
   EXPECT_TRUE(refs.front().content_sha256.isEmpty());
+  EXPECT_TRUE(refs.front().content_sha256_malformed);
 
   file_info.removeAttribute(u"content_sha256"_s);
   refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   ASSERT_EQ(refs.size(), 1);
   EXPECT_TRUE(refs.front().content_sha256.isEmpty());
+  EXPECT_FALSE(refs.front().content_sha256_malformed);
+}
+
+// A downloaded layout's sources live beside it; relative names are paths, so
+// filesystem characters never turn into URL syntax.
+TEST(ResolveFileSourceUrl, RelativeAndAbsoluteNetworkReferencesResolve) {
+  const QUrl layout(u"https://host.test/presets/fr3/layout.pj4.xml?v=2"_s);
+  const auto resolve = [&layout](const QString& filename) {
+    QString error;
+    const QUrl url = PJ::layout_xml::resolveFileSourceUrl(filename, layout, &error);
+    EXPECT_TRUE(error.isEmpty()) << filename.toStdString() << ": " << error.toStdString();
+    return url.toString(QUrl::FullyEncoded).toStdString();
+  };
+  EXPECT_EQ(resolve(u"data.mcap"_s), "https://host.test/presets/fr3/data.mcap");
+  EXPECT_EQ(resolve(u"pj4-sources/1/duplicate.csv"_s), "https://host.test/presets/fr3/pj4-sources/1/duplicate.csv");
+  EXPECT_EQ(resolve(u"../shared/run 1#2?.csv"_s), "https://host.test/presets/shared/run%201%232%3F.csv");
+  EXPECT_EQ(resolve(u"https://cdn.test/data.mcap"_s), "https://cdn.test/data.mcap");
+}
+
+// A web-hosted layout never points the app at local files or other schemes.
+TEST(ResolveFileSourceUrl, RejectsLocalPathsOtherSchemesAndUnanchoredLayouts) {
+  const QUrl layout(u"https://host.test/presets/fr3/layout.pj4.xml"_s);
+  for (const QString& filename :
+       {u""_s, u"/home/user/data.mcap"_s, u"//server/share/data.mcap"_s, u"C:/data/run.mcap"_s, u"C:\\data\\run.mcap"_s,
+        u"data\\run.mcap"_s, u"file:///home/user/data.mcap"_s, u"pj-upload://3f2b/1/data.csv"_s,
+        u"javascript:alert(1)"_s, u"data/"_s}) {
+    QString error;
+    EXPECT_TRUE(PJ::layout_xml::resolveFileSourceUrl(filename, layout, &error).isEmpty()) << filename.toStdString();
+    EXPECT_FALSE(error.isEmpty()) << filename.toStdString();
+  }
+  for (const QUrl& location : {QUrl(u"file:///data/layouts/robot.pj4.xml"_s), QUrl()}) {
+    QString error;
+    EXPECT_TRUE(PJ::layout_xml::resolveFileSourceUrl(u"data.mcap"_s, location, &error).isEmpty())
+        << location.toString().toStdString();
+    EXPECT_FALSE(error.isEmpty());
+  }
 }
 
 TEST(ExtractDataSource, RelativeFilesystemPathContainingSchemeTextStillAnchors) {
@@ -1446,6 +1488,228 @@ TEST(BrowserLayoutSerialization, DetectsEveryEphemeralPathSentinel) {
   EXPECT_TRUE(
       PJ::layout_xml::containsEphemeralBrowserPath(QByteArrayLiteral(
           "<root><plugin><![CDATA[{\"filepath\":\"/pj_uploads/7/capture.mcap\"}]]></plugin></root>")));
+}
+
+// ---------- streaming sources -----------------------------------------------
+
+QDomDocument parseLayout(const QByteArray& xml) {
+  QDomDocument doc;
+  EXPECT_TRUE(static_cast<bool>(doc.setContent(xml))) << xml.toStdString();
+  return doc;
+}
+
+TEST(LayoutXmlTest, StreamingRoundTripAndDuplicateIds) {
+  using PJ::layout_xml::StreamingSourceRef;
+  // Two streams of one plugin stay two records. The configuration is the saved template:
+  // it round-trips unexpanded and byte-exact, CDATA terminator included.
+  StreamingSourceRef robot;
+  robot.id = u"robot"_s;
+  robot.source_name = u"Robot"_s;
+  robot.plugin_id = u"PlotJuggler Bridge"_s;
+  robot.plugin_manifest_id = u"plotjuggler-bridge"_s;
+  robot.plugin_config_json = uR"({"url":"${deployment.ws_origin}/bridge","note":"]]>"})"_s;
+  robot.dataset.source_name = u"[stream] Robot"_s;
+  robot.dataset.source_index = 0;
+  robot.dataset.display_offset_ns = -250;
+  robot.dataset.has_display_offset = true;
+  robot.dataset.timeline_order = 1;
+  StreamingSourceRef arm = robot;
+  arm.id = u"arm"_s;
+  arm.source_name = u"Arm"_s;
+  arm.plugin_config_json = uR"({"url":"ws://10.0.0.2:9871/bridge"})"_s;
+  arm.dataset = {};
+
+  QDomDocument doc = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+  QString error = u"stale"_s;
+  ASSERT_TRUE(PJ::layout_xml::writeStreamingSources(doc, {robot, arm}, &error)) << error.toStdString();
+  EXPECT_TRUE(error.isEmpty());
+  EXPECT_EQ(PJ::layout_xml::kStreamingLayoutSchemaVersion, 5);
+  EXPECT_EQ(doc.documentElement().attribute(u"pj4_version"_s), u"5"_s)
+      << "only a stream-bearing layout is written with the newer schema";
+
+  error = u"stale"_s;
+  const QList<StreamingSourceRef> refs =
+      PJ::layout_xml::extractStreamingSources(parseLayout(doc.toByteArray(2)), &error);
+  EXPECT_TRUE(error.isEmpty()) << error.toStdString();
+  ASSERT_EQ(refs.size(), 2);
+  const std::array<const StreamingSourceRef*, 2> expected{&robot, &arm};
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    const StreamingSourceRef& want = *expected[index];
+    const StreamingSourceRef& got = refs[static_cast<qsizetype>(index)];
+    EXPECT_EQ(got.id, want.id);
+    EXPECT_EQ(got.source_name, want.source_name);
+    EXPECT_EQ(got.plugin_id, want.plugin_id);
+    EXPECT_EQ(got.plugin_manifest_id, want.plugin_manifest_id);
+    EXPECT_EQ(got.plugin_config_json, want.plugin_config_json);
+    EXPECT_EQ(got.dataset.source_name, want.dataset.source_name);
+    EXPECT_EQ(got.dataset.source_index, want.dataset.source_index);
+    EXPECT_EQ(got.dataset.display_offset_ns, want.dataset.display_offset_ns);
+    EXPECT_EQ(got.dataset.has_display_offset, want.dataset.has_display_offset);
+    EXPECT_FALSE(got.dataset.display_offset_includes_global_reference);
+    EXPECT_EQ(got.dataset.timeline_order, want.dataset.timeline_order);
+  }
+
+  // A layout without streams keeps the plain schema and gains no empty block.
+  QDomDocument plain = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+  EXPECT_TRUE(PJ::layout_xml::writeStreamingSources(plain, {}, &error));
+  EXPECT_EQ(plain.documentElement().attribute(u"pj4_version"_s), u"4"_s);
+  EXPECT_FALSE(plain.documentElement().hasChildNodes());
+  error = u"stale"_s;
+  EXPECT_TRUE(PJ::layout_xml::extractStreamingSources(plain, &error).isEmpty());
+  EXPECT_TRUE(error.isEmpty());
+
+  // The hand-authored preset form: the CDATA payload is kept as written.
+  const QList<StreamingSourceRef> authored = PJ::layout_xml::extractStreamingSources(
+      parseLayout(R"(<root pj4_version="5" binding="source"><previouslyLoaded_StreamingSources>
+  <streamInfo id="robot" source_name="Robot">
+    <plugin ID="PlotJuggler Bridge" manifest_id="plotjuggler-bridge"><![CDATA[
+      {"url":"${deployment.ws_origin}/bridge"}
+    ]]></plugin>
+  </streamInfo>
+</previouslyLoaded_StreamingSources></root>)"),
+      &error);
+  EXPECT_TRUE(error.isEmpty()) << error.toStdString();
+  ASSERT_EQ(authored.size(), 1);
+  EXPECT_EQ(authored.front().plugin_config_json, u"\n      {\"url\":\"${deployment.ws_origin}/bridge\"}\n    "_s);
+  EXPECT_EQ(authored.front().dataset.source_index, -1);
+  EXPECT_FALSE(authored.front().dataset.has_display_offset);
+  EXPECT_EQ(authored.front().dataset.timeline_order, -1);
+
+  // Any invalid record rejects the whole block, so a layout never replays a partial stream set.
+  const auto rejection = [](const char* records) {
+    QString reason;
+    const QList<StreamingSourceRef> parsed = PJ::layout_xml::extractStreamingSources(
+        parseLayout(
+            QByteArray("<root pj4_version=\"5\"><previouslyLoaded_StreamingSources>") + records +
+            "</previouslyLoaded_StreamingSources></root>"),
+        &reason);
+    EXPECT_TRUE(parsed.isEmpty()) << records;
+    EXPECT_FALSE(reason.isEmpty()) << records;
+    return reason.toStdString();
+  };
+  constexpr auto kBridge = R"(<plugin ID="PlotJuggler Bridge"><![CDATA[{"url":"ws://a"}]]></plugin>)";
+  const std::string duplicate =
+      rejection((u"<streamInfo id=\"robot\">%1</streamInfo><streamInfo id=\"robot\">%1</streamInfo>"_s.arg(
+                     QLatin1StringView(kBridge)))
+                    .toUtf8()
+                    .constData());
+  EXPECT_NE(duplicate.find("robot"), std::string::npos) << duplicate;
+  rejection((u"<streamInfo>%1</streamInfo>"_s.arg(QLatin1StringView(kBridge))).toUtf8().constData());
+  rejection(R"(<streamInfo id="robot"/>)");
+  rejection(R"(<streamInfo id="robot"><plugin><![CDATA[{"url":"ws://a"}]]></plugin></streamInfo>)");
+  rejection(R"(<streamInfo id="robot"><plugin manifest_id="plotjuggler-bridge">  </plugin></streamInfo>)");
+
+  // Everything bound to a stream is qualified by its opaque record identity, never a path.
+  const QString identity = PJ::layout_xml::streamSourceIdentity(u"robot"_s);
+  EXPECT_EQ(identity, u"pj-stream://robot"_s);
+  QDomDocument bound = parseLayout(R"(<root><plot><curve topic="/imu" field="x"/></plot></root>)");
+  QDomElement curve = bound.documentElement().firstChildElement(u"plot"_s).firstChildElement(u"curve"_s);
+  curve.setAttribute(u"dataset_path"_s, identity);
+  PJ::layout_xml::resolveDatasetSourcePaths(bound, QDir(u"/tmp/layouts"_s));
+  EXPECT_EQ(curve.attribute(u"dataset_path"_s), identity);
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(identity, identity));
+  EXPECT_FALSE(PJ::layout_xml::isSamePath(identity, PJ::layout_xml::streamSourceIdentity(u"arm"_s)));
+}
+
+// A robot or trail layer names its stream only on its nested payload. Binding marks the owning
+// <layer> pending (it waits for the topic instead of failing the restore) and gives it the
+// stream's dataset, so its topic is demanded from that stream alone.
+TEST(LayoutXmlTest, BindingANestedStreamReferenceMarksItsLayerPending) {
+  QDomDocument doc = parseLayout(R"(<root><scene3d>
+    <layer local="true" object_type="robot_description" order="0">
+      <robot_model source_type="topic" source_topic_name="robot_description" source_dataset_path="pj-stream://robot"/>
+    </layer>
+    <layer role="trail" order="1">
+      <trail source_kind="pose_topic" source_topic_name="pose" source_dataset_path="pj-stream://robot"/>
+    </layer>
+    <layer local="true" object_type="robot_description" order="2">
+      <robot_model source_type="topic" source_topic_name="robot_description" source_dataset_path="data.mcap"/>
+    </layer>
+  </scene3d></root>)");
+
+  PJ::layout_xml::bindStreamQualifiers(doc, {{u"pj-stream://robot"_s, 7U}});
+
+  const QDomNodeList layers = doc.elementsByTagName(u"layer"_s);
+  ASSERT_EQ(layers.size(), 3);
+  for (int index = 0; index < 2; ++index) {
+    const QDomElement layer = layers.at(index).toElement();
+    EXPECT_EQ(layer.attribute(u"pending_intent"_s), u"true"_s) << index;
+    EXPECT_EQ(layer.attribute(u"dataset_id"_s), u"7"_s) << index;
+    const QDomElement payload = layer.firstChildElement();
+    EXPECT_EQ(payload.attribute(u"source_dataset_id"_s), u"7"_s) << index;
+    EXPECT_FALSE(payload.hasAttribute(u"source_dataset_path"_s)) << index;
+  }
+  const QDomElement file_bound = layers.at(2).toElement();
+  EXPECT_FALSE(file_bound.hasAttribute(u"pending_intent"_s));
+  EXPECT_FALSE(file_bound.hasAttribute(u"dataset_id"_s));
+}
+
+TEST(LayoutXmlTest, StreamingBlockShapeAndWriterValidation) {
+  using PJ::layout_xml::StreamingSourceRef;
+  // Hand-authored presets often omit pj4_version. Stream records only exist from v5, so their
+  // timeline offset never takes the pre-v4 migration that an unversioned <fileInfo> does.
+  QString error;
+  const QList<StreamingSourceRef> unversioned = PJ::layout_xml::extractStreamingSources(
+      parseLayout(
+          R"(<root binding="source"><previouslyLoaded_StreamingSources><streamInfo id="robot">)"
+          R"(<plugin ID="Stream Plugin"><![CDATA[{"url":"ws://a"}]]></plugin>)"
+          R"(<dataset display_offset_ns="-5"/></streamInfo></previouslyLoaded_StreamingSources></root>)"),
+      &error);
+  ASSERT_EQ(unversioned.size(), 1) << error.toStdString();
+  EXPECT_TRUE(unversioned.front().dataset.has_display_offset);
+  EXPECT_EQ(unversioned.front().dataset.display_offset_ns, -5);
+  EXPECT_FALSE(unversioned.front().dataset.display_offset_includes_global_reference);
+
+  // A second block, or a second plugin in one record, rejects everything like any invalid record.
+  const auto record = [](const char* id) {
+    return QString::fromLatin1(R"(<streamInfo id="%1"><plugin ID="Stream Plugin"><![CDATA[{}]]></plugin></streamInfo>)")
+        .arg(QLatin1StringView(id));
+  };
+  const QString two_blocks =
+      u"<root pj4_version=\"5\"><previouslyLoaded_StreamingSources>%1</previouslyLoaded_StreamingSources>"
+      u"<previouslyLoaded_StreamingSources>%2</previouslyLoaded_StreamingSources></root>"_s.arg(
+          record("robot"), record("arm"));
+  const QString two_plugins =
+      uR"(<root pj4_version="5"><previouslyLoaded_StreamingSources><streamInfo id="robot">)"
+      uR"(<plugin ID="Stream Plugin"><![CDATA[{}]]></plugin><plugin ID="Other Plugin"><![CDATA[{}]]></plugin>)"
+      uR"(</streamInfo></previouslyLoaded_StreamingSources></root>)"_s;
+  for (const QString& xml : {two_blocks, two_plugins}) {
+    error.clear();
+    EXPECT_TRUE(PJ::layout_xml::extractStreamingSources(parseLayout(xml.toUtf8()), &error).isEmpty())
+        << xml.toStdString();
+    EXPECT_FALSE(error.isEmpty()) << xml.toStdString();
+  }
+
+  // The writer refuses what its reader would reject, and then writes nothing.
+  StreamingSourceRef valid;
+  valid.id = u"robot"_s;
+  valid.plugin_id = u"Stream Plugin"_s;
+  valid.plugin_config_json = uR"({"url":"ws://a"})"_s;
+  StreamingSourceRef no_id = valid;
+  no_id.id.clear();
+  StreamingSourceRef no_plugin = valid;
+  no_plugin.plugin_id.clear();
+  StreamingSourceRef no_config = valid;
+  no_config.plugin_config_json = u"  "_s;
+  const QList<QList<StreamingSourceRef>> refused{{no_id}, {valid, valid}, {no_plugin}, {no_config}};
+  for (const QList<StreamingSourceRef>& sources : refused) {
+    QDomDocument doc = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+    error.clear();
+    EXPECT_FALSE(PJ::layout_xml::writeStreamingSources(doc, sources, &error));
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_FALSE(doc.documentElement().hasChildNodes());
+    EXPECT_EQ(doc.documentElement().attribute(u"pj4_version"_s), u"4"_s);
+  }
+  // A second write would leave two blocks, which the reader rejects.
+  QDomDocument doc = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+  ASSERT_TRUE(PJ::layout_xml::writeStreamingSources(doc, {valid}, &error)) << error.toStdString();
+  StreamingSourceRef arm = valid;
+  arm.id = u"arm"_s;
+  error.clear();
+  EXPECT_FALSE(PJ::layout_xml::writeStreamingSources(doc, {arm}, &error));
+  EXPECT_FALSE(error.isEmpty());
+  EXPECT_EQ(doc.elementsByTagName(u"previouslyLoaded_StreamingSources"_s).size(), 1);
+  EXPECT_EQ(PJ::layout_xml::extractStreamingSources(doc, &error).size(), 1) << error.toStdString();
 }
 
 }  // namespace

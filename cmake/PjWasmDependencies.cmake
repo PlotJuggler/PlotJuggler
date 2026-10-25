@@ -21,6 +21,7 @@ option(PJ_WASM_WITH_ROS "Build the official ROS1/ROS2 message parser into the wa
 option(PJ_WASM_WITH_PROTOBUF "Build the official Protobuf/Foxglove parser into the wasm app" ON)
 option(PJ_WASM_WITH_TRANSFORM_EDITOR "Build the official Transform Editor toolbox into the wasm app" ON)
 option(PJ_WASM_WITH_DUMMY_STREAM "Build the official Dummy Streamer into the wasm app" ON)
+option(PJ_WASM_WITH_PJ_BRIDGE "Build the official PlotJuggler Bridge WebSocket streamer into the wasm app" ON)
 option(PJ_WASM_WITH_JSON "Build the official JSON message parser into the wasm app" ON)
 option(PJ_WASM_WITH_DATA_TAMER "Build the official DataTamer message parser into the wasm app" ON)
 option(PJ_WASM_WITH_3D_LOADER "Build the official PCD/PLY point-cloud and mesh importer into the wasm app" ON)
@@ -119,15 +120,15 @@ if(PJ_WASM_WITH_CSV)
 endif()
 
 if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF OR
-   PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_JSON OR
+   PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_JSON OR
    PJ_WASM_WITH_DATA_TAMER OR PJ_WASM_WITH_3D_LOADER OR PJ_WASM_WITH_QUATERNION OR
    PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR)
     # Source-only population shared by the narrowly-scoped static plugin
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.
     FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/056819f032638835cddc42dd4d9d6404f90018eb
-        URL_HASH SHA256=2bcff33aef1584446d7da47bb069098a0d239cc596e519f7282d0b43546f8585
+        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/37e1bde18b8a425b9b64d7fe54c165464942b5eb
+        URL_HASH SHA256=d5fcbc1e9a5a837e36fa2c1c64fa02908d74579671f413409ca86622a3aa5e04
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists)
     FetchContent_MakeAvailable(pj_official_plugins)
@@ -195,11 +196,11 @@ if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)
     FetchContent_MakeAvailable(data_tamer)
 endif()
 
-if(PJ_WASM_WITH_MCAP OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS))
+if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS))
     # Match the native Conan graph exactly. MCAP uses these libraries for chunk
-    # decompression; Cloudini uses the same pinned static targets for its second
-    # compression stage. Populate them once when either browser feature needs
-    # them.
+    # decompression, the PlotJuggler Bridge zstd for its data frames, and
+    # Cloudini the same pinned static targets for its second compression stage.
+    # Populate them once when any of these browser features needs them.
     set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
     set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(lz4

@@ -1079,11 +1079,11 @@ void FileLoader::selectBrowserInput(QWidget* dialog_parent, BrowserSelectionCall
         });
       });
 }
+#endif
 
 QString FileLoader::browserContentSha256(const QString& source_identity) const {
   return browser_content_sha256_.value(source_identity);
 }
-#endif
 
 FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   bool worker_handoff = false;
@@ -1174,23 +1174,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // the rest of this coroutine/worker load.
   const LoadedDataSource* source = matches.front();
   if (hints.require_expected_plugin) {
-    const auto match_by = [&matches](auto&& field_of) {
-      return std::find_if(matches.begin(), matches.end(), [&field_of](const LoadedDataSource* candidate) {
-        return candidate != nullptr && field_of(*candidate);
-      });
-    };
-    auto expected = matches.end();
-    if (!hints.expected_manifest_id.isEmpty()) {
-      expected = match_by([&hints](const LoadedDataSource& candidate) {
-        return QString::fromStdString(candidate.id) == hints.expected_manifest_id;
-      });
-    }
-    if (expected == matches.end() && !hints.expected_plugin_id.isEmpty()) {
-      expected = match_by([&hints](const LoadedDataSource& candidate) {
-        return QString::fromStdString(candidate.name) == hints.expected_plugin_id;
-      });
-    }
-    if (expected == matches.end()) {
+    const LoadedDataSource* expected =
+        findDataSourceByIdentity(matches, hints.expected_manifest_id, hints.expected_plugin_id);
+    if (expected == nullptr) {
       const QString expected_label = !hints.expected_plugin_id.isEmpty()     ? hints.expected_plugin_id
                                      : !hints.expected_manifest_id.isEmpty() ? hints.expected_manifest_id
                                                                              : tr("(unspecified)");
@@ -1198,7 +1184,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
                      .arg(expected_label, ext));
       co_return;
     }
-    source = *expected;
+    source = expected;
   }
   const QString source_name = QString::fromStdString(source->name);
   const QString source_manifest_id = QString::fromStdString(source->id);
@@ -2175,11 +2161,9 @@ LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_pare
     emit fileLoadFailed(path, reason);
     return 0;
   }
-#ifdef PJ_TARGET_WASM
   if (!input.content_sha256.isEmpty()) {
     browser_content_sha256_.insert(input.source_identity, input.content_sha256);
   }
-#endif
   ++next_load_ticket_;
   if (next_load_ticket_ == 0) {
     ++next_load_ticket_;  // reserve zero for "invalid", even after wraparound

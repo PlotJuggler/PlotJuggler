@@ -294,6 +294,18 @@ TEST_F(LayoutDatasetPathsTest, GeneratorFollowsItsDatasetWhenLayoutAndDataMove) 
   EXPECT_EQ(restored.front().dataset_id, dataset);
 }
 
+// Only a layout carrying stream records is written as schema 5 (layout_xml::writeStreamingSources).
+// Source-bound and generic saves of plots and files stay on 4, so an older build does not warn on them.
+TEST_F(LayoutDatasetPathsTest, PlainSavesStayOnSchemaFour) {
+  ASSERT_TRUE(folders.create());
+  ASSERT_NE(addDataset("run.csv", folders.saved + u"/data/one/run.csv"_s), 0U);
+  for (const bool include_data_source : {true, false}) {
+    const QString path = folders.saved + (include_data_source ? u"/source.pj4.xml"_s : u"/generic.pj4.xml"_s);
+    Peer::saveLayout(window, path, include_data_source);
+    EXPECT_EQ(readXml(path).documentElement().attribute(u"pj4_version"_s).toStdString(), "4") << qPrintable(path);
+  }
+}
+
 // Two same-named datasets: the generator's path, not its (swapped) id, picks the
 // dataset it was saved on.
 TEST_F(LayoutDatasetPathsTest, GeneratorResolvesByPathAmongSameNamedDatasets) {

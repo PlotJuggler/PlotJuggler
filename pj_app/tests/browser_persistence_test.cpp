@@ -4,10 +4,12 @@
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QDomDocument>
 #include <QString>
 #include <QVariant>
 
 #include "BrowserPersistence.h"
+#include "LayoutXml.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -153,6 +155,45 @@ TEST(BrowserPersistencePolicy, AcceptsOnlyBoundedSourceFreeLayoutRecipes) {
       BrowserPersistence::isSafeGenericLayoutRecipe(
           "<root pj4_version=\"4\" binding=\"generic\"><materialize provider=\"p\"/></root>"));
   EXPECT_FALSE(BrowserPersistence::isSafeGenericLayoutRecipe(QByteArray(256 * 1024 + 1, 'x')));
+}
+
+TEST(BrowserPersistenceTest, StreamRecordsNeverBecomeDurableRecipes) {
+  // A stream record carries plugin configuration (endpoints, maybe credentials), so neither the
+  // record nor its identity may enter durable browser storage, even in a document marked generic.
+  const QByteArray stream_block =
+      "<root pj4_version=\"5\" binding=\"generic\"><previouslyLoaded_StreamingSources/></root>";
+  const QByteArray nested_record =
+      "<root pj4_version=\"5\" binding=\"generic\"><tabbed_widget><streamInfo id=\"robot\"/></tabbed_widget></root>";
+  const QByteArray stream_qualifier =
+      "<root pj4_version=\"4\" binding=\"generic\"><plot><curve "
+      "dataset_path=\"pj-stream&#x3a;//robot\"/></plot></root>";
+  for (const QByteArray& xml : {stream_block, nested_record, stream_qualifier}) {
+    EXPECT_FALSE(BrowserPersistence::isSafeGenericLayoutRecipe(xml)) << xml.toStdString();
+  }
+  BrowserPersistence persistence;
+  QString error;
+  EXPECT_FALSE(persistence.rememberGenericLayout(u"robot.pj4.xml"_s, stream_block, &error));
+  EXPECT_FALSE(error.isEmpty());
+  EXPECT_TRUE(persistence.recentLayouts().isEmpty());
+
+  // The shell retains an opened browser layout as a recipe only when it is not source-bound:
+  // a stream record alone makes a layout source-bound.
+  const auto source_bound = [](const char* xml) {
+    QDomDocument doc;
+    EXPECT_TRUE(static_cast<bool>(doc.setContent(QByteArray(xml)))) << xml;
+    return layout_xml::isSourceBoundLayout(doc);
+  };
+  EXPECT_TRUE(source_bound(
+      R"(<root binding="source"><previouslyLoaded_StreamingSources><streamInfo id="robot">)"
+      R"(<plugin ID="PlotJuggler Bridge"><![CDATA[{"url":"ws://10.0.0.2:9871"}]]></plugin>)"
+      R"(</streamInfo></previouslyLoaded_StreamingSources></root>)"));
+  EXPECT_TRUE(source_bound(
+      R"(<root binding="source"><previouslyLoaded_Datafiles><fileInfo filename="run.csv"/>)"
+      R"(</previouslyLoaded_Datafiles></root>)"));
+  EXPECT_FALSE(source_bound(
+      R"(<root binding="generic"><previouslyLoaded_StreamingSources><streamInfo id="robot"/>)"
+      R"(</previouslyLoaded_StreamingSources></root>)"));
+  EXPECT_FALSE(source_bound(R"(<root binding="source"><tabbed_widget/></root>)"));
 }
 
 TEST(BrowserPersistencePolicy, RecentRecipesAreDeduplicatedBoundedAndClearable) {

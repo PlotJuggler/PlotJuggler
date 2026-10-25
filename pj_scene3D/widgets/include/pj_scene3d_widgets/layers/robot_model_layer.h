@@ -7,6 +7,7 @@
 #include <QMap>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -54,6 +55,17 @@ class UrdfPackageResolver;
 //     select the file again).
 //   - kUrl:   a URL fetched ASYNCHRONOUSLY (file/http/https on desktop, http(s)
 //     in the browser); the model is applied when the bytes land.
+//
+// Explicit package URL roots (setPackageUrlRoots) map package:// names to
+// directory URLs for THIS model, so a topic URDF, which has no location of its
+// own, can still fetch its meshes. They are persisted as the robot_model's
+// `package_url_roots` attribute (layout_resources.h).
+//
+// A robot restored from a web-hosted layout carries `remote_resources_only="true"`
+// (stamped by resolveLayoutResourceUrls, then saved with the layer): its URDF's
+// mesh references resolve to network resources and embedded assets only, never to
+// files on this host (UrdfPackageResolver::resolveUri). Nothing in the UI clears it; loading
+// a layout from any other location does.
 //
 // Coordinate contract. The layer's CPU model is TF-free: one ModelDrawCall per
 // link geometry, holding the prefixed link frame plus the link-local
@@ -125,6 +137,12 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   // the bytes are never persisted.
   void setSourceFileContent(QString filename, QByteArray bytes);
   void setSourceUrl(QString url);
+  // Package name -> directory URL, consulted before the resolver's heuristics
+  // and authoritative for the packages it names. A URL source's relative roots
+  // resolve against its fetched URDF's final URL; other sources need absolute
+  // roots (resolveLayoutResourceUrls makes a layout's absolute). A change
+  // reloads from the current source.
+  void setPackageUrlRoots(const QMap<QString, QUrl>& roots);
   void setFramePrefix(QString prefix);
   void setDisplayMode(DisplayMode mode);
   void setFallbackColor(QColor color);
@@ -260,6 +278,8 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
     PJ::DatasetId dataset_id = 0;  // 0: none saved
     QString dataset_source;
     QString dataset_path;
+    QMap<QString, QUrl> package_url_roots;
+    bool remote_resources_only = false;
   };
   [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
 
@@ -280,8 +300,10 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
   bool loadFromCurrentSource();
   bool tryLoadTopicDescription();
+  // `roots_base` anchors relative package roots (a URL source's final URL).
   bool applyRobotDescription(
-      const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url);
+      const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url,
+      const QUrl& roots_base = {});
   void queueMeshLoads();
   // A mesh load of the current source settled: admit it against the budget.
   void admitMesh(const std::string& key, MeshData mesh);
@@ -317,6 +339,8 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   QString source_value_;
   QByteArray local_file_bytes_;
   QMap<QString, QByteArray> embedded_assets_;
+  QMap<QString, QUrl> package_url_roots_;
+  bool remote_resources_only_{false};
   QString frame_prefix_;
   DisplayMode display_mode_{DisplayMode::kAuto};
   QColor fallback_color_{178, 178, 178};

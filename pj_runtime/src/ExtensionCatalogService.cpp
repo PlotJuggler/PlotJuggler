@@ -806,4 +806,20 @@ QString ExtensionCatalogService::descriptorIncompatReason(const PluginDescriptor
   return QString::fromStdString(result.reason);
 }
 
+const LoadedDataSource* findDataSourceByIdentity(
+    const std::vector<const LoadedDataSource*>& candidates, const QString& manifest_id, const QString& name) {
+  const auto find_by = [&candidates](const QString& wanted, std::string LoadedDataSource::* field) {
+    const auto found =
+        std::find_if(candidates.cbegin(), candidates.cend(), [&wanted, field](const LoadedDataSource* candidate) {
+          return candidate != nullptr && QString::fromStdString(candidate->*field) == wanted;
+        });
+    return found != candidates.cend() ? *found : nullptr;
+  };
+  const LoadedDataSource* source = manifest_id.isEmpty() ? nullptr : find_by(manifest_id, &LoadedDataSource::id);
+  if (source == nullptr && !name.isEmpty()) {
+    source = find_by(name, &LoadedDataSource::name);
+  }
+  return source;
+}
+
 }  // namespace PJ

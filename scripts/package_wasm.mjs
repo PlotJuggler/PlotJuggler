@@ -5,12 +5,14 @@
 import { createHash } from 'node:crypto';
 import {
   access,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -38,20 +40,56 @@ const REQUIRED_ARTIFACTS = [
 // Every build writes it (cmake/PjWasmNotices.cmake). Packaged beside the module, and again at the deployment root,
 // where the About dialog opens it by this name (pj_app/src/ui/AboutDialog.ui).
 const NOTICES = 'THIRD_PARTY_NOTICES.txt';
-const CONTENT_TYPES = new Map([
+// Every deployable type. docs/wasm/Caddyfile repeats this table, and
+// tests/wasm/robot_deployment.spec.js checks that Caddy serves each type as declared.
+export const CONTENT_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.svg', 'image/svg+xml'],
   ['.txt', 'text/plain; charset=utf-8'],
   ['.wasm', 'application/wasm'],
+  // Preset content: layouts, data, thumbnails, robot models and their notices.
+  // MCAP has no registered media type.
+  ['', 'text/plain; charset=utf-8'],
+  ['.csv', 'text/csv; charset=utf-8'],
+  ['.dae', 'model/vnd.collada+xml'],
+  ['.glb', 'model/gltf-binary'],
+  ['.gltf', 'model/gltf+json'],
+  ['.mcap', 'application/octet-stream'],
+  ['.md', 'text/markdown; charset=utf-8'],
+  ['.obj', 'model/obj'],
+  ['.png', 'image/png'],
+  ['.stl', 'model/stl'],
+  ['.xml', 'application/xml'],
 ]);
-const COMPRESSIBLE_TYPES = new Set(['.html', '.js', '.svg', '.txt', '.wasm']);
+// Each preset path segment: portable on every static host and filesystem, and
+// never a dotfile (.git, .DS_Store, editor state) or a URL-significant name.
+const PRESET_SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+// Types that gain from .br/.gz: text, and the wasm module. Left out because they are compressed inside:
+// .mcap (zstd chunks), .png, and .glb (embeds PNG/JPEG textures and Draco/meshopt buffers).
+// The empty extension is the extensionless license/notice text of a preset package.
+export const COMPRESSIBLE_TYPES = new Set([
+  '', '.csv', '.dae', '.gltf', '.html', '.js', '.json', '.md', '.obj', '.stl', '.svg', '.txt', '.wasm', '.xml',
+]);
 const MINIMUM_COMPRESSED_SIZE = 1024;
 const BROTLI_QUALITY = 9;
 const BROTLI_WINDOW = 22;
 const GZIP_LEVEL = 9;
 const DEPLOYMENT_FORMAT = 'org.plotjuggler.wasm-deployment.v1';
+// Runs in the entrypoint before the threaded runtime loads: without a secure,
+// cross-origin isolated page (no SharedArrayBuffer) it would stop on "Loading...".
+const ISOLATION_REQUIREMENT = 'The app must be served over HTTPS, or from localhost, with the headers '
+  + 'Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp.';
+const ISOLATION_PREFLIGHT = `if (!window.isSecureContext || !window.crossOriginIsolated) {
+                    status.textContent = 'PlotJuggler cannot start: this page '
+                        + (window.isSecureContext ? 'is not cross-origin isolated. ' : 'was not served over HTTPS. ')
+                        + ${JSON.stringify(ISOLATION_REQUIREMENT)};
+                    status.setAttribute('role', 'alert');
+                    console.error(status.textContent);
+                    return;
+                }
+                `;
 
 function usage() {
   return `Usage: node scripts/package_wasm.mjs [options]
@@ -60,6 +98,7 @@ Options:
   --source <dir>   Qt/Emscripten output directory (default: build-wasm/pj_app)
   --output <dir>   Deployment package directory (default: build-wasm/deploy)
   --version <text> Application version (default: PJ_VERSION or versions.env)
+  --presets <dir>  Preset tree to deploy under presets/ (default: none)
   --help           Show this help
 `;
 }
@@ -77,7 +116,7 @@ function parseArguments(argv) {
       process.stdout.write(usage());
       process.exit(0);
     }
-    if (!['--source', '--output', '--version'].includes(argument)) {
+    if (!['--source', '--output', '--version', '--presets'].includes(argument)) {
       throw new Error(`Unknown argument: ${argument}\n\n${usage()}`);
     }
     const value = argv[index + 1];
@@ -90,6 +129,9 @@ function parseArguments(argv) {
 
   options.source = path.resolve(options.source);
   options.output = path.resolve(options.output);
+  if (options.presets) {
+    options.presets = path.resolve(options.presets);
+  }
   return options;
 }
 
@@ -108,12 +150,17 @@ function containsPath(parent, candidate) {
     || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+// Extensions match in any case: robot packages often ship `.STL` meshes.
 function contentType(fileName) {
-  const value = CONTENT_TYPES.get(path.extname(fileName));
+  const value = CONTENT_TYPES.get(path.extname(fileName).toLowerCase());
   if (!value) {
     throw new Error(`No deployment MIME type is defined for ${fileName}`);
   }
   return value;
+}
+
+function isCompressible(fileName) {
+  return COMPRESSIBLE_TYPES.has(path.extname(fileName).toLowerCase());
 }
 
 function replaceExactlyOnce(contents, source, replacement) {
@@ -170,7 +217,86 @@ async function writeAsset(stagingRoot, logicalPath, contents, compress) {
   };
 }
 
-function deploymentHeaders(bundlePath) {
+// Lists every file of a preset tree as a '/'-separated path, refusing anything
+// a static host should not publish: symlinks (they can point anywhere), special
+// files, and names outside PRESET_SEGMENT. Throws before anything is written.
+async function presetFiles(presetsRoot, prefix = '') {
+  const files = [];
+  for (const name of (await readdir(path.join(presetsRoot, prefix))).sort()) {
+    const relative = prefix ? `${prefix}/${name}` : name;
+    if (!PRESET_SEGMENT.test(name)) {
+      throw new Error(`Refusing preset entry with an unsafe name: ${relative}`);
+    }
+    const metadata = await lstat(path.join(presetsRoot, relative));
+    if (metadata.isDirectory()) {
+      files.push(...await presetFiles(presetsRoot, relative));
+    } else if (metadata.isFile()) {
+      if (!CONTENT_TYPES.has(path.extname(name).toLowerCase())) {
+        throw new Error(`Refusing preset entry with no deployment MIME type: ${relative}`);
+      }
+      files.push(relative);
+    } else {
+      throw new Error(`Refusing preset entry that is not a regular file or directory: ${relative}`);
+    }
+  }
+  return files;
+}
+
+// Refuses a preset tree whose index.json the browser could not use: absent,
+// malformed, without a presets array, with an entry the browser's catalog parser
+// refuses (which drops every entry), or naming a relative layout or thumbnail
+// the tree does not deploy. Absolute http(s) references live elsewhere and pass.
+async function validatePresetIndex(presetsRoot, files) {
+  let index;
+  try {
+    index = JSON.parse(await readFile(path.join(presetsRoot, 'index.json'), 'utf8'));
+  } catch (error) {
+    throw new Error(`The preset tree needs a readable JSON index.json: ${error.message}`, { cause: error });
+  }
+  if (!Array.isArray(index?.presets)) {
+    throw new Error('The preset index.json has no presets array');
+  }
+  // The entry rules of pj_runtime's parsePresetCatalog(), which rejects the whole index for any of them.
+  const ids = new Set();
+  for (const [position, entry] of index.presets.entries()) {
+    const label = `The preset index.json entry #${position + 1}`;
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`${label} is not an object`);
+    }
+    const fields = ['id', 'title', 'description', 'layout', 'thumbnail'];
+    if (fields.some(field => entry[field] !== undefined && entry[field] !== null && typeof entry[field] !== 'string')) {
+      throw new Error(`${label} has a field that is not a string`);
+    }
+    if (!entry.id) {
+      throw new Error(`${label} has no id`);
+    }
+    if (ids.has(entry.id)) {
+      throw new Error(`The preset index.json has a duplicate preset id ${JSON.stringify(entry.id)}`);
+    }
+    ids.add(entry.id);
+    if (!entry.layout) {
+      throw new Error(`The preset index.json entry ${JSON.stringify(entry.id)} has no layout`);
+    }
+  }
+  const deployed = new Set(files);
+  const base = new URL('https://presets.invalid/presets/index.json');
+  for (const entry of index.presets) {
+    for (const reference of [entry?.layout, entry?.thumbnail].filter(value => value != null)) {
+      const target = typeof reference === 'string' && URL.canParse(reference, base)
+        ? new URL(reference, base) : undefined;
+      if (target && target.origin !== base.origin && ['http:', 'https:'].includes(target.protocol)) {
+        continue;
+      }
+      const relative = target?.origin === base.origin && target.pathname.startsWith('/presets/')
+        ? decodeURIComponent(target.pathname.slice('/presets/'.length)) : undefined;
+      if (!deployed.has(relative)) {
+        throw new Error(`The preset index.json names a file the tree does not deploy: ${JSON.stringify(reference)}`);
+      }
+    }
+  }
+}
+
+function deploymentHeaders(bundlePath, withPresets) {
   return `# Generated by scripts/package_wasm.mjs. Used by hosts which support
 # the Netlify/Cloudflare Pages _headers format. Precompressed representation
 # selection must still be enabled by the hosting platform.
@@ -194,7 +320,7 @@ function deploymentHeaders(bundlePath) {
 
 /${bundlePath}/*
   Cache-Control: public, max-age=31536000, immutable
-`;
+${withPresets ? '\n/presets/*\n  Cache-Control: no-cache\n' : ''}`;
 }
 
 async function validateSource(sourceRoot) {
@@ -260,17 +386,26 @@ async function validateReplaceableOutput(outputRoot) {
 export async function packageWasm(options) {
   const sourceRoot = path.resolve(options.source);
   const outputRoot = path.resolve(options.output);
+  const presetsRoot = options.presets ? path.resolve(options.presets) : undefined;
   const version = options.version || await defaultVersion();
   if (!version.trim()) {
     throw new Error('The package version must not be empty');
   }
+  // Replacing the output deletes it, so no input may live inside it (or hold it).
   if (outputRoot === path.parse(outputRoot).root
-      || containsPath(sourceRoot, outputRoot)
-      || containsPath(outputRoot, sourceRoot)) {
-    throw new Error('The source and output directories must be distinct, non-nested paths');
+      || [sourceRoot, presetsRoot].some(input => input
+        && (containsPath(input, outputRoot) || containsPath(outputRoot, input)))) {
+    throw new Error('The source, presets and output directories must be distinct, non-nested paths');
   }
   await validateReplaceableOutput(outputRoot);
   await validateSource(sourceRoot);
+  if (presetsRoot && !(await stat(presetsRoot)).isDirectory()) {
+    throw new Error(`The preset tree is not a directory: ${presetsRoot}`);
+  }
+  const presets = presetsRoot ? await presetFiles(presetsRoot) : [];
+  if (presetsRoot) {
+    await validatePresetIndex(presetsRoot, presets);
+  }
 
   const sourceAssets = await Promise.all([...REQUIRED_ARTIFACTS, NOTICES].map(async fileName => ({
     fileName,
@@ -298,7 +433,7 @@ export async function packageWasm(options) {
         stagingRoot,
         logicalPath,
         asset.contents,
-        COMPRESSIBLE_TYPES.has(path.extname(asset.fileName)),
+        isCompressible(asset.fileName),
       ));
     }
 
@@ -317,7 +452,8 @@ export async function packageWasm(options) {
     entrypoint = replaceExactlyOnce(
       entrypoint,
       qtLoadMarker,
-      `${qtLoadMarker}\n                    locateFile: filename => filename === 'plotjuggler4.wasm'`
+      `${ISOLATION_PREFLIGHT}${qtLoadMarker}`
+        + `\n                    locateFile: filename => filename === 'plotjuggler4.wasm'`
         + ` ? '${bundlePath}/plotjuggler4.wasm' : filename,`,
     );
     files.push(await writeAsset(
@@ -326,8 +462,19 @@ export async function packageWasm(options) {
       Buffer.from(entrypoint),
       false,
     ));
-    files.sort((left, right) => left.path.localeCompare(right.path));
-    const headersContents = Buffer.from(deploymentHeaders(bundlePath));
+    // Revalidated: a sample may change under the same name. The identity bytes are the tree's own, and
+    // every encoding decodes to them, so a source's content_sha256 holds whichever one is served.
+    for (const relative of presets) {
+      files.push(await writeAsset(
+        stagingRoot,
+        `presets/${relative}`,
+        await readFile(path.join(presetsRoot, relative)),
+        isCompressible(relative),
+      ));
+    }
+    // Code-unit order, as presetFiles walks: localeCompare would follow the locale.
+    files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+    const headersContents = Buffer.from(deploymentHeaders(bundlePath, presets.length > 0));
 
     const manifest = {
       format: DEPLOYMENT_FORMAT,

@@ -31,6 +31,11 @@ add_library(pj_app_shell OBJECT
     src/FileLoader.h
     src/SourcePromotionHost.cpp
     src/SourcePromotionHost.h
+    src/PresetController.cpp
+    src/PresetController.h
+    src/WelcomePresetsDialog.cpp
+    src/WelcomePresetsDialog.h
+    src/WelcomePresetsDialog.ui
     src/HeadlessDescriptorProviderSession.cpp
     src/HeadlessDescriptorProviderSession.h
     src/ToolboxHostWiring.h
@@ -216,6 +221,10 @@ endif()
 if(TARGET pj_wasm_dummy_stream)
     target_link_libraries(pj_app_shell PUBLIC pj_wasm_dummy_stream)
     target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_DUMMY_STREAM_PLUGIN)
+endif()
+if(TARGET pj_wasm_pj_bridge)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_pj_bridge)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_PJ_BRIDGE_PLUGIN)
 endif()
 if(TARGET pj_wasm_json_parser)
     target_link_libraries(pj_app_shell PUBLIC pj_wasm_json_parser)
@@ -445,6 +454,37 @@ if(PJ_BUILD_TESTS)
     # runs each case in its own process while sharing one linked executable.
     set(PJ_APP_GUI_TEST_SOURCES
         tests/slider_states_test.cpp)
+
+    # Browser presets: PresetController's bounded download against a loopback server.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/preset_controller_test.cpp)
+
+    # Browser presets: a layout opened by URL replays its relative file sources
+    # without a picker, all or nothing (mock source plugin staged per case).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/remote_preset_replay_test.cpp)
+    set_source_files_properties(tests/remote_preset_replay_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
+
+    # Browser presets: a layout's streaming sources start from their saved
+    # configuration inside the same all-or-nothing replay, and their views bind
+    # as topics arrive (test stream plugin staged per case).
+    add_library(mock_layout_stream_plugin SHARED tests/mock_layout_stream_plugin.cpp)
+    target_compile_features(mock_layout_stream_plugin PRIVATE cxx_std_20)
+    target_link_libraries(mock_layout_stream_plugin PRIVATE plotjuggler_sdk::plugin_sdk)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(mock_layout_stream_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/streaming_preset_test.cpp)
+    set_source_files_properties(tests/streaming_preset_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS
+        "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\";PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH=\"$<TARGET_FILE:mock_layout_stream_plugin>\"")
+
+    # Browser presets: the welcome dialog's selection, upload, cancel/retry and
+    # thumbnail fallback (built on the desktop too; only its wiring is browser-only).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/welcome_presets_dialog_test.cpp)
 
     # Bell dialog: severity / source / text filters, live rebuild on record,
     # cap eviction and Clear, driven straight through a DiagnosticHistory.
@@ -890,8 +930,10 @@ if(PJ_BUILD_TESTS)
     )
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
     # $<TARGET_FILE:...> in a compile definition creates no build-order dependency.
-    add_dependencies(pj_app_gui_tests custom_topics_editor_fixture_plugin)
+    add_dependencies(pj_app_gui_tests custom_topics_editor_fixture_plugin
+                     mock_file_source_plugin mock_layout_stream_plugin)
     # on_demand_test_utils.h: the fake script run and clouds shared with pj_runtime's tests.
+    # preset_controller_test serves canned responses with pj_runtime's loopback test server.
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
 
     # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,

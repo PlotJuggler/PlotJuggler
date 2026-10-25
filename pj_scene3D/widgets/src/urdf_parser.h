@@ -48,10 +48,13 @@ struct UrdfParseLimits {
 //
 // Returns {model, ""} on success, or {nullopt, error} on failure (xacro,
 // non-urdf root, malformed XML). `resolver` may be null (then mesh refs are
-// recorded with resolved=false and resolution is skipped).
+// recorded with resolved=false and resolution is skipped). `package_url_roots`
+// is the model's explicit package mapping and `remote_only` its network-only
+// policy (see UrdfPackageResolver::resolveUri).
 std::pair<std::optional<RobotModel>, std::string> parseUrdf(
     const std::string& xml, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url = false,
-    const std::string& filename = {}, const UrdfParseLimits* limits = nullptr);
+    const std::string& filename = {}, const UrdfParseLimits* limits = nullptr,
+    const QMap<QString, QUrl>& package_url_roots = {}, bool remote_only = false);
 
 // Returns true if `xml` (and/or `filename`) is xacro and must be expanded first.
 bool looksLikeXacro(const std::string& xml, const std::string& filename = {});

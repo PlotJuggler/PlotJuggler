@@ -310,6 +310,14 @@
     <string>Ctrl+Shift+M</string>
    </property>
   </action>
+  <action name="actionPresets">
+   <property name="text">
+    <string>Presets…</string>
+   </property>
+   <property name="visible">
+    <bool>false</bool>
+   </property>
+  </action>
   <action name="actionExit">
    <property name="text">
     <string>Quit</string>

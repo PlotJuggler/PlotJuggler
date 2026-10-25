@@ -3,7 +3,12 @@
 PlotJuggler's browser build is a static, threaded Qt/WebAssembly application.
 It must be served over HTTPS (or localhost during development) with
 cross-origin isolation enabled. Opening `index.html` directly from disk or
-using an ordinary `python -m http.server` is not a supported threaded setup.
+using an ordinary `python -m http.server` is not a supported threaded setup:
+the packaged entrypoint then shows why on the page ("PlotJuggler cannot start:
+this page was not served over HTTPS." or "…is not cross-origin isolated.", with
+what the server must do) instead of loading the runtime. To serve the app from
+a robot together with its PlotJuggler Bridge, see
+[`WASM_HOSTING.md`](./WASM_HOSTING.md).
 
 Qt's deployment guidance describes the generated HTML, JavaScript loader, and
 Wasm module, recommends gzip or Brotli compression, and documents the headers
@@ -36,12 +41,16 @@ cmake --build build-wasm --target pj_app --parallel 4
 
 node scripts/package_wasm.mjs \
   --source build-wasm/pj_app \
-  --output build-wasm/deploy
+  --output build-wasm/deploy \
+  --presets resources/wasm-presets
 ```
 
 A public deployment also publishes the source offer
 ([licence and source offer](#licence-of-the-browser-bundle-and-the-source-offer)):
 `node scripts/wasm_source_offer.mjs --output build-wasm/deploy/sources`.
+
+`--presets` is optional: it deploys a preset tree (the repository's samples
+here) under `presets/`; see [Presets](#presets).
 
 ### Built-in plugins
 
@@ -56,6 +65,7 @@ and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
 | `PJ_WASM_WITH_MCAP` | `data_load_mcap` |
 | `PJ_WASM_WITH_3D_LOADER` | `data_load_3d` (PCD/PLY) |
 | `PJ_WASM_WITH_DUMMY_STREAM` | `data_stream_dummy` |
+| `PJ_WASM_WITH_PJ_BRIDGE` | `data_stream_pj_bridge` (over the browser's WebSocket) |
 | `PJ_WASM_WITH_ROS` | `parser_ros` |
 | `PJ_WASM_WITH_PROTOBUF` | `parser_protobuf` |
 | `PJ_WASM_WITH_JSON` | `parser_json` |
@@ -70,7 +80,11 @@ depth, annotations, and with `PJ_WASM_WITH_VIDEO` software H.264/HEVC/AV1 video
 from a statically linked LGPL FFmpeg) and `PJ_WASM_WITH_SCENE3D`.
 
 Plugins that need raw sockets, child processes or native middleware (UDP, ZMQ,
-MQTT, LSL, ROS 2, the AI assistant) cannot run in a browser. Adding another
+MQTT, LSL, ROS 2, the AI assistant) cannot run in a browser. The PlotJuggler
+Bridge needs none of them: it connects with the browser's own WebSocket, so a page
+served over HTTPS reaches only `wss://` bridges (mixed content), and the browser
+reports a failed connection without its cause. Its stream presets are described
+in [`WASM_PRESETS.md`](./WASM_PRESETS.md#streaming-sources). Adding another
 plugin needs a recipe, a link block in `pj_app/CMakeLists.txt` and a
 registration in `BuiltinPlugins.cpp`; its export macros must name an
 unqualified class (or use the `_NAMED` variants) so the static getter symbol is
@@ -89,12 +103,13 @@ build-wasm/deploy/
 ├── manifest.json
 ├── _headers
 ├── THIRD_PARTY_NOTICES.txt[.br|.gz]
-└── assets/sha256-<bundle-id>/
-    ├── plotjuggler4.js[.br|.gz]
-    ├── plotjuggler4.wasm[.br|.gz]
-    ├── qtloader.js[.br|.gz]
-    ├── qtlogo.svg[.br|.gz]
-    └── THIRD_PARTY_NOTICES.txt[.br|.gz]
+├── assets/sha256-<bundle-id>/
+│   ├── plotjuggler4.js[.br|.gz]
+│   ├── plotjuggler4.wasm[.br|.gz]
+│   ├── qtloader.js[.br|.gz]
+│   ├── qtlogo.svg[.br|.gz]
+│   └── THIRD_PARTY_NOTICES.txt[.br|.gz]
+└── presets/            (with --presets: the tree, text and mesh files also as [.br|.gz])
 ```
 
 `manifest.json` records every identity/Brotli/gzip path, byte size, SHA-256,
@@ -232,9 +247,10 @@ What to know before changing it:
 - **Size budget.** It adds about 1.9 MB to the Brotli download (2026-10-21,
   the acceptance configuration with and without it), about 12 % of the
   production package's 16.13 MB. CI fails the production package above
-  16,932,000 B, 5 % over that measurement (`scripts/wasm_size_budget.mjs`): an
-  absolute budget, since both configurations now carry Python and a delta would
-  need a third build. About 0.67 MB of it is the stdlib zip, stored uncompressed
+  16,932,000 B, 5 % over that measurement (`scripts/wasm_size_budget.mjs`; the
+  sample `presets/` are fetched on demand and not counted): an absolute budget,
+  since both configurations now carry Python and a delta would need a third
+  build. About 0.67 MB of it is the stdlib zip, stored uncompressed
   so the package's Brotli compresses it with the module.
 - **The stdlib zip** holds only the modules that importing the roots in
   `stdlib_zip.py` loads (68 of them). A module the stdlib imports
@@ -293,7 +309,9 @@ contract is preserved.
 
 Cross-origin data loaded by the application has its own CORS/CORP requirements.
 Do not weaken the application asset policy globally to work around an unrelated
-remote server; configure that data origin explicitly.
+remote server; configure that data origin explicitly. A preset's layout, data
+files and robot meshes count as such data when they live on another origin: it
+must answer them with `Access-Control-Allow-Origin` for the page.
 
 ## Browser-local state
 
@@ -305,6 +323,55 @@ source-free generic layout recipes owned by `BrowserPersistence`. Source-bound
 layouts are downloaded with logical references and require explicit file
 reselection when replayed. Paths, upload identities, plugin configuration, and
 credentials are intentionally excluded from browser-local persistence.
+
+A layout opened by URL (a preset) replays its `<fileInfo>` sources without a
+picker instead. Each `filename` resolves against the layout's URL — the browser
+reports the requested URL even after a redirect, so a preset must not rely on a
+redirect to another directory — and only http(s) references are fetched: a local
+path or another scheme, like a local robot model reference, fails the load.
+Sources download one at a time, must match their recorded `content_sha256`, and
+may stage at most 16 MiB together (`kMaxPresetDownloadBytes`). They are staged
+like uploads and imported all or nothing: any failure or cancel removes what the
+load imported and restores the previous workspace. A layout's streaming sources
+start in the same load, from their saved configuration and without a dialog
+(see [`WASM_PRESETS.md`](./WASM_PRESETS.md#streaming-sources)). Once a preset
+has loaded, the files and streams the previous preset brought are removed;
+anything else stays. Saving that session again writes the usual logical
+references, which a later open reselects.
+
+## Presets
+
+A deployment offers presets by publishing `presets/index.json` in the page's
+directory: the page `https://host/app/index.html?preset=navigation` reads
+`https://host/app/presets/index.json` (the page's query and fragment play no
+part). The page URL must end in `/` or a file name, because `presets/index.json`
+resolves against it: `https://host/app` would read
+`https://host/presets/index.json`. The index is
+`{"presets": [{"id", "title", "description"?, "layout", "thumbnail"?}]}`, with
+`layout` and `thumbnail` resolved against the index URL; every file it leads to
+(index, layout, thumbnail, data) is capped at 16 MiB.
+
+- **Presets listed:** once the window is up, a welcome dialog offers them (with
+  their thumbnails) beside "Upload your own…", which opens the ordinary
+  data-file picker; File → Presets reopens it. Picking one opens its layout as
+  above, with Cancel while it loads and Retry if it fails. A thumbnail that does
+  not download or decode shows a placeholder and leaves its preset usable.
+- **No index, or an empty `presets` list:** the page starts exactly as it would
+  without the feature: no dialog, no File → Presets, no message (the browser
+  still logs the request's 404 in its own console).
+- **Malformed index** (bad JSON, an entry without `id` or `layout`, a duplicate
+  id, a reference that is not http(s)): the same, plus one console warning,
+  `PJ_PRESET_INDEX_INVALID url=… reason=…`.
+- **Deep link:** `?preset=<id>` opens that preset directly, the dialog showing
+  its progress. An id the index does not list, the `preset` key given twice, or
+  a deep link on a page without a usable index reports an error and loads
+  nothing. Other query keys are ignored.
+
+The repository ships two samples in `resources/wasm-presets/` (a mobile robot
+on a map, and a CSV of waveforms), deployed
+with `--presets`. Preset files are served `no-cache`. How to author a preset,
+what the packager refuses, and the hosting limits are in
+[`WASM_PRESETS.md`](./WASM_PRESETS.md).
 
 ## Local serving and release verification
 
@@ -329,3 +396,8 @@ npm ci
 npx playwright install chromium
 PJ_WASM_PACKAGE_DIR="$PWD/../../build-wasm/deploy" npm run test:deployment
 ```
+
+The deployment test expects a package built with `--presets`: it also checks
+every deployed preset file and that the page fetches `presets/index.json`.
+Its response checks (`tests/wasm/support/deployment_contract.js`) also run
+against Caddy with `docs/wasm/Caddyfile`, in `robot_deployment.spec.js`.

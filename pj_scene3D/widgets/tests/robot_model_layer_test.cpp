@@ -10,6 +10,10 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QHostAddress>
+#include <QMap>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <atomic>
@@ -28,6 +32,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_tf/tf_buffer.h"
 #include "pj_tf/transform.h"
+#include "urdf_package_resolver.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -266,6 +271,41 @@ class ResolvedMeshRobotDescriptionParser final : public PJ::MessageParserPluginB
   }
 };
 
+// A topic URDF naming one mesh through a package and one through a direct
+// http URL: an explicit package root may authorize the first, never the second.
+constexpr const char* kPackageUrlUrdf = R"(
+<robot name="url_roots">
+  <link name="base_link">
+    <visual><geometry><mesh filename="package://pj_url_pkg/meshes/cube.stl"/></geometry></visual>
+  </link>
+  <link name="tool0">
+    <visual><geometry><mesh filename="https://blocked.invalid/tool.stl"/></geometry></visual>
+  </link>
+  <joint name="mount" type="fixed"><parent link="base_link"/><child link="tool0"/></joint>
+</robot>
+)";
+
+class PackageUrlRobotDescriptionParser final : public PJ::MessageParserPluginBase {
+ public:
+  PackageUrlRobotDescriptionParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts,
+              .topic = "/robot_description",
+              .format = "urdf",
+              .text = kPackageUrlUrdf,
+          }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
 // Rebind-test parse counters. vtableWithCreate() requires a non-capturing create
 // function, so the counting parsers reach these via file scope rather than a
 // lambda capture.
@@ -390,6 +430,44 @@ const PJ_message_parser_vtable_t* colladaMeshParserVtable() {
       R"({"id":"robot-collada-mesh-test","name":"Robot Collada Mesh Test","version":"1.0.0","encoding":"test"})");
   return vt;
 }
+
+const PJ_message_parser_vtable_t* packageUrlParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new PackageUrlRobotDescriptionParser(); },
+      R"({"id":"robot-package-url-test","name":"Robot Package URL Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
+// Serves the cube fixture for every request and records the requested paths.
+class MeshHttpServer {
+ public:
+  MeshHttpServer() {
+    EXPECT_TRUE(server_.listen(QHostAddress::LocalHost, 0));
+    QFile mesh(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/cube.stl"));
+    EXPECT_TRUE(mesh.open(QIODevice::ReadOnly));
+    const QByteArray body = mesh.readAll();
+    QObject::connect(&server_, &QTcpServer::newConnection, &server_, [this, body]() {
+      QTcpSocket* socket = server_.nextPendingConnection();
+      QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket, body]() {
+        paths_.push_back(QString::fromLatin1(socket->readAll().split(' ').value(1)));
+        socket->write(
+            "HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Length: " + QByteArray::number(body.size()) +
+            "\r\n\r\n" + body);
+        socket->flush();
+      });
+    });
+  }
+  [[nodiscard]] QUrl url(const QString& path) const {
+    return QUrl(u"http://127.0.0.1:%1%2"_s.arg(server_.serverPort()).arg(path));
+  }
+  [[nodiscard]] const QStringList& paths() const {
+    return paths_;
+  }
+
+ private:
+  QTcpServer server_;
+  QStringList paths_;
+};
 
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session, std::string topic_name = "/robot_description") {
   auto topic = session.objectStore().registerTopic(
@@ -1192,4 +1270,91 @@ TEST(RobotModelLayerTest, SourceSwitchKeepsSupersededImportsWithinTheBound) {
   }
   EXPECT_EQ(layer.meshImportsOutstandingForTest(), 0U) << "superseded imports never settled";
   EXPECT_EQ(layer.loadedMeshCount(), mesh_count) << "the new source's meshes did not all load";
+}
+
+// A topic URDF has no URL of its own, so a package fetch needs an explicit
+// root. The root is model-local: the dock-shared resolver stays clean for a
+// sibling robot, the topic's direct http refs stay blocked, and the mapping
+// persists with the layer so a restored layer needs no layout context.
+TEST(RobotModelLayerTest, TopicUrdfUsesExplicitUrlRoots) {
+  MeshHttpServer assets;
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset_id = createDataset(session, "url-roots.mcap");
+  const PJ::ObjectTopicId topic_id = registerTopicForDataset(session, dataset_id);
+  registerParser(session, topic_id, packageUrlParserVtable());
+  pushWireBytes(session, topic_id);
+  const auto ctx = makeContext(session);
+  pj::scene3d::UrdfPackageResolver shared;
+
+  pj::scene3d::RobotModelLayer mapped(topic_id, u"/robot_description"_s);
+  mapped.setPackageResolver(&shared);
+  mapped.setPackageUrlRoots({{u"pj_url_pkg"_s, assets.url(u"/assets/pj_url_pkg/"_s)}});
+  ASSERT_TRUE(mapped.attach(ctx));
+  ASSERT_NE(mapped.robotModel(), nullptr) << mapped.statusText().toStdString();
+  EXPECT_EQ(mapped.totalMeshCount(), 2);
+  EXPECT_EQ(mapped.unresolvedMeshCount(), 1) << "a package root must not authorize the topic's direct http ref";
+  ASSERT_TRUE(
+      pj::scene3d::test::pumpUntil([&mapped]() { return mapped.loadedMeshCount() == 1; }, std::chrono::seconds(10)))
+      << mapped.statusText().toStdString();
+  EXPECT_EQ(assets.paths().join(u',').toStdString(), "/assets/pj_url_pkg/meshes/cube.stl");
+
+  pj::scene3d::RobotModelLayer unmapped(topic_id, u"/robot_description"_s);
+  unmapped.setPackageResolver(&shared);
+  ASSERT_TRUE(unmapped.attach(ctx));
+  ASSERT_NE(unmapped.robotModel(), nullptr);
+  EXPECT_EQ(unmapped.unresolvedMeshCount(), 2) << "one robot's mapping leaked into the shared resolver";
+
+  QDomDocument doc;
+  const QDomElement saved = mapped.xmlSaveState(doc);
+  EXPECT_TRUE(saved.hasAttribute(u"package_url_roots"_s));
+  pj::scene3d::RobotModelLayer restored(topic_id, u"/robot_description"_s);
+  restored.setPackageResolver(&shared);
+  ASSERT_TRUE(restored.attach(ctx));
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  ASSERT_NE(restored.robotModel(), nullptr);
+  EXPECT_EQ(restored.unresolvedMeshCount(), 1);
+}
+
+// A robot restored from a web-hosted layout keeps the network-only policy for its URDF's own mesh
+// references (here a file:// mesh that exists locally), and saves it so undo and re-saves keep it.
+TEST(RobotModelLayerTest, RemoteResourcesOnlyBlocksLocalMeshesAndPersists) {
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset_id = createDataset(session, "remote-only.mcap");
+  const PJ::ObjectTopicId topic_id = registerTopicForDataset(session, dataset_id);
+  registerParser(session, topic_id, resolvedMeshParserVtable());
+  pushWireBytes(session, topic_id);
+  const auto ctx = makeContext(session);
+  const auto restored = [&](const QString& policy) {
+    QDomDocument doc;
+    QDomElement element = doc.createElement(u"robot_model"_s);
+    element.setAttribute(u"source_type"_s, u"topic"_s);
+    element.setAttribute(u"source_value"_s, u"/robot_description"_s);
+    element.setAttribute(u"source_topic_name"_s, u"/robot_description"_s);
+    if (!policy.isEmpty()) {
+      element.setAttribute(u"remote_resources_only"_s, policy);
+    }
+    auto layer = std::make_unique<pj::scene3d::RobotModelLayer>(topic_id, u"/robot_description"_s);
+    EXPECT_TRUE(layer->attach(ctx));
+    EXPECT_TRUE(layer->xmlLoadState(element)) << policy.toStdString();
+    return layer;
+  };
+
+  const auto desktop = restored({});
+  ASSERT_NE(desktop->robotModel(), nullptr);
+  EXPECT_EQ(desktop->unresolvedMeshCount(), 0);
+  QDomDocument desktop_doc;
+  EXPECT_FALSE(desktop->xmlSaveState(desktop_doc).hasAttribute(u"remote_resources_only"_s));
+
+  const auto web = restored(u"true"_s);
+  ASSERT_NE(web->robotModel(), nullptr);
+  EXPECT_EQ(web->totalMeshCount(), 1);
+  EXPECT_EQ(web->unresolvedMeshCount(), 1) << "a web layout's URDF reached a local mesh";
+  QDomDocument web_doc;
+  EXPECT_EQ(web->xmlSaveState(web_doc).attribute(u"remote_resources_only"_s), u"true"_s);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  QDomDocument invalid_doc;
+  QDomElement invalid = invalid_doc.createElement(u"robot_model"_s);
+  invalid.setAttribute(u"remote_resources_only"_s, u"maybe"_s);
+  EXPECT_FALSE(layer.xmlLoadState(invalid));
 }

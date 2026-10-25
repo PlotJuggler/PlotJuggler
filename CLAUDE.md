@@ -32,7 +32,7 @@ PJ4/
 ├── pj_widgets/        # reusable Qt widgets and UI helpers
 ├── pj_plotting/       # Qwt plotting widget family
 ├── pj_app/            # main window shell
-├── resources/         # SVG icons + resources.qrc
+├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample presets
 ├── raster/            # helper/ executable + ipc/ wire contract
 ├── scripts/           # setup, worktrees, pre-commit, windows/ entry points
 ├── packaging/         # Nix, AppImage, Debian package, Windows installer
@@ -56,7 +56,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_marketplace/`: extension registry, download, install/manage services and UI.
 - `pj_dialog_host/`: host for plugin-provided dialogs. App dialogs stay in `pj_app`; reusable dialog controls in `pj_widgets`.
 - `pj_scripting/`: Luau and embedded-Python engines behind a language-agnostic `ScriptEngine` seam. No scripting code in `pj_app` or widget modules unless strictly UI/editor code.
-- `resources/`: shared resources in `resources.qrc`; module-local test/demo assets stay with their module.
+- `resources/`: shared resources in `resources.qrc`; module-local test/demo assets stay with their module. `resources/wasm-presets/` is the exception that is not compiled in: the browser sample presets `scripts/package_wasm.mjs --presets` deploys (see [`docs/WASM_PRESETS.md`](./docs/WASM_PRESETS.md)).
 - `3rdparty/`: vendored source deps plus `retro/` (compliance artifacts installed next to `pj-raster-helper`). Conan/system deps do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper`; `ipc/` its header-only MPL-2.0 wire contract (also used by `pj_widgets`). PlotJuggler uses only the contract, never links the helper.
 - `scripts/`: setup/maintenance utilities, `pre-commit/` hooks, `windows/` (PowerShell behind the `.bat` shims). The everyday `build.sh`, `run.sh`, `test.sh` and their shims stay at the root.

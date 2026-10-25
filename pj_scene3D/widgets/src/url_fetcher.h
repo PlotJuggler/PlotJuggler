@@ -23,11 +23,15 @@ namespace pj::scene3d {
   return scheme == QLatin1StringView("http") || scheme == QLatin1StringView("https");
 }
 
-// Outcome of one UrlFetcher::fetch. `bytes` is meaningful only when `ok`.
+// Outcome of one UrlFetcher::fetch. `bytes` and `final_url` are meaningful only when `ok`.
 struct FetchResult {
   bool ok{false};
   QByteArray bytes;
   QString error;
+  // Where a network fetch was served from: the reply's URL after redirects;
+  // empty for a local source. The browser follows redirects inside its fetch
+  // API and Qt's WASM backend reports the requested URL instead.
+  QUrl final_url;
 };
 
 // Asynchronous byte fetcher with a hard size cap and bounded redirects.
@@ -71,6 +75,9 @@ class UrlFetcher : public QObject {
   static constexpr qint64 kMaxFetchBytes = static_cast<qint64>(kSceneLimits.max_model_source_bytes);
 
   explicit UrlFetcher(QObject* parent = nullptr);
+  // Cancels every request in flight, muted, while the fetcher is whole: `manager_` deletes its
+  // replies first, and a browser reply deleted while running would deliver its callback.
+  ~UrlFetcher() override;
 
   // Start one fetch. `on_done` is invoked exactly once, via the event loop,
   // unless the fetcher is destroyed first (then never).
@@ -82,6 +89,7 @@ class UrlFetcher : public QObject {
   // `this`, so destruction drops pending deliveries too.
   void deliverLater(std::function<void(FetchResult)> on_done, FetchResult result);
 
+  // A child of the fetcher, so its in-flight replies are among the fetcher's descendants.
   QNetworkAccessManager manager_;
 };
 

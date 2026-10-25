@@ -55,6 +55,7 @@
 #include <QStatusBar>
 #include <QStringList>
 #include <QTabWidget>
+#include <QTextDocument>
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
@@ -92,18 +93,16 @@
 #endif
 #include <vector>
 
-#include "BuiltinPlugins.h"
-#ifdef PJ_TARGET_WASM
 #include "BrowserFileStore.h"
 #include "BrowserPersistence.h"
-#endif
+#include "BuiltinPlugins.h"
 #include "DatasetMergeActions.h"
 #include "DebugUi.h"
+#include "FanoutConfig.h"
 #include "FileLoader.h"
 #include "IngestProgressController.h"
 #include "IngestProgressWiring.h"
 #ifdef PJ_TARGET_WASM
-#include "FanoutConfig.h"
 #include "FileSelectionService.h"
 #endif
 #include "LayoutImportBatch.h"
@@ -112,6 +111,7 @@
 #include "PendingDisplayBinder.h"
 #include "PluginPlotTabsController.h"
 #include "PreferencesDialog.h"
+#include "PresetController.h"
 #include "RasterKeyMap.h"
 #include "SeriesProgressController.h"
 #include "SourcePromotionHost.h"
@@ -121,6 +121,9 @@
 #include "TitleBar.h"
 #include "ToolboxHostWiring.h"
 #include "TopicDemandController.h"
+#ifdef PJ_TARGET_WASM
+#include "WelcomePresetsDialog.h"
+#endif
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_base/builtin/plot_markers.hpp"
@@ -174,6 +177,7 @@
 #include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PlotTabsRuntimeHost.h"
+#include "pj_runtime/PresetCatalog.h"
 #include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/RecordingService.h"
 #include "pj_runtime/SessionManager.h"
@@ -181,6 +185,7 @@
 #include "pj_runtime/SourceCacheStore.h"
 #include "pj_runtime/SourceCaptureService.h"
 #endif
+#include "pj_runtime/SourceConfigVariables.h"
 #include "pj_runtime/TelemetryPing.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
@@ -197,6 +202,7 @@
 #include "pj_runtime/TransformService.h"
 #include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#include "pj_scene3d_widgets/layout_resources.h"
 #endif
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_widgets/CoalescingTrigger.h"
@@ -352,6 +358,10 @@ constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
 // displayOffset() (per-source alignment + global reference); v4 writes
 // sourceDisplayOffset() only, and the loader subtracts its current global
 // reference when reading a <=v3 layout (read-only migration, placement preserved).
+// v5 adds <previouslyLoaded_StreamingSources>. Only a layout that carries it is
+// written as v5 (layout_xml::writeStreamingSources stamps the root), so an older
+// build warns about exactly the layouts whose stream records it would drop; every
+// other layout is still written as v4.
 constexpr int kLayoutSchemaVersion = 4;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
@@ -393,7 +403,8 @@ constexpr int kIconPaddingDefault = 4;
 constexpr int kLayoutPaddingDefault = 2;
 constexpr int kLayoutSpacingDefault = 2;
 
-#ifdef PJ_TARGET_WASM
+// `text` is plain text: it often quotes a downloaded layout or index, whose
+// markup must be shown, never rendered.
 void showBrowserLayoutWarning(QWidget* parent, const QString& title, const QString& text) {
   // The browser main thread cannot enter MessageBox::warning's nested exec().
   // Parent ownership plus WA_DeleteOnClose gives the same application-modal
@@ -402,11 +413,10 @@ void showBrowserLayoutWarning(QWidget* parent, const QString& title, const QStri
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   dialog->setWindowModality(Qt::ApplicationModal);
   dialog->setTitle(title);
-  dialog->setText(text);
+  dialog->setText(Qt::convertFromPlainText(text, Qt::WhiteSpaceNormal));
   dialog->addButton(QObject::tr("OK"), MessageBox::kPrimaryRole);
   dialog->show();
 }
-#endif
 
 // Scene scrubber drags emit workspaceChanged per tick; one history snapshot
 // publishes after the gesture goes quiet.
@@ -473,6 +483,18 @@ std::array<PanelToggle, 3> panelToggles(Ui::MainWindow* ui) {
   }};
 }
 
+// MEMFS in the browser (beside the uploads); a temporary directory on the
+// desktop, where the browser root is not writable. Only tests reach the desktop
+// root (presets are browser-only), and files leased by a crashed process can
+// linger there.
+QString presetStagingRoot() {
+#ifdef PJ_TARGET_WASM
+  return u"/pj_uploads"_s;
+#else
+  return QDir::tempPath() + u"/pj_uploads"_s;
+#endif
+}
+
 // Curve-Width radio mapping. Hoisted from buildLocalToolbar so the
 // layout-save path can encode the float value (rebuild-stable) and the
 // layout-load path can map the stored value back to a button.
@@ -507,7 +529,6 @@ const RecipeGraph::Node* onDemandNodeOfCatalogKey(AppSession& session, const QSt
 
 }  // namespace
 
-#ifdef PJ_TARGET_WASM
 struct MainWindow::BrowserLayoutRuntime {
   struct DatasetShape {
     DatasetId dataset_id = 0;
@@ -524,22 +545,59 @@ struct MainWindow::BrowserLayoutRuntime {
     std::vector<DatasetShape> datasets;
   };
 
+  // A stream record and its configuration filled in for this page.
+  struct ReplayStream {
+    layout_xml::StreamingSourceRef record;
+    QString expanded_config;
+  };
+
+  // The playback transport before a replay starts its streams: each start makes
+  // its stream the followed one and plays from its end, so a rollback puts this back.
+  struct Transport {
+    DatasetId followed_stream = 0;
+    bool seeded = false;
+    bool playing = false;
+    DisplaySeconds current_time;
+  };
+
   struct Replay {
     QDomDocument doc;
     QString layout_name;
     QList<layout_xml::DataSourceRef> sources;
     std::vector<LoadInput> staged_inputs;
     QStringList selected_identities;
-    QSet<QString> loaded_identities;
     int selection_index = 0;
     bool load_failed = false;
     QString load_failure;
     CapturedWorkspace previous_workspace;
     QPointer<QPushButton> selection_button;
+    // Token of the one selection (picker, or download + staging) this replay
+    // waits for; 0 when none. See beginBrowserReplayPickerGeneration.
     quint64 active_picker_generation = 0;
-    QMetaObject::Connection loaded_connection;
-    QMetaObject::Connection failed_connection;
-    QMetaObject::Connection drained_connection;
+    // A downloaded layout's sources, in `sources` order; empty for an upload,
+    // whose sources are reselected. Their bytes count against one preset cap.
+    QList<QUrl> source_urls;
+    qint64 staged_bytes = 0;
+    // This replay's accepted imports whose loadFinished has not arrived.
+    QSet<quint64> pending_tickets;
+    bool cancelled = false;
+    // Context of this replay's FileLoader connections: they end with the replay,
+    // so a terminal arriving after it is delivered nowhere.
+    std::unique_ptr<QObject> receiver = std::make_unique<QObject>();
+    // Started after the file imports validate, just before the layout applies.
+    std::vector<ReplayStream> streams;
+    // The streams this replay started so far: its rollback stops and removes them.
+    std::vector<DatasetId> stream_datasets;
+    // Captured just before the first stream starts; empty while none has.
+    std::optional<Transport> transport_before_streams;
+  };
+
+  // What one preset load brought: its files' source identities (their save-ledger entries) and
+  // the datasets the next preset load removes, files and streams alike. A merge takes the
+  // datasets it involves out of `datasets`: a merge result may hold data no preset brought.
+  struct PresetData {
+    QSet<QString> file_identities;
+    std::vector<DatasetId> datasets;
   };
 
   QHash<QString, SourceRecord> sources;
@@ -548,8 +606,18 @@ struct MainWindow::BrowserLayoutRuntime {
   QString pending_recipe_name;
   bool pending_generic_recipe = false;
   quint64 next_picker_generation = 0;
+  // loadLayoutFromUrl's downloads (the layout, then its sources); created on
+  // first use. Its completions never outlive it, hence this window.
+  std::unique_ptr<PresetController> downloads;
+  // The loadLayoutFromUrl in flight, from the call to its terminal; empty for
+  // any other load. finishBrowserLayoutLoad reports its end through
+  // layoutUrlLoadFinished.
+  QUrl loading_url;
+  // Where downloaded sources are staged.
+  BrowserFileStore store{presetStagingRoot()};
+  // The last loadLayoutFromUrl that loaded: the next one that loads removes it.
+  PresetData preset_data;
 };
-#endif
 
 MainWindow::MainWindow(QWidget* parent) : MainWindow(QString{}, parent) {}
 
@@ -573,9 +641,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
               })),
       ingest_progress_controller_(std::make_unique<IngestProgressController>(this)),
       theme_(std::make_unique<Theme>()) {
-#ifdef PJ_TARGET_WASM
   browser_layout_runtime_ = std::make_unique<BrowserLayoutRuntime>();
-#endif
   // The transform service owns the per-dataset TF buffers + load-time ingest;
   // the fixed-frame memory is the 3D docks' view preference layered on top.
 #ifdef PJ_WITH_SCENE3D
@@ -755,6 +821,17 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // Duplicates the LeftPanel load button: many users look for "open" here first.
   action_open_data_ = file_menu->addAction(tr("Open Data File..."), this, &MainWindow::onLoadDataRequested);
   action_open_data_->setShortcut(QKeySequence::Open);
+#ifdef PJ_TARGET_WASM
+  // Hidden until startBrowserPresets finds presets to offer.
+  file_menu->addAction(ui_->actionPresets);
+  connect(ui_->actionPresets, &QAction::triggered, this, [this]() {
+    if (presets_dialog_ != nullptr) {
+      presets_dialog_->show();
+      presets_dialog_->raise();
+      presets_dialog_->activateWindow();
+    }
+  });
+#endif
   file_menu->addSeparator();
   // Desktop retains its path-based layout dialogs. WASM exposes W9's
   // content-based layout open/download actions.
@@ -994,6 +1071,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     Q_UNUSED(anchor);
     Q_UNUSED(consumed);
 #endif
+    if (browser_layout_runtime_ != nullptr) {
+      std::erase_if(browser_layout_runtime_->preset_data.datasets, [anchor, &consumed](DatasetId dataset_id) {
+        return dataset_id == anchor || consumed.contains(dataset_id);
+      });
+    }
     syncWidgetsToCatalog();
     resetUndoHistory();
   });
@@ -1406,19 +1488,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(recording_service_.get(), &RecordingService::stopped, this, &MainWindow::onRecordingStopped);
   connect(recording_service_.get(), &RecordingService::progress, this, &MainWindow::onRecordingProgress);
 
-  const auto refresh_streaming_seek_lock = [this]() {
-    if (session_ == nullptr) {
-      return;
-    }
-    // While a stream is live AND playback is playing, the cursor stays glued to the
-    // tip (held there by PlaybackEngine::onTick + each live ingest) and the user must
-    // not be able to drag it off: grey the playback slider and put the Source Timeline
-    // read-only (scene edits + needle seek). Pausing (stream still on) clears the lock
-    // so the retained window can be scrubbed/realigned.
-    const bool lock = active_streaming_dataset_id_ != 0 && session_->playbackEngine().isPlaying();
-    ui_->timelineWidget->setSeekLocked(lock);
-    setSourceTimelineStreamingLock(lock);
-  };
   const auto snap_streaming_playback_to_live_edge = [this]() -> bool {
     if (active_streaming_dataset_id_ == 0 || session_ == nullptr) {
       return false;
@@ -1450,18 +1519,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // is locked to the live edge and the engine is held at rangeMax between ingest
   // ticks instead of auto-pausing at the end. Pausing playback unlocks scrubbing
   // within the retained window; pressing play snaps back to the newest sample.
-  connect(
-      streaming_manager_.get(), &StreamingSourceManager::streamStarted, this,
-      [this, refresh_streaming_seek_lock](DatasetId id) {
-        active_streaming_dataset_id_ = id;
-        session_->setActiveStreamingDataset(id);  // scope recomputeRange to the live tip while playing
-        streaming_playback_seeded_ = false;
-        auto& engine = session_->playbackEngine();
-        engine.setHoldAtRangeMax(true);
-        engine.setCurrentTime(engine.rangeMax());
-        engine.play();
-        refresh_streaming_seek_lock();
-      });
+  connect(streaming_manager_.get(), &StreamingSourceManager::streamStarted, this, [this](DatasetId id) {
+    active_streaming_dataset_id_ = id;
+    session_->setActiveStreamingDataset(id);  // scope recomputeRange to the live tip while playing
+    streaming_playback_seeded_ = false;
+    auto& engine = session_->playbackEngine();
+    engine.setHoldAtRangeMax(true);
+    engine.setCurrentTime(engine.rangeMax());
+    engine.play();
+    refreshStreamingSeekLock();
+  });
   // A failed Start (or a stream dying mid-run) is a user-visible event: the
   // dialog carries the plugin's own reason; the bell keeps the record.
   connect(streaming_manager_.get(), &StreamingSourceManager::setupError, this, [this](const QString& message) {
@@ -1475,14 +1542,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       });
   connect(
       streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
-      [this, refresh_streaming_seek_lock](DatasetId id, const QString& reason) {
+      [this](DatasetId id, const QString& reason) {
         session_->sessionManager().notifyStreamEnded(id);
         if (active_streaming_dataset_id_ == id) {
           active_streaming_dataset_id_ = 0;
           session_->setActiveStreamingDataset(0);
           streaming_playback_seeded_ = false;
           session_->playbackEngine().setHoldAtRangeMax(false);
-          refresh_streaming_seek_lock();
+          refreshStreamingSeekLock();
         }
         // That source's file is finalized on its own; the rest of the capture
         // keeps recording, and the batch ends with its last live source. Taps
@@ -1492,15 +1559,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           recording_service_->onSourceEnded(static_cast<quint64>(id), reason);
         }
       });
-  connect(
-      &playback, &PlaybackEngine::playingChanged, this,
-      [this, snap_streaming_playback_to_live_edge, refresh_streaming_seek_lock](bool playing) {
-        if (active_streaming_dataset_id_ != 0 && playing) {
-          session_->playbackEngine().setHoldAtRangeMax(true);
-          (void)snap_streaming_playback_to_live_edge();
-        }
-        refresh_streaming_seek_lock();
-      });
+  connect(&playback, &PlaybackEngine::playingChanged, this, [this, snap_streaming_playback_to_live_edge](bool playing) {
+    if (active_streaming_dataset_id_ != 0 && playing) {
+      session_->playbackEngine().setHoldAtRangeMax(true);
+      (void)snap_streaming_playback_to_live_edge();
+    }
+    refreshStreamingSeekLock();
+  });
   // Bound the 3D TF buffer's history for live-streaming datasets in step with
   // the ObjectStore retention window, so a long streaming session doesn't retain
   // every TF sample forever (H.11). File loads keep the buffer's kKeepAll
@@ -1518,8 +1583,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   }
 #endif
   connect(
-      &session_->sessionManager(), &SessionManager::samplesIngested, this,
-      [this, refresh_streaming_seek_lock](const QVector<TopicId>&, bool live) {
+      &session_->sessionManager(), &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
         auto& engine = session_->playbackEngine();
         if (live) {
           // Streaming: follow the live edge (range grows, cursor tracks newest).
@@ -1536,7 +1600,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
             } else {
               engine.setRange(*range);
             }
-            refresh_streaming_seek_lock();
+            refreshStreamingSeekLock();
           }
           return;
         }
@@ -2332,7 +2396,6 @@ bool MainWindow::populateTestData() {
   return true;
 }
 
-#ifdef PJ_TARGET_WASM
 QDomDocument MainWindow::browserGenericLayoutDocument() const {
   QDomDocument doc = xmlSaveState();
   doc.documentElement().setAttribute(u"binding"_s, u"generic"_s);
@@ -2352,8 +2415,20 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
     return std::nullopt;
   }
 
+  // Every live stream is saved as its record; the datasets it writes into are
+  // named by that record, never by a file.
+  QList<layout_xml::StreamingSourceRef> stream_records;
+  QHash<std::uint32_t, QString> stream_identity_for_dataset;
+  if (streaming_manager_ != nullptr) {
+    stream_records = streaming_manager_->layoutSources();
+    for (const DatasetId dataset_id : session_->sessionManager().dataEngine().listDatasets()) {
+      if (const QString id = streaming_manager_->layoutSourceId(dataset_id); !id.isEmpty()) {
+        stream_identity_for_dataset.insert(dataset_id, layout_xml::streamSourceIdentity(id));
+      }
+    }
+  }
   const std::vector<std::pair<DatasetId, QString>> live_datasets = session_->catalogModel().datasets();
-  if (live_datasets.empty()) {
+  if (live_datasets.empty() && stream_records.isEmpty()) {
     error = tr("Open a browser data source before saving a source-bound layout.");
     return std::nullopt;
   }
@@ -2366,6 +2441,9 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
   QSet<QString> seen_sources;
   for (const auto& [dataset_id, unused_name] : live_datasets) {
     (void)unused_name;
+    if (stream_identity_for_dataset.contains(dataset_id)) {
+      continue;
+    }
     const QString identity = file_loader_->sourcePathForDataset(dataset_id);
     if (!isBrowserUploadIdentity(identity)) {
       error = tr("Every loaded dataset must be backed by a browser-selected file.");
@@ -2493,7 +2571,19 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
   });
   layout_xml::remapDatasetSourcePaths(
       doc, [&logical_path_for_identity](const QString& path) { return logical_path_for_identity.value(path, path); });
+  layout_xml::stampDatasetIdentities(doc, stream_identity_for_dataset);
   layout_xml::removeUnvalidatedDatasetIds(doc);
+  for (layout_xml::StreamingSourceRef& record : stream_records) {
+    const auto dataset = std::find_if(
+        stream_identity_for_dataset.cbegin(), stream_identity_for_dataset.cend(),
+        [&record](const QString& identity) { return identity == layout_xml::streamSourceIdentity(record.id); });
+    if (dataset != stream_identity_for_dataset.cend()) {
+      record.dataset.timeline_order = timeline_order.value(static_cast<DatasetId>(dataset.key()), -1);
+    }
+  }
+  if (!layout_xml::writeStreamingSources(doc, stream_records, &error)) {
+    return std::nullopt;
+  }
 
   root.appendChild(saveRightPanelState(doc));
   root.appendChild(ui_->leftPanel->saveSourcesState(doc));
@@ -2508,7 +2598,6 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
   }
   return doc;
 }
-#endif
 
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
 QByteArray MainWindow::wasmProbeLayoutBytes() const {
@@ -3033,7 +3122,8 @@ void MainWindow::onFileLoaded(
   if (!isBrowserUploadIdentity(path)) {
     session_->sessionManager().recordLoadedSource(path, prefix, plugin_id, plugin_config_json, plugin_manifest_id);
   }
-#ifdef PJ_TARGET_WASM
+  // Uploads, and on every platform a preset's staged downloads: what a
+  // source-bound browser save describes them by.
   if (isBrowserUploadIdentity(path) && browser_layout_runtime_ != nullptr) {
     const QString display_name = BrowserFileStore::displayNameForIdentity(path);
     if (!display_name.isEmpty()) {
@@ -3059,7 +3149,6 @@ void MainWindow::onFileLoaded(
                 });
     }
   }
-#endif
 #ifdef PJ_WITH_SCENE3D
   // Feed the loaded source path to every existing 3D dock so its URDF package
   // resolver can key per-source remembered roots and auto-seed search roots from
@@ -3252,10 +3341,12 @@ void MainWindow::removeDatasetData(DatasetId dataset_id) {
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
   }
+  // Any stream, not only the active one: its worker must stop writing before
+  // the dataset's storage is erased below.
+  if (streaming_manager_ != nullptr) {
+    static_cast<void>(streaming_manager_->stopDatasetAndWait(dataset_id, tr("dataset removed")));
+  }
   if (dataset_id == active_streaming_dataset_id_) {
-    if (streaming_manager_ != nullptr) {
-      streaming_manager_->stopDatasetAndWait(dataset_id, tr("dataset removed"));
-    }
     active_streaming_dataset_id_ = 0;
     streaming_playback_seeded_ = false;
   }
@@ -4309,6 +4400,19 @@ void MainWindow::seedStreamingPlaybackFromDrop() {
   }
 }
 
+void MainWindow::refreshStreamingSeekLock() {
+  if (session_ == nullptr) {
+    return;
+  }
+  // While a stream is live AND playback is playing, the cursor stays glued to the
+  // tip (held there by PlaybackEngine::onTick + each live ingest) and the user must
+  // not be able to drag it off. Pausing (stream still on) clears the lock so the
+  // retained window can be scrubbed/realigned.
+  const bool lock = active_streaming_dataset_id_ != 0 && session_->playbackEngine().isPlaying();
+  ui_->timelineWidget->setSeekLocked(lock);
+  setSourceTimelineStreamingLock(lock);
+}
+
 void MainWindow::setSourceTimelineStreamingLock(bool locked) {
   if (source_timeline_ != nullptr) {
     source_timeline_->setInteractionLocked(locked);
@@ -5090,6 +5194,17 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
     return;
   }
   file.close();
+#ifdef PJ_WITH_SCENE3D
+  // Robot resources may be named relative to the layout file: anchor them
+  // before anything restores from the document.
+  if (QString resource_error; !pj::scene3d::resolveLayoutResourceUrls(
+          doc, QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()), &resource_error)) {
+    reportLayoutRestoreIssue(
+        restore_policy, "layout-resources-invalid", tr("'%1' cannot be loaded: %2").arg(path, resource_error));
+    emit layoutRestoreSettled(false);
+    return;
+  }
+#endif
 
   // Forward-compat schema check. pj4_version is written by xmlSaveState
   // as an integer string; if we encounter a layout from a newer PJ4
@@ -5100,13 +5215,22 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
   const QDomElement root = doc.documentElement();
   bool version_ok = false;
   const int version = root.attribute(u"pj4_version"_s, u"0"_s).toInt(&version_ok);
-  if (version_ok && version > kLayoutSchemaVersion) {
+  if (version_ok && version > layout_xml::kStreamingLayoutSchemaVersion) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "schema-newer",
         tr("Layout '%1' was saved by a newer PJ4 (pj4_version=%2 > %3); loading best-effort.")
             .arg(QFileInfo(path).fileName())
             .arg(version)
-            .arg(kLayoutSchemaVersion));
+            .arg(layout_xml::kStreamingLayoutSchemaVersion));
+  }
+  // Only a layout opened by URL starts streams; without this the views bound to
+  // them would just look like missing curves.
+  if (const qsizetype streams = layout_xml::extractStreamingSources(doc, nullptr).size(); streams > 0) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-streams-not-started",
+        tr("Layout '%1' records %n streaming source(s); the desktop loader does not start them.", nullptr,
+           static_cast<int>(streams))
+            .arg(QFileInfo(path).fileName()));
   }
 
   // 2. Source-bound layouts may reload their original file; generic layouts
@@ -5315,8 +5439,7 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
   applyRestoredLayout(doc, path, restore_policy);
 }
 
-#ifdef PJ_TARGET_WASM
-void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& browser_name) {
+void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& browser_name, const QUrl& layout_url) {
   if (browser_layout_runtime_ != nullptr) {
     browser_layout_runtime_->pending_recipe_name.clear();
     browser_layout_runtime_->pending_generic_recipe = false;
@@ -5333,9 +5456,17 @@ void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& bro
     finishBrowserLayoutLoad(browser_name, false, u"parse"_s);
     return;
   }
-  const QDomElement root = doc.documentElement();
-  const bool source_bound = root.attribute(u"binding"_s, u"source"_s) != "generic"_L1 &&
-                            !layout_xml::extractDataSource(doc, QDir()).isEmpty();
+#ifdef PJ_WITH_SCENE3D
+  // Robot resources may be named relative to where the layout came from. An
+  // upload has no location, so only its absolute references resolve.
+  if (QString resource_error; !pj::scene3d::resolveLayoutResourceUrls(doc, layout_url, &resource_error)) {
+    showBrowserLayoutWarning(
+        this, tr("Load Layout"), tr("'%1' cannot be loaded: %2").arg(browser_name, resource_error));
+    finishBrowserLayoutLoad(browser_name, false, u"resources"_s);
+    return;
+  }
+#endif
+  const bool source_bound = layout_xml::isSourceBoundLayout(doc);
   if (browser_layout_runtime_ != nullptr) {
     browser_layout_runtime_->pending_recipe_name = browser_name;
     // Only source-free documents are retained implicitly. Source-bound layouts
@@ -5343,7 +5474,7 @@ void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& bro
     // reselect them through W9c instead of leaking them into localStorage.
     browser_layout_runtime_->pending_generic_recipe = !source_bound;
   }
-  switch (loadBrowserParsedLayout(std::move(doc), browser_name)) {
+  switch (loadBrowserParsedLayout(std::move(doc), browser_name, layout_url)) {
     case BrowserLayoutLoadResult::kApplied:
       finishBrowserLayoutLoad(browser_name, true);
       break;
@@ -5355,28 +5486,28 @@ void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& bro
   }
 }
 
-MainWindow::BrowserLayoutLoadResult MainWindow::loadBrowserParsedLayout(QDomDocument doc, const QString& browser_name) {
+MainWindow::BrowserLayoutLoadResult MainWindow::loadBrowserParsedLayout(
+    QDomDocument doc, const QString& browser_name, const QUrl& layout_url) {
   const QDomElement root = doc.documentElement();
   bool version_ok = false;
   const int version = root.attribute(u"pj4_version"_s, u"0"_s).toInt(&version_ok);
-  if (version_ok && version > kLayoutSchemaVersion) {
+  if (version_ok && version > layout_xml::kStreamingLayoutSchemaVersion) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "schema-newer",
         tr("Layout '%1' was saved by a newer PJ4 (pj4_version=%2 > %3); loading best-effort.")
             .arg(browser_name)
             .arg(version)
-            .arg(kLayoutSchemaVersion));
+            .arg(layout_xml::kStreamingLayoutSchemaVersion));
   }
 
-  // A browser selection supplies bytes and a display name, never a durable
-  // directory. Do not resolve or replay source paths: retain the intent for the
-  // later reselection package and bind this slice only to compatible live data.
+  // Bytes come with a display name and at most a URL, never a durable
+  // directory: source paths are never resolved as files here. The replay
+  // either reselects them (an upload) or downloads them beside `layout_url`.
   layout_xml::removeUnvalidatedDatasetIds(doc);
   layout_xml::normalizePlotRangeBasis(doc);
-  const QString binding = root.attribute(u"binding"_s, u"source"_s);
-  const QList<layout_xml::DataSourceRef> sources = layout_xml::extractDataSource(doc, QDir());
-  if (binding != "generic"_L1 && !sources.empty()) {
-    beginBrowserSourceReplay(std::move(doc), browser_name, sources);
+  if (layout_xml::isSourceBoundLayout(doc)) {
+    QList<layout_xml::DataSourceRef> sources = layout_xml::extractDataSource(doc, QDir());
+    beginBrowserSourceReplay(std::move(doc), browser_name, std::move(sources), layout_url);
     return BrowserLayoutLoadResult::kPending;
   }
   return applyBrowserRestoredLayout(std::move(doc), browser_name) ? BrowserLayoutLoadResult::kApplied
@@ -5384,7 +5515,7 @@ MainWindow::BrowserLayoutLoadResult MainWindow::loadBrowserParsedLayout(QDomDocu
 }
 
 void MainWindow::beginBrowserSourceReplay(
-    QDomDocument doc, const QString& browser_name, QList<layout_xml::DataSourceRef> sources) {
+    QDomDocument doc, const QString& browser_name, QList<layout_xml::DataSourceRef> sources, const QUrl& layout_url) {
   if (browser_layout_runtime_ == nullptr || browser_layout_runtime_->replay.has_value()) {
     finishBrowserLayoutLoad(browser_name, false, u"busy"_s);
     return;
@@ -5405,6 +5536,26 @@ void MainWindow::beginBrowserSourceReplay(
       return;
     }
   }
+  // Streams are checked and filled in for this page before anything is fetched.
+  QString stream_error;
+  const QList<layout_xml::StreamingSourceRef> stream_records = layout_xml::extractStreamingSources(doc, &stream_error);
+  if (!stream_error.isEmpty()) {
+    showBrowserLayoutWarning(this, tr("Load source-bound layout"), stream_error);
+    finishBrowserLayoutLoad(browser_name, false, u"stream-records"_s);
+    return;
+  }
+  std::vector<BrowserLayoutRuntime::ReplayStream> streams;
+  for (const layout_xml::StreamingSourceRef& record : stream_records) {
+    QString config_error;
+    QString expanded = expandSourceConfigVariables(record.plugin_config_json, deployment_page_url_, &config_error);
+    if (!config_error.isEmpty()) {
+      showBrowserLayoutWarning(
+          this, tr("Load source-bound layout"), tr("Stream '%1' cannot start: %2").arg(record.id, config_error));
+      finishBrowserLayoutLoad(browser_name, false, u"stream-config"_s);
+      return;
+    }
+    streams.push_back({.record = record, .expanded_config = std::move(expanded)});
+  }
   browser_layout_runtime_->replay.emplace(
       BrowserLayoutRuntime::Replay{
           .doc = std::move(doc),
@@ -5412,21 +5563,30 @@ void MainWindow::beginBrowserSourceReplay(
           .sources = std::move(sources),
           .staged_inputs = {},
           .selected_identities = {},
-          .loaded_identities = {},
           .selection_index = 0,
           .load_failed = false,
           .load_failure = {},
           .previous_workspace = captureWorkspace(),
           .selection_button = {},
           .active_picker_generation = 0,
-          .loaded_connection = {},
-          .failed_connection = {},
-          .drained_connection = {},
+          .source_urls = {},
+          .staged_bytes = 0,
+          .pending_tickets = {},
+          .cancelled = false,
+          .receiver = std::make_unique<QObject>(),
+          .streams = std::move(streams),
+          .stream_datasets = {},
+          .transport_before_streams = std::nullopt,
       });
 
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
   if (replay.sources.isEmpty()) {
-    finishBrowserLayoutLoad(browser_name, false, u"source-list"_s);
+    if (replay.streams.empty()) {
+      finishBrowserLayoutLoad(browser_name, false, u"source-list"_s);
+      return;
+    }
+    // Streams only: nothing to download or reselect.
+    startBrowserReplayImports();
     return;
   }
   QSet<QString> logical_paths;
@@ -5441,6 +5601,26 @@ void MainWindow::beginBrowserSourceReplay(
     logical_paths.insert(source.serialized_path);
     const QString basename = BrowserFileStore::sanitizedBasename(source.serialized_path);
     basename_counts.insert(basename, basename_counts.value(basename) + 1);
+  }
+  if (layout_url.isValid()) {
+    // Downloaded: every source is named by its URL, so equal basenames are not
+    // ambiguous. Refuse what cannot be fetched or checked before any request.
+    for (const layout_xml::DataSourceRef& source : replay.sources) {
+      QString error;
+      const QUrl url = layout_xml::resolveFileSourceUrl(source.serialized_path, layout_url, &error);
+      if (url.isEmpty() || source.content_sha256_malformed) {
+        showBrowserLayoutWarning(
+            this, tr("Load Layout"),
+            url.isEmpty()
+                ? error
+                : tr("Data source '%1' records a malformed content fingerprint.").arg(source.serialized_path));
+        finishBrowserLayoutLoad(browser_name, false, url.isEmpty() ? u"source-url"_s : u"fingerprint"_s);
+        return;
+      }
+      replay.source_urls.push_back(url);
+    }
+    downloadNextReplaySource();
+    return;
   }
   for (const layout_xml::DataSourceRef& source : replay.sources) {
     const QString basename = BrowserFileStore::sanitizedBasename(source.serialized_path);
@@ -5505,17 +5685,17 @@ void MainWindow::beginBrowserSourceReplay(
       // the replay so a vanished surface cannot lock layout actions forever.
     }
     if (choice == 1) {
-      BrowserLayoutRuntime::Replay& replay = *self->browser_layout_runtime_->replay;
-      QDomDocument apply_doc = replay.doc;
+      BrowserLayoutRuntime::Replay& active = *self->browser_layout_runtime_->replay;
+      QDomDocument apply_doc = active.doc;
       QHash<QString, QString> identity_for_logical_path;
       QSet<QString> consumed_identities;
       QStringList matched_identities;
       const auto live_datasets = self->session_->catalogModel().datasets();
-      for (const layout_xml::DataSourceRef& source : replay.sources) {
+      for (const layout_xml::DataSourceRef& source : active.sources) {
         const QString expected_name = BrowserFileStore::sanitizedBasename(source.serialized_path);
         const bool basename_is_ambiguous =
             std::count_if(
-                replay.sources.cbegin(), replay.sources.cend(),
+                active.sources.cbegin(), active.sources.cend(),
                 [&expected_name](const layout_xml::DataSourceRef& candidate) {
                   return BrowserFileStore::sanitizedBasename(candidate.serialized_path) == expected_name;
                 }) > 1;
@@ -5555,7 +5735,7 @@ void MainWindow::beginBrowserSourceReplay(
                   })) {
             continue;
           }
-          const int expected_count = source.datasets.isEmpty() ? 1 : source.datasets.size();
+          const int expected_count = source.datasets.isEmpty() ? 1 : static_cast<int>(source.datasets.size());
           if (static_cast<int>(record_it->datasets.size()) != expected_count) {
             continue;
           }
@@ -5581,7 +5761,7 @@ void MainWindow::beginBrowserSourceReplay(
           showBrowserLayoutWarning(
               self, self->tr("Load source-bound layout"),
               self->tr("The currently open browser data does not uniquely match every saved source."));
-          const QString layout_name = replay.layout_name;
+          const QString layout_name = active.layout_name;
           self->finishBrowserLayoutLoad(layout_name, false, u"current-source-shape"_s);
           return;
         }
@@ -5600,9 +5780,7 @@ void MainWindow::beginBrowserSourceReplay(
       layout_xml::remapDatasetSourcePaths(apply_doc, [&identity_for_logical_path](const QString& path) {
         return identity_for_logical_path.value(path, path);
       });
-      const QString layout_name = replay.layout_name;
-      const bool applied = self->applyBrowserRestoredLayout(std::move(apply_doc), layout_name);
-      self->finishBrowserLayoutLoad(layout_name, applied, applied ? QString{} : u"apply"_s);
+      self->applyBrowserReplay(std::move(apply_doc), u"apply"_s);
       return;
     }
     const QString layout_name = self->browser_layout_runtime_->replay->layout_name;
@@ -5629,6 +5807,7 @@ quint64 MainWindow::beginBrowserReplayPickerGeneration() {
 }
 
 void MainWindow::selectBrowserReplaySource() {
+#ifdef PJ_TARGET_WASM
   const quint64 generation = beginBrowserReplayPickerGeneration();
   if (generation == 0) {
     return;
@@ -5641,6 +5820,7 @@ void MainWindow::selectBrowserReplaySource() {
     self->loadBrowserReplaySource(
         generation, std::move(selection.browser_name), std::move(selection.input), std::move(selection.error));
   });
+#endif
 }
 
 void MainWindow::loadBrowserReplaySource(
@@ -5702,12 +5882,7 @@ void MainWindow::loadBrowserReplaySource(
     return;
   }
 
-  replay.selected_identities.push_back(input->source_identity);
-  replay.staged_inputs.push_back(std::move(*input));
-  ++replay.selection_index;
-  qInfo(
-      "PJ_WASM_SOURCE_LAYOUT_STAGED index=%d total=%d name=%s", replay.selection_index, replay.sources.size(),
-      qPrintable(selected_name));
+  stageReplayInput(std::move(*input), selected_name);
 
   if (replay.selection_index < replay.sources.size()) {
     const layout_xml::DataSourceRef& next_source = replay.sources[replay.selection_index];
@@ -5739,6 +5914,97 @@ void MainWindow::loadBrowserReplaySource(
   startBrowserReplayImports();
 }
 
+void MainWindow::stageReplayInput(LoadInput input, const QString& name) {
+  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  replay.selected_identities.push_back(input.source_identity);
+  replay.staged_inputs.push_back(std::move(input));
+  ++replay.selection_index;
+  qInfo(
+      "PJ_WASM_SOURCE_LAYOUT_STAGED index=%d total=%d name=%s", replay.selection_index,
+      static_cast<int>(replay.sources.size()), qPrintable(name));
+}
+
+void MainWindow::downloadNextReplaySource() {
+  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  const quint64 generation = beginBrowserReplayPickerGeneration();
+  browser_layout_runtime_->downloads->download(
+      replay.source_urls[replay.selection_index], [this, generation](QByteArray bytes, const QUrl&, QString error) {
+        stageDownloadedReplaySource(generation, std::move(bytes), error);
+      });
+}
+
+void MainWindow::stageDownloadedReplaySource(quint64 generation, QByteArray bytes, const QString& error) {
+  if (!browser_layout_runtime_->replay.has_value() ||
+      browser_layout_runtime_->replay->active_picker_generation != generation) {
+    return;
+  }
+  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  const QString layout_name = replay.layout_name;  // finishing ends the replay
+  const QUrl url = replay.source_urls[replay.selection_index];
+  if (!error.isEmpty()) {
+    showBrowserLayoutWarning(
+        this, tr("Load Layout"), tr("Data source '%1' could not be downloaded: %2").arg(url.toString(), error));
+    finishBrowserLayoutLoad(layout_name, false, u"download"_s);
+    return;
+  }
+  replay.staged_bytes += bytes.size();
+  if (replay.staged_bytes > kMaxPresetDownloadBytes) {
+    showBrowserLayoutWarning(
+        this, tr("Load Layout"),
+        tr("The layout's data sources exceed the %1 MiB a downloaded layout may load.")
+            .arg(kMaxPresetDownloadBytes / (1024 * 1024)));
+    finishBrowserLayoutLoad(layout_name, false, u"size"_s);
+    return;
+  }
+  // The completion may arrive after this window is gone; a dropped result
+  // releases its staged file with the lease.
+  QPointer<MainWindow> self(this);
+  browser_layout_runtime_->store.stageAsync(
+      url.fileName(), std::move(bytes), [self, generation](BrowserFileStore::StageResult staged) {
+        if (!self.isNull()) {
+          self->addDownloadedReplaySource(generation, std::move(staged.input), staged.error);
+        }
+      });
+}
+
+void MainWindow::addDownloadedReplaySource(quint64 generation, std::optional<LoadInput> input, const QString& error) {
+  if (!browser_layout_runtime_->replay.has_value() ||
+      browser_layout_runtime_->replay->active_picker_generation != generation) {
+    return;
+  }
+  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  replay.active_picker_generation = 0;
+  const QString layout_name = replay.layout_name;  // finishing ends the replay
+  const layout_xml::DataSourceRef& source = replay.sources[replay.selection_index];
+  if (!input.has_value()) {
+    showBrowserLayoutWarning(this, tr("Load Layout"), error);
+    finishBrowserLayoutLoad(layout_name, false, u"staging"_s);
+    return;
+  }
+  if (!source.content_sha256.isEmpty() && input->content_sha256 != source.content_sha256) {
+    showBrowserLayoutWarning(
+        this, tr("Load Layout"),
+        tr("Data source '%1' is not the file its layout was saved with (its content fingerprint differs).")
+            .arg(source.serialized_path));
+    finishBrowserLayoutLoad(layout_name, false, u"fingerprint"_s);
+    return;
+  }
+  stageReplayInput(std::move(*input), replay.source_urls[replay.selection_index].fileName());
+  if (replay.selection_index < replay.sources.size()) {
+    downloadNextReplaySource();
+    return;
+  }
+  startBrowserReplayImports();
+}
+
+void MainWindow::cancelBrowserReplayImports() {
+  // A copy: a queued cancel resolves later, never inside this loop.
+  const QSet<quint64> tickets = browser_layout_runtime_->replay->pending_tickets;
+  for (const quint64 ticket : tickets) {
+    file_loader_->cancelLoad(ticket, /*keep_partial=*/false);
+  }
+}
+
 void MainWindow::startBrowserReplayImports() {
   if (browser_layout_runtime_ == nullptr || !browser_layout_runtime_->replay.has_value()) {
     return;
@@ -5751,49 +6017,51 @@ void MainWindow::startBrowserReplayImports() {
     return;
   }
 
-  QPointer<MainWindow> self(this);
-  replay.loaded_connection = connect(
-      file_loader_.get(), &FileLoader::fileLoaded, this,
-      [self](const QString& path, const QString&, const QString&, const QString&) {
-        if (self.isNull() || self->browser_layout_runtime_ == nullptr ||
-            !self->browser_layout_runtime_->replay.has_value()) {
-          return;
-        }
-        BrowserLayoutRuntime::Replay& active = *self->browser_layout_runtime_->replay;
-        if (active.selected_identities.contains(path)) {
-          active.loaded_identities.insert(path);
-        }
-      });
-  replay.failed_connection = connect(
-      file_loader_.get(), &FileLoader::fileLoadFailed, this, [self](const QString& path, const QString& reason) {
-        if (self.isNull() || self->browser_layout_runtime_ == nullptr ||
-            !self->browser_layout_runtime_->replay.has_value()) {
-          return;
-        }
-        BrowserLayoutRuntime::Replay& active = *self->browser_layout_runtime_->replay;
-        if (active.selected_identities.contains(path)) {
-          active.load_failed = true;
+  // Both connections die with the replay's receiver, so their replay exists.
+  // Only this replay's own tickets count: other loads may run meanwhile.
+  connect(
+      file_loader_.get(), &FileLoader::fileLoadFailed, replay.receiver.get(),
+      [this](const QString& path, const QString& reason) {
+        BrowserLayoutRuntime::Replay& active = *browser_layout_runtime_->replay;
+        if (active.selected_identities.contains(path) && active.load_failure.isEmpty()) {
           active.load_failure = reason;
         }
       });
-  replay.drained_connection = connect(file_loader_.get(), &FileLoader::queueDrained, this, [self]() {
-    if (self.isNull() || self->browser_layout_runtime_ == nullptr ||
-        !self->browser_layout_runtime_->replay.has_value()) {
-      return;
-    }
-    self->finishBrowserReplayImports();
-  });
+  connect(
+      file_loader_.get(), &FileLoader::loadFinished, replay.receiver.get(),
+      [this](quint64 ticket, LoadOutcome outcome, const QString&, DatasetId, const QVector<DatasetId>&) {
+        BrowserLayoutRuntime::Replay& active = *browser_layout_runtime_->replay;
+        if (!active.pending_tickets.remove(ticket)) {
+          return;
+        }
+        if (outcome != LoadOutcome::kLoaded && !active.load_failed) {
+          // The transaction already failed: stop the rest instead of importing it.
+          active.load_failed = true;
+          cancelBrowserReplayImports();
+        }
+        if (active.pending_tickets.isEmpty()) {
+          finishBrowserReplayImports();
+        }
+      });
 
-  for (int index = 0; index < replay.sources.size(); ++index) {
+  for (int index = 0; index < replay.sources.size() && !replay.load_failed; ++index) {
     const layout_xml::DataSourceRef& source = replay.sources[index];
     // The browser preset carries the previous upload's expired MEMFS path, so
     // a saved plugin also opts into the filepath rewrite.
     const bool has_saved_plugin = !source.plugin_manifest_id.isEmpty() || !source.plugin_id.isEmpty();
     const LoadHints hints = layoutReplayHints(source, /*prefer_reuse=*/false, /*rewrite=*/has_saved_plugin);
-    if (!file_loader_->loadFile(std::move(replay.staged_inputs[static_cast<std::size_t>(index)]), this, hints)) {
+    const quint64 ticket =
+        file_loader_->loadFileTicketed(std::move(replay.staged_inputs[static_cast<std::size_t>(index)]), this, hints);
+    if (ticket == 0) {
       replay.load_failed = true;
       replay.load_failure = tr("A staged source could not be queued for import.");
+      cancelBrowserReplayImports();
+    } else {
+      replay.pending_tickets.insert(ticket);
     }
+  }
+  if (replay.pending_tickets.isEmpty()) {
+    finishBrowserReplayImports();
   }
 }
 
@@ -5803,8 +6071,13 @@ void MainWindow::finishBrowserReplayImports() {
   }
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
   const QString layout_name = replay.layout_name;
+  if (replay.cancelled) {
+    rollbackBrowserReplayImports();
+    finishBrowserLayoutLoad(layout_name, false, u"cancelled"_s);
+    return;
+  }
   QString validation_error;
-  if (replay.load_failed || replay.loaded_identities.size() != replay.selected_identities.size()) {
+  if (replay.load_failed) {
     validation_error = replay.load_failure.isEmpty()
                            ? tr("One or more selected sources closed without completing their import.")
                            : replay.load_failure;
@@ -5822,7 +6095,7 @@ void MainWindow::finishBrowserReplayImports() {
         candidates.push_back(dataset_id);
       }
     }
-    const int expected_count = source.datasets.isEmpty() ? 1 : source.datasets.size();
+    const int expected_count = source.datasets.isEmpty() ? 1 : static_cast<int>(source.datasets.size());
     if (static_cast<int>(candidates.size()) != expected_count) {
       validation_error = tr("Source '%1' produced %2 dataset(s); the layout requires exactly %3.")
                              .arg(BrowserFileStore::sanitizedBasename(source.serialized_path))
@@ -5871,6 +6144,16 @@ void MainWindow::finishBrowserReplayImports() {
       }
     }
   }
+  // Streams share the timeline's slots with the files.
+  for (const BrowserLayoutRuntime::ReplayStream& stream : replay.streams) {
+    const int slot = stream.record.dataset.timeline_order;
+    if (validation_error.isEmpty() && slot >= 0 && timeline_slots.contains(slot)) {
+      validation_error = tr("The saved Source Timeline contains duplicate track positions.");
+    }
+    if (slot >= 0) {
+      timeline_slots.insert(slot);
+    }
+  }
   for (int slot = 0; validation_error.isEmpty() && slot < timeline_slots.size(); ++slot) {
     if (!timeline_slots.contains(slot)) {
       validation_error = tr("The saved Source Timeline contains invalid track positions.");
@@ -5878,9 +6161,10 @@ void MainWindow::finishBrowserReplayImports() {
   }
 
   if (!validation_error.isEmpty()) {
+    const QString reason = replay.load_failed ? u"import"_s : u"source-shape"_s;
     showBrowserLayoutWarning(this, tr("Load source-bound layout"), validation_error);
     rollbackBrowserReplayImports();
-    finishBrowserLayoutLoad(layout_name, false, u"source-shape"_s);
+    finishBrowserLayoutLoad(layout_name, false, reason);
     return;
   }
 
@@ -5899,8 +6183,90 @@ void MainWindow::finishBrowserReplayImports() {
     return identity_for_logical_path.value(path, path);
   });
   layout_xml::removeUnvalidatedDatasetIds(apply_doc);
-  const bool applied = applyBrowserRestoredLayout(std::move(apply_doc), layout_name);
-  finishBrowserLayoutLoad(layout_name, applied, applied ? QString{} : u"apply-after-source-load"_s);
+  applyBrowserReplay(std::move(apply_doc), u"apply-after-source-load"_s);
+}
+
+void MainWindow::applyBrowserReplay(QDomDocument apply_doc, const QString& apply_failure) {
+  const QString layout_name = browser_layout_runtime_->replay->layout_name;  // finishing ends the replay
+  const QString failure = startReplayStreamsAndApply(std::move(apply_doc), apply_failure);
+  if (!failure.isEmpty()) {
+    // All or nothing: sources imported or started for a layout that cannot apply go too.
+    rollbackBrowserReplayImports();
+  } else if (!browser_layout_runtime_->loading_url.isEmpty()) {
+    replacePreviousPresetData();
+  }
+  finishBrowserLayoutLoad(layout_name, failure.isEmpty(), failure);
+}
+
+QString MainWindow::startReplayStreamsAndApply(QDomDocument apply_doc, const QString& apply_failure) {
+  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  if (!replay.streams.empty()) {
+    const PlaybackEngine& engine = session_->playbackEngine();
+    replay.transport_before_streams = BrowserLayoutRuntime::Transport{
+        .followed_stream = active_streaming_dataset_id_,
+        .seeded = streaming_playback_seeded_,
+        .playing = engine.isPlaying(),
+        .current_time = engine.currentTime(),
+    };
+  }
+  QHash<QString, std::uint32_t> stream_datasets;
+  LayoutTimelinePlan stream_tracks;
+  for (const BrowserLayoutRuntime::ReplayStream& stream : replay.streams) {
+    QString error;
+    const DatasetId dataset_id = streaming_manager_->startFromLayout(stream.record, stream.expanded_config, &error);
+    if (dataset_id == 0) {
+      showBrowserLayoutWarning(
+          this, tr("Load source-bound layout"), tr("Stream '%1' could not start: %2").arg(stream.record.id, error));
+      return u"stream"_s;
+    }
+    replay.stream_datasets.push_back(dataset_id);
+    stream_datasets.insert(layout_xml::streamSourceIdentity(stream.record.id), dataset_id);
+    const layout_xml::DataSourceDatasetRef& saved = stream.record.dataset;
+    stream_tracks.push_back(
+        LayoutTimelineTrack{dataset_id, saved.display_offset_ns, saved.has_display_offset, saved.timeline_order});
+  }
+  // Fresh sessions mint fresh DatasetIds: what the layout bound to a stream
+  // record binds to that record's new session, and waits there for its topics.
+  layout_xml::bindStreamQualifiers(apply_doc, stream_datasets);
+  return applyBrowserRestoredLayout(std::move(apply_doc), replay.layout_name, stream_tracks) ? QString{}
+                                                                                             : apply_failure;
+}
+
+void MainWindow::replacePreviousPresetData() {
+  BrowserLayoutRuntime& runtime = *browser_layout_runtime_;
+  const BrowserLayoutRuntime::Replay& replay = *runtime.replay;
+  BrowserLayoutRuntime::PresetData loaded{
+      .file_identities = QSet<QString>(replay.selected_identities.cbegin(), replay.selected_identities.cend()),
+      .datasets = replay.stream_datasets,
+  };
+  for (const auto& [dataset_id, unused_name] : session_->catalogModel().datasets()) {
+    (void)unused_name;
+    if (loaded.file_identities.contains(file_loader_->sourcePathForDataset(dataset_id))) {
+      loaded.datasets.push_back(dataset_id);
+    }
+  }
+  const BrowserLayoutRuntime::PresetData previous = std::exchange(runtime.preset_data, std::move(loaded));
+  std::vector<DatasetId> remove_ids;
+  for (const DatasetId dataset_id : previous.datasets) {
+    // A stream that ended keeps its dataset; one the user removed is gone already.
+    if (session_->sessionManager().dataEngine().getDataset(dataset_id) != nullptr) {
+      remove_ids.push_back(dataset_id);
+    }
+  }
+  if (remove_ids.empty()) {
+    return;
+  }
+  for (const DatasetId dataset_id : remove_ids) {
+    removeDatasetData(dataset_id);
+  }
+  for (const QString& identity : previous.file_identities) {
+    runtime.sources.remove(identity);
+  }
+  // The timeline spans what is left, not the previous preset's recordings too.
+  if (active_streaming_dataset_id_ == 0) {
+    session_->seedPlaybackFromSession();
+  }
+  resetUndoHistory();
 }
 
 void MainWindow::rollbackBrowserReplayImports() {
@@ -5919,6 +6285,9 @@ void MainWindow::rollbackBrowserReplayImports() {
       remove_ids.push_back(dataset_id);
     }
   }
+  for (const DatasetId dataset_id : replay.stream_datasets) {
+    remove_ids.push_back(dataset_id);
+  }
   for (const DatasetId dataset_id : remove_ids) {
     removeDatasetData(dataset_id);
   }
@@ -5932,14 +6301,39 @@ void MainWindow::rollbackBrowserReplayImports() {
         DiagnosticLevel::kWarning, "Layout", "browser-source-rollback-failed",
         tr("The failed source replay was removed, but the previous workspace could not be restored exactly."));
   }
+  const std::optional<BrowserLayoutRuntime::Transport> transport = replay.transport_before_streams;
+  PlaybackEngine& engine = session_->playbackEngine();
+  // Removing the replay's streams unfollowed whichever had become the followed
+  // one; follow the previous stream again first, so the range below is its window.
+  if (transport.has_value() && transport->followed_stream != 0 &&
+      !streaming_manager_->layoutSourceId(transport->followed_stream).isEmpty()) {
+    active_streaming_dataset_id_ = transport->followed_stream;
+    session_->setActiveStreamingDataset(active_streaming_dataset_id_);
+    engine.setHoldAtRangeMax(true);
+  }
   session_->seedPlaybackFromSession();
+  if (transport.has_value()) {
+    streaming_playback_seeded_ = transport->seeded;
+    engine.setCurrentTime(transport->current_time);
+    if (transport->playing) {
+      engine.play();
+    } else {
+      engine.pause();
+    }
+    // play() may not emit playingChanged here, since the started stream already played.
+    refreshStreamingSeekLock();
+  }
 }
 
 void MainWindow::finishBrowserLayoutLoad(const QString& browser_name, bool applied, const QString& reason) {
+  QUrl loading_url;
+  if (browser_layout_runtime_ != nullptr) {
+    if (browser_layout_runtime_->downloads != nullptr) {
+      browser_layout_runtime_->downloads->cancel();
+    }
+    loading_url = std::exchange(browser_layout_runtime_->loading_url, QUrl());
+  }
   if (browser_layout_runtime_ != nullptr && browser_layout_runtime_->replay.has_value()) {
-    QObject::disconnect(browser_layout_runtime_->replay->loaded_connection);
-    QObject::disconnect(browser_layout_runtime_->replay->failed_connection);
-    QObject::disconnect(browser_layout_runtime_->replay->drained_connection);
     if (!browser_layout_runtime_->decision_dialog.isNull()) {
       QPointer<MessageBox> decision = browser_layout_runtime_->decision_dialog;
       browser_layout_runtime_->decision_dialog.clear();
@@ -5967,14 +6361,16 @@ void MainWindow::finishBrowserLayoutLoad(const QString& browser_name, bool appli
   }
   layout_selection_pending_ = false;
   updateBrowserLayoutActions();
+  const QString failure = applied ? QString() : (reason.isEmpty() ? u"apply"_s : reason);
   if (applied) {
     qInfo("PJ_WASM_LAYOUT_LOAD_OK name=%s", qPrintable(browser_name));
-  } else if (reason == "cancelled"_L1) {
+  } else if (failure == "cancelled"_L1) {
     qInfo("PJ_WASM_SOURCE_LAYOUT_CANCELLED name=%s", qPrintable(browser_name));
   } else {
-    qWarning(
-        "PJ_WASM_LAYOUT_LOAD_FAILED name=%s reason=%s", qPrintable(browser_name),
-        qPrintable(reason.isEmpty() ? u"apply"_s : reason));
+    qWarning("PJ_WASM_LAYOUT_LOAD_FAILED name=%s reason=%s", qPrintable(browser_name), qPrintable(failure));
+  }
+  if (!loading_url.isEmpty()) {
+    emit layoutUrlLoadFinished(loading_url, applied, failure);
   }
 }
 
@@ -5995,6 +6391,94 @@ void MainWindow::updateBrowserLayoutActions() {
   if (action_save_source_layout_ != nullptr) {
     action_save_source_layout_->setEnabled(idle && source_eligible);
   }
+}
+
+void MainWindow::loadLayoutFromUrl(const QUrl& url) {
+  const QString name = url.toString();
+  if (layout_selection_pending_) {
+    qWarning("PJ_WASM_LAYOUT_LOAD_FAILED name=%s reason=busy", qPrintable(name));
+    emit layoutUrlLoadFinished(url, false, u"busy"_s);
+    return;
+  }
+  layout_selection_pending_ = true;
+  updateBrowserLayoutActions();
+  BrowserLayoutRuntime& runtime = *browser_layout_runtime_;
+  if (runtime.downloads == nullptr) {
+    runtime.downloads = std::make_unique<PresetController>();
+  }
+  runtime.loading_url = url;
+  runtime.downloads->download(url, [this, name](QByteArray bytes, const QUrl& final_url, QString error) {
+    if (!error.isEmpty()) {
+      showBrowserLayoutWarning(this, tr("Load Layout"), tr("'%1' could not be downloaded: %2").arg(name, error));
+      finishBrowserLayoutLoad(name, false, u"download"_s);
+      return;
+    }
+    // Relative references resolve against where the layout was fetched from.
+    // The browser reports the requested URL here even after a redirect.
+    loadLayoutFromBytes(bytes, name, final_url);
+  });
+}
+
+void MainWindow::cancelLayoutFromUrl() {
+  BrowserLayoutRuntime& runtime = *browser_layout_runtime_;
+  // The URL's layout file itself is still downloading: once it arrives, the load either
+  // ends synchronously or becomes a replay.
+  if (!runtime.loading_url.isEmpty() && !runtime.replay.has_value()) {
+    finishBrowserLayoutLoad(runtime.loading_url.toString(), false, u"cancelled"_s);
+    return;
+  }
+  if (!runtime.replay.has_value() || runtime.replay->source_urls.isEmpty() || runtime.replay->cancelled) {
+    return;
+  }
+  if (runtime.replay->pending_tickets.isEmpty()) {
+    // Still downloading or staging: nothing was imported yet.
+    const QString name = runtime.replay->layout_name;  // finishing ends the replay
+    finishBrowserLayoutLoad(name, false, u"cancelled"_s);
+    return;
+  }
+  // The last terminal of its own imports rolls back (finishBrowserReplayImports).
+  runtime.replay->cancelled = true;
+  cancelBrowserReplayImports();
+}
+
+#ifdef PJ_TARGET_WASM
+void MainWindow::startBrowserPresets(const QUrl& page_url) {
+  auto* discovery = new PresetController(this);
+  connect(
+      discovery, &PresetController::discovered, this,
+      [this, discovery](const QList<PresetEntry>& entries, const QString& deep_link, const QString& deep_link_error) {
+        discovery->deleteLater();
+#ifdef PJ_WASM_ENABLE_INGRESS_PROBE
+        qInfo(
+            "PJ_WASM_PRESETS_DISCOVERED count=%lld deep_link=%s error=%s", static_cast<long long>(entries.size()),
+            qPrintable(deep_link), qPrintable(deep_link_error));
+#endif
+        if (entries.isEmpty()) {
+          // No dialog without presets: the page looks as if it had none.
+          if (!deep_link_error.isEmpty()) {
+            showBrowserLayoutWarning(this, tr("Open Preset"), deep_link_error);
+          }
+          return;
+        }
+        presets_dialog_ = new WelcomePresetsDialog(entries, this);
+        presets_dialog_->setWindowModality(Qt::ApplicationModal);
+        presets_dialog_->setChromeMetrics(chrome_metrics_);
+        connect(this, &MainWindow::chromeMetricsChanged, presets_dialog_, &Dialog::setChromeMetrics);
+        connect(
+            presets_dialog_, &WelcomePresetsDialog::presetSelected, this,
+            [this](const QString&, const QUrl& layout_url) { loadLayoutFromUrl(layout_url); });
+        connect(presets_dialog_, &WelcomePresetsDialog::uploadRequested, action_open_data_, &QAction::trigger);
+        connect(presets_dialog_, &WelcomePresetsDialog::cancelRequested, this, &MainWindow::cancelLayoutFromUrl);
+        connect(this, &MainWindow::layoutUrlLoadFinished, presets_dialog_, &WelcomePresetsDialog::layoutLoadFinished);
+        ui_->actionPresets->setVisible(true);
+        presets_dialog_->show();
+        if (!deep_link_error.isEmpty()) {
+          presets_dialog_->showError(deep_link_error);
+        } else if (!deep_link.isEmpty()) {
+          presets_dialog_->selectPreset(deep_link);
+        }
+      });
+  discovery->start(page_url);
 }
 #endif
 
@@ -6026,9 +6510,9 @@ void MainWindow::enableAutoplay() {
   });
 }
 
-#ifdef PJ_TARGET_WASM
-bool MainWindow::applyBrowserRestoredLayout(QDomDocument doc, const QString& browser_name) {
-  if (session_->catalogModel().datasets().empty()) {
+bool MainWindow::applyBrowserRestoredLayout(
+    QDomDocument doc, const QString& browser_name, const LayoutTimelinePlan& stream_tracks) {
+  if (session_->catalogModel().datasets().empty() && stream_tracks.empty()) {
     showBrowserLayoutWarning(
         this, tr("Load Layout"), tr("No data is loaded. Open a data source before applying this layout."));
     return false;
@@ -6048,7 +6532,10 @@ bool MainWindow::applyBrowserRestoredLayout(QDomDocument doc, const QString& bro
   // Source replay validation has already proven an exact dataset/fan-out
   // shape. Apply per-source offsets and vertical order only after the workspace
   // succeeds, so a curve/scene failure cannot leave a partially moved timeline.
-  static_cast<void>(applyTimelineStateFromLayout(layout_xml::extractDataSource(doc, QDir())));
+  LayoutTimelinePlan timeline = resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, QDir()));
+  timeline.insert(timeline.end(), stream_tracks.cbegin(), stream_tracks.cend());
+  static_cast<void>(applyLayoutTimelineOffsets(timeline));
+  applyLayoutTimelineOrder(timeline);
   restoreBrowserChromeAndPanels(doc, browser_name);
   resetUndoHistory();
   return true;
@@ -6065,7 +6552,6 @@ void MainWindow::restoreBrowserChromeAndPanels(const QDomDocument& doc, const QS
   restoreSourceTimelineViewState(doc.documentElement().firstChildElement(u"source_timeline"_s));
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "loaded", tr("Loaded layout: %1").arg(browser_name));
 }
-#endif
 
 void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path, MissingCurvePolicy policy) {
   // 3. Filters + curve rebinding + plot apply happen together in restoreWorkspaceState
@@ -6426,7 +6912,8 @@ void MainWindow::reportLayoutRestoreIssue(MissingCurvePolicy policy, const char*
   if (policy == MissingCurvePolicy::kRetainAndDiagnose) {
     emitDiagnostic(DiagnosticLevel::kWarning, "Layout", id, message);
   } else {
-    MessageBox::warning(this, tr("Load Layout"), message);
+    // Plain text: messages quote paths and layout content.
+    MessageBox::warning(this, tr("Load Layout"), Qt::convertFromPlainText(message, Qt::WhiteSpaceNormal));
   }
 }
 

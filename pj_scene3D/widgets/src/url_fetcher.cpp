@@ -11,10 +11,11 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QTimer>
-#include <QVariant>
-#include <memory>
+#include <chrono>
 #include <optional>
 #include <utility>
+
+#include "pj_runtime/HttpGet.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -72,7 +73,7 @@ std::optional<QString> localFilePath(const QUrl& url) {
 
 }  // namespace
 
-UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {
+UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent), manager_(this) {
   // Persist fetched remote models so re-opening the dataset (or the next session)
   // serves them from disk instead of re-downloading. QNetworkDiskCache honors HTTP
   // Cache-Control/ETag: a fresh entry is served without touching the network; a
@@ -93,6 +94,15 @@ UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {
   cache->setMaximumCacheSize(256LL * 1024 * 1024);
   manager_.setCache(cache);
 #endif
+}
+
+UrlFetcher::~UrlFetcher() {
+  for (QNetworkReply* reply : manager_.findChildren<QNetworkReply*>()) {
+    reply->disconnect(this);
+    if (!reply->isFinished()) {
+      reply->abort();
+    }
+  }
 }
 
 void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchResult result) {
@@ -116,48 +126,25 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
 
   QNetworkRequest request(url);
   // Bounded redirects with no https->http downgrade (see the class contract for
-  // why this is the chosen policy) and a transfer timeout instead of a
-  // hand-rolled wall-clock QTimer.
+  // why this is the chosen policy).
   request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
   request.setMaximumRedirectsAllowed(4);
-  request.setTransferTimeout(15000);
-
-  QNetworkReply* reply = manager_.get(request);
-  // Size cap: abort as soon as either the declared Content-Length (headers,
-  // metaDataChanged) or the bytes actually buffered (readyRead) exceed
-  // kMaxFetchBytes. Deliberately NOT downloadProgress: Qt throttles it (~100 ms
-  // choke, bypassed only at completion), so a trickling over-cap response could
-  // evade enforcement. `capped` disambiguates our own abort from a genuine
-  // network error in the finished handler. bytesAvailable() counts the whole
-  // buffered body because nothing reads the reply before finished.
-  auto capped = std::make_shared<bool>(false);
-  const auto enforce_cap = [reply, capped]() {
-    if (*capped) {
-      return;
-    }
-    const QVariant declared = reply->header(QNetworkRequest::ContentLengthHeader);
-    if ((declared.isValid() && declared.toLongLong() > kMaxFetchBytes) || reply->bytesAvailable() > kMaxFetchBytes) {
-      *capped = true;
-      reply->abort();
-    }
-  };
-  connect(reply, &QNetworkReply::metaDataChanged, this, enforce_cap);
-  connect(reply, &QNetworkReply::readyRead, this, enforce_cap);
-  // `this` as context: destroying the fetcher severs this connection (and the
-  // reply, a child of manager_, is aborted), so the callback is dropped.
-  connect(reply, &QNetworkReply::finished, this, [reply, capped, on_done = std::move(on_done)]() {
-    reply->deleteLater();
-    FetchResult result;
-    if (*capped) {
-      result.error = tr("response exceeds the %1 MiB limit").arg(kMaxFetchBytes / (1024 * 1024));
-    } else if (reply->error() != QNetworkReply::NoError) {
-      result.error = reply->errorString();
-    } else {
-      result.bytes = reply->readAll();
-      result.ok = true;
-    }
-    on_done(std::move(result));
-  });
+  // `this` as context: destroying the fetcher aborts the reply and drops the callback.
+  PJ::httpGetWithLimit(
+      manager_, request, kMaxFetchBytes, std::chrono::seconds(15), this,
+      [on_done = std::move(on_done)](QNetworkReply& reply, bool limit_exceeded) {
+        FetchResult result;
+        if (limit_exceeded) {
+          result.error = tr("response exceeds the %1 MiB limit").arg(kMaxFetchBytes / (1024 * 1024));
+        } else if (reply.error() != QNetworkReply::NoError) {
+          result.error = reply.errorString();
+        } else {
+          result.bytes = reply.readAll();
+          result.final_url = reply.url();
+          result.ok = true;
+        }
+        on_done(std::move(result));
+      });
 }
 
 }  // namespace pj::scene3d

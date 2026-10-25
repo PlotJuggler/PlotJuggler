@@ -2586,3 +2586,11 @@ PJ--ToastNotification QPushButton#toastCloseButton {
 PJ--ToastNotification QPushButton#toastCloseButton:hover {
     color: ${text};
 }
+
+/* Welcome presets dialog: each preset is a card, and a thumbnail that is
+   missing or failed to load reads as an empty frame. */
+QFrame#presetCard,
+QLabel#labelPresetThumbnail {
+    border: 1px solid ${separation};
+    border-radius: ${radius_card}px;
+}

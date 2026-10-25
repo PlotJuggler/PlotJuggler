@@ -373,4 +373,11 @@ class ExtensionCatalogService : public QObject {
   ParserRoutingService routing_;
 };
 
+// The DataSource a saved layout names among `candidates`: the one whose manifest id is
+// `manifest_id`, else the one whose display name is `name` (the legacy identity); an empty
+// hint skips its tier. Each tier sweeps every candidate, so an id match on a later candidate
+// beats a name match on an earlier one. Null when neither matches; null candidates are skipped.
+[[nodiscard]] const LoadedDataSource* findDataSourceByIdentity(
+    const std::vector<const LoadedDataSource*>& candidates, const QString& manifest_id, const QString& name);
+
 }  // namespace PJ

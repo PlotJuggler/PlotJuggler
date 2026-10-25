@@ -158,13 +158,13 @@ class FileLoader : public QObject {
   // replay uses this to finish every required selection before importing any
   // data. Cancellation is an empty input/error pair.
   void selectBrowserInput(QWidget* dialog_parent, BrowserSelectionCallback callback);
-
-  // Fingerprint captured while BrowserFileStore staged this opaque upload.
-  // Empty for native paths, unknown identities, and failed pre-staging calls.
-  // Kept outside SessionManager because it is browser-session metadata, not a
-  // durable source path or plugin concern.
-  [[nodiscard]] QString browserContentSha256(const QString& source_identity) const;
 #endif
+
+  // Fingerprint captured while BrowserFileStore staged this opaque upload (or a
+  // preset's download, on any platform). Empty for native paths, unknown
+  // identities, and failed pre-staging calls. Kept outside SessionManager because
+  // it is browser-session metadata, not a durable source path or plugin concern.
+  [[nodiscard]] QString browserContentSha256(const QString& source_identity) const;
 
   // Resolves the "pick file(s)" interaction inside openFromDialog() /
   // replaceFromDialog(). Returns the selected paths (empty on cancel; at most
@@ -498,9 +498,7 @@ class FileLoader : public QObject {
   FilePicker file_picker_;
   DiagnosticSink diagnostic_sink_;
   std::shared_ptr<BrowserFileStore> browser_file_store_;
-#ifdef PJ_TARGET_WASM
   QHash<QString, QString> browser_content_sha256_;
-#endif
 #ifdef PJ_WITH_SCENE3D
   PJ::TransformService* transform_service_ = nullptr;
 #endif

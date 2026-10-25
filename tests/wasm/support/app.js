@@ -13,8 +13,14 @@ async function waitForQtApp(page, consoleMessages, previousReadyCount = 0) {
 
 
 function observeRuntimeTarget(target, targetMessages, allMessages, errors) {
+  // Firefox reports a worker thread's console line twice, from the worker and again from the page;
+  // Chromium reports it once, from the worker. Keeping one copy lets specs count worker-side lines.
+  const firefox = target.context().browser()?.browserType().name() === 'firefox';
   target.on('pageerror', error => errors.push(String(error)));
   target.on('console', (message) => {
+    if (firefox && message.worker()) {
+      return;
+    }
     targetMessages.push(message.text());
     allMessages.push(message.text());
   });

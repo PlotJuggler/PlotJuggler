@@ -48,6 +48,7 @@
 #include "pj_runtime/parse_locked.h"
 #include "pj_scene3d_core/model_budget.h"
 #include "pj_scene3d_core/robot_model_bridges.h"
+#include "pj_scene3d_widgets/layout_resources.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_widgets/CheckButton.h"
@@ -334,6 +335,12 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
       el.setAttribute(u"source_dataset_path"_s, path);
     }
   }
+  if (!package_url_roots_.isEmpty()) {
+    el.setAttribute(u"package_url_roots"_s, serializePackageUrlRoots(package_url_roots_));
+  }
+  if (remote_resources_only_) {
+    el.setAttribute(u"remote_resources_only"_s, u"true"_s);
+  }
   el.setAttribute(u"frame_prefix"_s, frame_prefix_);
   el.setAttribute(u"display_mode"_s, displayModeToString(display_mode_));
   el.setAttribute(u"visible"_s, visible_ ? u"true"_s : u"false"_s);
@@ -362,7 +369,8 @@ std::optional<RobotModelLayer::ParsedSettings> RobotModelLayer::parseSettings(co
   settings.source_type = sourceTypeFromString(source_type_text);
   settings.display_mode = displayModeFromString(display_mode_text);
   if (!detail::parseTrueFalse(element, "visible", true, settings.visible) ||
-      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, settings.ignore_collada_up_axis)) {
+      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, settings.ignore_collada_up_axis) ||
+      !detail::parseTrueFalse(element, "remote_resources_only", false, settings.remote_resources_only)) {
     return std::nullopt;
   }
   if (element.hasAttribute(u"color"_s)) {
@@ -394,6 +402,11 @@ std::optional<RobotModelLayer::ParsedSettings> RobotModelLayer::parseSettings(co
   }
   settings.dataset_source = element.attribute(u"source_dataset_source"_s);
   settings.dataset_path = element.attribute(u"source_dataset_path"_s);
+  std::optional<QMap<QString, QUrl>> roots = parsePackageUrlRoots(element.attribute(u"package_url_roots"_s));
+  if (!roots.has_value()) {
+    return std::nullopt;
+  }
+  settings.package_url_roots = std::move(*roots);
   return settings;
 }
 
@@ -446,6 +459,8 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
   const bool old_visible = visible_;
   const QRgb old_color = fallback_color_.rgb();
   const bool old_ignore_up_axis = ignore_collada_up_axis_;
+  const QMap<QString, QUrl> old_roots = package_url_roots_;
+  const bool old_remote_resources_only = remote_resources_only_;
   source_type_ = settings->source_type;
   source_value_ = element.attribute(u"source_value"_s, source_value_);
   frame_prefix_ = element.attribute(u"frame_prefix"_s);
@@ -453,6 +468,8 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
   visible_ = settings->visible;
   fallback_color_ = settings->color.value_or(fallback_color_);
   ignore_collada_up_axis_ = settings->ignore_collada_up_axis;
+  package_url_roots_ = settings->package_url_roots;
+  remote_resources_only_ = settings->remote_resources_only;
   // Layout bytes never carry file content: a restored kFile reads its path
   // (desktop) or asks for the file again (browser).
   local_file_bytes_.clear();
@@ -468,7 +485,8 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
   const bool changed = old_source_type != source_type_ || old_source_value != source_value_ ||
                        old_topic_id != source_topic_id_.id || old_prefix != frame_prefix_ ||
                        old_mode != display_mode_ || old_visible != visible_ || old_color != fallback_color_.rgb() ||
-                       old_ignore_up_axis != ignore_collada_up_axis_;
+                       old_ignore_up_axis != ignore_collada_up_axis_ || old_roots != package_url_roots_ ||
+                       old_remote_resources_only != remote_resources_only_;
   if (changed && !source_setter_emitted) {
     emit configurationChanged();
   }
@@ -959,6 +977,15 @@ void RobotModelLayer::setSourceUrl(QString url) {
   emit configurationChanged();
 }
 
+void RobotModelLayer::setPackageUrlRoots(const QMap<QString, QUrl>& roots) {
+  if (package_url_roots_ == roots) {
+    return;
+  }
+  package_url_roots_ = roots;
+  loadFromCurrentSource();
+  emit configurationChanged();
+}
+
 void RobotModelLayer::setFramePrefix(QString prefix) {
   if (frame_prefix_ == prefix) {
     return;
@@ -1147,8 +1174,12 @@ bool RobotModelLayer::loadFromCurrentSource() {
       fail(tr("Fetch failed (%1)").arg(fetched.error));
       return;
     }
+    // A redirected URDF anchors its relative meshes and roots where it was served.
+    // A local source keeps its text: the mesh loader reads plain paths, not file:// URLs.
+    const QUrl served = fetched.final_url.isEmpty() ? QUrl(url_text) : fetched.final_url;
     const QString text = QString::fromUtf8(fetched.bytes);
-    applyRobotDescription(text, formatFromXml(text), url_text, urlDirectory(url_text), /*source_is_url=*/true);
+    applyRobotDescription(
+        text, formatFromXml(text), url_text, urlDirectory(served.toString()), /*source_is_url=*/true, served);
   });
   return true;
 }
@@ -1191,7 +1222,8 @@ bool RobotModelLayer::tryLoadTopicDescription() {
 }
 
 bool RobotModelLayer::applyRobotDescription(
-    const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url) {
+    const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url,
+    const QUrl& roots_base) {
   latch_pending_ = false;
   const std::string xml = text.toStdString();
   if (static_cast<std::uint64_t>(xml.size()) > kSceneLimits.max_model_source_bytes) {
@@ -1210,7 +1242,13 @@ bool RobotModelLayer::applyRobotDescription(
     }
     resolver_->autoSeedSearchRoots(urdf_dir);
   }
-  auto parsed = parseUrdf(xml, resolver_, urdf_dir.toStdString(), source_is_url, label.toStdString(), &kUrdfLimits);
+  QMap<QString, QUrl> roots = package_url_roots_;
+  for (QUrl& root : roots) {
+    root = roots_base.resolved(root);  // absolute roots come back unchanged
+  }
+  auto parsed = parseUrdf(
+      xml, resolver_, urdf_dir.toStdString(), source_is_url, label.toStdString(), &kUrdfLimits, roots,
+      remote_resources_only_);
   if (!parsed.first.has_value()) {
     fail(QString::fromStdString(parsed.second));
     return false;

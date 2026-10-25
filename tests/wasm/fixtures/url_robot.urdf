@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- A URL-sourced robot: one mesh relative to the URDF, one through a package
+     root that the layout names relative to the URDF's final URL. -->
+<robot name="url_robot">
+  <link name="map">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/cube.stl"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <link name="arm">
+    <visual>
+      <geometry>
+        <mesh filename="package://pj_fixture_description/meshes/cube.stl"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="map_to_arm" type="fixed">
+    <parent link="map"/>
+    <child link="arm"/>
+    <origin xyz="0 0 1" rpy="0 0 0"/>
+  </joint>
+</robot>

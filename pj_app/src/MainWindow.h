@@ -111,6 +111,7 @@ class Theme;
 class TitleBar;
 class ToastManager;
 class UpdateChecker;
+class WelcomePresetsDialog;
 class RegistryManager;
 class TelemetryPing;
 class CoalescingTrigger;
@@ -147,6 +148,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowScene3dDropFramingTestPeer;
   friend class MainWindowOnDemandRestoreTestPeer;
   friend class MainWindowEditorIntegrationTestPeer;
+  friend class PresetTestPeer;
   friend class ToolboxPanelFoldTestPeer;
   friend class ToolboxPresenter;
 
@@ -185,6 +187,34 @@ class MainWindow : public QMainWindow {
   // Loads `path` on startup and auto-reloads its data source(s) without prompting
   // (the --layout CLI option). Safe no-op if the layout binds to no source.
   void loadLayoutAtStartup(const QString& path);
+
+  // Opens the layout at `url` (http/https) as a preset, with no picker: its
+  // <fileInfo> sources are downloaded from beside it one at a time, staged and
+  // checked against their fingerprints, then imported all or nothing — any
+  // failure or cancel removes what this load imported and restores the previous
+  // workspace. Scene3D resources resolve against the same location. A layout
+  // load already pending makes this a no-op logged with reason=busy. Every call
+  // ends in exactly one layoutUrlLoadFinished.
+  void loadLayoutFromUrl(const QUrl& url);
+  // Stops the loadLayoutFromUrl in flight, if any: its download is dropped, its
+  // own queued and running imports are cancelled (discarding their data) and
+  // the workspace comes back once they wind down. Other loads are left alone.
+  void cancelLayoutFromUrl();
+
+  // The page this build was opened from: fills a replayed stream's deployment variables
+  // (${deployment.*}). The browser build sets it at startup; the desktop app leaves it empty.
+  void setDeploymentPageUrl(const QUrl& page_url) {
+    deployment_page_url_ = page_url;
+  }
+
+#ifdef PJ_TARGET_WASM
+  // Looks for the presets the page at `page_url` publishes (presets/index.json
+  // beside it) and, once found, offers them in the welcome dialog and under
+  // File → Presets, or opens the one a ?preset=<id> deep link names. A page
+  // without a usable index starts as if this were never called. Call once,
+  // from the event loop, after the window is shown.
+  void startBrowserPresets(const QUrl& page_url);
+#endif
 
   // Arms the --autoplay CLI option: begins looping playback the first time a data
   // source provides a non-empty time range (so it works for both the synchronous
@@ -324,6 +354,14 @@ class MainWindow : public QMainWindow {
   // A progressive restore superseded by a newer load never settles — the
   // superseding load emits its own settlement instead.
   void layoutRestoreSettled(bool success);
+
+  // The terminal of one loadLayoutFromUrl: `reason` is empty on success, else
+  // the token its PJ_WASM_LAYOUT_LOAD_FAILED line names (busy, download, size,
+  // fingerprint, source-url, staging, import, source-shape, resources,
+  // apply-after-source-load, …) or "cancelled". A busy refusal is reported at
+  // once for the refused URL while the load in flight carries on. Emitted after
+  // the load's state is cleared, so a handler may start the next one.
+  void layoutUrlLoadFinished(const QUrl& url, bool ok, const QString& reason);
 
   // Fires when any chrome metric changes. Bundled so consumers always
   // recompute layout from a consistent snapshot:
@@ -562,8 +600,12 @@ class MainWindow : public QMainWindow {
   // The first topic dropped into an empty click-created object view: seeds streaming playback and frames it.
   void onFirstObjectTopicAdded(DockWidget* dock);
 
+  // Locks seeking (playback slider + Source Timeline) exactly while a followed stream
+  // is playing; called on every change of either condition.
+  void refreshStreamingSeekLock();
+
   // Put the Source Timeline into read-only mode (called with streaming && playing,
-  // from the streaming seek-lock refresh). While the cursor is glued to the live
+  // from refreshStreamingSeekLock). While the cursor is glued to the live
   // tip, editing source offsets / order / merges or seeking the needle is unsafe;
   // pausing the stream clears it so the retained window can be scrubbed/realigned.
   // Locks the Timeline widget's manipulation gestures (setInteractionLocked) AND
@@ -798,27 +840,41 @@ class MainWindow : public QMainWindow {
     kAutomated,    ///< --layout CLI: auto-reload, never any dialog
   };
   void loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity);
-#ifdef PJ_TARGET_WASM
+  // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl
+  // (which is why they also build on the desktop). Every terminal outcome goes
+  // through finishBrowserLayoutLoad, which logs PJ_WASM_LAYOUT_LOAD_OK/FAILED.
   enum class BrowserLayoutLoadResult { kApplied, kPending, kFailed };
 
   [[nodiscard]] QDomDocument browserGenericLayoutDocument() const;
   [[nodiscard]] std::optional<QDomDocument> browserSourceLayoutDocument(QString& error) const;
-  void loadLayoutFromBytes(const QByteArray& bytes, const QString& browser_name);
-  [[nodiscard]] BrowserLayoutLoadResult loadBrowserParsedLayout(QDomDocument doc, const QString& browser_name);
-  [[nodiscard]] bool applyBrowserRestoredLayout(QDomDocument doc, const QString& browser_name);
+  // `layout_url` is where the bytes came from (empty for an upload): relative
+  // Scene3D resources and file sources resolve against it, and with it the
+  // sources download instead of being reselected.
+  void loadLayoutFromBytes(const QByteArray& bytes, const QString& browser_name, const QUrl& layout_url = {});
+  [[nodiscard]] BrowserLayoutLoadResult loadBrowserParsedLayout(
+      QDomDocument doc, const QString& browser_name, const QUrl& layout_url);
   void restoreBrowserChromeAndPanels(const QDomDocument& doc, const QString& browser_name);
   void beginBrowserSourceReplay(
-      QDomDocument doc, const QString& browser_name, QList<layout_xml::DataSourceRef> sources);
+      QDomDocument doc, const QString& browser_name, QList<layout_xml::DataSourceRef> sources, const QUrl& layout_url);
   [[nodiscard]] quint64 beginBrowserReplayPickerGeneration();
   void selectBrowserReplaySource();
   void loadBrowserReplaySource(
       quint64 picker_generation, QString browser_name, std::optional<LoadInput> input, QString error);
+  // Accepts `input` (already checked) for the replay's current source slot and moves to the
+  // next one; `name` is only logged.
+  void stageReplayInput(LoadInput input, const QString& name);
+  // Remote replay (layout_url set): downloads the next source, then stages it
+  // under the same generation token a picker selection uses.
+  void downloadNextReplaySource();
+  void stageDownloadedReplaySource(quint64 generation, QByteArray bytes, const QString& error);
+  void addDownloadedReplaySource(quint64 generation, std::optional<LoadInput> input, const QString& error);
+  // Cancels (discarding) every import of the replay still awaiting its terminal.
+  void cancelBrowserReplayImports();
   void startBrowserReplayImports();
   void finishBrowserReplayImports();
   void rollbackBrowserReplayImports();
   void finishBrowserLayoutLoad(const QString& browser_name, bool applied, const QString& reason = {});
   void updateBrowserLayoutActions();
-#endif
   // How a complete-snapshot restore handles curves no loaded dataset can provide.
   enum class MissingCurvePolicy {
     kPrompt,      ///< layout load: prompt the user (cancel aborts, remove strips them)
@@ -934,6 +990,22 @@ class MainWindow : public QMainWindow {
     int timeline_order;
   };
   using LayoutTimelinePlan = std::vector<LayoutTimelineTrack>;
+  // Applies a byte-level layout with kExact, then its file sources' timeline
+  // state plus `stream_tracks` (the replay's streams, which have no data yet,
+  // so an empty catalog is not an error when there are some).
+  [[nodiscard]] bool applyBrowserRestoredLayout(
+      QDomDocument doc, const QString& browser_name, const LayoutTimelinePlan& stream_tracks = {});
+  // The replay's last step: applies it (startReplayStreamsAndApply), rolls it back on a
+  // failure or replaces the previous preset's data on a URL load's success, and finishes
+  // the load. `apply_failure` is the failure token when the layout itself does not apply.
+  void applyBrowserReplay(QDomDocument apply_doc, const QString& apply_failure);
+  // Starts the replay's streams from their records, binds what the layout qualified by
+  // pj-stream:// to the new sessions and applies it. Returns the failure token ("stream",
+  // else `apply_failure`), empty on success.
+  [[nodiscard]] QString startReplayStreamsAndApply(QDomDocument apply_doc, const QString& apply_failure);
+  // After a preset load succeeded: records what it brought and removes what the
+  // preset before it brought (its file datasets and streams), nothing else.
+  void replacePreviousPresetData();
   void restoreChromeAndPanels(
       const QDomDocument& doc, const QString& path, const LayoutTimelinePlan* resolved_timeline = nullptr);
   void saveLayoutToPath(const QString& path, bool include_data_source);
@@ -1573,12 +1645,23 @@ class MainWindow : public QMainWindow {
   QAction* action_save_layout_ = nullptr;
   QAction* action_open_data_ = nullptr;
   QAction* action_preferences_ = nullptr;
-#ifdef PJ_TARGET_WASM
+  // Byte-level layout loads (browser uploads and recipes, loadLayoutFromUrl on
+  // every platform) and their source replay. Desktop file loads never use it.
   struct BrowserLayoutRuntime;
   std::unique_ptr<BrowserLayoutRuntime> browser_layout_runtime_;
-  QAction* action_save_source_layout_ = nullptr;
-  bool layout_selection_pending_ = false;
+  QAction* action_save_source_layout_ = nullptr;  // browser build only
+#ifdef PJ_TARGET_WASM
+  // Created once the page's preset index lists at least one preset; a child of
+  // this window, hidden between uses.
+  WelcomePresetsDialog* presets_dialog_ = nullptr;
 #endif
+  // A byte-level layout load is in flight: layout actions stay disabled and a
+  // second one is refused until finishBrowserLayoutLoad.
+  bool layout_selection_pending_ = false;
+  // The page this browser build was opened from (setDeploymentPageUrl); fills a
+  // replayed stream's deployment variables. Empty on the desktop, where a
+  // configuration that names one fails with "missing deployment context".
+  QUrl deployment_page_url_;
   std::deque<CapturedWorkspace> undo_states_;
   std::deque<CapturedWorkspace> redo_states_;
   QSet<QString> history_data_universe_;

@@ -1,0 +1,18 @@
+{
+  "presets": [
+    {
+      "id": "navigation",
+      "title": "Mobile robot navigation",
+      "description": "A robot localizing on a map: occupancy grid, laser scan and transforms, beside its pose estimate.",
+      "layout": "navigation/layout.pj4.xml",
+      "thumbnail": "navigation/thumbnail.png"
+    },
+    {
+      "id": "signals",
+      "title": "Signals",
+      "description": "Six waveforms from a small CSV file, on two time-series plots.",
+      "layout": "signals/layout.pj4.xml",
+      "thumbnail": "signals/thumbnail.png"
+    }
+  ]
+}

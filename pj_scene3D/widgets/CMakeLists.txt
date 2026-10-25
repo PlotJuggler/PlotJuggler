@@ -101,6 +101,7 @@ add_library(pj_scene3d_widgets STATIC
   src/urdf_parser.cpp
   src/urdf_package_resolver.cpp
   src/FixedFrameMemory.cpp
+  src/layout_resources.cpp
   src/object_topic_metadata.cpp
   src/resolve_object.cpp
   src/scene_state_xml.cpp
@@ -128,6 +129,7 @@ add_library(pj_scene3d_widgets STATIC
   include/pj_scene3d_widgets/marker_geometry.h
   include/pj_scene3d_widgets/gizmos/arrow_mesh.h
   include/pj_scene3d_widgets/FixedFrameMemory.h
+  include/pj_scene3d_widgets/layout_resources.h
   include/pj_scene3d_widgets/object_topic_metadata.h
   include/pj_scene3d_widgets/resolve_object.h
   rhi/shaders/scene3d_rhi_shaders.qrc
@@ -312,6 +314,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/url_fetcher_test.cpp
     tests/scene_entities_layer_model_test.cpp
     tests/robot_model_layer_test.cpp
+    tests/layout_resources_test.cpp
   )
 
   # The coalescing test encodes valid fixtures with the Cloudini encoder, which

@@ -1,4 +1,5 @@
-exclude: ^.vscode/|^deps/|^build/|^3rdparty/|^resources/fonts/
+# resources/wasm-presets/*/assets/ holds verbatim third-party robot packages.
+exclude: ^.vscode/|^deps/|^build/|^3rdparty/|^resources/fonts/|^resources/wasm-presets/[^/]+/assets/
 repos:
 
   # Standard hooks
@@ -7,9 +8,10 @@ repos:
     hooks:
       - id: check-added-large-files
         # The Conan source backup deliberately stores third-party source
-        # tarballs (sha256-addressed; see its README) — exempt it from the
-        # accidental-large-binary guard. (resources/fonts/ is exempt globally.)
-        exclude: ^\.github/conan/source-backup/
+        # tarballs (sha256-addressed; see its README), and the browser sample
+        # presets their recordings — exempt both from the accidental-large-binary
+        # guard. (resources/fonts/ is exempt globally.)
+        exclude: ^(\.github/conan/source-backup/|resources/wasm-presets/)
       - id: check-ast
       - id: check-case-conflict
       - id: check-merge-conflict

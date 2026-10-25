@@ -5,15 +5,18 @@
 # sources prove the advertised feature matrix:
 #
 #   1. Production — the shipped defaults (Scene2D/Scene3D and browser Python
-#      ON), probes OFF: the app must configure, build, package deterministically,
-#      stay within its download budget, and pass the deployment contract + cold
-#      threaded Chromium boot.
+#      ON), probes OFF: the app must configure, build, package deterministically
+#      with the sample presets (resources/wasm-presets), stay within its
+#      download budget, and pass the deployment contract + cold threaded
+#      Chromium boot.
 #   2. Acceptance — the same defaults with the ingress probe ON: the retained
 #      QRhi capability probe and functional browser suite (with python.spec.js
 #      and python_layout.spec.js) run against the same source graph used by the
 #      packaged application, in Chromium (wasm-chromium job, three Playwright
 #      workers) and Firefox (wasm-firefox, two shards of one worker), which run
 #      in parallel on this job's package.
+#      It is packaged twice: without presets (deploy/, every spec) and with the
+#      samples (deploy-presets/, which presets.spec.js serves itself).
 #
 # The deterministic release archive and performance budgets remain part of
 # the release tranche.
@@ -40,6 +43,8 @@ on:
       # consumer, and '**/wasm/**' does not match a file whose name — not
       # directory — carries the wasm token.
       - 'scripts/*wasm*'
+      # The sample presets the production and acceptance packages deploy.
+      - 'resources/wasm-presets/**'
       - '.github/workflows/wasm-ci.yml'
   schedule:
     - cron: "0 4 * * *"
@@ -201,9 +206,9 @@ jobs:
         run: |
           set -euo pipefail
           npm --prefix tests/wasm run test:package
-          node scripts/package_wasm.mjs \
+          node scripts/package_wasm.mjs --presets resources/wasm-presets \
             --source build-wasm-prod/pj_app --output build-wasm-prod/deploy
-          node scripts/package_wasm.mjs \
+          node scripts/package_wasm.mjs --presets resources/wasm-presets \
             --source build-wasm-prod/pj_app --output build-wasm-prod/deploy-b
           diff -qr build-wasm-prod/deploy build-wasm-prod/deploy-b
 
@@ -284,9 +289,13 @@ jobs:
             npm --prefix tests/wasm run test:scene3d-capability
 
       - name: Package acceptance build
+        # deploy/ boots without a welcome dialog over every spec; the samples'
+        # own cases (presets.spec.js) serve deploy-presets/.
         run: |
           node scripts/package_wasm.mjs \
             --source build-wasm-probe/pj_app --output build-wasm-probe/deploy
+          node scripts/package_wasm.mjs --presets resources/wasm-presets \
+            --source build-wasm-probe/pj_app --output build-wasm-probe/deploy-presets
 
       - name: Upload acceptance package for the browser jobs
         uses: actions/upload-artifact@v4
@@ -296,6 +305,7 @@ jobs:
           # capability probe exactly as below without installing emsdk.
           path: |
             build-wasm-probe/deploy
+            build-wasm-probe/deploy-presets
             build-wasm-probe/pj_app/scene3d_capability_probe.*
             build-wasm-probe/pj_app/qtloader.js
             build-wasm-probe/pj_app/qtlogo.svg
@@ -307,7 +317,8 @@ jobs:
           retention-days: 3
 
   wasm-chromium:
-    # The acceptance package of the wasm job, in Chromium (SwiftShader WebGL).
+    # The acceptance package of the wasm job, in Chromium (SwiftShader WebGL),
+    # including the robot hosting spec, which runs docs/wasm/Caddyfile in Caddy.
     # Skipped, like wasm-firefox, on PRs into release-* while the repo variable
     # PJ_CI_RELEASE_PR_LITE is 'true'; the wasm build itself still runs.
     needs: wasm
@@ -332,6 +343,8 @@ jobs:
         run: |
           source ./versions.env
           echo "node=${PJ_WASM_NODE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "PJ_CADDY_VERSION=${PJ_CADDY_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_CADDY_LINUX_AMD64_SHA512=${PJ_CADDY_LINUX_AMD64_SHA512}" >> "${GITHUB_ENV}"
 
       - name: Install pinned packaging runtime
         uses: actions/setup-node@v6
@@ -354,6 +367,31 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+
+      - name: Install the fake bridge's Python
+        # bridge.spec.js serves tests/wasm/support/bridge_server.py, whose data
+        # frames need zstd: the standard library has it from Python 3.14.
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install Caddy for the robot hosting spec
+        # robot_deployment.spec.js serves the package through docs/wasm/Caddyfile,
+        # using the official release pinned with its sha512 in versions.env.
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="caddy_${PJ_CADDY_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/caddyserver/caddy/releases/download/v${PJ_CADDY_VERSION}/${archive}"
+          echo "${PJ_CADDY_LINUX_AMD64_SHA512}  ${RUNNER_TEMP}/${archive}" | sha512sum -c -
+          mkdir -p "${RUNNER_TEMP}/caddy"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/caddy" caddy
+          echo "PJ_CADDY=${RUNNER_TEMP}/caddy/caddy" >> "${GITHUB_ENV}"
+          # The guide's example configuration (Caddy's local CA, default ports) stays valid too.
+          PJ_ROBOT_HOST=robot.local PJ_WASM_ROOT="${PWD}/build-wasm-probe/deploy" \
+            XDG_DATA_HOME="${RUNNER_TEMP}/caddy-state" XDG_CONFIG_HOME="${RUNNER_TEMP}/caddy-state" \
+            "${RUNNER_TEMP}/caddy/caddy" validate --config docs/wasm/Caddyfile --adapter caddyfile
 
       - name: Serve acceptance package
         # The background server outlives this step; the runner reaps it at job end.
@@ -432,6 +470,13 @@ jobs:
             libgl1 libegl1 libgl1-mesa-dri libegl-mesa0
           npm ci
           npx playwright install --with-deps firefox
+
+      - name: Install the fake bridge's Python
+        # bridge.spec.js serves tests/wasm/support/bridge_server.py, whose data
+        # frames need zstd: the standard library has it from Python 3.14.
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
 
       - name: Serve acceptance package and capability probe
         # Background servers outlive this step; the runner reaps them at job end.

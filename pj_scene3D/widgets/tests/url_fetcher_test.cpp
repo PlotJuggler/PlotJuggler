@@ -17,6 +17,8 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QHostAddress>
+#include <QList>
+#include <QNetworkReply>
 #include <QString>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -71,6 +73,7 @@ TEST(UrlFetcherTest, LocalFileUrlDeliversBytesAsynchronously) {
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_TRUE(result.ok) << result.error.toStdString();
   EXPECT_EQ(result.bytes, payload);
+  EXPECT_TRUE(result.final_url.isEmpty()) << "a local read has no served-from URL";
 }
 
 TEST(UrlFetcherTest, SchemelessBarePathReadsLocalFile) {
@@ -156,6 +159,30 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
 
   pumpUntil([]() { return false; }, 300);  // give a stray queued callback time to fire
   EXPECT_FALSE(called) << "callback fired after the fetcher was destroyed";
+}
+
+// A browser reply deleted while running aborts and emits finished, and the fetcher's manager
+// deletes its replies before the fetcher's own teardown: the fetcher must cancel them while it
+// is still whole. Natively the cancellation is what shows: the reply finishes during the
+// fetcher's destruction, and the callback still never runs.
+TEST(UrlFetcherTest, DestructionCancelsInFlightRequestsWhileTheFetcherIsWhole) {
+  QTcpServer server;
+  auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
+  bool called = false;
+  fetcher->fetch(QUrl(pj::scene3d::test::silentServerUrl(server, u"never"_s)), [&called](pj::scene3d::FetchResult) {
+    called = true;
+  });
+  ASSERT_TRUE(pumpUntil([&server]() { return server.hasPendingConnections(); }, 2000));
+  const QList<QNetworkReply*> replies = fetcher->findChildren<QNetworkReply*>();
+  ASSERT_EQ(replies.size(), 1);
+  bool reply_finished = false;
+  QObject::connect(replies.front(), &QNetworkReply::finished, [&reply_finished]() { reply_finished = true; });
+
+  fetcher.reset();
+
+  EXPECT_TRUE(reply_finished) << "the request was not cancelled while the fetcher was alive";
+  pumpUntil([]() { return false; }, 300);
+  EXPECT_FALSE(called);
 }
 
 namespace {
@@ -289,6 +316,35 @@ TEST(UrlFetcherTest, StaleEntryServedFromCacheWhenOffline) {
   const pj::scene3d::FetchResult second = fetchSync(fetcher, url);
   EXPECT_TRUE(second.ok) << "stale cached model not served offline: " << second.error.toStdString();
   EXPECT_EQ(second.bytes, body);
+}
+
+// A redirected response reports where it was finally served, so a URDF's
+// relative meshes and package roots anchor at that location.
+TEST(UrlFetcherTest, FinalUrlFollowsRedirect) {
+  clearModelCache();
+  QTcpServer server;
+  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&server]() {
+    QTcpSocket* socket = server.nextPendingConnection();
+    QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
+      const QByteArray request = socket->readAll();
+      if (request.startsWith("GET /start/robot.urdf ")) {
+        socket->write("HTTP/1.1 302 Found\r\nLocation: /served/v2/robot.urdf\r\nContent-Length: 0\r\n\r\n");
+      } else {
+        socket->write("HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Length: 5\r\n\r\nrobot");
+      }
+      socket->flush();
+    });
+  });
+
+  pj::scene3d::UrlFetcher fetcher;
+  const pj::scene3d::FetchResult result =
+      fetchSync(fetcher, QUrl(u"http://127.0.0.1:%1/start/robot.urdf"_s.arg(server.serverPort())));
+  ASSERT_TRUE(result.ok) << result.error.toStdString();
+  EXPECT_EQ(result.bytes, QByteArray("robot"));
+  EXPECT_EQ(
+      result.final_url.toString().toStdString(),
+      u"http://127.0.0.1:%1/served/v2/robot.urdf"_s.arg(server.serverPort()).toStdString());
 }
 
 // A size-capped (aborted) response must not leave a usable cache entry: a later

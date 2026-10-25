@@ -16,9 +16,12 @@
 #include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <Qt>
 #ifndef PJ_TARGET_WASM
 #include <backward.hpp>
+#else
+#include <emscripten/val.h>
 #endif
 #include <algorithm>
 #include <cstdio>
@@ -31,9 +34,7 @@
 #include <map>
 #endif
 #include <memory>
-#ifndef PJ_TARGET_WASM
 #include <string>
-#endif
 
 #include "BrowserPersistence.h"
 #include "DebugMode.h"
@@ -517,6 +518,13 @@ int main(int argc, char* argv[]) {
     const QString layout_path = parser.value(layout_option);
     QTimer::singleShot(0, &window, [&window, layout_path]() { window.loadLayoutAtStartup(layout_path); });
   }
+
+#ifdef PJ_TARGET_WASM
+  // The page names its preset index (beside it) and an optional ?preset= deep link.
+  const QUrl page_url(QString::fromStdString(emscripten::val::global("location")["href"].as<std::string>()));
+  window.setDeploymentPageUrl(page_url);
+  QTimer::singleShot(0, &window, [&window, page_url]() { window.startBrowserPresets(page_url); });
+#endif
 
 #ifndef PJ_TARGET_WASM
   // --exit-after-layout: quit at the restore settlement boundary with a

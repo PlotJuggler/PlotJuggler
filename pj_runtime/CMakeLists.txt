@@ -38,6 +38,8 @@ add_library(pj_runtime STATIC
     src/HttpGet.cpp
     src/InFlightBudget.cpp
     src/InputStager.cpp
+    src/PresetCatalog.cpp
+    src/SourceConfigVariables.cpp
     src/PluginRuntimeCatalog.cpp
     src/PlaybackControlHost.cpp
     src/PlaybackEngine.cpp
@@ -67,6 +69,9 @@ add_library(pj_runtime STATIC
     include/pj_runtime/DiagnosticHistory.h
     include/pj_runtime/ExtensionCatalogService.h
     include/pj_runtime/HttpGet.h
+    include/pj_runtime/HttpUrl.h
+    include/pj_runtime/PresetCatalog.h
+    include/pj_runtime/SourceConfigVariables.h
     include/pj_runtime/PluginRuntimeCatalog.h
     include/pj_runtime/SourceCacheStore.h
     include/pj_runtime/IDataWidget.h
@@ -222,6 +227,12 @@ if(PJ_BUILD_TESTS)
         tests/data_processors_runtime_host_test.cpp
         # Pure header-only version math (UpdateVersion.h) — no networking, no lib.
         tests/update_version_test.cpp
+        # Browser presets: the static index parser, and the size-capped GET it
+        # downloads with (scripted loopback server).
+        tests/preset_catalog_test.cpp
+        tests/http_get_limit_test.cpp
+        # Deployment variables (${deployment.ws_origin}) in saved source configurations.
+        tests/source_config_variables_test.cpp
         # Drives UpdateChecker's reply state machine against a local QTcpServer.
         # Qt6::Test supplies QSignalSpy; Qt6::Network comes transitively via pj_runtime.
         tests/update_checker_test.cpp

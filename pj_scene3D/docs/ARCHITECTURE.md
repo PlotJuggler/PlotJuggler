@@ -825,7 +825,9 @@ The browser runs the same view, dock and layers. What differs:
   the explicitly gated browser graph.
 - **URDF from bytes.** A local URDF arrives as bytes (`setSourceFileContent`,
   `addRobotModelLayerFromContent`), never as a path, so a restored browser layout
-  asks the user to select the file again.
+  asks the user to select the file again. Web-hosted meshes reach a topic or
+  local URDF only through explicit package URL roots ("Asset resolution"), and
+  every cross-origin URDF or mesh needs CORS: a refused one is a failed mesh load.
 - **3D textures.** The retained Chromium/Firefox/WebKit matrix measured a
   2,048 per-dimension limit on all three engines.
 
@@ -1383,9 +1385,12 @@ mode does. It renders in every build, the browser included.
   dock-local: synthetic registry ids that never touch the ObjectStore
   (`Scene3DDockWidget::addRobotModelLayer{,FromUrl}`). The browser receives a local
   URDF as bytes (see "WebAssembly"); native builds read the path, even for a layout
-  the browser saved. A dock whose only content is local robots gets a private TF
-  buffer (`ensureLocalTransformBuffer`) for the fixed-joint bridges; a dataset
-  binding replaces it.
+  the browser saved. A URL source's bare mesh paths, URL-ancestor packages and
+  relative package roots anchor at the URDF's final URL (`FetchResult::final_url`,
+  after redirects; in the browser Qt reports the requested URL, so there a
+  redirected URDF anchors where it was requested). A dock whose only content is
+  local robots gets a private TF buffer (`ensureLocalTransformBuffer`) for the
+  fixed-joint bridges; a dataset binding replaces it.
 - **Coordinate contract.** `RobotModelLayer` and `SceneEntitiesLayer` keep a
   TF-free CPU model: a robot geometry is its prefixed link frame plus the
   link-local `<origin>` and scale; a scene-entity model is its entity frame plus
@@ -1547,7 +1552,8 @@ this on the live path:
 `UrdfPackageResolver` dispatches on the URI scheme first: `file://` → absolute
 path; a bare path → relative to the URDF's directory (never enters the package
 chain); `http(s)://` → allowed only for URL-source layers; `package://pkg/rel` →
-the chain below, stopping at the first hit:
+the model's explicit root for `pkg` when it has one (below), otherwise this chain,
+stopping at the first hit:
 
 0. **In-band embedded-asset lookup**: exact-name match against the embedded asset
    dictionary (`stepEmbeddedAsset`). The dataset source plugin (not the host) is
@@ -1567,6 +1573,39 @@ the chain below, stopping at the first hit:
    identity is the directory basename only; no `package.xml` check.
 4. **Ask once**: unresolved packages surface on the layer's status text; a chosen
    root is stored per source and globally, then pending meshes retry.
+
+**Explicit package URL roots.** `RobotModelLayer::setPackageUrlRoots` (persisted
+as `<robot_model package_url_roots='{"pkg":"https://host/assets/pkg/"}'>`) maps a
+package to an http(s) or file directory URL. It is how a topic URDF, which has no
+location of its own, reaches web-hosted meshes. The map is the model's own and
+travels with each `parseUrdf`/`resolveUri` call, because the dock shares one
+resolver across its robots and its settings stay untouched. A mapped package is
+authoritative: `rel` resolves under its root with `QUrl::resolved` and must stay
+inside it once decoded and normalized (a `..` that climbs out, an encoded `/` or
+`\`, a backslash, a relative root, another scheme, or a `file://` root in the
+browser leaves the mesh unresolved) and never falls back to the chain above.
+A root never permits the model's direct `http(s)` references.
+
+Roots relative to the layout are resolved once, at layout ingress:
+`resolveLayoutResourceUrls` (`layout_resources.h`) rewrites the application's
+copy of the document before anything restores from it, so what the layer
+applies, snapshots and saves is absolute and undo needs no layout context.
+`MainWindow` passes the layout file's `file://` URL on the desktop, the layout's
+http(s) URL for one opened by URL (a preset), and no location for a browser
+upload. Topic and file sources anchor their relative roots at the layout, a URL
+source's relative `source_value` too, while a URL source's own roots wait for its
+final URDF URL; a relative reference without a location, or malformed roots,
+fails the whole load with nothing changed. A web-hosted layout (an http(s)
+location) never points the app at local files: a file source, a URL source naming
+a local path or a non-http(s) URL, or a `file://` root fails it the same way. Its
+URDFs' own mesh references are out of the layout's sight, so every model also gets
+`remote_resources_only="true"`, which the layer keeps and saves: the resolver then
+refuses what is on this host even on the desktop (`file://` and absolute paths,
+bare paths not under a URL, `file://` roots, steps 1-3 except the URL ancestor
+walk), as the browser build always does; embedded assets and network references
+still resolve. The policy follows the layout's location on every load: a layout
+loaded from anywhere else has the attribute removed, so a browser-saved robot
+opened from a local file may use local meshes.
 
 Failure semantics: never silent. Missing meshes → magenta cubes + status counts;
 a wrong folder → an explicit "expected a subdirectory named <pkg>" error; a URDF

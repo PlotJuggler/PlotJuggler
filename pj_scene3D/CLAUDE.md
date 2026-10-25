@@ -58,7 +58,8 @@ catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline)
 - `widgets/`: the view, passes, layers and dock. Key public headers in `widgets/include/pj_scene3d_widgets/`:
   `Scene3DDockWidget.h`, `scene_view_widget.h`, `scene3d_layer.h`, `point_renderable.h`, `model_renderable.h`,
   `resolve_object.h`, `latest_wins_worker.h`, `FixedFrameMemory.h`, `mesh_data.h`, `mesh_shading_params.h`,
-  `scene_look_defaults.h`, `hud_overlay.h`, `layers/*.h`.
+  `scene_look_defaults.h`, `hud_overlay.h`, `layout_resources.h` (the host resolves a layout's relative robot
+  resource URLs against the layout's own URL before restoring; a web-hosted layout never points at local files), `layers/*.h`.
 - `widgets/testing/`: `SceneViewTestAccess`, the only way tests, benchmarks and browser probes read the view's
   internals (the view has no test API of its own).
 - `demos/` (`PJ_BUILD_DEMOS`): `pointcloud_convert_benchmark`, `pointcloud_rhi_benchmark`.
