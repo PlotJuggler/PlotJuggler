@@ -5,15 +5,20 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDir>
 #include <QEventLoop>
+#include <QFile>
 #include <QList>
 #include <QNetworkReply>
 #include <QSignalSpy>
 #include <QString>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QUrl>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <tuple>
 
 #include "PresetController.h"
@@ -101,6 +106,50 @@ TEST(PresetControllerTest, DownloadHonoursTheCallersLimit) {
   ASSERT_TRUE(QTest::qWaitFor([&] { return completion.calls > 0; }, 10000));
   EXPECT_FALSE(completion.error.isEmpty());
   EXPECT_TRUE(completion.bytes.isEmpty());
+}
+
+// A recording lands in the caller's file with its size and fingerprint, never handed over as bytes.
+TEST(PresetControllerTest, DownloadToFileWritesTheBodyAndItsFingerprint) {
+  LocalHttpServer server;
+  server.setResponse("200 OK", "recording bytes");
+  QTemporaryDir directory;
+  ASSERT_TRUE(directory.isValid());
+  const QString path = directory.filePath(u"data.mcap"_s);
+  PJ::PresetController controller;
+  std::optional<PJ::PresetController::FileDownload> result;
+
+  controller.downloadToFile(
+      server.url(), path, 1024, [&result](PJ::PresetController::FileDownload file) { result = std::move(file); });
+
+  ASSERT_TRUE(QTest::qWaitFor([&] { return result.has_value(); }, 5000));
+  EXPECT_TRUE(result->error.isEmpty()) << result->error.toStdString();
+  EXPECT_FALSE(result->limit_exceeded);
+  EXPECT_EQ(result->size, 15);
+  EXPECT_EQ(
+      result->sha256,
+      QString::fromLatin1(QCryptographicHash::hash("recording bytes", QCryptographicHash::Sha256).toHex()));
+  QFile written(path);
+  ASSERT_TRUE(written.open(QIODevice::ReadOnly));
+  EXPECT_EQ(written.readAll(), QByteArray("recording bytes"));
+}
+
+// Over the caller's limit is flagged apart from other failures: the replay words it as its cap.
+TEST(PresetControllerTest, DownloadToFileFlagsABodyOverTheLimit) {
+  LocalHttpServer server;
+  server.setResponse("200 OK", QByteArray(2048, 'x'));
+  QTemporaryDir directory;
+  ASSERT_TRUE(directory.isValid());
+  PJ::PresetController controller;
+  std::optional<PJ::PresetController::FileDownload> result;
+
+  controller.downloadToFile(
+      server.url(), directory.filePath(u"data.mcap"_s), 1024,
+      [&result](PJ::PresetController::FileDownload file) { result = std::move(file); });
+
+  ASSERT_TRUE(QTest::qWaitFor([&] { return result.has_value(); }, 10000));
+  EXPECT_TRUE(result->limit_exceeded);
+  EXPECT_FALSE(result->error.isEmpty());
+  EXPECT_TRUE(result->sha256.isEmpty());
 }
 
 TEST(PresetControllerTest, NonHttpSchemeIsRefusedAsynchronously) {

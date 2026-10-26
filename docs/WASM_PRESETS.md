@@ -51,8 +51,10 @@ The layout is what **File → Save Layout with sources** writes
 
 The index, a layout and a thumbnail are capped at 16 MiB each
 (`kMaxPresetDownloadBytes`), a preset's data files at 512 MiB each and together
-(`kMaxPresetDataBytes`); every download is held whole in memory, so keep a
-sample's recording well below that. Robot meshes are fetched by Scene3D under its own
+(`kMaxPresetDataBytes`). A recording streams straight into the page's in-memory
+file system, outside the WebAssembly heap, but it stays in the browser's memory
+next to what the app loads from it, so keep a sample's recording well below
+that. Robot meshes are fetched by Scene3D under its own
 per-file model budget (32 MiB in the browser, `kBrowserSceneLimits.max_model_source_bytes`).
 Presets are same-origin by default; one on another origin, and an asset host
 serving meshes, needs CORS (`Access-Control-Allow-Origin`) on every file (see

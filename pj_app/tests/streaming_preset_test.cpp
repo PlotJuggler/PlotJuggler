@@ -19,6 +19,7 @@
 #include <QList>
 #include <QSet>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -464,6 +465,47 @@ TEST_F(StreamingPresetTest, FailedSetupKeepsPreviousPreset) {
   const QStringList files = fileSources();
   ASSERT_EQ(files.size(), 1);
   EXPECT_FALSE(files_before.contains(files.front()));
+}
+
+// A stream-only preset (the browser's live samples): presets whose stream cannot start leave
+// the running preset's streams alone; the next one that loads stops and removes both.
+TEST_F(StreamingPresetTest, StreamOnlyPresetReplacesThePreviousStreams) {
+  ASSERT_EQ(
+      loadPreset(
+          u"live"_s,
+          streamLayout(
+              {{u"plot_a"_s, streamCurve(u"a/data"_s, u"a"_s)}, {u"plot_b"_s, streamCurve(u"b/data"_s, u"b"_s)}},
+              {{u"a"_s, uR"({"topic":"a/data"})"_s}, {u"b"_s, uR"({"topic":"b/data"})"_s}})),
+      u"ok"_s);
+  const QHash<QString, PJ::DatasetId> live = streamSessions();
+  ASSERT_EQ(live.size(), 2);
+
+  const QString next = uR"({"topic":"next/data"})"_s;
+  const QList<Plot> next_plot{{u"plot_c"_s, streamCurve(u"next/data"_s, u"c"_s)}};
+  EXPECT_EQ(
+      loadPreset(u"missing"_s, streamLayout(next_plot, {{u"c"_s, next, {}, u"Missing Stream"_s, u"missing-stream"_s}})),
+      u"stream"_s);
+  closeDialogs();
+  EXPECT_EQ(
+      loadPreset(u"typo"_s, streamLayout(next_plot, {{u"c"_s, uR"({"url":"${deployment.wsorigin}"})"_s}})),
+      u"stream-config"_s);
+  closeDialogs();
+  pj_app_test::flushQueuedEvents();
+  EXPECT_EQ(streamSessions(), live);
+
+  QSignalSpy stopped(&PresetTestPeer::streams(*window_), &PJ::StreamingSourceManager::streamStopped);
+  ASSERT_EQ(loadPreset(u"next"_s, streamLayout(next_plot, {{u"c"_s, next}})), u"ok"_s);
+  QSet<PJ::DatasetId> stopped_ids;
+  for (const QList<QVariant>& arguments : stopped) {
+    stopped_ids.insert(arguments.at(0).value<PJ::DatasetId>());
+  }
+  EXPECT_EQ(stopped_ids, (QSet<PJ::DatasetId>{live.value(u"a"_s), live.value(u"b"_s)}));
+  const QHash<QString, PJ::DatasetId> sessions = streamSessions();
+  EXPECT_EQ(QSet<QString>(sessions.keyBegin(), sessions.keyEnd()), QSet<QString>{u"c"_s});
+  for (const auto& [dataset_id, unused_name] : PresetTestPeer::session(*window_).catalogModel().datasets()) {
+    (void)unused_name;
+    EXPECT_FALSE(dataset_id == live.value(u"a"_s) || dataset_id == live.value(u"b"_s)) << "a replaced stream's dataset";
+  }
 }
 
 // Topics that arrive after the layout applied bind to the stream their curve

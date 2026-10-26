@@ -2610,6 +2610,10 @@ qsizetype MainWindow::wasmProbeDatasetCount() const {
   return static_cast<qsizetype>(session_->catalogModel().datasets().size());
 }
 
+std::size_t MainWindow::wasmProbeResidentPoolCapacity() const {
+  return session_->sessionManager().residentPayloadPool()->stats().capacity_bytes;
+}
+
 void MainWindow::wasmProbeReportFilterResult() const {
   const auto recipes = session_->sessionManager().dataProcessorService().recipes();
   QStringList processor_ids;
@@ -5927,51 +5931,63 @@ void MainWindow::stageReplayInput(LoadInput input, const QString& name) {
 void MainWindow::downloadNextReplaySource() {
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
   const quint64 generation = beginBrowserReplayPickerGeneration();
-  browser_layout_runtime_->downloads->download(
-      replay.source_urls[replay.selection_index],
-      [this, generation](QByteArray bytes, const QUrl&, QString error) {
-        stageDownloadedReplaySource(generation, std::move(bytes), error);
-      },
-      kMaxPresetDataBytes);
-}
-
-void MainWindow::stageDownloadedReplaySource(quint64 generation, QByteArray bytes, const QString& error) {
-  if (!browser_layout_runtime_->replay.has_value() ||
-      browser_layout_runtime_->replay->active_picker_generation != generation) {
-    return;
-  }
-  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
-  const QString layout_name = replay.layout_name;  // finishing ends the replay
   const QUrl url = replay.source_urls[replay.selection_index];
-  if (!error.isEmpty()) {
-    showBrowserLayoutWarning(
-        this, tr("Load Layout"), tr("Data source '%1' could not be downloaded: %2").arg(url.toString(), error));
-    finishBrowserLayoutLoad(layout_name, false, u"download"_s);
+  // Written straight into its staged file (in the browser streamed, so the recording never passes through the
+  // wasm heap) and stopped at what is left of the preset's cap. A dropped completion drops `input`, whose lease
+  // removes the partial file.
+  BrowserFileStore::StageResult staged = browser_layout_runtime_->store.reserve(url.fileName());
+  if (!staged.input.has_value()) {
+    addDownloadedReplaySource(generation, std::nullopt, staged.error);
     return;
   }
-  replay.staged_bytes += bytes.size();
-  if (replay.staged_bytes > kMaxPresetDataBytes) {
-    showBrowserLayoutWarning(
-        this, tr("Load Layout"),
-        tr("The layout's data sources exceed the %1 MiB a downloaded layout may load.")
-            .arg(kMaxPresetDataBytes / (1024 * 1024)));
-    finishBrowserLayoutLoad(layout_name, false, u"size"_s);
-    return;
-  }
-  // The completion may arrive after this window is gone; a dropped result
-  // releases its staged file with the lease.
-  QPointer<MainWindow> self(this);
-  browser_layout_runtime_->store.stageAsync(
-      url.fileName(), std::move(bytes), [self, generation](BrowserFileStore::StageResult staged) {
-        if (!self.isNull()) {
-          self->addDownloadedReplaySource(generation, std::move(staged.input), staged.error);
+  const QString path = staged.input->backing_path;
+  browser_layout_runtime_->downloads->downloadToFile(
+      url, path, kMaxPresetDataBytes - replay.staged_bytes,
+      [this, generation, input = std::move(*staged.input)](const PresetController::FileDownload& file) mutable {
+        if (!isActiveReplayDownload(generation)) {
+          return;
         }
+        // Over the remaining budget once earlier sources took part of it; over the whole cap otherwise.
+        if (file.limit_exceeded && browser_layout_runtime_->replay->staged_bytes > 0) {
+          failReplayOverCap();
+          return;
+        }
+        if (!file.error.isEmpty()) {
+          failReplayDownload(file.error);
+          return;
+        }
+        browser_layout_runtime_->replay->staged_bytes += file.size;
+        input.content_sha256 = file.sha256;
+        addDownloadedReplaySource(generation, std::move(input), QString());
       });
 }
 
+bool MainWindow::isActiveReplayDownload(quint64 generation) const {
+  return browser_layout_runtime_->replay.has_value() &&
+         browser_layout_runtime_->replay->active_picker_generation == generation;
+}
+
+void MainWindow::failReplayDownload(const QString& error) {
+  const BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  const QString layout_name = replay.layout_name;  // finishing ends the replay
+  showBrowserLayoutWarning(
+      this, tr("Load Layout"),
+      tr("Data source '%1' could not be downloaded: %2")
+          .arg(replay.source_urls[replay.selection_index].toString(), error));
+  finishBrowserLayoutLoad(layout_name, false, u"download"_s);
+}
+
+void MainWindow::failReplayOverCap() {
+  const QString layout_name = browser_layout_runtime_->replay->layout_name;  // finishing ends the replay
+  showBrowserLayoutWarning(
+      this, tr("Load Layout"),
+      tr("The layout's data sources exceed the %1 MiB a downloaded layout may load.")
+          .arg(kMaxPresetDataBytes / (1024 * 1024)));
+  finishBrowserLayoutLoad(layout_name, false, u"size"_s);
+}
+
 void MainWindow::addDownloadedReplaySource(quint64 generation, std::optional<LoadInput> input, const QString& error) {
-  if (!browser_layout_runtime_->replay.has_value() ||
-      browser_layout_runtime_->replay->active_picker_generation != generation) {
+  if (!isActiveReplayDownload(generation)) {
     return;
   }
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;

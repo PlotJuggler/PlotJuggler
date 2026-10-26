@@ -130,6 +130,15 @@ BrowserFileStore::StageResult BrowserFileStore::makeSuccess(const StagePlacement
   };
 }
 
+BrowserFileStore::StageResult BrowserFileStore::reserve(const QString& browser_name) {
+  QString error;
+  const std::optional<StagePlacement> placement = preparePlacement(browser_name, error);
+  if (!placement.has_value()) {
+    return {.input = std::nullopt, .error = std::move(error)};
+  }
+  return makeSuccess(*placement);
+}
+
 BrowserFileStore::StageResult BrowserFileStore::stage(const QString& browser_name, QByteArray bytes) {
   QString error;
   std::optional<StagePlacement> placement = preparePlacement(browser_name, error);
@@ -280,8 +289,11 @@ void BrowserFileStore::stageAsync(const QString& browser_name, QByteArray bytes,
   job->file = std::make_unique<QFile>(job->placement.path);
   job->completion = std::move(completion);
 
-  if (!job->file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+  // Sized once up front: MEMFS would otherwise regrow, and copy, the file's backing array as chunks extend it.
+  if (!job->file->open(QIODevice::WriteOnly | QIODevice::Truncate) || !job->file->resize(job->total)) {
     const QString detail = job->file->errorString();
+    job->file->close();
+    QFile::remove(job->placement.path);
     QDir().rmdir(job->placement.leaf_directory);
     AsyncStageJob::finish(
         job, {.input = std::nullopt, .error = u"Could not stage %1: %2"_s.arg(job->placement.display_name, detail)});

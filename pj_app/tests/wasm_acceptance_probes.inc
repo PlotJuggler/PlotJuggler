@@ -6,7 +6,9 @@
 // Keeping it out of the shell source makes the production ownership boundary
 // explicit while preserving same-translation-unit access to probe helpers.
 
+#include <emscripten/heap.h>
 #include <emscripten/val.h>
+#include <malloc.h>
 
 #include <QCheckBox>
 #include <QDirIterator>
@@ -556,6 +558,22 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_staged_files() {
     ++count;
   }
   qInfo("PJ_WASM_STAGED_FILES count=%d bytes=%lld", count, static_cast<long long>(bytes));
+}
+
+// The wasm heap: the bytes malloc holds now, the linear memory's size (it never
+// shrinks, so it is the peak so far) and the resident payload pool's capacity.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_heap() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      const struct mallinfo info = mallinfo();
+      qInfo(
+          "PJ_WASM_HEAP in_use=%lld memory=%lld resident_pool=%lld", static_cast<long long>(info.uordblks),
+          static_cast<long long>(emscripten_get_heap_size()),
+          static_cast<long long>(main_window->wasmProbeResidentPoolCapacity()));
+      return;
+    }
+  }
+  qWarning("PJ_WASM_HEAP_FAILED no main window");
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_streaming_state() {
@@ -1717,6 +1735,7 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportLayoutSnapshotProbe = () => Module._pj_wasm_test_report_layout_snapshot();
   globalThis.pjWasmReportDatasetCountProbe = () => Module._pj_wasm_test_report_dataset_count();
   globalThis.pjWasmReportStagedFilesProbe = () => Module._pj_wasm_test_report_staged_files();
+  globalThis.pjWasmReportHeapProbe = () => Module._pj_wasm_test_report_heap();
   globalThis.pjWasmReportCurveRowsProbe = () => Module._pj_wasm_test_report_curve_rows();
   globalThis.pjWasmReportPlaceholderIconsProbe = () => Module._pj_wasm_test_report_placeholder_icons();
   globalThis.pjWasmReportStreamingStateProbe = () => Module._pj_wasm_test_report_streaming_state();

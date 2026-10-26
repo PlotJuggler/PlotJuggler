@@ -85,8 +85,14 @@ QString SessionManager::normalizedSourcePath(const QString& path) {
 
 // Session-wide cap on ingest-seeded resident object payloads. Large enough to
 // cover the live-edge window a scene chases during a progressive load; small
-// against the app's overall footprint.
+// against the app's overall footprint. The browser's wasm heap never shrinks
+// and holds every other copy too, so it keeps a quarter: measured on a 261 MB
+// recording, playback and seeking cost no more than with 256 MiB.
+#ifdef PJ_TARGET_WASM
+constexpr size_t kResidentPayloadPoolBytes = 64ULL * 1024 * 1024;
+#else
 constexpr size_t kResidentPayloadPoolBytes = 256ULL * 1024 * 1024;
+#endif
 
 SessionManager::SessionManager(QObject* parent)
     : QObject(parent), ingest_taps_(std::make_shared<ObjectIngestTapRegistry>()) {

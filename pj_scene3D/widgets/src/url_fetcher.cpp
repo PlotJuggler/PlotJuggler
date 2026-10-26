@@ -16,6 +16,9 @@
 #include <utility>
 
 #include "pj_runtime/HttpGet.h"
+#ifdef PJ_TARGET_WASM
+#include "pj_runtime/BrowserFetch.h"
+#endif
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -124,6 +127,18 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
     return;
   }
 
+#ifdef PJ_TARGET_WASM
+  PJ::browserFetchToBytes(
+      url, kMaxFetchBytes, std::chrono::seconds(15), this,
+      [url, on_done = std::move(on_done)](QByteArray bytes, QString error, bool) {
+        FetchResult result;
+        result.ok = error.isEmpty();
+        result.error = std::move(error);
+        result.bytes = std::move(bytes);
+        result.final_url = url;  // the browser follows redirects out of sight
+        on_done(std::move(result));
+      });
+#else
   QNetworkRequest request(url);
   // Bounded redirects with no https->http downgrade (see the class contract for
   // why this is the chosen policy).
@@ -145,6 +160,7 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
         }
         on_done(std::move(result));
       });
+#endif
 }
 
 }  // namespace pj::scene3d

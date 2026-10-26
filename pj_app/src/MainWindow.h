@@ -171,6 +171,7 @@ class MainWindow : public QMainWindow {
   // writes a path.
   [[nodiscard]] QByteArray wasmProbeLayoutBytes() const;
   [[nodiscard]] qsizetype wasmProbeDatasetCount() const;
+  [[nodiscard]] std::size_t wasmProbeResidentPoolCapacity() const;
   void wasmProbeReportFilterResult() const;
   void wasmProbeReportToolboxTransformResult() const;
   // Reports streaming controls, catalog/tree state, playback range, and the
@@ -866,7 +867,11 @@ class MainWindow : public QMainWindow {
   // Remote replay (layout_url set): downloads the next source, then stages it
   // under the same generation token a picker selection uses.
   void downloadNextReplaySource();
-  void stageDownloadedReplaySource(quint64 generation, QByteArray bytes, const QString& error);
+  // Whether the replay still waits for the download started under `generation`.
+  [[nodiscard]] bool isActiveReplayDownload(quint64 generation) const;
+  // End the replay over its current source: reason "download", or "size" (over kMaxPresetDataBytes).
+  void failReplayDownload(const QString& error);
+  void failReplayOverCap();
   void addDownloadedReplaySource(quint64 generation, std::optional<LoadInput> input, const QString& error);
   // Cancels (discarding) every import of the replay still awaiting its terminal.
   void cancelBrowserReplayImports();

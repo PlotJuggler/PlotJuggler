@@ -98,7 +98,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | Module | Entry point | Docs |
 |---|---|---|
 | `pj_app` | [CLAUDE.md](./pj_app/CLAUDE.md) | [docs/](./pj_app/docs): ARCHITECTURE |
-| `pj_runtime` | [CLAUDE.md](./pj_runtime/CLAUDE.md) | [docs/](./pj_runtime/docs): ARCHITECTURE; derived objects |
+| `pj_runtime` | [CLAUDE.md](./pj_runtime/CLAUDE.md) | [docs/](./pj_runtime/docs): ARCHITECTURE, TECHNICAL_NOTES; derived objects |
 | `pj_tf` | [CLAUDE.md](./pj_tf/CLAUDE.md) | — |
 | `pj_widgets` | [CLAUDE.md](./pj_widgets/CLAUDE.md) | — |
 | `pj_plotting` | [CLAUDE.md](./pj_plotting/CLAUDE.md) | [docs/](./pj_plotting/docs): ARCHITECTURE |

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 const { expect } = require('@playwright/test');
+const { count, latest } = require('./console');
 
 async function waitForQtApp(page, consoleMessages, previousReadyCount = 0) {
   await expect(page.locator('#screen')).toBeVisible({ timeout: 60000 });
@@ -43,5 +44,15 @@ async function replaceRuntimeTarget(currentPage, allMessages, errors, { hideOpen
   return { page, consoleMessages, screen };
 }
 
+// The wasm heap: the bytes malloc holds, the linear memory's size (it never
+// shrinks, so it is the peak so far) and the resident payload pool's capacity.
+async function wasmHeap(page, messages) {
+  const before = count(messages, 'PJ_WASM_HEAP in_use=');
+  await page.evaluate(() => window.pjWasmReportHeapProbe());
+  await expect.poll(() => count(messages, 'PJ_WASM_HEAP in_use=')).toBeGreaterThan(before);
+  const [, inUse, memory, pool] = latest(messages, 'PJ_WASM_HEAP in_use=')
+    .match(/in_use=(\d+) memory=(\d+) resident_pool=(\d+)/).map(Number);
+  return { inUse, memory, pool };
+}
 
-module.exports = { waitForQtApp, observeRuntimeTarget, replaceRuntimeTarget };
+module.exports = { waitForQtApp, observeRuntimeTarget, replaceRuntimeTarget, wasmHeap };

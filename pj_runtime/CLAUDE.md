@@ -32,6 +32,7 @@ Session, catalog and time:
 - `IDataWidget.h`, `IObjectViewer.h`: the contracts data widgets and object-store viewers implement for the shell.
 - `DiagnosticHistory.h`, `DiagnosticEmit.h`: diagnostics ring buffer and the fill-and-forward helper (no-op without a sink).
 - `HttpGet.h`, `UpdateChecker.h`, `UpdateVersion.h`, `TelemetryPing.h`: one-shot HTTP idiom (`httpGetWithLimit()` is the size-capped GET for untrusted bodies, also behind Scene3D's `UrlFetcher`; `HttpUrl.h`'s `isHttpUrl()`, Qt6::Network-free, is the http(s) gate in front of it), the per-channel update check, version math, the anonymous launch ping.
+- `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend ([why](./docs/TECHNICAL_NOTES.md)).
 - `PresetCatalog.h`: `parsePresetCatalog()` reads a deployment's browser `presets/index.json` into `PresetEntry`s (`findPreset()` looks one up by id); `kMaxPresetDownloadBytes` caps each small preset download (index, layout, thumbnail), `kMaxPresetDataBytes` each recording and a preset's recordings together.
 - `SourceConfigVariables.h`: `expandSourceConfigVariables()` expands `${deployment.ws_origin}` (the page's WebSocket origin) in a saved streaming-source configuration; any other `${deployment.*}` name is an error.
 - `QSettingsBackend.h`, `XmlCdata.h`: `sdk::SettingsBackend` over `QSettings`; CDATA helpers shared with `pj_app`'s layout code.
@@ -81,5 +82,6 @@ Shared fixtures, the freeze bench and the recording pipeline test: [docs/ARCHITE
 ## Read deeper
 
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): link surface and per-subsystem wiring and contracts.
+- [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): Qt pitfalls the code works around.
 - [docs/derived_objects/README.md](../docs/derived_objects/README.md): the derived-data engines (start there, then ARCHITECTURE.md; §21 has recipes for common changes).
 - [docs/RECORDING_AND_CACHING.md](../docs/RECORDING_AND_CACHING.md) and [docs/session_recorder_design.md](../docs/session_recorder_design.md): recording and the source cache.

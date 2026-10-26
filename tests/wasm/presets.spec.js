@@ -7,7 +7,7 @@ const { test, expect } = require('@playwright/test');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp } = require('./support/app');
+const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp, wasmHeap } = require('./support/app');
 const { count, latest } = require('./support/console');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { startHostedAssetMirror } = require('./support/hosted_assets');
@@ -769,5 +769,59 @@ test('a sample that fails releases what it staged and leaves the open sample as 
     expect(errors).toEqual([]);
   } finally {
     await samples.close();
+  }
+});
+
+// A recording streams from the network into its staged file, never through the
+// wasm heap: the download leaves no copy behind and peaks at no copy on the way.
+// Served the wrong bytes, a recording takes the whole download and staging path
+// and is refused before any import, so no parsed data blurs the figures. The
+// bounds sit far below one copy of the recording, yet above allocator noise and
+// one 20 % growth step of the linear memory.
+test('a preset recording downloads without passing through the wasm heap', async ({ page }) => {
+  test.setTimeout(180000);
+  const errors = [];
+  const messages = [];
+  await boot(page, messages, errors);
+  const recordingBytes = 96 * 1024 * 1024;
+  const server = await startPresetServer({
+    'big/layout.pj4.xml': fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'layout.pj4.xml')),
+    'big/data.csv': Buffer.alloc(recordingBytes, '0'),
+  });
+  try {
+    const before = await wasmHeap(page, messages);
+    expect(await openPreset(page, messages, server.url('big/layout.pj4.xml'))).toContain('reason=fingerprint');
+    expect(server.requests).toEqual(['GET /presets/big/layout.pj4.xml', 'GET /presets/big/data.csv']);
+    await dismissDialogs(page, messages);
+
+    const after = await wasmHeap(page, messages);
+    console.log(`heap in use ${before.inUse} -> ${after.inUse}, memory ${before.memory} -> ${after.memory}`);
+    expect.soft(after.inUse - before.inUse).toBeLessThan(recordingBytes / 4);
+    expect.soft(after.memory - before.memory).toBeLessThan(recordingBytes);
+    // The browser keeps a smaller resident payload window than the desktop's 256 MiB.
+    expect.soft(after.pool).toBe(64 * 1024 * 1024);
+    expect(errors).toEqual([]);
+  } finally {
+    await server.close();
+  }
+});
+
+// A 2xx answer without a body (204) is an empty recording: refused for its
+// fingerprint like any other wrong bytes, never as a download failure.
+test('a recording answered with no body is refused for its fingerprint', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = [];
+  const messages = [];
+  await boot(page, messages, errors);
+  const server = await startPresetServer({
+    'empty/layout.pj4.xml': fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'layout.pj4.xml')),
+    'empty/data.csv': { body: '', status: 204 },
+  });
+  try {
+    expect(await openPreset(page, messages, server.url('empty/layout.pj4.xml'))).toContain('reason=fingerprint');
+    await dismissDialogs(page, messages);
+    expect(errors).toEqual([]);
+  } finally {
+    await server.close();
   }
 });

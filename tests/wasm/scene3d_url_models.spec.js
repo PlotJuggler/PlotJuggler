@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 
+const { wasmHeap } = require('./support/app');
 const { layoutOutcome } = require('./support/console');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { openLayoutChooser } = require('./support/pickers');
@@ -151,6 +152,42 @@ test('a URL robot anchors relative meshes and roots at its URL, and a replaced f
     await page.waitForTimeout(1500);
     const settled = await waitForModels(page, messages, models => models.robots.live === 1);
     expect(settled.docks[0].models.robots).toMatchObject({ source, draws: 2, placeholders: 0 });
+    expect(errors).toEqual([]);
+  } finally {
+    await assets.close();
+  }
+});
+
+// A fetched mesh leaves no copy in the wasm heap: its bytes are dropped once
+// parsed. This one does not parse (zeros, not an STL), so the robot keeps a
+// placeholder and nothing it built muddies the figure. The bound sits at half a
+// copy of the mesh, clear of the ~6 MiB that replacing the layout itself leaves.
+test('a URL robot mesh leaves no copy in the wasm heap', async ({ page }) => {
+  test.setTimeout(120000);
+  const messages = [];
+  const errors = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  const meshBytes = 30 * 1024 * 1024;  // under the browser's 32 MiB model budget
+  const assets = await startSecondOrigin({
+    '/robots/v2/url_robot.urdf': { body: fixture('url_robot.urdf') },
+    '/robots/v2/meshes/cube.stl': { body: Buffer.alloc(meshBytes) },
+    '/robots/assets/pj_fixture_description/meshes/cube.stl': { body: cube },
+  });
+  try {
+    const { layout } = await sceneWithLayout(page, messages, 'ros2_robot_description_real.mcap');
+    const before = await wasmHeap(page, messages);
+    const loaded = await uploadLayout(page, messages, 'big-mesh-robot.pj4.xml', withRobot(layout, {
+      source_type: 'url',
+      source_value: `${assets.origin}/robots/v2/url_robot.urdf`,
+      package_url_roots: JSON.stringify({ pj_fixture_description: '../assets/pj_fixture_description/' }),
+    }));
+    expect(loaded).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    await waitForModels(page, messages, models => models.robots.live === 1 && models.robots.placeholders === 1);
+    expect(assets.requests).toContain('GET /robots/v2/meshes/cube.stl');
+
+    const after = await wasmHeap(page, messages);
+    console.log(`heap in use ${before.inUse} -> ${after.inUse}`);
+    expect(after.inUse - before.inUse).toBeLessThan(meshBytes / 2);
     expect(errors).toEqual([]);
   } finally {
     await assets.close();

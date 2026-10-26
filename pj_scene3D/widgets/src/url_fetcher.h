@@ -47,6 +47,8 @@ struct FetchResult {
 //    other scheme fails with "unsupported URL scheme". WASM checks the MEMFS
 //    file size against kMaxFetchBytes before allocating its QByteArray; native
 //    local-file behavior remains unchanged.
+//  - In WASM, network requests go through pj_runtime's BrowserFetch.h instead
+//    (same cap; 15 s idle; the browser's redirect policy, minus https->http).
 //  - Network requests use QNetworkRequest::setTransferTimeout (15 s) and
 //    NoLessSafeRedirectPolicy capped at 4 redirects — bounded, with no
 //    https->http downgrade. There is no host allowlist; the egress bound is the

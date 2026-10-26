@@ -3,6 +3,8 @@
 
 #include "PresetController.h"
 
+#include <QCryptographicHash>
+#include <QFile>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QStringList>
@@ -12,6 +14,7 @@
 #include <utility>
 
 #include "pj_runtime/HttpGet.h"
+#include "pj_runtime/HttpUrl.h"
 #include "pj_runtime/PresetCatalog.h"
 
 using namespace Qt::StringLiterals;
@@ -20,13 +23,13 @@ namespace PJ {
 
 namespace {
 
-// Qt's transfer timeout is inactivity, not wall clock, so it suits a body of up to the cap.
+// An inactivity timeout, not wall clock, so it suits a body of up to the cap.
 constexpr std::chrono::seconds kTransferTimeout{30};
 constexpr int kMaxRedirects = 4;
 
 }  // namespace
 
-PresetController::PresetController(QObject* parent) : QObject(parent), network_(this) {}
+PresetController::PresetController(QObject* parent) : QObject(parent) {}
 
 PresetController::~PresetController() {
   cancel();
@@ -34,18 +37,65 @@ PresetController::~PresetController() {
 
 void PresetController::download(const QUrl& url, DownloadDone done, qint64 limit) {
   cancel();
-  const quint64 generation = generation_;
+  get(url, limit, [done = std::move(done)](QByteArray bytes, QUrl final_url, QString error, bool) {
+    done(std::move(bytes), std::move(final_url), std::move(error));
+  });
+}
 
+void PresetController::downloadToFile(const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done) {
+  cancel();
+#ifdef PJ_TARGET_WASM
+  const quint64 generation = generation_;
+  fetch_ = browserFetchToFile(
+      url, path, limit, kTransferTimeout, [this, generation, done = std::move(done)](FileDownload file) {
+        if (generation == generation_) {
+          fetch_ = 0;
+          done(std::move(file));
+        }
+      });
+#else
+  get(url, limit,
+      [path, done = std::move(done)](const QByteArray& bytes, const QUrl&, QString error, bool limit_exceeded) {
+        FileDownload file;
+        file.error = std::move(error);
+        file.limit_exceeded = limit_exceeded;
+        if (file.error.isEmpty()) {
+          QFile output(path);
+          if (output.open(QIODevice::WriteOnly | QIODevice::Truncate) && output.write(bytes) == bytes.size() &&
+              output.flush()) {
+            file.size = bytes.size();
+            file.sha256 = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+          } else {
+            file.error = tr("could not write %1: %2").arg(path, output.errorString());
+          }
+        }
+        done(std::move(file));
+      });
+#endif
+}
+
+void PresetController::get(const QUrl& url, qint64 limit, Fetched done) {
+  const quint64 generation = generation_;
   if (!isHttpUrl(url)) {
     // Native QNetworkAccessManager would read file:// URLs: a preset names its files, so refuse here.
     QTimer::singleShot(0, this, [this, generation, url, done = std::move(done)]() {
       if (generation == generation_) {
-        done({}, url, tr("only http(s) preset files can be downloaded: %1").arg(url.toString()));
+        done({}, url, tr("only http(s) preset files can be downloaded: %1").arg(url.toString()), false);
       }
     });
     return;
   }
-
+#ifdef PJ_TARGET_WASM
+  // The browser reports the requested URL as final (DownloadDone).
+  fetch_ = browserFetchToBytes(
+      url, limit, kTransferTimeout, this,
+      [this, generation, url, done = std::move(done)](QByteArray bytes, QString error, bool limit_exceeded) {
+        if (generation == generation_) {
+          fetch_ = 0;
+          done(std::move(bytes), url, std::move(error), limit_exceeded);
+        }
+      });
+#else
   QNetworkRequest request(url);
   request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
   request.setMaximumRedirectsAllowed(kMaxRedirects);
@@ -57,13 +107,14 @@ void PresetController::download(const QUrl& url, DownloadDone done, qint64 limit
         }
         reply_.clear();
         if (limit_exceeded) {
-          done({}, reply.url(), tr("download exceeds the %1 MiB limit").arg(limit / (1024 * 1024)));
+          done({}, reply.url(), tr("download exceeds the %1 MiB limit").arg(limit / (1024 * 1024)), true);
         } else if (reply.error() != QNetworkReply::NoError) {
-          done({}, reply.url(), reply.errorString());
+          done({}, reply.url(), reply.errorString(), false);
         } else {
-          done(reply.readAll(), reply.url(), QString());
+          done(reply.readAll(), reply.url(), QString(), false);
         }
       });
+#endif
 }
 
 void PresetController::start(const QUrl& page_url) {
@@ -100,6 +151,9 @@ void PresetController::start(const QUrl& page_url) {
 
 void PresetController::cancel() {
   ++generation_;
+#ifdef PJ_TARGET_WASM
+  cancelBrowserFetch(std::exchange(fetch_, 0));
+#endif
   if (reply_) {
     reply_->abort();  // finished fires synchronously and sees the stale generation
   }

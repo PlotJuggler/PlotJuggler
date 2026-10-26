@@ -124,6 +124,8 @@ if(NOT EMSCRIPTEN)
 endif()
 
 if(EMSCRIPTEN)
+    # The browser's streaming download (the page's fetch() into MEMFS).
+    target_sources(pj_runtime PRIVATE src/BrowserFetch.cpp include/pj_runtime/BrowserFetch.h)
     # DiagnosticHistory uses the lightweight QtDiagnosticBridge type. The wasm
     # app compiles that bridge directly while the rest of marketplace is absent.
     target_include_directories(pj_runtime PRIVATE ${CMAKE_SOURCE_DIR}/pj_marketplace/include)
