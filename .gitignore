@@ -69,3 +69,6 @@ build-wasm*/
 # gtest_discover_tests (PRE_TEST) writes this next to the tests' WORKING_DIRECTORY;
 # the source-dir runners (pj_scene2d_core_source_dir_tests) run in the source tree.
 cmake_test_discovery_*.json
+
+# packaging/conda/build_conda.sh output
+conda-output/

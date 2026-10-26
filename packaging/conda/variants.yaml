@@ -1,0 +1,9 @@
+# Pins shared with RoboStack's conda_build_config.yaml (humble, jazzy, kilted),
+# so plotjuggler4 installs into the same environment as their ROS packages.
+fmt:
+  - "12.1"
+# One build per ffmpeg major, since a ROS environment's OpenCV fixes it: jazzy
+# is on 9, kilted on 8 (ffmpeg 9 needs a protobuf newer than kilted pins).
+ffmpeg:
+  - "8.1"
+  - "9.0"

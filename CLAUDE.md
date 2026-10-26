@@ -35,7 +35,7 @@ PJ4/
 ├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample presets
 ├── raster/            # helper/ executable + ipc/ wire contract
 ├── scripts/           # setup, worktrees, pre-commit, windows/ entry points
-├── packaging/         # Nix, AppImage, Debian package, Windows installer, hosted browser app
+├── packaging/         # Nix, conda, AppImage, Debian package, Windows installer, hosted browser app
 └── docs/              # cross-cutting guides, research, archived plans
 ```
 
@@ -60,7 +60,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `3rdparty/`: vendored source deps plus `retro/` (compliance artifacts installed next to `pj-raster-helper`). Conan/system deps do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper`; `ipc/` its header-only MPL-2.0 wire contract (also used by `pj_widgets`). PlotJuggler uses only the contract, never links the helper.
 - `scripts/`: setup/maintenance utilities, `pre-commit/` hooks, `windows/` (PowerShell behind the `.bat` shims). The everyday `build.sh`, `run.sh`, `test.sh` and their shims stay at the root.
-- `packaging/`: format-specific packaging: `nix/` (native build behind the root flake), repackaging a built tree (`appimage/`, `deb/`, `installer/`; [guides](./packaging/README.md)), and `web/` (the Worker that hosts the browser build at app.plotjuggler.io). Format utilities stay with their format; general dev utilities go to `scripts/`.
+- `packaging/`: format-specific packaging: `nix/` (native build behind the root flake), `conda/` (source build for RoboStack users), repackaging a built tree (`appimage/`, `deb/`, `installer/`; [guides](./packaging/README.md)), and `web/` (the Worker that hosts the browser build at app.plotjuggler.io). Format utilities stay with their format; general dev utilities go to `scripts/`.
 
 ## Documentation
 

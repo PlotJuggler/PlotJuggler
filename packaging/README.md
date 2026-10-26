@@ -9,6 +9,7 @@ The Nix flake is the exception: it builds and packages the app in one step.
 | Linux AppImage | [AppImage and Docker builds](appimage/README.md) | `packaging/appimage/build_appimage.sh` |
 | Debian / Ubuntu | [Debian package](deb/README.md) | `packaging/deb/build_deb.sh` |
 | Windows installer | [Qt Installer Framework](installer/README.md) | `.\packaging\installer\build_windows_installer.ps1` |
+| Conda (RoboStack) | [Conda package](conda/README.md) | `packaging/conda/build_conda.sh` |
 | Browser app (app.plotjuggler.io) | [Hosted browser app](web/README.md) | `node packaging/web/deploy.mjs --package <deployment>` |
 
 AppImages and `.deb` files are written into their respective packaging folders.

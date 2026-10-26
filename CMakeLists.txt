@@ -22,7 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Packaging channel stamped into the anonymous telemetry ping. A channel token
 # (like gcc_64/msvc2022_64), not a version — deliberately NOT in versions.env.
-set(PJ_INSTALLATION "source" CACHE STRING "Packaging channel: source, appimage, deb, or windows")
+set(PJ_INSTALLATION "source" CACHE STRING "Packaging channel: source, appimage, deb, windows, or conda")
 
 configure_file(cmake/pj_version.h.in ${CMAKE_BINARY_DIR}/generated/pj_version.h @ONLY)
 
@@ -108,16 +108,17 @@ else()
         -Wall -Wextra -Wshadow -Wnon-virtual-dtor -Wold-style-cast
         -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
     )
+    # Clang's -Wconversion also covers sign conversions, and its -Wall unused
+    # constants (here often ones only a WASM #ifdef reads); GCC's, the reference
+    # compiler, cover neither. Match GCC so both reject the same code.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND PJ_WARNING_FLAGS -Wno-sign-conversion -Wno-unused-const-variable)
+    endif()
     # wasm32 makes size_t 32-bit and surfaces the SDK's explicitly tracked
     # uint64_t ABI conversions. Keep the warnings visible, but do not turn the
     # cross-compile bring-up into an unrelated warning-cleanup project.
     if(NOT EMSCRIPTEN)
         list(APPEND PJ_WARNING_FLAGS -Werror)
-    endif()
-    # Clang's -Wconversion also turns on -Wsign-conversion, which GCC's C++
-    # -Wconversion leaves off: keep one warning set across compilers.
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        list(APPEND PJ_WARNING_FLAGS -Wno-sign-conversion)
     endif()
 endif()
 

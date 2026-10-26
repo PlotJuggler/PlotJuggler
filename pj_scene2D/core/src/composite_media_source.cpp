@@ -154,8 +154,10 @@ std::optional<MediaFrame> CompositeMediaSource::takeFrame() {
         if (!layer.pairs_annotations || annotation.image_topic.empty()) {
           return false;
         }
-        const bool paired = base_layer != nullptr && annotation.image_topic == base_layer->image_topic &&
-                            std::abs(static_cast<long double>(annotation.timestamp) - shown_stamp) <= pairingCadence();
+        const bool paired =
+            base_layer != nullptr && annotation.image_topic == base_layer->image_topic &&
+            std::abs(static_cast<long double>(annotation.timestamp) - static_cast<long double>(shown_stamp)) <=
+                static_cast<long double>(pairingCadence());
         if (!paired) {
           warning = "annotations for " + annotation.image_topic + " at " + std::to_string(annotation.timestamp) +
                     " ns are not paired with the shown image";

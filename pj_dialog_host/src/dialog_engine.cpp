@@ -341,6 +341,8 @@ struct DialogEngine::AsyncRunner {
         dialog->setMaximumSize(maximum);
         dialog->resize(dialog->size().boundedTo(maximum));
       }
+#else
+      Q_UNUSED(dialog);
 #endif
     };
 

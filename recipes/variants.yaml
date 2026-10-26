@@ -2,7 +2,28 @@
 # compiler's --sysroot to the conda glibc (2.28); without it rattler-build's
 # compiler falls back to the (newer) system glibc headers and the archives end
 # up referencing __isoc23_* symbols that won't resolve against the sysroot.
+# macOS: the deployment target, 13.0 being the pinned Qt's minimum.
 c_stdlib:
-  - sysroot
+  - if: linux
+    then: sysroot
+  - if: osx
+    then: macosx_deployment_target
 c_stdlib_version:
-  - "2.28"
+  - if: linux
+    then: "2.28"
+  - if: osx
+    then: "13.0"
+# RoboStack's compiler pin (its conda_build_config.yaml): GCC 14, which the
+# pixi dev env resolves too, and Jazzy's clang 19. Without it rattler-build
+# takes the newest compiler, whose new warnings break the -Werror build. No
+# Windows entry: there the key would select the MSVC toolset instead.
+c_compiler_version:
+  - if: linux
+    then: "14"
+  - if: osx
+    then: "19"
+cxx_compiler_version:
+  - if: linux
+    then: "14"
+  - if: osx
+    then: "19"
