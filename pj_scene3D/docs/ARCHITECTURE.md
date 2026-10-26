@@ -583,7 +583,10 @@ index buffers; streamed triangles expanded to edges) on every backend, without
 included.
 
 **Models (`ModelRhiPass`).** Every `ModelRenderable`: per-layer GPU meshes, up to
-five material textures per submesh (budgeted before decode), one material SRB
+five material textures per submesh (budgeted before decode; a map longer than
+the backend limit or `max_model_texture_dimension` decodes scaled down, aspect kept,
+so a browser robot of 2048² maps fits its layer budget instead of failing the
+layer), one material SRB
 per submesh and one instance per submesh draw. Its caches:
 
 - GPU meshes are keyed by mesh key and `MeshData` pointer. A `modelRevision()`
@@ -1422,7 +1425,10 @@ mode does. It renders in every build, the browser included.
   metallic-roughness, read via assimp's material abstraction). Each map
   (`TextureSource`) is an external file path OR inline bytes for embedded glTF/GLB
   `*N` images (still PNG/JPEG-encoded; raw embedded RGBA, `mHeight > 0`, is
-  skipped), keyed by content hash. Sources without PBR
+  skipped), keyed by content hash. An in-memory import keeps an external map as
+  `unresolved_ref` (never a local path); a URL mesh's queue fetches it beside the
+  mesh (http(s) only), within the per-mesh texture budget, and a map that fails or
+  is over budget leaves its slot empty, never the mesh. Sources without PBR
   factors fall back to `MeshShadingParams`.
 - **Rendering** is the model pass (see "Per-family passes and caches"). Primitives come from
   unit box/cylinder/sphere geometry (URDF cylinder is Z-aligned; sizes ride the

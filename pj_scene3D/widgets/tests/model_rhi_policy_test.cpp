@@ -10,6 +10,8 @@
 #include <gtest/gtest.h>
 
 #include <QColor>
+#include <QSize>
+#include <cstdint>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 #include <map>
@@ -21,6 +23,7 @@
 
 #include "../rhi/passes/model_rhi_pass.h"
 #include "fake_model_layer.h"
+#include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_widgets/model_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -120,6 +123,38 @@ TEST(ModelRhiPolicy, UnkeyedTexturesKeyByIdentity) {
   TextureSource second;
   EXPECT_EQ(ModelRhiPass::textureKey(first, kBaseColor), ModelRhiPass::textureKey(first, kBaseColor));
   EXPECT_NE(ModelRhiPass::textureKey(first, kBaseColor), ModelRhiPass::textureKey(second, kBaseColor));
+}
+
+// Oversized maps decode scaled down, aspect kept, within both the backend limit
+// and the scene's texture dimension.
+TEST(ModelRhiPolicy, DecodedTextureSizeFitsBothLimits) {
+  EXPECT_EQ(ModelRhiPass::decodedTextureSize(QSize(512, 256), 8192, kBrowserSceneLimits), QSize(512, 256));
+  EXPECT_EQ(ModelRhiPass::decodedTextureSize(QSize(4096, 2048), 8192, kBrowserSceneLimits), QSize(1024, 512));
+  EXPECT_EQ(ModelRhiPass::decodedTextureSize(QSize(4096, 4096), 2048, kDesktopSceneLimits), QSize(2048, 2048));
+  EXPECT_EQ(ModelRhiPass::decodedTextureSize(QSize(65536, 1), 8192, kBrowserSceneLimits), QSize(1024, 1));
+}
+
+// A PNG that decodes to a 1024 px texture still holds its full-size image while
+// decoding; a 16k PNG (a few MiB of flat colour) must not get that far.
+TEST(ModelRhiPolicy, NonScalingDecodeIsBoundedBySourcePixels) {
+  const QSize huge(16384, 16384);
+  const QSize scaled = ModelRhiPass::decodedTextureSize(huge, 16384, kBrowserSceneLimits);
+  EXPECT_FALSE(ModelRhiPass::decodeFitsTransientLimit(huge, scaled, false, kBrowserSceneLimits));
+  EXPECT_TRUE(ModelRhiPass::decodeFitsTransientLimit(huge, scaled, true, kBrowserSceneLimits));
+  const QSize map(2048, 2048);
+  EXPECT_TRUE(
+      ModelRhiPass::decodeFitsTransientLimit(
+          map, ModelRhiPass::decodedTextureSize(map, 16384, kBrowserSceneLimits), false, kBrowserSceneLimits));
+}
+
+// A browser robot with fourteen 2048x2048 maps (ANYmal) fits one layer's decoded
+// texture budget; over it, the whole layer would fail to draw.
+TEST(ModelRhiPolicy, BrowserLayerTextureBudgetFitsARobotOf2kMaps) {
+  constexpr std::uint64_t kMaps = 14;
+  const QSize size = ModelRhiPass::decodedTextureSize(QSize(2048, 2048), 8192, kBrowserSceneLimits);
+  const std::uint64_t pixels = static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
+  EXPECT_LE(pixels, kBrowserSceneLimits.max_model_texture_pixels_per_mesh);
+  EXPECT_LE(kMaps * pixels, kBrowserSceneLimits.max_model_texture_pixels_per_layer);
 }
 
 // Caster and scene bounds start from the model-space box of every finite vertex.

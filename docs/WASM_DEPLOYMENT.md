@@ -107,7 +107,7 @@ build-wasm/deploy/
 │   ├── plotjuggler4.js[.br|.gz]
 │   ├── plotjuggler4.wasm[.br|.gz]
 │   ├── qtloader.js[.br|.gz]
-│   ├── qtlogo.svg[.br|.gz]
+│   ├── plotjuggler.svg[.br|.gz]   (the loading screen's logo)
 │   └── THIRD_PARTY_NOTICES.txt[.br|.gz]
 └── presets/            (with --presets: the tree, text and mesh files also as [.br|.gz])
 ```
@@ -341,7 +341,7 @@ reports the requested URL even after a redirect, so a preset must not rely on a
 redirect to another directory — and only http(s) references are fetched: a local
 path or another scheme, like a local robot model reference, fails the load.
 Sources download one at a time, must match their recorded `content_sha256`, and
-may stage at most 128 MiB together (`kMaxPresetDataBytes`). They are staged
+may stage at most 512 MiB together (`kMaxPresetDataBytes`). They are staged
 like uploads and imported all or nothing: any failure or cancel removes what the
 load imported and restores the previous workspace. A layout's streaming sources
 start in the same load, from their saved configuration and without a dialog
@@ -353,14 +353,14 @@ references, which a later open reselects.
 ## Presets
 
 A deployment offers presets by publishing `presets/index.json` in the page's
-directory: the page `https://host/app/index.html?preset=navigation` reads
+directory: the page `https://host/app/index.html?preset=signals` reads
 `https://host/app/presets/index.json` (the page's query and fragment play no
 part). The page URL must end in `/` or a file name, because `presets/index.json`
 resolves against it: `https://host/app` would read
 `https://host/presets/index.json`. The index is
 `{"presets": [{"id", "title", "description"?, "layout", "thumbnail"?}]}`, with
 `layout` and `thumbnail` resolved against the index URL; the index, a layout and
-a thumbnail are capped at 16 MiB each, a preset's data files at 128 MiB each and
+a thumbnail are capped at 16 MiB each, a preset's data files at 512 MiB each and
 together.
 
 - **Presets listed:** once the window is up, a welcome dialog offers them (with

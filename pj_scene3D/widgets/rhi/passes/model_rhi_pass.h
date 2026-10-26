@@ -5,6 +5,7 @@
 
 #include <QColor>
 #include <QImage>
+#include <QSize>
 #include <QString>
 #include <array>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "../rhi_scene_pass.h"
+#include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_widgets/mesh_data.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/model_renderable.h"
@@ -243,6 +245,17 @@ class ModelRhiPass {
   /// colour space, so one image serving a colour slot and a data slot is two
   /// entries. An unkeyed source keys by its address.
   [[nodiscard]] static TextureKey textureKey(const TextureSource& texture, std::size_t slot);
+  /// The size a texture of `source` size decodes at, and is charged to the pixel
+  /// budgets at: scaled down, aspect kept, so neither side exceeds the backend's
+  /// `max_texture_size` or `limits.max_model_texture_dimension`.
+  [[nodiscard]] static QSize decodedTextureSize(
+      QSize source, int max_texture_size, const SceneLimits& limits = kSceneLimits);
+  /// Whether decoding a texture of `source` size to `decoded` stays within the
+  /// per-mesh pixel budget while it decodes: a format that cannot scale while
+  /// decoding (PNG, BMP, TGA) holds the full-size image first, so its source
+  /// pixels are what must fit.
+  [[nodiscard]] static bool decodeFitsTransientLimit(
+      QSize source, QSize decoded, bool scales_while_decoding, const SceneLimits& limits = kSceneLimits);
   /// Model-space bounds of the finite vertices; invalid for a mesh without any.
   [[nodiscard]] static AABB meshBounds(const MeshData& mesh);
   /// Whether a draw of `group` is drawn in the colour pass: robot visuals and

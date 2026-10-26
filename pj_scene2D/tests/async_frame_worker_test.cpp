@@ -307,6 +307,32 @@ TEST(AsyncFrameWorkerTest, TeardownUnderLoadNeverHangs) {
   SUCCEED();
 }
 
+TEST(AsyncFrameWorkerTest, NoDecodeStartsAfterStopReturns) {
+  // A worker destroyed right after start() races its own thread's start: a
+  // thread that had not begun is detached rather than joined (a WebAssembly
+  // thread created with the pool exhausted cannot start while the main thread
+  // waits), and must then never run the DecodeFn of a destroyed owner.
+  std::atomic<int> late_decodes{0};
+  for (int i = 0; i < 1000; ++i) {
+    auto stopped = std::make_shared<std::atomic<bool>>(false);
+    {
+      AsyncFrameWorker worker;
+      worker.start(
+          [stopped, &late_decodes](const AsyncFrameWorker::Request&, AsyncFrameWorker&) {
+            if (stopped->load()) {
+              ++late_decodes;
+            }
+          },
+          failOnError);
+      worker.requestDecode(i);
+      worker.stop();
+      stopped->store(true);
+    }
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(late_decodes.load(), 0);
+}
+
 TEST(AsyncFrameWorkerTest, NeverStartedWorkerDestructsSafely) {
   AsyncFrameWorker worker;
   EXPECT_FALSE(worker.take().has_value());

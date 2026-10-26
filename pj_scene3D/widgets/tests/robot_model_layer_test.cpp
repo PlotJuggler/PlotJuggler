@@ -10,10 +10,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
-#include <QHostAddress>
 #include <QMap>
-#include <QTcpServer>
-#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <atomic>
@@ -438,37 +435,6 @@ const PJ_message_parser_vtable_t* packageUrlParserVtable() {
       R"({"id":"robot-package-url-test","name":"Robot Package URL Test","version":"1.0.0","encoding":"test"})");
   return vt;
 }
-
-// Serves the cube fixture for every request and records the requested paths.
-class MeshHttpServer {
- public:
-  MeshHttpServer() {
-    EXPECT_TRUE(server_.listen(QHostAddress::LocalHost, 0));
-    QFile mesh(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/cube.stl"));
-    EXPECT_TRUE(mesh.open(QIODevice::ReadOnly));
-    const QByteArray body = mesh.readAll();
-    QObject::connect(&server_, &QTcpServer::newConnection, &server_, [this, body]() {
-      QTcpSocket* socket = server_.nextPendingConnection();
-      QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket, body]() {
-        paths_.push_back(QString::fromLatin1(socket->readAll().split(' ').value(1)));
-        socket->write(
-            "HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Length: " + QByteArray::number(body.size()) +
-            "\r\n\r\n" + body);
-        socket->flush();
-      });
-    });
-  }
-  [[nodiscard]] QUrl url(const QString& path) const {
-    return QUrl(u"http://127.0.0.1:%1%2"_s.arg(server_.serverPort()).arg(path));
-  }
-  [[nodiscard]] const QStringList& paths() const {
-    return paths_;
-  }
-
- private:
-  QTcpServer server_;
-  QStringList paths_;
-};
 
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session, std::string topic_name = "/robot_description") {
   auto topic = session.objectStore().registerTopic(
@@ -1278,7 +1244,8 @@ TEST(RobotModelLayerTest, SourceSwitchKeepsSupersededImportsWithinTheBound) {
 // sibling robot, the topic's direct http refs stay blocked, and the mapping
 // persists with the layer so a restored layer needs no layout context.
 TEST(RobotModelLayerTest, TopicUrdfUsesExplicitUrlRoots) {
-  MeshHttpServer assets;
+  const pj::scene3d::test::FileHttpServer assets(
+      {{u"/assets/pj_url_pkg/meshes/cube.stl"_s, pj::scene3d::test::readFixtureBytes("cube.stl")}});
   PJ::SessionManager session;
   const PJ::DatasetId dataset_id = createDataset(session, "url-roots.mcap");
   const PJ::ObjectTopicId topic_id = registerTopicForDataset(session, dataset_id);
@@ -1295,7 +1262,7 @@ TEST(RobotModelLayerTest, TopicUrdfUsesExplicitUrlRoots) {
     robot.setAttribute(u"source_topic_name"_s, u"/robot_description"_s);
     robot.setAttribute(
         u"package_url_roots"_s,
-        pj::scene3d::serializePackageUrlRoots({{u"pj_url_pkg"_s, assets.url(u"/assets/pj_url_pkg/"_s)}}));
+        pj::scene3d::serializePackageUrlRoots({{u"pj_url_pkg"_s, QUrl(assets.url(u"/assets/pj_url_pkg/"_s))}}));
     if (web_hosted) {
       robot.setAttribute(u"remote_resources_only"_s, u"true"_s);
     }

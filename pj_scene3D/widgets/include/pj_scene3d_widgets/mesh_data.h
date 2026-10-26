@@ -7,6 +7,7 @@
 // buffer/texture upload lives in the pass.
 
 #include <QString>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -50,9 +51,17 @@ struct TextureSource {
   QString path;
   std::vector<std::uint8_t> bytes;
   std::string key;
+  // An external reference an in-memory import had no directory to resolve (never
+  // a local path), relative to the mesh's own location: MeshLoadQueue fetches it
+  // beside a URL mesh into `bytes`. Not a pixel source: empty() ignores it.
+  QString unresolved_ref;
 
   [[nodiscard]] bool empty() const {
     return path.isEmpty() && bytes.empty();
+  }
+  /// Whether the slot names a texture, loaded or still to fetch.
+  [[nodiscard]] bool named() const {
+    return !empty() || !unresolved_ref.isEmpty();
   }
 };
 
@@ -86,6 +95,15 @@ struct Material {
   TextureSource normal;
   TextureSource occlusion;
   TextureSource emissive;
+
+  /// The five maps in the renderer's slot order: base colour, metallic-roughness,
+  /// normal, occlusion, emissive. ModelRhiPass::textureIsSrgb() keys off this order.
+  [[nodiscard]] std::array<const TextureSource*, 5> textureSlots() const {
+    return {&base_color, &metallic_roughness, &normal, &occlusion, &emissive};
+  }
+  [[nodiscard]] std::array<TextureSource*, 5> textureSlots() {
+    return {&base_color, &metallic_roughness, &normal, &occlusion, &emissive};
+  }
 };
 
 struct SubMesh {

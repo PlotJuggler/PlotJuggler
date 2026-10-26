@@ -54,6 +54,9 @@ struct SceneLimits {
   std::uint64_t max_model_encoded_texture_bytes_per_mesh;
   std::uint64_t max_model_texture_pixels_per_mesh;
   std::uint64_t max_model_texture_pixels_per_layer;
+  // Longest side a model texture decodes at; larger maps are scaled down (aspect
+  // kept) instead of failing, so a robot's textures fit the pixel budgets.
+  std::uint64_t max_model_texture_dimension;
   std::uint64_t max_model_state_bytes_per_layer;
   std::uint64_t max_model_retained_bytes_per_mesh;
   std::uint64_t max_model_retained_bytes_per_layer;
@@ -113,6 +116,7 @@ inline constexpr SceneLimits kBrowserSceneLimits{
     .max_model_encoded_texture_bytes_per_mesh = 32 * kMiB,
     .max_model_texture_pixels_per_mesh = 16 * kMiB,
     .max_model_texture_pixels_per_layer = 32 * kMiB,
+    .max_model_texture_dimension = 1024,
     .max_model_state_bytes_per_layer = 64 * kMiB,
     .max_model_retained_bytes_per_mesh = 128 * kMiB,
     .max_model_retained_bytes_per_layer = 256 * kMiB,
@@ -171,6 +175,7 @@ inline constexpr SceneLimits kDesktopSceneLimits{
     .max_model_encoded_texture_bytes_per_mesh = 512 * kMiB,
     .max_model_texture_pixels_per_mesh = 64 * kMiB,
     .max_model_texture_pixels_per_layer = 256 * kMiB,
+    .max_model_texture_dimension = 16384,
     .max_model_state_bytes_per_layer = 1024 * kMiB,
     .max_model_retained_bytes_per_mesh = 2048 * kMiB,
     .max_model_retained_bytes_per_layer = 4096 * kMiB,
@@ -205,9 +210,9 @@ inline constexpr SceneLimits kSceneLimits = kDesktopSceneLimits;
          limits.max_occupancy_cells_per_view <= kIntMax && limits.max_voxels_per_view <= kIntMax &&
          limits.max_marker_instances_per_view <= kIntMax && limits.max_marker_stream_vertices_per_view <= kIntMax &&
          limits.max_model_draws_per_view <= kIntMax && limits.max_model_triangles_per_view <= kIntMax &&
-         limits.max_occupancy_texture_dimension <= kIntMax && limits.max_occupancy_cells_per_layer <= kU32Max &&
-         limits.max_voxels_per_layer <= kU32Max / 4U && limits.max_model_vertices_per_mesh <= kU32Max &&
-         limits.max_model_indices_per_mesh <= kU32Max;
+         limits.max_occupancy_texture_dimension <= kIntMax && limits.max_model_texture_dimension <= kIntMax &&
+         limits.max_occupancy_cells_per_layer <= kU32Max && limits.max_voxels_per_layer <= kU32Max / 4U &&
+         limits.max_model_vertices_per_mesh <= kU32Max && limits.max_model_indices_per_mesh <= kU32Max;
 }
 static_assert(sceneLimitsFitRendererTypes(kBrowserSceneLimits));
 static_assert(sceneLimitsFitRendererTypes(kDesktopSceneLimits));

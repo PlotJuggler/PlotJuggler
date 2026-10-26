@@ -834,6 +834,16 @@ malformed input, this is an out-of-bounds read.
 defining `PJ_ASAN_ACTIVE` when sanitizers are enabled and skipping
 the flag in that case.
 
+**Never join a decode thread that has not started (WebAssembly).** The
+browser build pre-spawns a fixed pthread pool (`QT_WASM_PTHREAD_POOL_SIZE`,
+7). A thread created with the pool exhausted starts only once the main
+thread yields, so a main-thread `join()` on it waits forever. A failed layout
+replay builds and discards each camera dock twice in one pass, which is
+enough to exhaust the pool with three camera docks open.
+`AsyncFrameWorker::stop()` therefore joins only a thread that has entered its
+loop and detaches one that has not; the thread checks a shared start gate
+before touching the worker, so a detached thread returns at once.
+
 ## 12. Camera Rectification (2D annotation alignment)
 
 `ImagePipelineSource::rectifyIfCalibrated` (using `undistort_remap` +

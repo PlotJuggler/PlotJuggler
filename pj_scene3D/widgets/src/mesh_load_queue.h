@@ -10,8 +10,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "pj_scene3d_widgets/mesh_data.h"
 
@@ -42,6 +44,12 @@ struct FetchResult;
 //  - `done` runs on the GUI thread through the event loop, except when an
 //    import cannot even be started: that failure is delivered from inside
 //    pump(). The queue pumps itself after every settled job.
+//  - A kUrl job also fetches the external textures its mesh left unresolved
+//    (TextureSource::unresolved_ref, resolved against the mesh URL, http(s) only,
+//    each distinct URL once) through the same fetcher before it settles, holding
+//    its slot meanwhile. A texture that fails to fetch, is not an image or exceeds
+//    the per-mesh encoded-texture budget leaves its slot empty; it never fails
+//    the mesh.
 //  - GUI-thread only. Owned by `context`'s object (a layer member): the retired
 //    fetchers are parented to `context`, so they die with it.
 class MeshLoadQueue {
@@ -111,7 +119,13 @@ class MeshLoadQueue {
   struct Running {
     std::function<void(Outcome)> done;  // empty once cancelled
     Source source;
-    std::unique_ptr<MeshImport> import;  // null while fetching
+    std::unique_ptr<MeshImport> import;  // null while fetching (the mesh or its textures)
+    MeshData mesh{};                     // imported, waiting for its textures
+    // Private copies of the mesh's materials that name a texture to fetch.
+    std::vector<std::shared_ptr<Material>> materials{};
+    // Texture URL (each such slot's `key`) -> body; empty unless fetched as an image.
+    std::unordered_map<std::string, QByteArray> textures{};
+    std::size_t textures_pending = 0;
   };
 
   // The shared fetcher, created on first use and again after a retirement.
@@ -126,6 +140,12 @@ class MeshLoadQueue {
   // Import completion: settles the job with the worker's mesh (or, if the job was
   // cancelled, frees its slot without delivering).
   void onImported(JobId id);
+  // A kUrl job's import landed: starts fetching the textures `mesh` left unresolved,
+  // taking `mesh` into the job. False, leaving `mesh` with the caller, when none is
+  // fetchable.
+  bool startTextureFetches(JobId id, MeshData& mesh);
+  // One texture fetch completed; the last one attaches the textures and settles.
+  void onTextureFetched(JobId id, const std::string& url, FetchResult result);
   // Removes a running job and hands `outcome` to its `done` (if still wanted).
   void settle(JobId id, Outcome outcome);
   // Retires the fetcher once none of its running fetches is still wanted.

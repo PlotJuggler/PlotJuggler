@@ -16,9 +16,9 @@ A preset tree is a directory with an `index.json` and one folder per preset:
 ```text
 presets/
 ├── index.json
-└── navigation/
+└── signals/
     ├── layout.pj4.xml
-    ├── data.mcap
+    ├── data.csv
     └── thumbnail.png
 ```
 
@@ -26,14 +26,14 @@ presets/
 against the index URL:
 
 ```json
-{"presets": [{"id": "navigation", "title": "Mobile robot navigation", "description": "...",
-              "layout": "navigation/layout.pj4.xml", "thumbnail": "navigation/thumbnail.png"}]}
+{"presets": [{"id": "signals", "title": "Signals", "description": "...",
+              "layout": "signals/layout.pj4.xml", "thumbnail": "signals/thumbnail.png"}]}
 ```
 
 The layout is what **File → Save Layout with sources** writes
 (`<root binding="source">`), with each data file beneath the layout's folder:
 
-- `<fileInfo filename="data.mcap" content_sha256="…">` — the filename is relative
+- `<fileInfo filename="data.csv" content_sha256="…">` — the filename is relative
   to the layout's URL, or an absolute `https://` URL on an asset host that sends
   CORS headers (as the ANYmal sample's recording), and the download must match `content_sha256` when the
   layout carries one (a mismatched or malformed fingerprint fails the whole
@@ -50,7 +50,7 @@ The layout is what **File → Save Layout with sources** writes
   `https://assets.plotjuggler.io/`, Cloudflare R2, immutable `v1/` prefixes).
 
 The index, a layout and a thumbnail are capped at 16 MiB each
-(`kMaxPresetDownloadBytes`), a preset's data files at 128 MiB each and together
+(`kMaxPresetDownloadBytes`), a preset's data files at 512 MiB each and together
 (`kMaxPresetDataBytes`); every download is held whole in memory, so keep a
 sample's recording well below that. Robot meshes are fetched by Scene3D under its own
 per-file model budget (32 MiB in the browser, `kBrowserSceneLimits.max_model_source_bytes`).
@@ -249,7 +249,8 @@ fake bridge behind Caddy and `docs/wasm/Caddyfile` (see
 
 They open every sample into its views (the ANYmal robot with all its meshes, its
 compressed lidar scan, its three camera views and its joint, IMU and speed plots;
-the navigation map, scan and pose plots; the signals plots), check that seeking
+the self-driving car's camera, lidar following the car and motion plots; the
+signals plots), check that seeking
 between two points inside the recording changes what the 3D view draws (a scene
 drawn once and then frozen fails), reopen ANYmal after switching sample while
 watching the page's longest frame gap, and make loads fail after staging
@@ -327,5 +328,5 @@ curl -fsSI "$BASE/presets/index.json" | grep -iE '^(cross-origin|cache-control|c
 curl -fsS "$BASE/presets/index.json" | node -e 'JSON.parse(require("fs").readFileSync(0))'
 ```
 
-Then open `$BASE/?preset=navigation` in Chromium and Firefox: the map, the laser
-scan and the pose plots appear, and the browser console shows no errors.
+Then open `$BASE/?preset=signals` in Chromium and Firefox: its two plots appear,
+and the browser console shows no errors.

@@ -6,6 +6,7 @@
 #include <QBuffer>
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QImageIOHandler>
 #include <QImageReader>
 #include <algorithm>
 #include <cmath>
@@ -46,15 +47,10 @@ constexpr bool fitsBuffers(const SceneLimits& limits) {
 static_assert(fitsBuffers(kBrowserSceneLimits));
 static_assert(fitsBuffers(kDesktopSceneLimits));
 
-std::array<const TextureSource*, 5> textureSources(const Material& material) {
-  return {
-      &material.base_color, &material.metallic_roughness, &material.normal, &material.occlusion, &material.emissive};
-}
-
 bool materialUsesPbrPath(const Material& material) {
   const bool has_emissive =
       material.emissive_factor.r != 0.0F || material.emissive_factor.g != 0.0F || material.emissive_factor.b != 0.0F;
-  const auto textures = textureSources(material);
+  const auto textures = material.textureSlots();
   return material.has_pbr || has_emissive ||
          std::any_of(textures.cbegin(), textures.cend(), [](const TextureSource* texture) {
            return texture != nullptr && !texture->empty();
@@ -73,6 +69,22 @@ ModelRhiPass::TextureKey ModelRhiPass::textureKey(const TextureSource& texture, 
   std::string key =
       !texture.key.empty() ? texture.key : "@" + std::to_string(reinterpret_cast<std::uintptr_t>(&texture));
   return {std::move(key), textureIsSrgb(slot)};
+}
+
+QSize ModelRhiPass::decodedTextureSize(QSize source, int max_texture_size, const SceneLimits& limits) {
+  const int extent = static_cast<int>(std::min<std::uint64_t>(
+      static_cast<std::uint64_t>(std::max(max_texture_size, 1)), limits.max_model_texture_dimension));
+  if (source.width() <= extent && source.height() <= extent) {
+    return source;
+  }
+  return source.scaled(extent, extent, Qt::KeepAspectRatio).expandedTo(QSize(1, 1));
+}
+
+bool ModelRhiPass::decodeFitsTransientLimit(
+    QSize source, QSize decoded, bool scales_while_decoding, const SceneLimits& limits) {
+  const QSize held = scales_while_decoding ? decoded : source;
+  return static_cast<std::uint64_t>(held.width()) * static_cast<std::uint64_t>(held.height()) <=
+         limits.max_model_texture_pixels_per_mesh;
 }
 
 AABB ModelRhiPass::meshBounds(const MeshData& mesh) {
@@ -898,7 +910,7 @@ bool ModelRhiPass::buildMesh(
     if (submesh.material == nullptr) {
       continue;
     }
-    const auto textures = textureSources(*submesh.material);
+    const auto textures = submesh.material->textureSlots();
     for (std::size_t slot = 0; slot < textures.size(); ++slot) {
       const TextureSource* texture = textures[slot];
       if (texture == nullptr || texture->empty()) {
@@ -926,14 +938,21 @@ bool ModelRhiPass::buildMesh(
       } else {
         reader.setFileName(texture->path);
       }
-      const QSize size = reader.size();
+      const QSize source_size = reader.size();
+      const QSize size = decodedTextureSize(source_size, max_texture_size);
       QImage image;
       if (size.isValid()) {
         const std::uint64_t pixels =
             static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
-        if (size.width() > max_texture_size || size.height() > max_texture_size ||
-            !tryConsumeModelTexturePixels(pixels, remaining_mesh_pixels, candidate_layer_pixels)) {
+        if (!tryConsumeModelTexturePixels(pixels, remaining_mesh_pixels, candidate_layer_pixels)) {
           return fail("A model exceeds the decoded-texture limit");
+        }
+        if (size != source_size) {
+          if (!decodeFitsTransientLimit(
+                  source_size, size, reader.supportsOption(QImageIOHandler::ScaledSize), kSceneLimits)) {
+            return fail("A model exceeds the decoded-texture limit");
+          }
+          reader.setScaledSize(size);
         }
         image = reader.read();
       }
@@ -973,7 +992,7 @@ bool ModelRhiPass::buildMesh(
     const std::shared_ptr<const Material>& material = source->submeshes[index].material;
     MaterialGpu& material_gpu = mesh.materials[index];
     const Material fallback;
-    const auto textures = textureSources(material != nullptr ? *material : fallback);
+    const auto textures = (material != nullptr ? *material : fallback).textureSlots();
     for (std::size_t slot = 0; slot < textures.size(); ++slot) {
       TextureGpu& texture_gpu = material_gpu.textures[slot];
       texture_gpu.texture = white_texture_;

@@ -8,7 +8,6 @@
 #include <QString>
 #include <QThread>
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -33,25 +32,27 @@ namespace pj::scene3d {
 #endif
 }
 
-// Retained CPU footprint of an imported mesh (geometry + encoded textures, each
-// shared material counted once); kSaturated when the estimate overflows.
-[[nodiscard]] inline std::uint64_t estimateRetainedMeshBytes(const MeshData& mesh) {
+// Encoded texture bytes a mesh holds, each shared material counted once.
+[[nodiscard]] inline std::uint64_t encodedTextureBytes(const MeshData& mesh) {
   std::uint64_t texture_bytes = 0;
   std::unordered_set<const Material*> counted;
   for (const SubMesh& submesh : mesh.submeshes) {
     if (submesh.material == nullptr || !counted.insert(submesh.material.get()).second) {
       continue;
     }
-    const std::array<const TextureSource*, 5> textures{
-        &submesh.material->base_color, &submesh.material->metallic_roughness, &submesh.material->normal,
-        &submesh.material->occlusion, &submesh.material->emissive};
-    for (const TextureSource* texture : textures) {
+    for (const TextureSource* texture : submesh.material->textureSlots()) {
       texture_bytes = saturatedAdd(texture_bytes, texture->bytes.size());
     }
   }
+  return texture_bytes;
+}
+
+// Retained CPU footprint of an imported mesh (geometry + encoded textures);
+// kSaturated when the estimate overflows.
+[[nodiscard]] inline std::uint64_t estimateRetainedMeshBytes(const MeshData& mesh) {
   return modelRetainedByteCount(
              mesh.vertices.size(), sizeof(Vertex), mesh.indices.size(), mesh.submeshes.size(), sizeof(SubMesh),
-             texture_bytes)
+             encodedTextureBytes(mesh))
       .value_or(kSaturated);
 }
 

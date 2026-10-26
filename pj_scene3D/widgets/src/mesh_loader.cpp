@@ -70,7 +70,8 @@ std::string contentHashKey(const std::uint8_t* data, std::size_t size) {
 // Resolve one texture map of a material into a TextureSource. Embedded glTF/GLB
 // images (assimp ref "*N") become inline bytes keyed by content hash; external
 // refs become an absolute filesystem path (resolved relative to base_dir, with a
-// small extension-retry for refs that drop their suffix). Only compressed
+// small extension-retry for refs that drop their suffix); with no base_dir (an
+// in-memory import) every ref stays `unresolved_ref`, never a local path. Only compressed
 // embedded images (PNG/JPEG, the universal glTF case where aiTexture::mHeight ==
 // 0) are supported; raw embedded RGBA (mHeight > 0, rare) is skipped and the
 // slot stays empty.
@@ -115,16 +116,13 @@ TextureSource resolveTexture(
   }
 
   const QString ref = QDir::fromNativeSeparators(raw);
+  if (base_dir.isEmpty()) {
+    TextureSource source;
+    source.unresolved_ref = ref;
+    return source;
+  }
   const auto resolve = [&base_dir](const QString& path) -> QString {
-    QString candidate;
-    if (QDir::isAbsolutePath(path)) {
-      candidate = path;
-    } else if (!base_dir.isEmpty()) {
-      candidate = QDir(base_dir).absoluteFilePath(path);
-    } else {
-      return {};
-    }
-    const QFileInfo info(QDir::cleanPath(candidate));
+    const QFileInfo info(QDir::cleanPath(QDir(base_dir).absoluteFilePath(path)));
     return info.isFile() ? info.absoluteFilePath() : QString{};
   };
 
@@ -212,22 +210,22 @@ Material readMaterial(
   }
 
   out.base_color = resolveTexture(scene, mat, aiTextureType_BASE_COLOR, base_dir, texture_budget);
-  if (out.base_color.empty()) {
+  if (!out.base_color.named()) {
     out.base_color = resolveTexture(scene, mat, aiTextureType_DIFFUSE, base_dir, texture_budget);
   }
   // assimp's glTF2 importer exposes the packed metallic-roughness image under the
   // metalness slot (and aiTextureType_UNKNOWN on older versions) — same file, the
   // shader reads G=roughness/B=metallic.
   out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_METALNESS, base_dir, texture_budget);
-  if (out.metallic_roughness.empty()) {
+  if (!out.metallic_roughness.named()) {
     out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_DIFFUSE_ROUGHNESS, base_dir, texture_budget);
   }
-  if (out.metallic_roughness.empty()) {
+  if (!out.metallic_roughness.named()) {
     out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_UNKNOWN, base_dir, texture_budget);
   }
   out.normal = resolveTexture(scene, mat, aiTextureType_NORMALS, base_dir, texture_budget);
   out.occlusion = resolveTexture(scene, mat, aiTextureType_AMBIENT_OCCLUSION, base_dir, texture_budget);
-  if (out.occlusion.empty()) {
+  if (!out.occlusion.named()) {
     out.occlusion = resolveTexture(scene, mat, aiTextureType_LIGHTMAP, base_dir, texture_budget);
   }
   out.emissive = resolveTexture(scene, mat, aiTextureType_EMISSIVE, base_dir, texture_budget);
@@ -492,9 +490,7 @@ MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& fo
       }
       return out;
     }
-    // Embedded buffers (glTF/GLB, the Waymo path) keep their per-submesh materials:
-    // embedded textures are extracted into Material::base_color etc. by readMaterial,
-    // so there is no external base_dir to resolve against and nothing to flatten.
+    // Per-submesh materials are kept (embedded textures: readMaterial); external refs stay unresolved.
     return buildMeshData(scene, flip_to_z_up, u"<memory:%1>"_s.arg(format_hint), QString{});
   } catch (const std::exception& ex) {
     MeshData out;

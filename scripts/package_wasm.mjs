@@ -35,8 +35,9 @@ const REQUIRED_ARTIFACTS = [
   'plotjuggler4.js',
   'plotjuggler4.wasm',
   'qtloader.js',
-  'qtlogo.svg',
 ];
+// The loading screen shows this instead of Qt's template logo (qtlogo.svg, not packaged).
+const LOGO = 'plotjuggler.svg';
 // Every build writes it (cmake/PjWasmNotices.cmake). Packaged beside the module, and again at the deployment root,
 // where the About dialog opens it by this name (pj_app/src/ui/AboutDialog.ui).
 const NOTICES = 'THIRD_PARTY_NOTICES.txt';
@@ -407,10 +408,13 @@ export async function packageWasm(options) {
     await validatePresetIndex(presetsRoot, presets);
   }
 
-  const sourceAssets = await Promise.all([...REQUIRED_ARTIFACTS, NOTICES].map(async fileName => ({
-    fileName,
-    contents: await readFile(path.join(sourceRoot, fileName)),
-  })));
+  const sourceAssets = await Promise.all([
+    ...[...REQUIRED_ARTIFACTS, NOTICES].map(async fileName => ({
+      fileName,
+      contents: await readFile(path.join(sourceRoot, fileName)),
+    })),
+    readFile(path.join(REPOSITORY_ROOT, 'resources', LOGO)).then(contents => ({ fileName: LOGO, contents })),
+  ]);
   const bundleDigest = createHash('sha256');
   for (const asset of sourceAssets) {
     bundleDigest.update(asset.fileName);
@@ -448,6 +452,9 @@ export async function packageWasm(options) {
         `src="${bundlePath}/${fileName}"`,
       );
     }
+    entrypoint = replaceExactlyOnce(entrypoint, 'src="qtlogo.svg"', `src="${bundlePath}/${LOGO}"`);
+    entrypoint = replaceExactlyOnce(entrypoint, '<title>plotjuggler4</title>', '<title>PlotJuggler</title>');
+    entrypoint = replaceExactlyOnce(entrypoint, 'Qt for WebAssembly: plotjuggler4', 'PlotJuggler');
     const qtLoadMarker = 'const instance = await qtLoad({';
     entrypoint = replaceExactlyOnce(
       entrypoint,

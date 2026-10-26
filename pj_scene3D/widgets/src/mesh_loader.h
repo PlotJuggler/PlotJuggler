@@ -38,6 +38,7 @@ class MeshLoader {
   // Load from an in-memory buffer (embedded glTF / Waymo path, design §3). The
   // `format_hint` is an assimp extension hint without the dot (e.g. "glb",
   // "gltf", "dae") so assimp can pick the importer for headerless buffers.
+  // External texture refs are left in TextureSource::unresolved_ref (no directory to resolve against).
   QFuture<MeshData> loadFromMemory(
       const QByteArray& bytes, const QString& format_hint, std::optional<bool> flip_override = std::nullopt);
 

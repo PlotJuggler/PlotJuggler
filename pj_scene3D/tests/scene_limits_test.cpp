@@ -18,7 +18,7 @@ namespace {
 
 using Field = std::uint64_t SceneLimits::*;
 
-constexpr std::array<Field, 47> kAllFields{
+constexpr std::array<Field, 48> kAllFields{
     &SceneLimits::max_points_per_cloud,
     &SceneLimits::max_point_wire_bytes_per_cloud,
     &SceneLimits::max_point_vertices_per_view,
@@ -51,6 +51,7 @@ constexpr std::array<Field, 47> kAllFields{
     &SceneLimits::max_model_encoded_texture_bytes_per_mesh,
     &SceneLimits::max_model_texture_pixels_per_mesh,
     &SceneLimits::max_model_texture_pixels_per_layer,
+    &SceneLimits::max_model_texture_dimension,
     &SceneLimits::max_model_state_bytes_per_layer,
     &SceneLimits::max_model_retained_bytes_per_mesh,
     &SceneLimits::max_model_retained_bytes_per_layer,

@@ -3,7 +3,8 @@
 
 // MeshLoadQueue: the per-layer bound over fetches + imports (cancelled imports
 // keep their slots until their workers finish), cancellation that never reaches
-// `done`, aborting fetches nobody wants, and destruction during fetch/import.
+// `done`, aborting fetches nobody wants, destruction during fetch/import, and a
+// URL mesh's relative textures fetched beside it.
 
 #include "mesh_load_queue.h"
 
@@ -22,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "mesh_import.h"  // maxConcurrentMeshLoads
@@ -32,7 +34,9 @@ using namespace Qt::StringLiterals;
 using pj::scene3d::maxConcurrentMeshLoads;
 using pj::scene3d::MeshLoadQueue;
 using pj::scene3d::test::cubeCopies;
+using pj::scene3d::test::FileHttpServer;
 using pj::scene3d::test::pumpUntil;
+using pj::scene3d::test::readFixtureBytes;
 using pj::scene3d::test::silentServerUrl;
 
 namespace {
@@ -60,7 +64,63 @@ MeshLoadQueue::JobId enqueue(MeshLoadQueue& queue, MeshLoadQueue::Source source,
       });
 }
 
+// Loads textured_quad.dae from `server` as a URL mesh and returns its outcome.
+std::optional<MeshLoadQueue::Outcome> loadQuadFrom(const FileHttpServer& server) {
+  QObject context;
+  MeshLoadQueue queue(&context);
+  MeshLoadQueue::Source source = urlSource(server.url(u"/meshes/quad.dae"_s));
+  source.format_hint = u"dae"_s;
+  std::optional<MeshLoadQueue::Outcome> outcome;
+  queue.enqueue(
+      [source]() { return std::optional(source); },
+      [&outcome](MeshLoadQueue::Outcome settled) { outcome = std::move(settled); });
+  queue.pump();
+  EXPECT_TRUE(pumpUntil([&] { return outcome.has_value(); }, std::chrono::seconds(5)));
+  return outcome;
+}
+
 }  // namespace
+
+// A URL mesh's relative texture is fetched beside it, once, into inline bytes
+// keyed by its URL.
+TEST(MeshLoadQueueTest, UrlMeshFetchesItsRelativeTexture) {
+  const FileHttpServer server({
+      {u"/meshes/quad.dae"_s, readFixtureBytes("textured_quad.dae")},
+      {u"/meshes/red_4x4.png"_s, readFixtureBytes("red_4x4.png")},
+  });
+  const std::optional<MeshLoadQueue::Outcome> outcome = loadQuadFrom(server);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_EQ(server.paths().count(u"/meshes/red_4x4.png"_s), 1);
+  ASSERT_FALSE(outcome->mesh.submeshes.empty());
+  const pj::scene3d::TextureSource& base = outcome->mesh.submeshes.front().material->base_color;
+  EXPECT_FALSE(base.bytes.empty());
+  EXPECT_EQ(base.key, server.url(u"/meshes/red_4x4.png"_s).toStdString());
+}
+
+// A texture that cannot be fetched leaves its slot empty; the mesh still loads.
+TEST(MeshLoadQueueTest, MissingUrlTextureLeavesTheMeshUntextured) {
+  const FileHttpServer server({{u"/meshes/quad.dae"_s, readFixtureBytes("textured_quad.dae")}});
+  const std::optional<MeshLoadQueue::Outcome> outcome = loadQuadFrom(server);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_TRUE(server.paths().contains(u"/meshes/red_4x4.png"_s));
+  ASSERT_FALSE(outcome->mesh.submeshes.empty());
+  EXPECT_TRUE(outcome->mesh.submeshes.front().material->base_color.empty());
+}
+
+// A texture ref that resolves to no http(s) URL is never requested.
+TEST(MeshLoadQueueTest, UrlMeshNeverRequestsANonNetworkTexture) {
+  QByteArray dae = readFixtureBytes("textured_quad.dae");
+  dae.replace("red_4x4.png", "ftp://127.0.0.1/x.png");
+  const FileHttpServer server({{u"/meshes/quad.dae"_s, dae}});
+  const std::optional<MeshLoadQueue::Outcome> outcome = loadQuadFrom(server);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_EQ(server.paths().join(u',').toStdString(), "/meshes/quad.dae");
+  ASSERT_FALSE(outcome->mesh.submeshes.empty());
+  EXPECT_TRUE(outcome->mesh.submeshes.front().material->base_color.empty());
+}
 
 TEST(MeshLoadQueueTest, CancelledImportsKeepTheirSlotsAndNeverDeliver) {
   QTemporaryDir dir;

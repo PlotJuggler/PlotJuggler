@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -109,7 +110,10 @@ class AsyncFrameWorker {
   /// Stop and join the worker (idempotent; also run by the destructor). After
   /// stop() no DecodeFn is running and none will start. Declare the worker
   /// LAST in the owning source so its implicit stop joins the thread before
-  /// any member the DecodeFn touches is destroyed.
+  /// any member the DecodeFn touches is destroyed. A thread that has not begun
+  /// running is detached instead of joined: under WebAssembly a thread created
+  /// with the pthread pool exhausted only starts once the main thread yields,
+  /// so joining it from the main thread would wait forever.
   void stop();
 
   /// Post a decode target (latest-wins). Equal consecutive targets are
@@ -166,6 +170,16 @@ class AsyncFrameWorker {
   // Frame-ready notification; the mutex makes replacement safe mid-run.
   std::mutex callback_mutex_;
   std::function<void()> on_frame_ready_;
+
+  /// The handshake between stop() and a thread that may not have started yet.
+  /// Shared with the thread, which reads it before touching `this`: a thread
+  /// stop() abandoned returns at once, so the worker may already be destroyed.
+  struct StartGate {
+    std::mutex mutex;
+    bool started = false;
+    bool abandoned = false;
+  };
+  std::shared_ptr<StartGate> start_gate_ = std::make_shared<StartGate>();
 
   std::thread worker_;
 };

@@ -261,6 +261,8 @@ Selected values:
 | Marker instances per layer / per view | 1 M / 2 M | 50 k / 100 k |
 | Marker stream vertices per layer / per view | 10 M / 20 M | 500 k / 1 M |
 | Model triangles per layer / per view | 50 M / 100 M | 2 M / 4 M |
+| Model texture pixels per mesh / per layer | 64 Mi / 256 Mi | 16 Mi / 32 Mi |
+| Model texture longest side (larger maps decode scaled down) | 16384 | 1024 |
 | HDR chain per view / per QRhi | 1 GiB / 4 GiB | 256 MiB / 512 MiB |
 | Concurrent mesh loads per layer | 4 | 1 |
 

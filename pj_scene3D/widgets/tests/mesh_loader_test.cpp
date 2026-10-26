@@ -23,7 +23,9 @@
 #include <vector>
 
 #include "mesh_import.h"
+#include "mock_parser_support.h"
 using namespace Qt::StringLiterals;
+using pj::scene3d::test::readFixtureBytes;
 
 namespace pj::scene3d {
 namespace {
@@ -34,12 +36,6 @@ namespace {
 
 QString fixturePath(const char* name) {
   return QString(PJ_SCENE3D_FIXTURES_DIR) + "/meshes/" + QLatin1String(name);
-}
-
-QByteArray readFixtureBytes(const char* name) {
-  QFile f(fixturePath(name));
-  EXPECT_TRUE(f.open(QIODevice::ReadOnly)) << "missing fixture: " << name;
-  return f.readAll();
 }
 
 // Every emitted normal must be unit length (GenSmoothNormals guarantees them).
@@ -215,6 +211,38 @@ TEST(MeshLoaderTest, ColladaExtractsUvsAndResolvesTexturePath) {
   EXPECT_TRUE(texture_info.isAbsolute()) << texture_path.toStdString();
   EXPECT_TRUE(texture_path.endsWith(QLatin1String("red_4x4.png"))) << texture_path.toStdString();
   EXPECT_TRUE(texture_info.isFile()) << texture_path.toStdString();
+}
+
+// In memory there is no directory to resolve the texture against: the reference
+// is kept for a caller that knows where the mesh came from.
+TEST(MeshLoaderTest, ColladaFromMemoryKeepsTheUnresolvedTextureReference) {
+  MeshLoader loader;
+  const MeshData mesh = loader.loadFromMemory(readFixtureBytes("textured_quad.dae"), u"dae"_s).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+  const TextureSource& base = mesh.submeshes.front().material->base_color;
+  EXPECT_TRUE(base.empty()) << "no pixels until the reference is fetched";
+  EXPECT_EQ(base.unresolved_ref.toStdString(), "red_4x4.png");
+}
+
+// An in-memory import never turns a reference into a local file path, absolute
+// ones included: the bytes may come from a remote host.
+TEST(MeshLoaderTest, ColladaFromMemoryNeverResolvesAbsoluteTextureRefToLocalFile) {
+  const QString absolute_texture = fixturePath("red_4x4.png");
+  ASSERT_TRUE(QFileInfo(absolute_texture).isFile());
+  for (const QString& ref : {absolute_texture, u"file://"_s + absolute_texture}) {
+    SCOPED_TRACE(ref.toStdString());
+    QByteArray bytes = readFixtureBytes("textured_quad.dae");
+    bytes.replace("red_4x4.png", ref.toUtf8());
+    MeshLoader loader;
+    const MeshData mesh = loader.loadFromMemory(bytes, u"dae"_s).result();
+    ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+    ASSERT_FALSE(mesh.submeshes.empty());
+    const TextureSource& base = mesh.submeshes.front().material->base_color;
+    EXPECT_TRUE(base.path.isEmpty()) << base.path.toStdString();
+    EXPECT_TRUE(base.empty());
+    EXPECT_EQ(base.unresolved_ref.toStdString(), absolute_texture.toStdString());
+  }
 }
 
 // --- In-memory load (embedded path) -----------------------------------------
