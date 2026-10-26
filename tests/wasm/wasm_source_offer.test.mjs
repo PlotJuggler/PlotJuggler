@@ -35,7 +35,7 @@ test('the Qt sources are the PJ_QT_VERSION modules the notices attribute, each w
   const series = version.split('.').slice(0, 2).join('.');
   for (const archive of qt) {
     assert.equal(
-      archive.url, `https://download.qt.io/official_releases/qt/${series}/${version}/submodules/${archive.name}`);
+      archive.url, `https://download.qt.io/archive/qt/${series}/${version}/submodules/${archive.name}`);
     assert.match(archive.sha256, /^[0-9a-f]{64}$/);
   }
 });
@@ -114,6 +114,40 @@ test('SOURCE-OFFER.txt names each archive with its hash, and what rebuilds the m
     'conveyed under the GNU General Public License version 3', 'the desktop application remains MPL-2.0']) {
     assert.ok(text.replace(/\s+/g, ' ').includes(input), `names ${input}`);
   }
+});
+
+test('with --links, SOURCE-OFFER.txt gives each library its public address; only PlotJuggler 4 is here', async () => {
+  const unresolved = await planSourceOffer();
+  // What --links records for a git pin: the commit its tag names and GitHub's tarball of it, with no hash.
+  const plan = {
+    ...unresolved,
+    archives: unresolved.archives.map((archive, index) => (archive.sha256 ? archive : {
+      ...archive, commit: `${index}`.padStart(40, 'c'), url: `https://c.example/${index}`,
+    })),
+  };
+  const text = renderSourceOffer(plan, { links: true });
+  for (const archive of plan.archives) {
+    assert.ok(text.includes(archive.url), `${archive.name} has its address`);
+    assert.ok(text.includes(archive.sha256 ?? archive.commit), `${archive.name} has its hash or commit`);
+  }
+  assert.ok(text.includes(plan.pj4.name) && text.includes(plan.pj4.commit), 'PlotJuggler 4 is the archive here');
+  assert.ok(text.includes(`codeload.github.com/PlotJuggler/Qt-Advanced-Docking-System/tar.gz/${plan.ads.commit}`),
+    'the docking system is its fork commit on GitHub');
+  assert.ok(!text.includes('This directory holds the complete corresponding source'), 'claims no copies');
+  assert.ok(!text.replace(/\s+/g, ' ').includes('with the SHA-256 it had then'), 'claims no tarball hashes');
+});
+
+test('--dry-run --links lists only the PlotJuggler 4 archive and the offer', async t => {
+  const output = await mkdtemp(path.join(os.tmpdir(), 'plotjuggler-source-offer-'));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  const run = spawnSync('node', ['scripts/wasm_source_offer.mjs', '--links', '--dry-run', '--output', output], {
+    cwd: ROOT, encoding: 'utf8',
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const plan = await planSourceOffer();
+  assert.ok(run.stdout.includes(plan.pj4.name) && run.stdout.includes('SOURCE-OFFER.txt'));
+  assert.ok(!run.stdout.includes(plan.ads.name), 'the docking system is linked, not copied');
+  assert.deepEqual(await readdir(output), []);
 });
 
 test('--dry-run lists the files and writes nothing; the notices point at the offer it writes', async t => {

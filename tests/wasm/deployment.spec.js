@@ -20,6 +20,11 @@ let manifest;
 
 test.beforeAll(async () => {
   manifest = JSON.parse(await readFile(path.join(packageRoot, 'manifest.json'), 'utf8'));
+  // A published copy of the same package (packaging/web) instead of the reference server.
+  if (process.env.PJ_WASM_DEPLOYMENT_URL) {
+    baseUrl = process.env.PJ_WASM_DEPLOYMENT_URL.replace(/\/+$/, '');
+    return;
+  }
   const { listenWasmServer } = await import('../../scripts/serve_wasm.mjs');
   server = await listenWasmServer(packageRoot);
   const address = server.address();

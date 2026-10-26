@@ -47,7 +47,7 @@ node scripts/package_wasm.mjs \
 
 A public deployment also publishes the source offer
 ([licence and source offer](#licence-of-the-browser-bundle-and-the-source-offer)):
-`node scripts/wasm_source_offer.mjs --output build-wasm/deploy/sources`.
+`node scripts/wasm_source_offer.mjs --links --output build-wasm/deploy/sources`.
 
 `--presets` is optional: it deploys a preset tree (the repository's samples
 here) under `presets/`; see [Presets](#presets).
@@ -164,9 +164,9 @@ Qwt (LGPL-2.1 with the Qwt exception, which addresses static linking) is in
 the offer like every other fetched dependency. The header of `THIRD_PARTY_NOTICES.txt` (written in
 `cmake/PjWasmNotices.cmake`) states the bundle's licence, points at the GPL-3.0
 text in its Qt section, and says, as the desktop packages'
-`packaging/deb/copyright` does, that the complete corresponding source is in
-`sources/` next to the deployment and on written request via the PJ4 issue
-tracker. No object files are published; PJ4's source pins the toolchain and the
+`packaging/deb/copyright` does, that `sources/SOURCE-OFFER.txt` next to the
+deployment names the complete corresponding source and where each part is, and
+that it is available on written request via the PJ4 issue tracker. No object files are published; PJ4's source pins the toolchain and the
 commands to rebuild the module against a modified library.
 
 `scripts/wasm_source_offer.mjs` writes that `sources/` directory. Run it after
@@ -175,8 +175,19 @@ built revision, and upload the result with the deployment:
 
 ```bash
 node scripts/package_wasm.mjs --source build-wasm/pj_app --output build-wasm/deploy
-node scripts/wasm_source_offer.mjs --output build-wasm/deploy/sources   # ~300 MB, needs network
+node scripts/wasm_source_offer.mjs --links --output build-wasm/deploy/sources   # ~17 MB, needs network
 ```
+
+`--links`, the mode `app.plotjuggler.io` publishes with (`packaging/web/`),
+archives only PlotJuggler 4, whose repository is private, and gives every other
+part its public address: the URL and SHA-256 of a hashed pin, the commit and
+GitHub tarball of a git pin, the Qt Advanced Docking System fork's commit. The
+GPL v3 accepts source on another server when the object code carries clear
+directions to it, as long as it stays available there: every address is
+fetched once and the run fails if one does not answer, and the pinned commits
+of repositories PlotJuggler controls (the docking-system fork,
+`pj-official-plugins`, `plotjuggler_sdk`, `cloudini`, `rosx_introspection`)
+must never be deleted. Without `--links` it copies everything, as below.
 
 It takes a `git archive` of PlotJuggler 4 at `HEAD` (its vendored `3rdparty/`
 libraries included) and of the pinned Qt Advanced Docking System commit,
@@ -185,7 +196,7 @@ and archives every other library the build fetches: each `FetchContent_Declare`
 pin of `cmake/PjWasm*.cmake`, the root `CMakeLists.txt` (the SDK) and
 `3rdparty/qwt`, the CPython tarball of `PjWasmPython.cmake`, and the Abseil that
 protobuf fetches in its own build (at the `abseil-cpp-version` of the protobuf
-archive's `cmake/dependencies.cmake`). It writes `SOURCE-OFFER.txt` (each
+commit's `cmake/dependencies.cmake`, read from GitHub). It writes `SOURCE-OFFER.txt` (each
 archive with its URL, SHA-256 or commit, and how to rebuild with a modified
 library). A `URL_HASH` is verified and the run fails on a mismatch or on a pin
 without one; Qt's hashes are in the script (`QT_SHA256`, from the `.sha256`

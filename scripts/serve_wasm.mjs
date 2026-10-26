@@ -8,18 +8,10 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  CACHE_CONTROL, ISOLATION_HEADERS, conditionalMatch, etag, selectRepresentation,
+} from './wasm_http_contract.mjs';
 import { sha256 } from './wasm_manifest.mjs';
-
-const CACHE_CONTROL = {
-  revalidate: 'no-cache',
-  immutable: 'public, max-age=31536000, immutable',
-};
-const ISOLATION_HEADERS = {
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
-  'Cross-Origin-Resource-Policy': 'same-origin',
-  'X-Content-Type-Options': 'nosniff',
-};
 
 function usage() {
   return `Usage: node scripts/serve_wasm.mjs [options]
@@ -61,48 +53,6 @@ function parseArguments(argv) {
     throw new Error('--port must be an integer from 0 through 65535');
   }
   return options;
-}
-
-function parseAcceptEncoding(header) {
-  const qualities = new Map();
-  for (const item of (header || '').split(',')) {
-    const [rawName, ...parameters] = item.trim().toLowerCase().split(';');
-    if (!rawName) {
-      continue;
-    }
-    let quality = 1;
-    for (const parameter of parameters) {
-      const match = parameter.trim().match(/^q=(0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/);
-      if (match) {
-        quality = Number(match[1]);
-      }
-    }
-    qualities.set(rawName, quality);
-  }
-  return qualities;
-}
-
-function selectRepresentation(file, acceptEncoding) {
-  const qualities = parseAcceptEncoding(acceptEncoding);
-  const wildcard = qualities.get('*');
-  const identityQuality = qualities.get('identity') ?? (wildcard === 0 ? 0 : 1);
-  const candidates = [
-    ['br', file.representations.br, qualities.get('br') ?? wildcard ?? 0, 3],
-    ['gzip', file.representations.gzip, qualities.get('gzip') ?? wildcard ?? 0, 2],
-    ['identity', file.representations.identity, identityQuality, 1],
-  ].filter(([, representation, quality]) => representation && quality > 0);
-  candidates.sort((left, right) => right[2] - left[2] || right[3] - left[3]);
-  return candidates[0]?.[1];
-}
-
-function etag(representation) {
-  return `"sha256-${representation.sha256}"`;
-}
-
-function conditionalMatch(header, value) {
-  return (header || '').split(',').map(candidate => candidate.trim()).some(
-    candidate => candidate === '*' || candidate === value || candidate === `W/${value}`,
-  );
 }
 
 async function loadDeployment(root) {

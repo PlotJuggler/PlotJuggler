@@ -2,7 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Usage: node scripts/wasm_source_offer.mjs [--output <dir>] [--dry-run]
+// Usage: node scripts/wasm_source_offer.mjs [--output <dir>] [--links] [--dry-run]
 //
 // Writes the corresponding source of the browser build, which is conveyed under the GPL version 3, and the written
 // offer that names it: PlotJuggler 4 itself (the HEAD of this checkout), Qt, Qt Advanced Docking System, and every
@@ -10,7 +10,9 @@
 // once per deployment, from a clean checkout of the built revision and after scripts/package_wasm.mjs (which replaces
 // its output directory), into <deployment>/sources, where the THIRD_PARTY_NOTICES.txt of the build points. Writes
 // ~300 MB. A pinned hash is verified (a mismatch, a missing hash, or a Qt version without hashes fails); a git pin is
-// resolved to its commit and archived from GitHub's tarball of that commit, whose hash is recorded.
+// resolved to its commit and archived from GitHub's tarball of that commit, whose hash is recorded. With --links, only
+// PlotJuggler 4 (a private repository) is archived: the offer gives every library's public address instead, which
+// the GPL accepts beside the object code as long as those addresses keep serving it; each is checked to answer.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -137,7 +139,8 @@ export async function planSourceOffer({ qtVersion } = {}) {
     return {
       dependency: module,
       name,
-      url: `https://download.qt.io/official_releases/qt/${series}/${qt}/submodules/${name}`,
+      // The archive tree keeps every release; official_releases drops a superseded one.
+      url: `https://download.qt.io/archive/qt/${series}/${qt}/submodules/${name}`,
       sha256: hashes[module],
       what: `${module}: ${libraries}`,
     };
@@ -166,6 +169,7 @@ export async function planSourceOffer({ qtVersion } = {}) {
     what: "Abseil, at the abseil-cpp-version in protobuf's cmake/dependencies.cmake",
   });
   const commit = git('ls-tree', 'HEAD', ADS_DIRECTORY).split(/\s+/)[2];
+  const adsUrl = git('config', '-f', '.gitmodules', '--get', `submodule.${ADS_DIRECTORY}.url`);
   const revision = git('rev-parse', 'HEAD');
   return {
     archives,
@@ -173,7 +177,8 @@ export async function planSourceOffer({ qtVersion } = {}) {
     ads: {
       name: `Qt-Advanced-Docking-System-${commit.slice(0, 12)}.tar.gz`,
       commit,
-      url: git('config', '-f', '.gitmodules', '--get', `submodule.${ADS_DIRECTORY}.url`),
+      url: adsUrl,
+      tarball: `https://codeload.github.com/${githubRepository(adsUrl)}/tar.gz/${commit}`,
     },
     revision,
     qt,
@@ -182,7 +187,7 @@ export async function planSourceOffer({ qtVersion } = {}) {
   };
 }
 
-export function renderSourceOffer({ archives, pj4, ads, revision, qt, emscripten, node }) {
+export function renderSourceOffer({ archives, pj4, ads, revision, qt, emscripten, node }, { links = false } = {}) {
   const listing = archives.map(archive => [
     `  ${archive.name}`,
     `    ${archive.what}`,
@@ -192,6 +197,18 @@ export function renderSourceOffer({ archives, pj4, ads, revision, qt, emscripten
     archive.sha256 && `    SHA-256 ${archive.sha256}`,
     archive.url && `    from ${archive.url}`,
   ].filter(Boolean).join('\n')).join('\n\n');
+  const where = links
+    ? `The complete corresponding source is PlotJuggler 4, in this directory, and every library the module is built
+from, at the public address below of the exact release or commit its build pins. It is also available on written
+request via ${ISSUES}.`
+    : `This directory holds the complete corresponding source: PlotJuggler 4 and every library the module is built
+from, as the exact releases or commits its build pins. It is also available on written request via
+${ISSUES}.`;
+  const gitPins = links
+    ? `A pin to a git tag is given as the commit the tag named when this offer was written, with GitHub's tarball of
+it (an entry's name labels its download; only PlotJuggler 4's archive is in this directory).`
+    : `A pin to a git tag is archived as GitHub's tarball of the commit the tag named when this directory was written,
+with the SHA-256 it had then.`;
   return `PlotJuggler 4, browser build: corresponding source and written offer
 
 The browser build (plotjuggler4.wasm, plotjuggler4.js, qtloader.js) is a combined work conveyed under the GNU General
@@ -203,9 +220,7 @@ desktop application remains MPL-2.0. The libraries it links keep their own licen
   - FFmpeg (libavcodec, libavutil, libswscale), built LGPL-only: the GNU LGPL version 2.1 or later;
   - the Qt Advanced Docking System, PlotJuggler's fork: the GNU LGPL version 2.1 or later.
 
-This directory holds the complete corresponding source: PlotJuggler 4 and every library the module is built from, as
-the exact releases or commits its build pins. It is also available on written request via
-${ISSUES}.
+${where}
 The licence texts, the GPL version 3 among them, are in THIRD_PARTY_NOTICES.txt, at the root of the deployment and
 behind the About dialog's "Third-party licences" link.
 
@@ -215,15 +230,17 @@ behind the About dialog's "Third-party licences" link.
 
 ${listing}
 
-  ${ads.name}
+${links ? `  Qt Advanced Docking System, PlotJuggler's fork with its changes: the 3rdparty/Qt-Advanced-Docking
+    submodule commit ${ads.commit} of ${ads.url.replace(/\.git$/, '')}
+    from ${ads.tarball}` : `  ${ads.name}
     Qt Advanced Docking System, PlotJuggler's fork with its changes: \`git archive\` of the
     3rdparty/Qt-Advanced-Docking submodule commit ${ads.commit},
-    also at ${ads.url.replace(/\.git$/, '')}
+    also at ${ads.url.replace(/\.git$/, '')}`}
 
 Qt and FFmpeg are unmodified upstream releases. The Qt modules came as The Qt Company's prebuilt WebAssembly
 (multithread) kit, built from the archives above; FFmpeg is compiled from its archive with configure options only.
-A pin to a git tag is archived as GitHub's tarball of the commit the tag named when this directory was written, with
-the SHA-256 it had then. The libraries are named with their licences in THIRD_PARTY_NOTICES.txt. The Emscripten
+${gitPins}
+The libraries are named with their licences in THIRD_PARTY_NOTICES.txt. The Emscripten
 runtime linked into the module (musl, libc++, compiler-rt, the zlib port) comes with the Emscripten SDK ${emscripten}
 pinned in versions.env, whose source is public at https://github.com/emscripten-core/emscripten; it is not copied here.
 
@@ -323,37 +340,85 @@ function resolveTag(repository, tag) {
   return ref[0];
 }
 
-// Fills in what a git pin needs before it downloads: the tag protobuf pins for Abseil, the commit, GitHub's tarball.
-function resolveGitPin(archive, directory, archives) {
-  if (archive.pinnedBy) {
-    const file = path.join(directory, archives.find(entry => entry.dependency === archive.pinnedBy).name);
-    const member = `${tarList(file)[0].split('/')[0]}/cmake/dependencies.cmake`;
-    const dependencies = execFileSync('tar', ['-xzOf', file, member], { encoding: 'utf8' });
-    archive.tag = dependencies.match(/set\(abseil-cpp-version "([^"]+)"\)/)?.[1];
-    if (!archive.tag) {
-      throw new Error(`${member} of ${archive.pinnedBy} no longer sets abseil-cpp-version`);
-    }
-  }
-  const repository = archive.repository.match(/^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/)?.[1];
+function githubRepository(url) {
+  const repository = url.match(/^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/)?.[1];
   if (!repository) {
-    throw new Error(`${archive.repository} is not a GitHub repository, so it has no tarball to archive`);
+    throw new Error(`${url} is not a GitHub repository, so it has no tarball to archive`);
   }
-  archive.commit = resolveTag(archive.repository, archive.tag);
-  archive.url = `https://codeload.github.com/${repository}/tar.gz/${archive.commit}`;
+  return repository;
 }
 
-export async function writeSourceOffer({ output, dryRun = false, log = () => {} }) {
+// Fills in what a git pin needs before it downloads: the tag protobuf pins for Abseil (read from protobuf's resolved
+// commit, which comes earlier in the plan), the commit, GitHub's tarball.
+async function resolveGitPin(archive, archives) {
+  if (archive.pinnedBy) {
+    const pinner = archives.find(entry => entry.dependency === archive.pinnedBy);
+    const repository = githubRepository(pinner.repository);
+    const file = `https://raw.githubusercontent.com/${repository}/${pinner.commit}/cmake/dependencies.cmake`;
+    const response = await fetch(file);
+    archive.tag = response.ok ? (await response.text()).match(/set\(abseil-cpp-version "([^"]+)"\)/)?.[1] : undefined;
+    if (!archive.tag) {
+      throw new Error(`${file} does not set abseil-cpp-version (HTTP ${response.status})`);
+    }
+  }
+  archive.commit = resolveTag(archive.repository, archive.tag);
+  archive.url = `https://codeload.github.com/${githubRepository(archive.repository)}/tar.gz/${archive.commit}`;
+}
+
+// GitHub's tarball has no submodules, which the build's git clone would have fetched: refuse a pin that has any.
+async function refuseSubmodules(archive) {
+  const repository = githubRepository(archive.repository);
+  const response = await fetch(`https://raw.githubusercontent.com/${repository}/${archive.commit}/.gitmodules`);
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`cannot read the .gitmodules of ${archive.name} (HTTP ${response.status})`);
+  }
+  if (response.ok && /^\[submodule /m.test(await response.text())) {
+    throw new Error(`${archive.name} has git submodules, which GitHub's tarball of the commit does not contain`);
+  }
+}
+
+// Fails unless `url` answers, trying three times: an offer must not point at an address that serves nothing.
+async function checkReachable(url) {
+  for (let attempt = 1; ; attempt += 1) {
+    const status = await fetch(url, { method: 'HEAD' }).then(response => response.status, error => error.message);
+    if (status === 200) {
+      return;
+    }
+    if (attempt === 3) {
+      throw new Error(`${url} does not answer (${status})`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+  }
+}
+
+export async function writeSourceOffer({ output, links = false, dryRun = false, log = () => {} }) {
   const plan = await planSourceOffer();
-  const names = [plan.pj4.name, ...plan.archives.map(archive => archive.name), plan.ads.name, 'SOURCE-OFFER.txt'];
+  const names = links
+    ? [plan.pj4.name, 'SOURCE-OFFER.txt']
+    : [plan.pj4.name, ...plan.archives.map(archive => archive.name), plan.ads.name, 'SOURCE-OFFER.txt'];
   log(`${dryRun ? 'Would write' : 'Writing'} to ${output}:\n${names.map(name => `  ${name}`).join('\n')}\n`);
   if (dryRun) {
     return plan;
   }
   await mkdir(output, { recursive: true });
+  if (links) {
+    for (const archive of plan.archives) {
+      log(`  ${archive.name}`);
+      if (archive.repository) {
+        await resolveGitPin(archive, plan.archives);
+        await refuseSubmodules(archive);
+      }
+      await checkReachable(archive.url);
+    }
+    await checkReachable(plan.ads.tarball);
+    gitArchive(ROOT, plan.pj4, output);
+    await writeFile(path.join(output, 'SOURCE-OFFER.txt'), renderSourceOffer(plan, { links }));
+    return plan;
+  }
   for (const archive of plan.archives) {
     log(`  ${archive.name}`);
     if (archive.repository) {
-      resolveGitPin(archive, output, plan.archives);
+      await resolveGitPin(archive, plan.archives);
     }
     await download(archive, output);
     // GitHub's tarball has no submodules, which the build's git clone would have fetched.
@@ -370,14 +435,17 @@ export async function writeSourceOffer({ output, dryRun = false, log = () => {} 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const option = name => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-  if (args.includes('--help') || args.some(arg => arg.startsWith('--') && !['--output', '--dry-run'].includes(arg))) {
-    process.stdout.write('Usage: node scripts/wasm_source_offer.mjs [--output <dir>] [--dry-run]\n'
+  if (args.includes('--help')
+      || args.some(arg => arg.startsWith('--') && !['--output', '--links', '--dry-run'].includes(arg))) {
+    process.stdout.write('Usage: node scripts/wasm_source_offer.mjs [--output <dir>] [--links] [--dry-run]\n'
       + '  --output <dir>  Where to write the sources (default: build-wasm/deploy/sources)\n'
+      + '  --links         Archive PlotJuggler 4 only; give every library its public address\n'
       + '  --dry-run       List the files and download nothing\n');
     process.exit(args.includes('--help') ? 0 : 2);
   }
   writeSourceOffer({
     output: path.resolve(option('--output') ?? path.join(ROOT, 'build-wasm', 'deploy', 'sources')),
+    links: args.includes('--links'),
     dryRun: args.includes('--dry-run'),
     log: message => process.stdout.write(`${message}\n`),
   }).catch(error => {
