@@ -1,9 +1,9 @@
 # Hosted browser app (`app.plotjuggler.io`)
 
 The WebAssembly build is published at `https://app.plotjuggler.io` by a Cloudflare Worker
-(`worker.mjs`, named `plotjuggler-web`) serving a deployment package from the R2 bucket
-`plotjuggler-web`. Cloudflare Pages cannot hold it: `plotjuggler4.wasm` is larger than the
-25 MiB per-file limit (`docs/WASM_PRESETS.md`, "Cloudflare Pages").
+(`worker.mjs`, named `plotjuggler-app`; `plotjuggler-web` is the plotjuggler.io website's) serving
+a deployment package from the R2 bucket `plotjuggler-web`. Cloudflare Pages cannot hold it:
+`plotjuggler4.wasm` is larger than the 25 MiB per-file limit (`docs/WASM_PRESETS.md`, "Cloudflare Pages").
 
 The Worker serves a package exactly as `scripts/serve_wasm.mjs` does locally, sharing its rules
 (`scripts/wasm_http_contract.mjs`): only the files the package's `manifest.json` declares, with
@@ -27,7 +27,7 @@ rolling back is one Worker deploy and a page never mixes two releases.
 node scripts/package_wasm.mjs --presets resources/wasm-presets --source build-wasm-prod/pj_app --output build-wasm-prod/deploy
 node scripts/wasm_source_offer.mjs --links --output build-wasm-prod/deploy/sources
 
-# A preview on plotjuggler-web-preview.<account>.workers.dev (no custom domain), then production:
+# A preview on plotjuggler-app-preview.<account>.workers.dev (no custom domain), then production:
 node packaging/web/deploy.mjs --package build-wasm-prod/deploy --env preview
 PJ_WASM_PACKAGE_DIR=build-wasm-prod/deploy PJ_WASM_DEPLOYMENT_URL=<preview url> npm --prefix tests/wasm run test:deployment
 node packaging/web/deploy.mjs --package build-wasm-prod/deploy --env production
