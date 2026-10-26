@@ -32,7 +32,7 @@ Session, catalog and time:
 - `IDataWidget.h`, `IObjectViewer.h`: the contracts data widgets and object-store viewers implement for the shell.
 - `DiagnosticHistory.h`, `DiagnosticEmit.h`: diagnostics ring buffer and the fill-and-forward helper (no-op without a sink).
 - `HttpGet.h`, `UpdateChecker.h`, `UpdateVersion.h`, `TelemetryPing.h`: one-shot HTTP idiom (`httpGetWithLimit()` is the size-capped GET for untrusted bodies, also behind Scene3D's `UrlFetcher`; `HttpUrl.h`'s `isHttpUrl()`, Qt6::Network-free, is the http(s) gate in front of it), the per-channel update check, version math, the anonymous launch ping.
-- `PresetCatalog.h`: `parsePresetCatalog()` reads a deployment's browser `presets/index.json` into `PresetEntry`s (`findPreset()` looks one up by id); `kMaxPresetDownloadBytes` caps each preset download.
+- `PresetCatalog.h`: `parsePresetCatalog()` reads a deployment's browser `presets/index.json` into `PresetEntry`s (`findPreset()` looks one up by id); `kMaxPresetDownloadBytes` caps each small preset download (index, layout, thumbnail), `kMaxPresetDataBytes` each recording and a preset's recordings together.
 - `SourceConfigVariables.h`: `expandSourceConfigVariables()` expands `${deployment.ws_origin}` (the page's WebSocket origin) in a saved streaming-source configuration; any other `${deployment.*}` name is an error.
 - `QSettingsBackend.h`, `XmlCdata.h`: `sdk::SettingsBackend` over `QSettings`; CDATA helpers shared with `pj_app`'s layout code.
 

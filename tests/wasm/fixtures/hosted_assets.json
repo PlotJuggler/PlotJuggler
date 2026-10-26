@@ -1,0 +1,141 @@
+{
+ "origin": "https://assets.plotjuggler.io",
+ "files": {
+  "v1/anymal_d_simple_description/LICENSE": {
+   "sha256": "a2e2d4de161f4cc6ceffd2470c5cc2bdef33af7e4c168a77a81156e581ac2db5",
+   "bytes": 1477
+  },
+  "v1/anymal_d_simple_description/PROVENANCE.txt": {
+   "sha256": "5c1bcf686d97c7fcdbb7a65c3dc43669c9c009743e271ddf8461291c2fb00e5e",
+   "bytes": 781
+  },
+  "v1/anymal_d_simple_description/meshes/base.dae": {
+   "sha256": "1b0dca39e7388fd4d1c3dc8ac1e8b92071456a488119274dd18c4216b4ee3e39",
+   "bytes": 283774
+  },
+  "v1/anymal_d_simple_description/meshes/base.jpg": {
+   "sha256": "e3a6fe114e41ba271ff3fb1bdb6f55f6b4f07ca067b63dcf8303d4a6342431e1",
+   "bytes": 459779
+  },
+  "v1/anymal_d_simple_description/meshes/battery.dae": {
+   "sha256": "bfe517c31fba165931386998272c5c2db700fba59b9c1e098ef74dbb4ba603f6",
+   "bytes": 5396
+  },
+  "v1/anymal_d_simple_description/meshes/battery.jpg": {
+   "sha256": "dc2968cc934d7259539aa7cacf04d8dba05cce45335c7a17940a56fada1d33be",
+   "bytes": 113546
+  },
+  "v1/anymal_d_simple_description/meshes/bottom_shell.dae": {
+   "sha256": "7dcd7e9d8463352457947e8505f459b5797b04d18b1dcbfb0cfa46d3f0c1655a",
+   "bytes": 354331
+  },
+  "v1/anymal_d_simple_description/meshes/bottom_shell.jpg": {
+   "sha256": "d3bd38b0993b02c78ec11b80a7151fc042ae47ff242f6c5f6b6149584c9758a9",
+   "bytes": 179554
+  },
+  "v1/anymal_d_simple_description/meshes/docking_socket.dae": {
+   "sha256": "a24329a6ebc006789e0696a3dc3837a26838d04c405536929056358a9ef5a0e6",
+   "bytes": 7107
+  },
+  "v1/anymal_d_simple_description/meshes/docking_socket.jpg": {
+   "sha256": "8c18aa11faa72fe3f378978f620b1a2f02256b8d853190d7db4758c99b6efe58",
+   "bytes": 160714
+  },
+  "v1/anymal_d_simple_description/meshes/drive.dae": {
+   "sha256": "c1bf273e08b9c3dd4959ee121f61c0592cc630a4d738035ce7cd0244cc84e5fa",
+   "bytes": 26878
+  },
+  "v1/anymal_d_simple_description/meshes/drive.jpg": {
+   "sha256": "bcf0cd844bb0826228194a7f6f0d164251db4591ea4cad2585fba1a7b2696c7a",
+   "bytes": 227976
+  },
+  "v1/anymal_d_simple_description/meshes/face_shell.dae": {
+   "sha256": "ddea3d2532d096b8d69e02416bd119344629c9d5f5d7363400d32b2f32702fdc",
+   "bytes": 234095
+  },
+  "v1/anymal_d_simple_description/meshes/face_shell.jpg": {
+   "sha256": "edd52422f54adbac23380cd3a3c9e932cc451f0e0776aa4c4cf3348558c3f0f4",
+   "bytes": 230284
+  },
+  "v1/anymal_d_simple_description/meshes/foot.dae": {
+   "sha256": "5b66da1c26a3e23465eb86e3c43f753800187ef7a0bebfad23b8d34687aa6af2",
+   "bytes": 37724
+  },
+  "v1/anymal_d_simple_description/meshes/foot.jpg": {
+   "sha256": "0617ab4af3aef51d0b2d1508608711c53d38633e19cb4f45894a22fab766d8f2",
+   "bytes": 111873
+  },
+  "v1/anymal_d_simple_description/meshes/hatch.dae": {
+   "sha256": "c3f5df8131dd4bed958ece40f92230f01889989407d1e44677a1b456174b39df",
+   "bytes": 32035
+  },
+  "v1/anymal_d_simple_description/meshes/hatch.jpg": {
+   "sha256": "9416be68d3dbaffc1d9491a879d091ee04d967cb6e841521a8e2373edb2801c5",
+   "bytes": 149803
+  },
+  "v1/anymal_d_simple_description/meshes/hip.dae": {
+   "sha256": "73c844997807f6970d3034ab228cc994a750e623961de9d841f950bc72a1f2fe",
+   "bytes": 12173
+  },
+  "v1/anymal_d_simple_description/meshes/hip.jpg": {
+   "sha256": "be5905b85de92a930cead709b4de1987b3693400a69abbc13896de67c2f341a5",
+   "bytes": 205523
+  },
+  "v1/anymal_d_simple_description/meshes/lidar.dae": {
+   "sha256": "fac6c49660371f2ffe396f83554269e9f4fb61196476daf17bb4514da4513d0f",
+   "bytes": 36424
+  },
+  "v1/anymal_d_simple_description/meshes/lidar.jpg": {
+   "sha256": "cf9fba85e4411aea9763ecc32f219fdeed83d6a7e4c164551ba5d1b391bfbe19",
+   "bytes": 116482
+  },
+  "v1/anymal_d_simple_description/meshes/lidar_guard.dae": {
+   "sha256": "85f1175f51c035d906120ea06ead3375d983ae20b7cddd89e3c283e2f84340ad",
+   "bytes": 40335
+  },
+  "v1/anymal_d_simple_description/meshes/lidar_guard.jpg": {
+   "sha256": "a65c64dba907c9c7322532d17e5d362c2e0bacc1754572c9b7cf7aafb5620a75",
+   "bytes": 99125
+  },
+  "v1/anymal_d_simple_description/meshes/shank.jpg": {
+   "sha256": "400f2987352b76ca0b69f728a73e15dd0725d9f71b981f4e2994e16931bbf5f5",
+   "bytes": 143592
+  },
+  "v1/anymal_d_simple_description/meshes/shank_l.dae": {
+   "sha256": "d9db9446a80994852e6aae1d5c5b00a79bc66132ccad7029fa2091145e22a35a",
+   "bytes": 64640
+  },
+  "v1/anymal_d_simple_description/meshes/shank_r.dae": {
+   "sha256": "ad609a7c0040911481f27ea5f86bde9b40fa773dcf4ad284aebd9dd8f98f3587",
+   "bytes": 65057
+  },
+  "v1/anymal_d_simple_description/meshes/thigh.dae": {
+   "sha256": "3dec4fce5678b1f9f175deb16a3d08df9e9a471cf06d471a5ffe7ebda2bcfdce",
+   "bytes": 63950
+  },
+  "v1/anymal_d_simple_description/meshes/thigh.jpg": {
+   "sha256": "bd152dbcebbc1e46608500543a42a62a6a26471b284d1ab0c26226b0de72ef74",
+   "bytes": 205155
+  },
+  "v1/anymal_d_simple_description/meshes/top_shell.dae": {
+   "sha256": "b0b1089a6d6630fcc1e52899b913adb31124bed180f5e07e23ee83094dd053ee",
+   "bytes": 346613
+  },
+  "v1/anymal_d_simple_description/meshes/top_shell.jpg": {
+   "sha256": "59696c6fe2ff317d149db108107f0d8ec1e672ff90eccfe7370a41f3fd696995",
+   "bytes": 309189
+  },
+  "v1/anymal_d_simple_description/urdf/anymal.urdf": {
+   "sha256": "0f7c208ab53d595a70711034b9ebe4dd47a4536ed0ccb1cc08d732c3ecd7ce1a",
+   "bytes": 55009
+  },
+  "v1/grand_tour/README.txt": {
+   "sha256": "18181be584e7ec63087e8b8870ea1c54772dd9cc9a211957a6aff9a7c7bd27a7",
+   "bytes": 1692
+  },
+  "v1/grand_tour/anymal_grand_tour.mcap": {
+   "sha256": "10df0dd12f8e933b37a95d8e943699a28b8131c71cdc7854f801ea108f432a4b",
+   "bytes": 81488756
+  }
+ }
+}

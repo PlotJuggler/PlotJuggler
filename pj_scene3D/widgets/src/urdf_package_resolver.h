@@ -108,7 +108,9 @@ class UrdfPackageResolver {
       const std::string& uri, const std::string& urdf_dir, bool source_is_url,
       const QMap<QString, QUrl>& package_url_roots = {}, bool remote_only = false);
 
-  // The package:// chain (an explicit root, else steps 0..3). Returns "" on
+  // The package:// chain (an explicit root, else steps 0..3). On the desktop an
+  // http(s) root counts only for a URL source or with `remote_only`; for any other
+  // model it is skipped and the package takes steps 0..3. Returns "" on
   // miss, also for a mapped package whose ref escapes its root (decoded and
   // normalized; an encoded separator or a backslash never resolves) or whose root
   // is unusable (relative, another scheme, a file root in the browser or with

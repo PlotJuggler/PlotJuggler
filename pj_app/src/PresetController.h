@@ -21,7 +21,8 @@ namespace PJ {
  * @brief Fetches the files of a browser preset (index, layout, thumbnails, data), one at a time,
  * and discovers the presets a page publishes.
  *
- * Every download is capped at `kMaxPresetDownloadBytes` (PresetCatalog.h) and buffered whole.
+ * Every download is buffered whole and capped: at `kMaxPresetDownloadBytes` (PresetCatalog.h) unless
+ * the caller passes a limit (a recording takes `kMaxPresetDataBytes`).
  * GUI thread only; asynchronous, never nests an event loop. The completion is never called from
  * inside `download()`, after `cancel()`, or after the controller is destroyed.
  */
@@ -43,7 +44,7 @@ class PresetController : public QObject {
   /// Starts fetching `url` (http/https only; redirects follow, never to a less secure scheme).
   /// A download already in flight is cancelled first, so its completion is dropped. `done` may
   /// call `download()` again to chain the next file.
-  void download(const QUrl& url, DownloadDone done);
+  void download(const QUrl& url, DownloadDone done, qint64 limit = kMaxPresetDownloadBytes);
 
   /// Aborts the download in flight, if any, without calling its completion. Idempotent.
   void cancel();

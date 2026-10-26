@@ -21,9 +21,12 @@ class QByteArray;
 
 namespace PJ {
 
-/// Ceiling for one downloaded preset file (index, layout, thumbnail or data file), and for the
-/// bytes staged for one preset in total: a static host is a trust boundary, not a bulk channel.
+/// Ceiling for one small preset file (index, layout or thumbnail): a static host is a trust
+/// boundary, not a bulk channel.
 inline constexpr qint64 kMaxPresetDownloadBytes = 16 * 1024 * 1024;
+
+/// Ceiling for one preset recording, and for all of one preset's recordings together.
+inline constexpr qint64 kMaxPresetDataBytes = 128 * 1024 * 1024;
 
 /// One selectable preset. URLs are absolute http(s); `thumbnail_url` is empty when none was given.
 struct PresetEntry {

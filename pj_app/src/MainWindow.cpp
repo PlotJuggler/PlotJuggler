@@ -5928,9 +5928,11 @@ void MainWindow::downloadNextReplaySource() {
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
   const quint64 generation = beginBrowserReplayPickerGeneration();
   browser_layout_runtime_->downloads->download(
-      replay.source_urls[replay.selection_index], [this, generation](QByteArray bytes, const QUrl&, QString error) {
+      replay.source_urls[replay.selection_index],
+      [this, generation](QByteArray bytes, const QUrl&, QString error) {
         stageDownloadedReplaySource(generation, std::move(bytes), error);
-      });
+      },
+      kMaxPresetDataBytes);
 }
 
 void MainWindow::stageDownloadedReplaySource(quint64 generation, QByteArray bytes, const QString& error) {
@@ -5948,11 +5950,11 @@ void MainWindow::stageDownloadedReplaySource(quint64 generation, QByteArray byte
     return;
   }
   replay.staged_bytes += bytes.size();
-  if (replay.staged_bytes > kMaxPresetDownloadBytes) {
+  if (replay.staged_bytes > kMaxPresetDataBytes) {
     showBrowserLayoutWarning(
         this, tr("Load Layout"),
         tr("The layout's data sources exceed the %1 MiB a downloaded layout may load.")
-            .arg(kMaxPresetDownloadBytes / (1024 * 1024)));
+            .arg(kMaxPresetDataBytes / (1024 * 1024)));
     finishBrowserLayoutLoad(layout_name, false, u"size"_s);
     return;
   }

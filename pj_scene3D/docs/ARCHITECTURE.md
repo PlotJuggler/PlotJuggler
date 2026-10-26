@@ -1584,7 +1584,13 @@ authoritative: `rel` resolves under its root with `QUrl::resolved` and must stay
 inside it once decoded and normalized (a `..` that climbs out, an encoded `/` or
 `\`, a backslash, a relative root, another scheme, or a `file://` root in the
 browser leaves the mesh unresolved) and never falls back to the chain above.
-A root never permits the model's direct `http(s)` references.
+A root never permits the model's direct `http(s)` references. On the desktop an
+http(s) root counts only for a URL source or a web-hosted layout's robot
+(`remote_only`), the models that already reach the network; for any other it is
+skipped and the package goes through the chain above, so a layout file cannot
+make a topic or file URDF fetch from a host it names (the browser honors every
+root: it has no other way to reach meshes). The root stays in the model's map,
+so a re-save keeps it.
 
 Roots relative to the layout are resolved once, at layout ingress:
 `resolveLayoutResourceUrls` (`layout_resources.h`) rewrites the application's

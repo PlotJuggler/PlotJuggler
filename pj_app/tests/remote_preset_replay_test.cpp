@@ -218,6 +218,17 @@ TEST_F(RemotePresetReplayTest, RelativePairNeedsNoPicker) {
   EXPECT_NE(keys[0], keys[1]) << "each curve binds to its own source's dataset";
 }
 
+// A preset's recording may be larger than its small files (index, layout,
+// thumbnail): one above their cap still loads.
+TEST_F(RemotePresetReplayTest, RecordingAboveTheSmallFileCapLoads) {
+  const QByteArray recording(static_cast<qsizetype>(PJ::kMaxPresetDownloadBytes + 1), 'x');
+  server_.route(u"/large/layout.pj4.xml"_s, presetLayout({{u"recording.mock"_s, sha256(recording)}}));
+  server_.route(u"/large/recording.mock"_s, recording);
+
+  EXPECT_EQ(loadPreset(u"/large/layout.pj4.xml"_s), u"ok"_s);
+  EXPECT_EQ(datasetSources(*window_).size(), 1);
+}
+
 // A preset that loads replaces the data the preset before it brought, and only
 // that: data the user opened stays, and a preset that fails keeps the last one.
 TEST_F(RemotePresetReplayTest, NextPresetReplacesThePreviousPresetsData) {
@@ -332,8 +343,8 @@ TEST_F(RemotePresetReplayTest, FailedOrCancelledReplayRestoresWorkspace) {
   EXPECT_EQ(loadPreset(u"/ok/import.pj4.xml"_s), u"import"_s);
   expectUnchanged(before, sources_before);
 
-  // Each file fits the per-download cap, but together they exceed the preset's.
-  const QByteArray big(static_cast<qsizetype>(PJ::kMaxPresetDownloadBytes / 2 + 1), 'x');
+  // Each recording fits the data cap, but together they exceed the preset's.
+  const QByteArray big(static_cast<qsizetype>(PJ::kMaxPresetDataBytes / 2 + 1), 'x');
   server_.route(u"/big/layout.pj4.xml"_s, presetLayout(pair));
   server_.route(u"/big/left.mock"_s, big);
   server_.route(u"/big/right.mock"_s, big);

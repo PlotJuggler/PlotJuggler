@@ -47,6 +47,19 @@ bool allowsLocalFiles(bool remote_only) {
 #endif
 }
 
+// Whether a package's network root may be fetched. The desktop honors one only where the model
+// already reaches the network, a URL URDF or a web-hosted layout's robot, so a layout file cannot
+// send a topic or file URDF's meshes there; the browser reaches meshes no other way.
+bool allowsNetworkRoot(bool source_is_url, bool remote_only) {
+#ifdef PJ_TARGET_WASM
+  (void)source_is_url;
+  (void)remote_only;
+  return true;
+#else
+  return source_is_url || remote_only;
+#endif
+}
+
 // `rel` under the directory `root` names: a URL, a local path for a file root,
 // or "" when the root is unusable (a file root without `local_files`) or `rel`
 // climbs out of it.
@@ -228,7 +241,9 @@ std::string UrdfPackageResolver::resolve(
     const QMap<QString, QUrl>& package_url_roots, bool remote_only) {
   // An explicit root is the model author's answer for this package: authoritative,
   // so a miss under it never falls back to a heuristic that might find another copy.
-  if (const auto root = package_url_roots.constFind(QString::fromStdString(pkg)); root != package_url_roots.cend()) {
+  // A network root this model may not fetch is skipped: the package resolves here.
+  if (const auto root = package_url_roots.constFind(QString::fromStdString(pkg));
+      root != package_url_roots.cend() && (!isNetworkUrl(*root) || allowsNetworkRoot(source_is_url, remote_only))) {
     return resolveUnderRoot(*root, rel, allowsLocalFiles(remote_only));
   }
   // Step 0 — embedded-asset exact-name lookup.

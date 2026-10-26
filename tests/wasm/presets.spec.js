@@ -10,10 +10,12 @@ const path = require('path');
 const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp } = require('./support/app');
 const { count, latest } = require('./support/console');
 const { clickActiveDialogButton } = require('./support/dialogs');
+const { startHostedAssetMirror } = require('./support/hosted_assets');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { openFileChooser } = require('./support/pickers');
 const { requestMultiPlotState } = require('./support/plot_probes');
 const { datasetCount, dismissDialogs, openPreset, startPresetServer } = require('./support/preset_server');
+const { requestScene2DState } = require('./support/scene2d');
 const { waitForScene3DModels } = require('./support/scene3d_acceptance');
 const { qtPointToCss } = require('./support/scene3d_foundation');
 const { downloadSourceLayoutFromFileMenu } = require('./support/source_layout');
@@ -471,7 +473,7 @@ test('a ?preset= deep link opens that preset directly; an unknown or repeated on
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_DIRECTORY = path.join(__dirname, '..', '..', 'resources', 'wasm-presets');
-const SAMPLE_IDS = ['navigation', 'signals'];
+const SAMPLE_IDS = ['anymal', 'navigation', 'signals'];
 
 async function startSamples() {
   if (!fs.existsSync(path.join(SAMPLES_PACKAGE, 'manifest.json'))) {
@@ -481,14 +483,26 @@ async function startSamples() {
   const { listenWasmServer } = await import('../../scripts/serve_wasm.mjs');
   const server = await listenWasmServer(SAMPLES_PACKAGE);
   const origin = `http://127.0.0.1:${server.address().port}`;
+  const mirror = await startHostedAssetMirror();
   return {
     origin,
+    mirror,
     url: file => `${origin}/presets/${file}`,
-    close: () => new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve()))),
+    close: async () => {
+      await mirror.close();
+      await new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve())));
+    },
   };
 }
 
+// Contexts already sending the samples' hosted files to the mirror (a test boots several pages in one).
+const ROUTED_CONTEXTS = new WeakSet();
+
 async function bootSamples(context, errors, samples) {
+  if (!ROUTED_CONTEXTS.has(context)) {
+    ROUTED_CONTEXTS.add(context);
+    await samples.mirror.route(context, samples.origin);
+  }
   const page = await context.newPage();
   page.on('filechooser', () => {});
   const messages = [];
@@ -576,6 +590,28 @@ async function expectSceneMoves(run, ready) {
       && dock.readback.frameHash !== first.docks[0].readback.frameHash);
 }
 
+// The robot with every mesh fetched and the model pass drawing them: unlike its
+// scan, it does not depend on where the cursor is.
+const anymalLoaded = models => models.robots.live === 1 && models.robots.placeholders === 0
+  && models.robots.draws > 0 && /\b(\d+)\/\1 meshes/.test(models.robots.status.join(' '))
+  && models.models.rendered > 0 && models.models.draws >= models.robots.draws;
+
+// The robot and, around it, the lidar scan the recording carries compressed.
+const anymalReady = (models, dock) => anymalLoaded(models)
+  && dock.data.points.live === 1 && dock.data.points.compressed === 1 && dock.data.points.rendered > 0;
+
+// The ANYmal sample's plots, its three camera views, and its robot moving inside its scan.
+async function expectAnymalViews(run) {
+  await expectPlots(run, [
+    ['LF', 'RF', 'LH', 'RH'].map(leg => `joint_states/${leg}_KFE/position`),
+    ['x', 'y', 'z'].map(axis => `anymal/imu/angular_velocity/${axis}`),
+    ['x', 'y'].map(axis => `leg_odometry/odom/twist/twist/linear/${axis}`),
+  ]);
+  const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual([[1, true], [1, true], [1, true]]);
+  await expectSceneMoves(run, anymalReady);
+}
+
 // The sample's map and laser-scan layers restored in the map frame. Nothing need
 // be drawn yet: the cursor starts before the first scan.
 const navigationLoaded = (_models, dock) => dock.fixed === 'map'
@@ -605,7 +641,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     const context = page.context();
     await page.close();
     for (const [id, expectViews] of [
-      ['navigation', expectNavigationViews], ['signals', expectSignalsViews],
+      ['anymal', expectAnymalViews], ['navigation', expectNavigationViews], ['signals', expectSignalsViews],
     ]) {
       const run = await bootSamples(context, errors, samples);
       let dialog;
@@ -631,7 +667,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
 });
 
 // @serial: its frame-gap bound fails on a loaded runner (playwright.config.js).
-test('navigation sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page }) => {
+test('anymal sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page }) => {
   test.setTimeout(300000);
   const errors = [];
   const samples = await startSamples();
@@ -659,29 +695,28 @@ test('navigation sample stays responsive through load and reopen', { tag: '@seri
         return window.pjSampleFrameWatch.longest;
       });
     };
-    const openNavigation = async (pass, staged) => {
+    const openAnymal = async (pass, staged) => {
       const longest = await longestFrameGap(async () => {
-        expect(await pickSample(run, samples, 'navigation'), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
-        await waitForScene3DModels(run.page, run.messages, navigationLoaded, 60000);
+        expect(await pickSample(run, samples, 'anymal'), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+        await waitForScene3DModels(run.page, run.messages, anymalLoaded, 60000);
       });
-      console.log(`navigation ${pass}: longest frame gap ${Math.round(longest)} ms`);
+      console.log(`anymal ${pass}: longest frame gap ${Math.round(longest)} ms`);
       expect(longest, pass).toBeLessThan(MAX_FRAME_GAP_MS);
-      // The open navigation recording keeps its staged file for its lazy MCAP reader; a
+      // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a
       // replaced sample releases its own, and the CSV parses eagerly and lets
       // its file go, so nothing else is left behind.
       expect(await stagedFiles(run.page, run.messages), pass).toBe(staged);
     };
 
-    await openNavigation('load', 1);
-    await expectNavigationViews(run);
+    await openAnymal('load', 1);
     // Switching to another sample brings its views and replaces the one it
-    // switched from; reopening navigation brings its map and scan back.
+    // switched from; reopening ANYmal brings its robot back.
     expect(await pickSample(run, samples, 'signals')).toContain('PJ_WASM_LAYOUT_LOAD_OK');
     await expectSignalsViews(run);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
-    await openNavigation('reopen', 1);
+    await openAnymal('reopen', 1);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
-    await expectNavigationViews(run);
+    await expectAnymalViews(run);
     expect(errors).toEqual([]);
   } finally {
     await samples.close();

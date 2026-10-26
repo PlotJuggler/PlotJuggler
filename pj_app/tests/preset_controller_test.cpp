@@ -89,6 +89,20 @@ TEST(PresetControllerTest, BodyOverTheCapIsAnError) {
   EXPECT_TRUE(completion.bytes.isEmpty());
 }
 
+// A download is capped at the caller's limit, not the default (a preset's recording takes a larger one).
+TEST(PresetControllerTest, DownloadHonoursTheCallersLimit) {
+  LocalHttpServer server;
+  server.setResponse("200 OK", QByteArray(2048, 'x'));
+  PJ::PresetController controller;
+  Completion completion;
+
+  controller.download(server.url(), recordInto(completion), 1024);
+
+  ASSERT_TRUE(QTest::qWaitFor([&] { return completion.calls > 0; }, 10000));
+  EXPECT_FALSE(completion.error.isEmpty());
+  EXPECT_TRUE(completion.bytes.isEmpty());
+}
+
 TEST(PresetControllerTest, NonHttpSchemeIsRefusedAsynchronously) {
   PJ::PresetController controller;
   Completion completion;

@@ -58,8 +58,10 @@ class UrdfPackageResolver;
 //
 // Explicit package URL roots (setPackageUrlRoots) map package:// names to
 // directory URLs for THIS model, so a topic URDF, which has no location of its
-// own, can still fetch its meshes. They are persisted as the robot_model's
-// `package_url_roots` attribute (layout_resources.h).
+// own, can still fetch its meshes: in the browser, or from a web-hosted layout
+// (on the desktop a layout file's http(s) root is skipped, UrdfPackageResolver).
+// They are persisted as the robot_model's `package_url_roots` attribute
+// (layout_resources.h), skipped or not.
 //
 // A robot restored from a web-hosted layout carries `remote_resources_only="true"`
 // (stamped by resolveLayoutResourceUrls, then saved with the layer): its URDF's

@@ -30,6 +30,7 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_widgets/layout_resources.h"
 #include "pj_tf/tf_buffer.h"
 #include "pj_tf/transform.h"
 #include "urdf_package_resolver.h"
@@ -1285,11 +1286,35 @@ TEST(RobotModelLayerTest, TopicUrdfUsesExplicitUrlRoots) {
   pushWireBytes(session, topic_id);
   const auto ctx = makeContext(session);
   pj::scene3d::UrdfPackageResolver shared;
+  // A topic robot as a layout saves it: its roots, and the web-hosted layout's network-only policy.
+  const auto element = [&assets](bool web_hosted) {
+    QDomDocument doc;
+    QDomElement robot = doc.createElement(u"robot_model"_s);
+    robot.setAttribute(u"source_type"_s, u"topic"_s);
+    robot.setAttribute(u"source_value"_s, u"/robot_description"_s);
+    robot.setAttribute(u"source_topic_name"_s, u"/robot_description"_s);
+    robot.setAttribute(
+        u"package_url_roots"_s,
+        pj::scene3d::serializePackageUrlRoots({{u"pj_url_pkg"_s, assets.url(u"/assets/pj_url_pkg/"_s)}}));
+    if (web_hosted) {
+      robot.setAttribute(u"remote_resources_only"_s, u"true"_s);
+    }
+    return robot;
+  };
+
+  // From a layout file on the desktop, the network root is skipped and nothing is fetched.
+  pj::scene3d::RobotModelLayer desktop(topic_id, u"/robot_description"_s);
+  desktop.setPackageResolver(&shared);
+  ASSERT_TRUE(desktop.attach(ctx));
+  ASSERT_TRUE(desktop.xmlLoadState(element(/*web_hosted=*/false)));
+  ASSERT_NE(desktop.robotModel(), nullptr) << desktop.statusText().toStdString();
+  EXPECT_EQ(desktop.unresolvedMeshCount(), 2);
+  EXPECT_TRUE(assets.paths().isEmpty()) << assets.paths().join(u',').toStdString();
 
   pj::scene3d::RobotModelLayer mapped(topic_id, u"/robot_description"_s);
   mapped.setPackageResolver(&shared);
-  mapped.setPackageUrlRoots({{u"pj_url_pkg"_s, assets.url(u"/assets/pj_url_pkg/"_s)}});
   ASSERT_TRUE(mapped.attach(ctx));
+  ASSERT_TRUE(mapped.xmlLoadState(element(/*web_hosted=*/true)));
   ASSERT_NE(mapped.robotModel(), nullptr) << mapped.statusText().toStdString();
   EXPECT_EQ(mapped.totalMeshCount(), 2);
   EXPECT_EQ(mapped.unresolvedMeshCount(), 1) << "a package root must not authorize the topic's direct http ref";

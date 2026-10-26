@@ -1,6 +1,13 @@
 {
   "presets": [
     {
+      "id": "anymal",
+      "title": "ANYmal GrandTour",
+      "description": "A legged robot walking a forest trail: its three cameras, the lidar scan around its model, beside its joints, IMU and speed.",
+      "layout": "anymal/layout.pj4.xml",
+      "thumbnail": "anymal/thumbnail.png"
+    },
+    {
       "id": "navigation",
       "title": "Mobile robot navigation",
       "description": "A robot localizing on a map: occupancy grid, laser scan and transforms, beside its pose estimate.",

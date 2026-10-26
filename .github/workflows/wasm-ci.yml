@@ -393,6 +393,18 @@ jobs:
             XDG_DATA_HOME="${RUNNER_TEMP}/caddy-state" XDG_CONFIG_HOME="${RUNNER_TEMP}/caddy-state" \
             "${RUNNER_TEMP}/caddy/caddy" validate --config docs/wasm/Caddyfile --adapter caddyfile
 
+      - name: Mirror the hosted sample assets
+        # The suites never reach the network (tests/wasm/support/browser.js): the
+        # samples that load from assets.plotjuggler.io are served from this mirror,
+        # each file checked against tests/wasm/fixtures/hosted_assets.json.
+        uses: actions/cache@v5
+        with:
+          path: build-wasm-assets
+          key: wasm-hosted-assets-${{ hashFiles('tests/wasm/fixtures/hosted_assets.json') }}
+
+      - name: Fetch the hosted sample assets the cache lacks
+        run: npm --prefix tests/wasm run fetch:assets
+
       - name: Serve acceptance package
         # The background server outlives this step; the runner reaps it at job end.
         run: |
@@ -477,6 +489,18 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.14'
+
+      - name: Mirror the hosted sample assets
+        # The suites never reach the network (tests/wasm/support/browser.js): the
+        # samples that load from assets.plotjuggler.io are served from this mirror,
+        # each file checked against tests/wasm/fixtures/hosted_assets.json.
+        uses: actions/cache@v5
+        with:
+          path: build-wasm-assets
+          key: wasm-hosted-assets-${{ hashFiles('tests/wasm/fixtures/hosted_assets.json') }}
+
+      - name: Fetch the hosted sample assets the cache lacks
+        run: npm --prefix tests/wasm run fetch:assets
 
       - name: Serve acceptance package and capability probe
         # Background servers outlive this step; the runner reaps them at job end.

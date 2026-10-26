@@ -330,7 +330,7 @@ reports the requested URL even after a redirect, so a preset must not rely on a
 redirect to another directory — and only http(s) references are fetched: a local
 path or another scheme, like a local robot model reference, fails the load.
 Sources download one at a time, must match their recorded `content_sha256`, and
-may stage at most 16 MiB together (`kMaxPresetDownloadBytes`). They are staged
+may stage at most 128 MiB together (`kMaxPresetDataBytes`). They are staged
 like uploads and imported all or nothing: any failure or cancel removes what the
 load imported and restores the previous workspace. A layout's streaming sources
 start in the same load, from their saved configuration and without a dialog
@@ -348,8 +348,9 @@ part). The page URL must end in `/` or a file name, because `presets/index.json`
 resolves against it: `https://host/app` would read
 `https://host/presets/index.json`. The index is
 `{"presets": [{"id", "title", "description"?, "layout", "thumbnail"?}]}`, with
-`layout` and `thumbnail` resolved against the index URL; every file it leads to
-(index, layout, thumbnail, data) is capped at 16 MiB.
+`layout` and `thumbnail` resolved against the index URL; the index, a layout and
+a thumbnail are capped at 16 MiB each, a preset's data files at 128 MiB each and
+together.
 
 - **Presets listed:** once the window is up, a welcome dialog offers them (with
   their thumbnails) beside "Upload your own…", which opens the ordinary
@@ -367,8 +368,9 @@ resolves against it: `https://host/app` would read
   a deep link on a page without a usable index reports an error and loads
   nothing. Other query keys are ignored.
 
-The repository ships two samples in `resources/wasm-presets/` (a mobile robot
-on a map, and a CSV of waveforms), deployed
+The repository ships three samples in `resources/wasm-presets/` (an ANYmal
+walking a forest trail, whose cameras, lidar, recording and robot model load from
+`https://assets.plotjuggler.io`; a mobile robot on a map; a CSV of waveforms), deployed
 with `--presets`. Preset files are served `no-cache`. How to author a preset,
 what the packager refuses, and the hosting limits are in
 [`WASM_PRESETS.md`](./WASM_PRESETS.md).

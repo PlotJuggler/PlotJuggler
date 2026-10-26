@@ -32,7 +32,7 @@ PresetController::~PresetController() {
   cancel();
 }
 
-void PresetController::download(const QUrl& url, DownloadDone done) {
+void PresetController::download(const QUrl& url, DownloadDone done, qint64 limit) {
   cancel();
   const quint64 generation = generation_;
 
@@ -50,14 +50,14 @@ void PresetController::download(const QUrl& url, DownloadDone done) {
   request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
   request.setMaximumRedirectsAllowed(kMaxRedirects);
   reply_ = httpGetWithLimit(
-      network_, request, kMaxPresetDownloadBytes, kTransferTimeout, this,
-      [this, generation, done = std::move(done)](QNetworkReply& reply, bool limit_exceeded) {
+      network_, request, limit, kTransferTimeout, this,
+      [this, generation, limit, done = std::move(done)](QNetworkReply& reply, bool limit_exceeded) {
         if (generation != generation_) {
           return;  // cancelled or superseded
         }
         reply_.clear();
         if (limit_exceeded) {
-          done({}, reply.url(), tr("download exceeds the %1 MiB limit").arg(kMaxPresetDownloadBytes / (1024 * 1024)));
+          done({}, reply.url(), tr("download exceeds the %1 MiB limit").arg(limit / (1024 * 1024)));
         } else if (reply.error() != QNetworkReply::NoError) {
           done({}, reply.url(), reply.errorString());
         } else {

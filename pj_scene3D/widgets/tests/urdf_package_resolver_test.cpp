@@ -354,7 +354,8 @@ TEST(UrdfResolver, SetAttachmentsResetsExtractionDir) {
 // The dock shares one resolver across its robots, so each model's mapping
 // travels with the call: two models naming the same package resolve to their
 // own roots, and a model without a mapping keeps the legacy chain. An HTTP root
-// works for a non-URL (topic) source, yet the topic's own http refs stay blocked.
+// works for a topic source of a web-hosted layout, yet the topic's own http refs
+// stay blocked.
 TEST(UrdfResolver, TwoModelsKeepIndependentMappings) {
   UrdfPackageResolver shared;
   shared.addSearchRoot(QString::fromStdString(fixtures() + "/search_root"));
@@ -362,14 +363,15 @@ TEST(UrdfResolver, TwoModelsKeepIndependentMappings) {
   // No trailing slash: the root still names a directory.
   const QMap<QString, QUrl> second_roots{{u"demo_description"_s, QUrl(u"https://second.test/v2/pkg"_s)}};
 
-  const ResolvedMesh first =
-      shared.resolveUri("package://demo_description/meshes/base.stl", "", /*source_is_url=*/false, first_roots);
+  // Network roots of a topic URDF count only in a web-hosted layout (remote_only).
+  const ResolvedMesh first = shared.resolveUri(
+      "package://demo_description/meshes/base.stl", "", /*source_is_url=*/false, first_roots, /*remote_only=*/true);
   ASSERT_TRUE(first.resolved);
   EXPECT_TRUE(first.is_url);
   EXPECT_EQ(first.path, "http://first.test/assets/demo_description/meshes/base.stl");
 
-  const ResolvedMesh second =
-      shared.resolveUri("package://demo_description/meshes/base.stl", "", /*source_is_url=*/false, second_roots);
+  const ResolvedMesh second = shared.resolveUri(
+      "package://demo_description/meshes/base.stl", "", /*source_is_url=*/false, second_roots, /*remote_only=*/true);
   ASSERT_TRUE(second.resolved);
   EXPECT_EQ(second.path, "https://second.test/v2/pkg/meshes/base.stl");
 
@@ -379,17 +381,47 @@ TEST(UrdfResolver, TwoModelsKeepIndependentMappings) {
   EXPECT_EQ(legacy.path, fixtures() + "/search_root/demo_description/meshes/base.stl");
 
   // The mapping is authoritative for its package and authorizes nothing else.
-  const ResolvedMesh unmapped = shared.resolveUri("package://ghost_pkg/meshes/x.stl", "", false, first_roots);
+  const ResolvedMesh unmapped = shared.resolveUri("package://ghost_pkg/meshes/x.stl", "", false, first_roots, true);
   EXPECT_EQ(unmapped.issue, MeshResolveIssue::kUnresolvedPackage);
   const ResolvedMesh direct =
-      shared.resolveUri("http://first.test/assets/demo_description/meshes/base.stl", "", false, first_roots);
+      shared.resolveUri("http://first.test/assets/demo_description/meshes/base.stl", "", false, first_roots, true);
   EXPECT_EQ(direct.issue, MeshResolveIssue::kBlockedHttp);
   // A reference that climbs out of the mapped root is not a package fetch.
   const ResolvedMesh escaped =
-      shared.resolveUri("package://demo_description/../../private/key.stl", "", false, first_roots);
+      shared.resolveUri("package://demo_description/../../private/key.stl", "", false, first_roots, true);
   EXPECT_FALSE(escaped.resolved);
   EXPECT_EQ(escaped.package, "demo_description");
 }
+
+#ifndef PJ_TARGET_WASM
+// On the desktop a layout file cannot point a topic or file URDF's meshes at the network: its
+// network root is skipped and the package resolves on this computer. A URL URDF, already fetched
+// over the network, and a web-hosted layout (remote_only) keep it.
+TEST(UrdfResolver, DesktopNetworkRootsNeedAUrlSourceOrAWebLayout) {
+  const QMap<QString, QUrl> roots{{u"demo_description"_s, QUrl(u"https://cdn.test/demo_description/"_s)}};
+  const std::string uri = "package://demo_description/meshes/base.stl";
+  UrdfPackageResolver local;
+  local.addSearchRoot(QString::fromStdString(fixtures() + "/search_root"));
+
+  const ResolvedMesh topic = local.resolveUri(uri, "", /*source_is_url=*/false, roots);
+  ASSERT_TRUE(topic.resolved);
+  EXPECT_FALSE(topic.is_url);
+  EXPECT_EQ(topic.path, fixtures() + "/search_root/demo_description/meshes/base.stl");
+
+  UrdfPackageResolver bare;
+  const ResolvedMesh missing = bare.resolveUri(uri, "", /*source_is_url=*/false, roots);
+  EXPECT_EQ(missing.issue, MeshResolveIssue::kUnresolvedPackage);
+  EXPECT_EQ(missing.package, "demo_description");
+
+  for (const auto& [source_is_url, remote_only] : {std::pair{true, false}, std::pair{false, true}}) {
+    const ResolvedMesh network =
+        bare.resolveUri(uri, "https://host.test/robot/urdf", source_is_url, roots, remote_only);
+    ASSERT_TRUE(network.resolved) << source_is_url << remote_only;
+    EXPECT_TRUE(network.is_url);
+    EXPECT_EQ(network.path, "https://cdn.test/demo_description/meshes/base.stl");
+  }
+}
+#endif
 
 // An encoded separator or dot segment, or a backslash, cannot climb out of a mapped root either:
 // file roots resolve to a local path the filesystem would decode and normalize itself.
