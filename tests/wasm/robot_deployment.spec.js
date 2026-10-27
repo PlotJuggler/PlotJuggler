@@ -296,20 +296,25 @@ function trackServer(server) {
   return server;
 }
 
-// A static server that sends no isolation headers, as `python -m http.server` does.
-async function listenWithoutIsolation(root) {
+// A static server that sends no isolation headers, as `python -m http.server` does. With `headOnly` it sends them
+// on HEAD requests alone: the page then sees a server that asks for isolation and a page that did not get it, which
+// is what a browser without cross-origin isolation (an Android WebView) shows.
+async function listenWithoutIsolation(root, { headOnly = false } = {}) {
   const server = http.createServer((request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     fs.readFile(path.join(root, pathname === '/' ? 'index.html' : pathname), (error, body) => {
-      response.writeHead(error ? 404 : 200);
-      response.end(body);
+      const headers = headOnly && request.method === 'HEAD'
+        ? { 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp' }
+        : {};
+      response.writeHead(error ? 404 : 200, headers);
+      response.end(request.method === 'HEAD' ? undefined : body);
     });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return trackServer(server);
 }
 
-test('a page that is not secure, or not isolated, says why it cannot start', async () => {
+test('a page that is not secure, not isolated, or in a browser that cannot isolate it says why it cannot start', async () => {
   test.setTimeout(120000);
   const requirement = 'The app must be served over HTTPS, or from localhost, with the headers '
     + 'Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp.';
@@ -318,12 +323,18 @@ test('a page that is not secure, or not isolated, says why it cannot start', asy
   const { listenWasmServer } = await import('../../scripts/serve_wasm.mjs');
   const withHeaders = trackServer(await listenWasmServer(PACKAGE));
   const withoutHeaders = await listenWithoutIsolation(PACKAGE);
+  const unsupportedBrowser = await listenWithoutIsolation(PACKAGE, { headOnly: true });
   const browser = await launchChromium({ trustRobot: false });
   const cases = [
-    [`http://${HOST}:${withHeaders.address().port}/`, [false, false], 'this page was not served over HTTPS.'],
-    [`http://127.0.0.1:${withoutHeaders.address().port}/`, [true, false], 'this page is not cross-origin isolated.'],
+    [`http://${HOST}:${withHeaders.address().port}/`, [false, false],
+      `PlotJuggler cannot start: this page was not served over HTTPS. ${requirement}`],
+    [`http://127.0.0.1:${withoutHeaders.address().port}/`, [true, false],
+      `PlotJuggler cannot start: this page is not cross-origin isolated. ${requirement}`],
+    [`http://127.0.0.1:${unsupportedBrowser.address().port}/`, [true, false],
+      'PlotJuggler cannot start in this browser: it does not isolate the page as the app needs, although the server '
+      + 'asks it to. Open it in a current Chrome, Edge, Firefox or Safari.'],
   ];
-  for (const [url, context, reason] of cases) {
+  for (const [url, context, message] of cases) {
     const page = await browser.newPage();
     const errors = [];
     const requests = [];
@@ -332,8 +343,7 @@ test('a page that is not secure, or not isolated, says why it cannot start', asy
     await page.goto(url);
     expect(await page.evaluate(() => [isSecureContext, crossOriginIsolated]), url).toEqual(context);
     // The preflight returns in the block that sets this text: once it shows, the runtime never loads.
-    await expect(page.locator('#status')).toHaveText(`PlotJuggler cannot start: ${reason} ${requirement}`,
-      { timeout: 30000 });
+    await expect(page.locator('#status')).toHaveText(message, { timeout: 30000 });
     await expect(page.locator('#status')).toBeVisible();
     expect(requests.filter(request => request.includes('plotjuggler4.wasm')), url).toEqual([]);
     expect(errors, url).toEqual([]);

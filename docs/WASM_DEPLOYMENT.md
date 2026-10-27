@@ -6,7 +6,9 @@ cross-origin isolation enabled. Opening `index.html` directly from disk or
 using an ordinary `python -m http.server` is not a supported threaded setup:
 the packaged entrypoint then shows why on the page ("PlotJuggler cannot start:
 this page was not served over HTTPS." or "…is not cross-origin isolated.", with
-what the server must do) instead of loading the runtime. To serve the app from
+what the server must do) instead of loading the runtime. When the server does send
+the headers and the page still is not isolated, the browser itself cannot isolate
+it (an Android WebView, as in DuckDuckGo), and the page says to open another one. To serve the app from
 a robot together with its PlotJuggler Bridge, see
 [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 

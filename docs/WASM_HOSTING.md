@@ -167,6 +167,7 @@ The Caddyfile reproduces the package's [response contract](./WASM_DEPLOYMENT.md#
 |---|---|---|
 | "PlotJuggler cannot start: this page was not served over HTTPS…" | The page was opened over `http://` from a name other than `localhost`. | Open `https://<robot>/`. |
 | "PlotJuggler cannot start: this page is not cross-origin isolated…" | The server, or a proxy in front of it, does not send the COOP/COEP headers. | Serve through this Caddyfile, and keep the headers through any other proxy. |
+| "PlotJuggler cannot start in this browser…" | The server sends the headers, but the browser cannot isolate the page (an Android WebView, as in DuckDuckGo). | Open the app in a current Chrome, Edge, Firefox or Safari. |
 | A certificate warning instead of the app | The client does not trust the robot's certificate. | [Certificates](#certificates). |
 | "The stream failed: … the browser refused to open a WebSocket to ws://…" | The preset names a `ws://` URL. | Use `${deployment.ws_origin}/bridge`, or a `wss://` URL. |
 | "The stream failed: … failed to connect to PJ bridge at wss://<robot>/bridge…" | The bridge is not listening at `PJ_BRIDGE_UPSTREAM`: Caddy answers the upgrade with a 502. | Start the bridge on that port. |

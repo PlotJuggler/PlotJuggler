@@ -421,8 +421,25 @@
       }
     }
 
+    // A secure page the server asked to isolate, but that is not, runs in a browser without cross-origin isolation
+    // (an Android WebView, as in DuckDuckGo): no header can fix that. A failed check keeps the server explanation.
+    async function isolationFailureMessage() {
+      if (window.isSecureContext) {
+        try {
+          const headers = (await fetch(location.href, { method: 'HEAD', cache: 'no-store' })).headers;
+          if (headers.get('Cross-Origin-Opener-Policy') === 'same-origin'
+              && headers.get('Cross-Origin-Embedder-Policy') === 'require-corp') {
+            return 'PlotJuggler cannot start in this browser: it does not isolate the page as the app needs, although '
+              + 'the server asks it to. Open it in a current Chrome, Edge, Firefox or Safari.';
+          }
+        } catch (error) {
+        }
+      }
+      return isolationFailure;
+    }
+
     if (isolationFailure) {
-      pageLoaded.then(() => fail(isolationFailure));
+      Promise.all([isolationFailureMessage(), pageLoaded]).then(([message]) => fail(message));
     } else if (smallTouchScreen) {
       body.dataset.state = 'confirm';
       document.querySelector('#continue').addEventListener('click', start, { once: true });
