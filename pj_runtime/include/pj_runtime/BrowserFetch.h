@@ -39,10 +39,18 @@ struct BrowserFetchResult {
  * exceed `max_bytes`, when no chunk arrives for `idle_timeout`, on an HTTP error status, and when an https URL
  * is redirected to http. Other redirects follow the browser's own policy and limit (not the desktop's
  * `NoLessSafeRedirectPolicy` with 4 hops), out of the caller's sight: there is no final URL to report.
+ * A response the loading page prefetched for `url` (`globalThis.pjPrefetch`) is read instead of fetching it once,
+ * under the same rules; if that prefetch failed, the URL is fetched as usual.
  *
  * `progress`, when set, runs from the event loop as chunks arrive, at most about every 100 ms plus once when the
  * body has ended, always before `done` and never after a cancel. Its total is -1 when the response declares no length,
  * or a Content-Encoding (the page counts decoded bytes, Content-Length the encoded ones).
+ *
+ * `pinned_sha256`, the lowercase hex SHA-256 the caller requires of the body, lets the browser keep the file across
+ * visits (Cache Storage, keyed on the pin and `url`): a kept copy is read instead of fetching, under the same rules,
+ * and a download is kept only once its SHA-256 equals the pin. The fetch does not check the pin itself; a kept copy
+ * that no longer matches it is dropped, and reported as read (the caller's pin check refuses it). Keeping is best
+ * effort: no Cache Storage, no room or any storage error just means the next visit downloads again.
  *
  * `done` runs exactly once, later, from the event loop, unless cancelBrowserFetch() runs first. On failure the
  * file may hold part of the body: removing it is the caller's job, also after a cancel. Browser main (GUI)
@@ -50,7 +58,7 @@ struct BrowserFetchResult {
  */
 quint32 browserFetchToFile(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout,
-    std::function<void(BrowserFetchResult)> done, FetchProgress progress = {});
+    std::function<void(BrowserFetchResult)> done, FetchProgress progress = {}, const QString& pinned_sha256 = {});
 
 /**
  * browserFetchToFile() for a caller that wants the body in memory (a small file): it goes through a scratch MEMFS

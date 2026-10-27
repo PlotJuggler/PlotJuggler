@@ -106,6 +106,39 @@ shows its reason and a Reload button. On a small touch screen (coarse pointer,
 shorter screen side under 600 CSS px) the page first says PlotJuggler is not
 intended for mobile devices and fetches nothing until "Continue anyway".
 
+For a `?preset=<id>` deep link the page also prefetches that preset's
+recordings while the app boots. It reads `presets/index.json` and the preset's
+layout, and once the module has downloaded (so boot keeps the link to itself) a
+dedicated Worker fetches every `<fileInfo filename>` that is an absolute
+http(s) URL, one after the other, within the app's 512 MiB
+(`kMaxPresetDataBytes`), buffering each body in ~8 MB pieces. `BrowserFetch`
+takes a prefetched response from `globalThis.pjPrefetch` instead of fetching
+that URL, so a recording crosses the network once (a second request for a URL
+still downloading stalls on Chromium's HTTP-cache lock), and reads it through
+the same loop as its own downloads: the SHA-256 pin, size limit, idle timeout
+and progress apply unchanged, and its cancel aborts the prefetch. A prefetch
+that fails leaves the app to fetch as usual; one the app has not taken 60 s
+after it started is dropped. Nothing else is prefetched: no deep link, an
+unknown id, the welcome dialog's choices, a recording the browser already keeps.
+
+The browser keeps every downloaded recording whose `<fileInfo>` carries a
+`content_sha256` pin, so a returning visitor loads it without the network (the
+HTTP cache refuses bodies this large). It lives in Cache Storage
+(`pj-recordings-v1`, no Service Worker), keyed on the pin and the URL
+(`/pj-recording-cache/<sha256>?source=<url>`): a changed pin or URL simply
+misses, and entries never change. `BrowserFetch` reads a kept copy through the
+same loop as a download, so the pin check, size limit and progress apply; a
+copy that no longer matches its pin is refused (`reason=fingerprint`) and
+dropped, and the next load downloads it again. A download is kept only after it
+matched its pin, streamed from its MEMFS file without a second copy. The kept
+recordings stay under 1 GiB together: storing one first drops the
+longest-kept ones (a hit does not refresh an entry), and nothing is stored when
+`navigator.storage.estimate()` leaves no room for it. Storage is best effort:
+the page does not ask for persistent storage (Firefox would prompt), so the
+browser may evict the cache under pressure, and any cache error, private mode
+or full quota just means downloading again. The loading page does not prefetch
+a kept recording.
+
 ```text
 build-wasm/deploy/
 ├── index.html

@@ -38,7 +38,10 @@ The layout is what **File → Save Layout with sources** writes
   CORS headers (as the ANYmal sample's recording), and the download must match `content_sha256` when the
   layout carries one (a mismatched or malformed fingerprint fails the whole
   load). Browser-saved layouts write a fingerprint; a desktop **Save Layout with
-  sources** does not, so a desktop-authored preset is only size-capped.
+  sources** does not, so a desktop-authored preset is only size-capped. A
+  pinned recording is also kept by each visitor's browser, so a revisit loads
+  it without the network (`docs/WASM_DEPLOYMENT.md`); an unpinned one downloads
+  on every visit.
 - `<plugin ID="…" manifest_id="…" filepath_mode="source">` — the existing marker
   that rewrites the plugin configuration's `filepath` to the downloaded file. The
   same layout therefore also opens on the desktop next to its data.

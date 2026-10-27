@@ -3,8 +3,9 @@ const http = require('http');
 
 // A real second local origin (another port), so cross-origin model fetches go
 // through the browser's CORS checks under the page's COEP. `routes` maps a
-// path to { body, cors = true, hold, status = 200, headers }: `cors: false` omits
-// Access-Control-Allow-Origin, `hold` delays the response until release(), and
+// path to { body, cors = true, corsFailures = 0, hold, status = 200, headers }: `cors: false` omits
+// Access-Control-Allow-Origin, `corsFailures` omits it from that many first requests only (the
+// browser fails them like a network error), `hold` delays the response until release(), and
 // `headers` are added to the answer (Node declares no Content-Length by itself).
 // Unknown paths answer 404 (with CORS, so the page sees the status). Every
 // request is logged as "METHOD /path".
@@ -15,7 +16,11 @@ async function startSecondOrigin(routes) {
     const path = new URL(request.url, 'http://second.origin').pathname;
     requests.push(`${request.method} ${path}`);
     const route = routes[path];
-    const headers = route && route.cors === false ? {} : { 'access-control-allow-origin': '*' };
+    const corsFailure = route && route.corsFailures > 0 && request.method !== 'OPTIONS';
+    if (corsFailure) {
+      route.corsFailures -= 1;
+    }
+    const headers = route && (route.cors === false || corsFailure) ? {} : { 'access-control-allow-origin': '*' };
     response.on('error', () => {});
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {

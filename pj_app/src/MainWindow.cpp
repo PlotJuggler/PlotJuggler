@@ -5968,7 +5968,8 @@ void MainWindow::downloadNextReplaySource() {
         if (isActiveReplayDownload(generation)) {
           emit layoutUrlLoadProgress(layout_url, received, total);
         }
-      });
+      },
+      replay.sources[replay.selection_index].content_sha256);
 }
 
 bool MainWindow::isActiveReplayDownload(quint64 generation) const {

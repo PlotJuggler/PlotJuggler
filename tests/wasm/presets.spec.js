@@ -183,9 +183,13 @@ const PNG = Buffer.from(
 
 // A fresh runtime at APP_URL + `query` whose presets/index.json answers `index`
 // (an object as JSON, a string verbatim; undefined leaves the deployment's own
-// 404). Returns once the app has finished looking for presets.
-async function bootWithIndex(context, errors, { index, query = '' } = {}) {
+// 404); `initScript` runs in the page before its own scripts. Returns once the app
+// has finished looking for presets.
+async function bootWithIndex(context, errors, { index, query = '', initScript } = {}) {
   const page = await context.newPage();
+  if (initScript) {
+    await page.addInitScript(initScript);
+  }
   // Keeps file-chooser interception on before any picker can open.
   page.on('filechooser', () => {});
   if (index !== undefined) {
@@ -442,6 +446,287 @@ test('a ?preset= deep link opens that preset directly; an unknown or repeated on
     expect(errors).toEqual([]);
   } finally {
     await server.close();
+  }
+});
+
+// A deep-linked preset whose layout names its recording by absolute URL, as the deployed samples do.
+// `recording` adds to the recording's route; `sha` replaces its recorded fingerprint (null drops it).
+// pin(bytes) serves other recording bytes, pinned in the layout.
+async function startDeepLinkPreset({ recording = {}, sha } = {}) {
+  const layoutRoute = {};
+  const recordingRoute = { body: fs.readFileSync(path.join(SIGNALS_FIXTURE, 'data.csv')), ...recording };
+  const server = await startPresetServer({
+    'signals/layout.pj4.xml': layoutRoute,
+    'signals/data.csv': recordingRoute,
+  });
+  const recordingUrl = server.url('signals/data.csv');
+  const layout = fs.readFileSync(path.join(SIGNALS_FIXTURE, 'layout.pj4.xml'), 'utf8').replace(
+    /\b(filename|dataset_path|dataset_source)="data\.csv"/g, `$1="${recordingUrl}"`);
+  const pinned = value => (value === null
+    ? layout.replace(/ content_sha256="[^"]*"/, '')
+    : setElementAttributeAt(layout, 'fileInfo', 0, 'content_sha256', value));
+  layoutRoute.body = sha === undefined ? layout : pinned(sha);
+  const { sha256 } = await import('../../scripts/wasm_manifest.mjs');
+  const pin = (bytes) => {
+    recordingRoute.body = bytes;
+    layoutRoute.body = pinned(sha256(bytes));
+    return sha256(bytes);
+  };
+  const layoutUrl = server.url('signals/layout.pj4.xml');
+  const recordingGets = () => server.requests.filter(request => request === 'GET /presets/signals/data.csv');
+  // The loading page asked for the recording before the app fetched the layout that names it.
+  const fetchedWhileBooting = () => server.requests.indexOf('GET /presets/signals/data.csv')
+    < server.requests.lastIndexOf('GET /presets/signals/layout.pj4.xml');
+  return {
+    server, layoutUrl, recordingUrl, recordingGets, fetchedWhileBooting, pin,
+    sha: elementAttributes(layoutRoute.body, 'fileInfo', 'content_sha256')[0],
+    index: { presets: [{ id: 'signals', title: 'Signals', layout: layoutUrl }] },
+  };
+}
+
+// The loading page starts a deep link's recording while the app boots and hands
+// the download over: one request, and the replay reads it like its own.
+test('a ?preset= deep link downloads its recording once, while the app boots', async ({ page }) => {
+  test.setTimeout(180000);
+  const errors = [];
+  const preset = await startDeepLinkPreset();
+  try {
+    // Without a deep link nothing is fetched ahead.
+    const plain = await bootWithIndex(page.context(), errors, { index: preset.index });
+    await plain.page.waitForTimeout(2000);
+    expect(preset.server.requests).toEqual([]);
+    await plain.page.close();
+
+    const run = await bootWithIndex(page.context(), errors, { index: preset.index, query: '?preset=signals' });
+    await expect.poll(() => urlOutcome(run.messages, 0, preset.layoutUrl), { timeout: 60000 })
+      .toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(await datasetCount(run.page, run.messages)).toBe(1);
+    expect(preset.recordingGets()).toHaveLength(1);
+    expect(preset.fetchedWhileBooting(), preset.server.requests.join('\n')).toBe(true);
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
+// A prefetch that fails costs nothing but its request: the app downloads the recording itself.
+test('a deep link whose prefetch fails still loads its recording', async ({ page }) => {
+  test.setTimeout(180000);
+  const errors = [];
+  const preset = await startDeepLinkPreset({ recording: { corsFailures: 1 } });
+  try {
+    const run = await bootWithIndex(page.context(), errors, { index: preset.index, query: '?preset=signals' });
+    await expect.poll(() => urlOutcome(run.messages, 0, preset.layoutUrl), { timeout: 60000 })
+      .toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(await datasetCount(run.page, run.messages)).toBe(1);
+    expect(preset.recordingGets()).toHaveLength(2);
+    expect(preset.fetchedWhileBooting(), preset.server.requests.join('\n')).toBe(true);
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
+// A prefetched recording is checked against its fingerprint like any other download.
+test('a prefetched recording with the wrong bytes is refused for its fingerprint', async ({ page }) => {
+  test.setTimeout(180000);
+  const errors = [];
+  const { sha256 } = await import('../../scripts/wasm_manifest.mjs');
+  const preset = await startDeepLinkPreset({ sha: sha256(Buffer.from('other bytes')) });
+  try {
+    const run = await bootWithIndex(page.context(), errors, { index: preset.index, query: '?preset=signals' });
+    await expect.poll(() => urlOutcome(run.messages, 0, preset.layoutUrl), { timeout: 60000 })
+      .toContain('reason=fingerprint');
+    expect(await datasetCount(run.page, run.messages)).toBe(0);
+    expect(preset.recordingGets()).toHaveLength(1);
+    expect(preset.fetchedWhileBooting(), preset.server.requests.join('\n')).toBe(true);
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
+// The browser build's store of downloaded recordings, and the key it files one under: the pin and the URL
+// (BrowserFetch.cpp recordingCacheKey(), loading.html.in).
+const RECORDING_CACHE = 'pj-recordings-v1';
+const recordingCacheKey = (sha, url) => `/pj-recording-cache/${sha}?source=${encodeURIComponent(url)}`;
+
+// The keys of the recordings the page's origin keeps, as recordingCacheKey() spells them.
+async function cachedRecordings(page) {
+  return page.evaluate(async (name) => {
+    const requests = await (await caches.open(name)).keys();
+    return requests.map(request => new URL(request.url)).map(url => url.pathname + url.search).sort();
+  }, RECORDING_CACHE);
+}
+
+// Stores `body` under `key` in the page origin's recording cache, as if downloaded at `stored` (ms since the epoch)
+// with `size` bytes.
+async function putCachedRecording(page, key, body, { size = body.length, stored = Date.now() } = {}) {
+  await page.evaluate(async ({ name, key, body, size, stored }) => {
+    await (await caches.open(name)).put(key, new Response(body, {
+      headers: { 'X-PJ-Size': String(size), 'X-PJ-Stored': String(stored) },
+    }));
+  }, { name: RECORDING_CACHE, key, body, size, stored });
+}
+
+// Boots `preset` by deep link (`query`) or, without one, picks it in the welcome dialog; returns the run once
+// its layout load has ended, with that outcome.
+async function loadSignals(context, errors, preset, { deepLink = true, initScript } = {}) {
+  const run = await bootWithIndex(context, errors, {
+    index: preset.index, query: deepLink ? '?preset=signals' : '', initScript,
+  });
+  if (!deepLink) {
+    let dialog;
+    await expect.poll(async () => {
+      dialog = await presetsDialog(run.page, run.messages);
+      return dialog.visible && Boolean(dialog.entries.signals?.enabled);
+    }, { timeout: 30000 }).toBe(true);
+    await click(run, dialog.entries.signals.open);
+  }
+  await expect.poll(() => urlOutcome(run.messages, 0, preset.layoutUrl), { timeout: 60000 }).not.toBe('');
+  return { ...run, outcome: urlOutcome(run.messages, 0, preset.layoutUrl) };
+}
+
+// A pinned recording is kept by the browser once it has downloaded and matched its pin: every later
+// visit from the same browser reads it from there, deep link or welcome dialog, without the network.
+test('a pinned recording downloads once and later visits load it without the network', async ({ page }) => {
+  test.setTimeout(240000);
+  const errors = [];
+  const preset = await startDeepLinkPreset();
+  const context = page.context();
+  try {
+    const first = await loadSignals(context, errors, preset);
+    expect(first.outcome).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(preset.recordingGets()).toHaveLength(1);
+    const key = recordingCacheKey(preset.sha, preset.recordingUrl);
+    await expect.poll(() => cachedRecordings(first.page), { timeout: 30000 }).toEqual([key]);
+    await first.page.close();
+
+    for (const deepLink of [true, false]) {
+      const again = await loadSignals(context, errors, preset, { deepLink });
+      expect(again.outcome, `deep link ${deepLink}`).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      expect(await datasetCount(again.page, again.messages)).toBe(1);
+      expect(preset.recordingGets(), `deep link ${deepLink}`).toHaveLength(1);
+      await again.page.close();
+    }
+
+    // A layout whose pin changed names other bytes: they download, and are kept beside the first.
+    const otherSha = preset.pin(Buffer.from(fs.readFileSync(path.join(SIGNALS_FIXTURE, 'data.csv'), 'utf8')
+      .replace(/0\.049787\n?$/, '0.049788\n')));
+    const changed = await loadSignals(context, errors, preset, { deepLink: false });
+    expect(changed.outcome).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(preset.recordingGets()).toHaveLength(2);
+    await expect.poll(() => cachedRecordings(changed.page), { timeout: 30000 })
+      .toEqual([key, recordingCacheKey(otherSha, preset.recordingUrl)].sort());
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
+// A kept recording is checked against its pin like a download: one that no longer matches is refused for
+// its fingerprint and dropped, so the next visit downloads it again.
+test('a kept recording that no longer matches its pin is dropped, and the next visit downloads it', async ({ page }) => {
+  test.setTimeout(240000);
+  const errors = [];
+  const preset = await startDeepLinkPreset();
+  const context = page.context();
+  const key = recordingCacheKey(preset.sha, preset.recordingUrl);
+  try {
+    const plain = await bootWithIndex(context, errors, { index: { presets: [] } });
+    await putCachedRecording(plain.page, key, 'time,value\n0,1\n');
+    await plain.page.close();
+
+    const refused = await loadSignals(context, errors, preset);
+    expect(refused.outcome).toContain('reason=fingerprint');
+    expect(preset.recordingGets()).toHaveLength(0);
+    await expect.poll(() => cachedRecordings(refused.page), { timeout: 30000 }).toEqual([]);
+    await refused.page.close();
+
+    const recovered = await loadSignals(context, errors, preset);
+    expect(recovered.outcome).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(preset.recordingGets()).toHaveLength(1);
+    await expect.poll(() => cachedRecordings(recovered.page), { timeout: 30000 }).toEqual([key]);
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
+// Only a pinned recording is kept: nothing else can show that what the cache answers is what the layout names.
+test('a recording without a pin is downloaded on every visit', async ({ page }) => {
+  test.setTimeout(240000);
+  const errors = [];
+  const preset = await startDeepLinkPreset({ sha: null });
+  const context = page.context();
+  try {
+    for (const visit of [1, 2]) {
+      const run = await loadSignals(context, errors, preset);
+      expect(run.outcome).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      expect(preset.recordingGets()).toHaveLength(visit);
+      await run.page.waitForTimeout(1000);
+      expect(await cachedRecordings(run.page)).toEqual([]);
+      await run.page.close();
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
+// The cache is a convenience: a browser that has none (or refuses to store, e.g. over its quota) loads the
+// recording from the network as before, and nothing is kept.
+test('a recording loads when the browser cannot keep it', async ({ page }) => {
+  test.setTimeout(240000);
+  const errors = [];
+  const preset = await startDeepLinkPreset();
+  const context = page.context();
+  try {
+    const stubs = [
+      () => { CacheStorage.prototype.open = () => Promise.reject(new DOMException('no cache', 'SecurityError')); },
+      () => { Cache.prototype.put = () => Promise.reject(new DOMException('full', 'QuotaExceededError')); },
+    ];
+    for (const [visit, initScript] of stubs.entries()) {
+      const run = await loadSignals(context, errors, preset, { initScript });
+      expect(run.outcome, String(visit)).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      expect(preset.recordingGets()).toHaveLength(visit + 1);
+      await run.page.waitForTimeout(1000);
+      await run.page.close();
+    }
+    const plain = await loadSignals(context, errors, preset);
+    expect(plain.outcome).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(preset.recordingGets()).toHaveLength(3);
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
+// The kept recordings stay within 1 GiB: storing one past it first drops the longest-kept ones.
+test('keeping a recording drops the longest-kept ones past the cache budget', async ({ page }) => {
+  test.setTimeout(240000);
+  const errors = [];
+  const preset = await startDeepLinkPreset();
+  const context = page.context();
+  const MiB = 1024 * 1024;
+  try {
+    const plain = await bootWithIndex(context, errors, { index: { presets: [] } });
+    // Stand-ins that declare their sizes: together they fill the budget.
+    await putCachedRecording(plain.page, recordingCacheKey('a'.repeat(64), 'https://old.example/a'), 'a',
+      { size: 700 * MiB, stored: 1 });
+    await putCachedRecording(plain.page, recordingCacheKey('b'.repeat(64), 'https://old.example/b'), 'b',
+      { size: 324 * MiB, stored: 2 });
+    await plain.page.close();
+
+    const run = await loadSignals(context, errors, preset);
+    expect(run.outcome).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    await expect.poll(() => cachedRecordings(run.page), { timeout: 30000 }).toEqual([
+      recordingCacheKey('b'.repeat(64), 'https://old.example/b'),
+      recordingCacheKey(preset.sha, preset.recordingUrl),
+    ].sort());
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
   }
 });
 

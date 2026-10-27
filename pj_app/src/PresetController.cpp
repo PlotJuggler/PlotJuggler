@@ -38,12 +38,15 @@ void PresetController::download(const QUrl& url, DownloadDone done, qint64 limit
 }
 
 void PresetController::downloadToFile(
-    const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done, FetchProgress progress) {
+    const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done, FetchProgress progress,
+    const QString& pinned_sha256) {
   cancel();
 #ifdef PJ_TARGET_WASM
-  const quint32 id = browserFetchToFile(url, path, limit, kTransferTimeout, std::move(done), std::move(progress));
+  const quint32 id =
+      browserFetchToFile(url, path, limit, kTransferTimeout, std::move(done), std::move(progress), pinned_sha256);
   cancel_fetch_ = [id]() { cancelBrowserFetch(id); };
 #else
+  Q_UNUSED(pinned_sha256);
   cancel_fetch_ = fetchBytesWithLimit(
       url, limit, kTransferTimeout, this,
       [path, done = std::move(done)](FetchedBytes fetched) {

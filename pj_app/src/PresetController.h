@@ -53,8 +53,11 @@ class PresetController : public QObject {
   /// cancellation and http(s) rules as download(); over `limit` sets `limit_exceeded`. The caller owns
   /// `path`, also after a failure or a cancel. `progress` reports the bytes received against the declared size (-1:
   /// unknown), throttled to about ten calls a second plus the last, always before `done` and never after a cancel.
+  /// `pinned_sha256`, the SHA-256 the caller will require of the file, lets the browser keep it across visits
+  /// (browserFetchToFile()); the desktop ignores it.
   void downloadToFile(
-      const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done, FetchProgress progress = {});
+      const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done, FetchProgress progress = {},
+      const QString& pinned_sha256 = {});
 
   /// Aborts the download in flight, if any, without calling its completion. Idempotent.
   void cancel();

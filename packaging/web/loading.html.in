@@ -184,8 +184,9 @@
       console.error(message);
     }
 
-    // Streams the module through a byte counter into the compiler, so it compiles while it downloads.
-    async function compileWithProgress() {
+    // Streams the module through a byte counter into the compiler, so it compiles while it downloads; calls
+    // `downloaded` once the last byte has arrived.
+    async function compileWithProgress(downloaded) {
       const response = await fetch(WASM_URL);
       if (!response.ok) {
         throw new Error(`Downloading the app failed (HTTP ${response.status}).`);
@@ -204,6 +205,7 @@
         flush() {
           showProgress(1);
           setPhase('preparing', 'Preparing');
+          downloaded();
         },
       });
       return WebAssembly.compileStreaming(
@@ -219,10 +221,175 @@
     const smallTouchScreen = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600;
     const pageLoaded = new Promise(resolve => window.addEventListener('load', resolve, { once: true }));
 
+    // What a preset's recordings may stage together: kMaxPresetDataBytes in pj_runtime/include/pj_runtime/PresetCatalog.h.
+    const MAX_PRESET_DATA_BYTES = 512 * 1024 * 1024;
+    // How long a prefetched recording the app has not taken stays buffered once the app has started.
+    const PREFETCH_UNUSED_MS = 60000;
+
+    // Runs in a dedicated Worker, whose download keeps flowing while the page's main thread boots the app. It fetches
+    // the posted recordings one after the other, the order the app asks for them in, within one byte budget, and
+    // answers each with {url, status, statusText, headers, body}: the body is a transferred stream that buffers until
+    // the app reads it, in ~8 MB pieces (Firefox moves network-sized chunks between threads at a fraction of network
+    // speed). A body that overruns the budget ends with its first piece past it, which the app refuses as too large.
+    // A failed fetch, a redirect from https to http (a constructed Response has no URL to show it to the app), or a
+    // success without a body or declared over the budget answers {url, error} instead, so the app fetches it itself.
+    function prefetchWorker() {
+      const PIECE_BYTES = 8 * 1024 * 1024;
+      const controllers = new Map();
+      onmessage = async ({ data }) => {
+        if (data.abort) {
+          controllers.get(data.abort)?.abort();
+          return;
+        }
+        let budget = data.maxBytes;
+        for (const url of data.urls) {
+          const controller = new AbortController();
+          controllers.set(url, controller);
+          try {
+            if (budget < 0) {
+              throw new Error('over the preset data limit');
+            }
+            const response = await fetch(url, { signal: controller.signal });
+            if (url.startsWith('https:') && response.url.startsWith('http:')) {
+              response.body?.cancel();
+              throw new Error('insecure redirect');
+            }
+            const answer = {
+              url, status: response.status, statusText: response.statusText, headers: [...response.headers],
+            };
+            if (!response.ok) {
+              response.body?.cancel();
+              postMessage(answer);
+              continue;
+            }
+            if (!response.body || Number(response.headers.get('Content-Length')) > budget) {
+              throw new Error('no body within the preset data limit');
+            }
+            let parts = [];
+            let partBytes = 0;
+            const deliver = (queue) => {
+              if (partBytes === 0) {
+                return;
+              }
+              const piece = new Uint8Array(partBytes);
+              let offset = 0;
+              for (const part of parts) {
+                piece.set(part, offset);
+                offset += part.byteLength;
+              }
+              parts = [];
+              partBytes = 0;
+              queue.enqueue(piece);
+            };
+            const pieces = new TransformStream({
+              transform(chunk, queue) {
+                parts.push(chunk);
+                partBytes += chunk.byteLength;
+                budget -= chunk.byteLength;
+                if (partBytes >= PIECE_BYTES || budget < 0) {
+                  deliver(queue);
+                }
+                if (budget < 0) {
+                  queue.terminate();
+                }
+              },
+              flush: deliver,
+            }, undefined, { highWaterMark: Infinity });
+            const downloaded = response.body.pipeTo(pieces.writable);
+            postMessage({ ...answer, body: pieces.readable }, [pieces.readable]);
+            await downloaded.catch(() => {});
+          } catch (error) {
+            // Stops a download still running when its hand-off failed (a browser without transferable streams).
+            controller.abort();
+            postMessage({ url, error: String(error) });
+          }
+        }
+      };
+    }
+
+    // Whether the browser keeps the recording `url` pinned to `sha256`, which BrowserFetch (pj_runtime) then reads
+    // instead of downloading it. The key is BrowserFetch.cpp's recordingCacheKey(); any error counts as not kept.
+    async function isRecordingKept(url, sha256) {
+      if (!sha256 || typeof caches === 'undefined') {
+        return false;
+      }
+      try {
+        const key = `/pj-recording-cache/${sha256}?source=${encodeURIComponent(url)}`;
+        return (await (await caches.open('pj-recordings-v1')).keys(key)).length > 0;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    // For a ?preset=<id> deep link, downloads that preset's recordings while the app boots, from the moment the module
+    // has downloaded (so boot does not share the link with them). BrowserFetch (pj_runtime) takes each one from
+    // globalThis.pjPrefetch (url -> {response, abort()}) instead of fetching it: a recording crosses the network once,
+    // as it must, since a second request for a URL still downloading stalls on Chromium's cache lock. Only absolute
+    // http(s) URLs in canonical form are prefetched, the form the app asks for them by, and none the browser already
+    // keeps. Whatever fails here leaves the app to fetch as usual.
+    async function prefetchPresetRecordings(wasmDownloaded) {
+      const ids = new URLSearchParams(location.search).getAll('preset');
+      if (ids.length !== 1) {
+        return;
+      }
+      const indexUrl = new URL('presets/index.json', location.href);
+      const preset = (await (await fetch(indexUrl)).json()).presets.find(entry => entry.id === ids[0]);
+      if (!preset) {
+        return;
+      }
+      const layout = await (await fetch(new URL(preset.layout, indexUrl))).text();
+      const sources = [...new DOMParser().parseFromString(layout, 'application/xml').querySelectorAll('fileInfo')]
+        .map(info => ({ url: info.getAttribute('filename') ?? '', sha256: info.getAttribute('content_sha256') }))
+        .filter(({ url }) => /^https?:/.test(url) && URL.canParse(url) && new URL(url).href === url);
+      const kept = await Promise.all(sources.map(({ url, sha256 }) => isRecordingKept(url, sha256)));
+      const urls = [...new Set(sources.filter((source, index) => !kept[index]).map(({ url }) => url))];
+      if (urls.length === 0) {
+        return;
+      }
+      const worker = new Worker(URL.createObjectURL(new Blob([`(${prefetchWorker})()`], { type: 'text/javascript' })));
+      const answers = new Map();
+      globalThis.pjPrefetch = new Map(urls.map((url) => {
+        const response = new Promise((resolve, reject) => answers.set(url, { resolve, reject }));
+        response.catch(() => {});
+        // Cancelling the page's end of the stream also releases what the worker buffered.
+        const abort = () => {
+          worker.postMessage({ abort: url });
+          response.then(answer => answer.body?.cancel(), () => {}).catch(() => {});
+        };
+        return [url, { response, abort }];
+      }));
+      worker.onmessage = ({ data }) => {
+        const answer = answers.get(data.url);
+        try {
+          if (data.error) {
+            throw new Error(data.error);
+          }
+          answer.resolve(new Response(data.body ?? null,
+            { status: data.status, statusText: data.statusText, headers: data.headers }));
+        } catch (error) {
+          answer.reject(error);
+        }
+      };
+      worker.onerror = () => answers.forEach(answer => answer.reject(new Error('the prefetch worker failed')));
+      await wasmDownloaded;
+      worker.postMessage({ urls, maxBytes: MAX_PRESET_DATA_BYTES });
+    }
+
+    // Drops the prefetched recordings the app has not taken, so their buffers do not outlive their use.
+    function dropUnusedPrefetches() {
+      globalThis.pjPrefetch?.forEach(entry => entry.abort());
+      globalThis.pjPrefetch?.clear();
+    }
+
     // The module downloads and compiles while the scripts below load; a failure reaches init through qtLoad.
     function start() {
       body.dataset.state = 'loading';
-      const wasmModule = compileWithProgress();
+      let downloaded;
+      const wasmDownloaded = new Promise((resolve) => {
+        downloaded = resolve;
+      });
+      prefetchPresetRecordings(wasmDownloaded).catch(() => {});
+      const wasmModule = compileWithProgress(downloaded);
       wasmModule.then(() => setPhase('preparing', 'Starting'), () => {});
       pageLoaded.then(() => init(wasmModule));
     }
@@ -235,6 +402,7 @@
             module: wasmModule,
             onLoaded: () => {
               body.dataset.state = 'ready';
+              setTimeout(dropUnusedPrefetches, PREFETCH_UNUSED_MS);
               setTimeout(() => {
                 if (body.dataset.state === 'ready') {
                   loader.style.display = 'none';

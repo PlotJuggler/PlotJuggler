@@ -46,6 +46,11 @@ struct Transfer {
   QByteArray piece;
   qint64 max_bytes = 0;
   std::chrono::milliseconds idle_timeout{0};
+  /// The SHA-256 a kept copy must match, its recordingCacheKey() and the file it streams into; the key is empty
+  /// when the body is not kept.
+  QString pinned_sha256;
+  QString cache_key;
+  QString path;
 };
 
 // The transfers not yet delivered, by id. Browser main thread only.
@@ -67,6 +72,14 @@ quint32 addTransfer(std::function<void(BrowserFetchResult)> done, qint64 max_byt
   return last_id;
 }
 
+// Where Cache Storage keeps a body pinned to `sha256` fetched from `url`: a same-origin path no server answers. The
+// loading page (packaging/web/loading.html.in) spells the same key with encodeURIComponent(), which leaves exactly
+// `!*'()` unescaped beyond what toPercentEncoding() does.
+QString recordingCacheKey(const QString& sha256, const QUrl& url) {
+  return u"/pj-recording-cache/%1?source=%2"_s.arg(
+      sha256, QString::fromLatin1(QUrl::toPercentEncoding(url.toString(QUrl::FullyEncoded), "!*'()")));
+}
+
 // Delivers `id`'s result from the event loop, never from the page's callback, unless it is cancelled by then.
 void complete(quint32 id, BrowserFetchResult result) {
   QTimer::singleShot(0, [id, result = std::move(result)]() mutable {
@@ -84,11 +97,15 @@ void complete(quint32 id, BrowserFetchResult result) {
 // A `piece_bytes` of 0 skips hashing; `report_progress` reports the bytes received on the first chunk, then every
 // 100 ms or so, and once at the end. Without a Content-Encoding header (CORS hides it cross-origin unless exposed) a
 // body that outgrows its declared length is a decoded one, so its total becomes unknown. `status` tracks the phase so
-// an exception maps to its FetchStatus. A body-less answer (a 204 may come without one) is an empty file. The macro
+// an exception maps to its FetchStatus. A body-less answer (a 204 may come without one) is an empty file. A response
+// the loading page prefetched (globalThis.pjPrefetch, url -> {response, abort()}) is taken once instead of fetching:
+// the abort reaches it, and a failed prefetch falls back to fetching. Otherwise a non-empty `cache_key` reads the
+// body kept under it in the 'pj-recordings-v1' cache when there is one; any cache error counts as none. The macro
 // joins the body into one line: every statement ends in a semicolon.
 // clang-format off
 EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const char* path_utf8, double max_bytes,
-                                     int idle_timeout_ms, int piece_bytes, int report_progress), {
+                                     int idle_timeout_ms, int piece_bytes, int report_progress,
+                                     const char* cache_key_utf8), {
   const kOk = 0;
   const kNetwork = 1;
   const kHttpError = 2;
@@ -98,6 +115,7 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
   const kInsecureRedirect = 6;
   const url = UTF8ToString(url_utf8);
   const path = UTF8ToString(path_utf8);
+  const cacheKey = UTF8ToString(cache_key_utf8);
   const controller = new AbortController();
   if (!Module.pjBrowserFetches) {
     Module.pjBrowserFetches = new Map();
@@ -107,6 +125,7 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
   let httpStatus = 0;
   let received = 0;
   let timedOut = false;
+  let fromCache = false;
   let timer = 0;
   const arm = () => {
     clearTimeout(timer);
@@ -116,7 +135,24 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
     let stream = null;
     try {
       arm();
-      const response = await fetch(url, { signal: controller.signal });
+      const prefetched = globalThis.pjPrefetch ? globalThis.pjPrefetch.get(url) : undefined;
+      let response;
+      if (prefetched) {
+        globalThis.pjPrefetch.delete(url);
+        controller.signal.addEventListener('abort', () => prefetched.abort());
+        response = await prefetched.response.catch(() => fetch(url, { signal: controller.signal }));
+      } else {
+        if (cacheKey && typeof caches !== 'undefined') {
+          try {
+            response = await (await caches.open('pj-recordings-v1')).match(cacheKey);
+          } catch (error) {
+          }
+        }
+        fromCache = Boolean(response);
+        if (!fromCache) {
+          response = await fetch(url, { signal: controller.signal });
+        }
+      }
       httpStatus = response.status;
       if (!response.ok) {
         status = kHttpError;
@@ -195,9 +231,86 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
         }
       }
       Module.pjBrowserFetches.delete(id);
-      Module._pj_browser_fetch_done(id, status, received, httpStatus);
+      Module._pj_browser_fetch_done(id, status, received, httpStatus, fromCache ? 1 : 0);
     }
   })();
+});
+
+// Keeps the MEMFS file `path` in the 'pj-recordings-v1' cache under `cache_key`, best effort and in the background.
+// The file is streamed from views of its MEMFS buffer, never copied whole, and that buffer stays readable after the
+// caller removes the file (MEMFS drops only the directory entry) or reopens it for writing (truncating allocates a
+// new buffer).
+// Before storing, the longest-kept entries go until the cache stays under its budget; then the body is stored only
+// when navigator.storage.estimate() leaves room for it. Each entry records its size and when it was stored in
+// X-PJ-Size / X-PJ-Stored: a hit does not refresh it (that would rewrite the whole body), so the eviction order is
+// download order. Every failure leaves the file unkept.
+EM_JS(void, pj_browser_cache_store, (const char* cache_key_utf8, const char* path_utf8), {
+  // What the kept recordings may occupy together.
+  const kBudgetBytes = 1024 * 1024 * 1024;
+  const kPieceBytes = 8 * 1024 * 1024;
+  const key = UTF8ToString(cache_key_utf8);
+  const path = UTF8ToString(path_utf8);
+  let bytes = null;
+  try {
+    const node = FS.lookupPath(path).node;
+    if (typeof caches !== 'undefined' && node.contents instanceof Uint8Array) {
+      bytes = node.contents.subarray(0, node.usedBytes);
+    }
+  } catch (error) {
+  }
+  if (!bytes) {
+    return;
+  }
+  (async () => {
+    const cache = await caches.open('pj-recordings-v1');
+    const entries = [];
+    for (const request of await cache.keys()) {
+      const kept = await cache.match(request);
+      if (kept) {
+        entries.push({ request, size: Number(kept.headers.get('X-PJ-Size')) || 0,
+                       stored: Number(kept.headers.get('X-PJ-Stored')) || 0 });
+      }
+    }
+    entries.sort((a, b) => a.stored - b.stored);
+    let total = entries.reduce((sum, entry) => sum + entry.size, 0);
+    while (entries.length > 0 && total + bytes.length > kBudgetBytes) {
+      const oldest = entries.shift();
+      await cache.delete(oldest.request);
+      total -= oldest.size;
+    }
+    if (total + bytes.length > kBudgetBytes) {
+      return;
+    }
+    if (navigator.storage && navigator.storage.estimate) {
+      const estimate = await navigator.storage.estimate();
+      if (estimate.quota - estimate.usage < bytes.length) {
+        return;
+      }
+    }
+    let offset = 0;
+    const body = new ReadableStream({
+      pull(queue) {
+        if (offset >= bytes.length) {
+          queue.close();
+          return;
+        }
+        const end = Math.min(offset + kPieceBytes, bytes.length);
+        queue.enqueue(bytes.subarray(offset, end));
+        offset = end;
+      },
+    });
+    const size = String(bytes.length);
+    await cache.put(key, new Response(body, {
+      headers: { 'Content-Length': size, 'X-PJ-Size': size, 'X-PJ-Stored': String(Date.now()) } }));
+  })().catch(() => {});
+});
+
+// Drops the entry kept under `cache_key`, best effort.
+EM_JS(void, pj_browser_cache_forget, (const char* cache_key_utf8), {
+  const key = UTF8ToString(cache_key_utf8);
+  if (typeof caches !== 'undefined') {
+    caches.open('pj-recordings-v1').then(cache => cache.delete(key)).catch(() => {});
+  }
 });
 
 EM_JS(void, pj_browser_fetch_abort, (unsigned id), {
@@ -212,7 +325,7 @@ EM_JS(void, pj_browser_fetch_abort, (unsigned id), {
 // browserFetchToFile(), hashing the body only when `hash` is set.
 quint32 startFetch(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout, bool hash,
-    std::function<void(BrowserFetchResult)> done, FetchProgress progress = {}) {
+    std::function<void(BrowserFetchResult)> done, FetchProgress progress = {}, const QString& pinned_sha256 = {}) {
   const quint32 id = addTransfer(std::move(done), max_bytes, idle_timeout);
   const bool report_progress = static_cast<bool>(progress);
   transfers()[id].progress = std::move(progress);
@@ -220,15 +333,20 @@ quint32 startFetch(
     complete(id, {.error = u"only http(s) URLs can be fetched: %1"_s.arg(url.toString())});
     return id;
   }
+  Transfer& transfer = transfers()[id];
   if (hash) {
-    Transfer& transfer = transfers()[id];
     transfer.hash.emplace(QCryptographicHash::Sha256);
     transfer.piece = QByteArray(kHashPieceBytes, Qt::Uninitialized);
+    if (!pinned_sha256.isEmpty()) {
+      transfer.pinned_sha256 = pinned_sha256;
+      transfer.cache_key = recordingCacheKey(pinned_sha256, url);
+      transfer.path = path;
+    }
   }
   pj_browser_fetch_start(
       id, url.toString(QUrl::FullyEncoded).toUtf8().constData(), path.toUtf8().constData(),
       static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), hash ? kHashPieceBytes : 0,
-      report_progress ? 1 : 0);
+      report_progress ? 1 : 0, transfer.cache_key.toUtf8().constData());
   return id;
 }
 
@@ -236,9 +354,10 @@ quint32 startFetch(
 
 quint32 browserFetchToFile(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout,
-    std::function<void(BrowserFetchResult)> done, FetchProgress progress) {
+    std::function<void(BrowserFetchResult)> done, FetchProgress progress, const QString& pinned_sha256) {
   Q_ASSERT(emscripten_is_main_browser_thread());
-  return startFetch(url, path, max_bytes, idle_timeout, /*hash=*/true, std::move(done), std::move(progress));
+  return startFetch(
+      url, path, max_bytes, idle_timeout, /*hash=*/true, std::move(done), std::move(progress), pinned_sha256);
 }
 
 quint32 browserFetchToBytes(
@@ -310,8 +429,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_progress(quint32 id, doubl
   });
 }
 
-/// The page's fetch for transfer `id` ended with `status` (a FetchStatus) after writing `bytes`.
-extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(quint32 id, int status, double bytes, int http_status) {
+/// The page's fetch for transfer `id` ended with `status` (a FetchStatus) after writing `bytes`, read from the kept
+/// copy when `from_cache` is set. A download that matches its pin is kept, a kept copy that does not is dropped.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(
+    quint32 id, int status, double bytes, int http_status, int from_cache) {
   const auto found = PJ::transfers().find(id);
   if (found == PJ::transfers().end()) {
     return;
@@ -322,6 +443,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(quint32 id, int statu
     case PJ::FetchStatus::kOk:
       if (transfer.hash) {
         result.sha256 = QString::fromLatin1(transfer.hash->result().toHex());
+      }
+      if (!transfer.cache_key.isEmpty()) {
+        const QByteArray key = transfer.cache_key.toUtf8();
+        if (from_cache != 0 && result.sha256 != transfer.pinned_sha256) {
+          PJ::pj_browser_cache_forget(key.constData());
+        } else if (from_cache == 0 && result.sha256 == transfer.pinned_sha256) {
+          PJ::pj_browser_cache_store(key.constData(), transfer.path.toUtf8().constData());
+        }
       }
       break;
     case PJ::FetchStatus::kHttpError:
