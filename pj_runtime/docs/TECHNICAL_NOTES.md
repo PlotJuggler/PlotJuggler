@@ -21,7 +21,7 @@ whole body (`tests/wasm/scene3d_url_models.spec.js`, "a URL robot mesh leaves no
 
 **What the code does.** `browserFetchToFile()` (`BrowserFetch.h`) bypasses Qt: the
 page's `fetch()` writes each chunk into a MEMFS file, which MEMFS keeps as a JavaScript
-array outside the wasm heap, and copies it through a 256 KiB buffer only to hash it.
+array outside the wasm heap; the SHA-256 is one `crypto.subtle.digest` over that array once the body is complete.
 `pj_app`'s `PresetController` streams preset recordings through it; every download that
 wants the bytes (the other preset files, Scene3D's `UrlFetcher` for robot URDFs, meshes and
 textures) goes through `HttpGet.h`'s `fetchBytesWithLimit()`, whose browser side is

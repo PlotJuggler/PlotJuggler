@@ -7,13 +7,10 @@
 #include <emscripten/threading.h>
 
 #include <QByteArray>
-#include <QByteArrayView>
-#include <QCryptographicHash>
 #include <QObject>
 #include <QTemporaryFile>
 #include <QTimer>
 #include <memory>
-#include <optional>
 #include <unordered_map>
 #include <utility>
 
@@ -33,17 +30,17 @@ enum class FetchStatus : int {
   kIdleTimeout = 4,
   kWriteFailed = 5,
   kInsecureRedirect = 6,
+  kHashFailed = 7,
 };
 
-// The page copies each received chunk into the wasm heap in pieces of at most this size, to hash it.
-constexpr int kHashPieceBytes = 256 * 1024;
+constexpr int kSha256Bytes = 32;
 
 struct Transfer {
   std::function<void(BrowserFetchResult)> done;
   FetchProgress progress;
-  /// Engaged only for a transfer that reports its SHA-256; `piece` is the page's copy buffer for it.
-  std::optional<QCryptographicHash> hash;
-  QByteArray piece;
+  /// Set for a transfer that reports its SHA-256; the page writes the digest of the finished body into `digest`.
+  bool hash = false;
+  QByteArray digest;
   qint64 max_bytes = 0;
   std::chrono::milliseconds idle_timeout{0};
   /// The SHA-256 a kept copy must match, its recordingCacheKey() and the file it streams into; the key is empty
@@ -94,7 +91,9 @@ void complete(quint32 id, BrowserFetchResult result) {
 // the file outside the wasm heap. The file is sized once from Content-Length (MEMFS would otherwise regrow, and
 // copy, it as chunks extend it); a compressed response declares its encoded length, which the final truncate
 // corrects. The idle timer restarts with every chunk, so a large body may take as long as it keeps arriving.
-// A `piece_bytes` of 0 skips hashing; `report_progress` reports the bytes received on the first chunk, then every
+// A `hash` of 0 skips hashing, otherwise the finished body is digested with WebCrypto straight from its MEMFS buffer
+// (off the main thread, far faster than hashing in wasm) and the digest is handed over before the done call;
+// `report_progress` reports the bytes received on the first chunk, then every
 // 100 ms or so, and once at the end. Without a Content-Encoding header (CORS hides it cross-origin unless exposed) a
 // body that outgrows its declared length is a decoded one, so its total becomes unknown. `status` tracks the phase so
 // an exception maps to its FetchStatus. A body-less answer (a 204 may come without one) is an empty file. A response
@@ -104,7 +103,7 @@ void complete(quint32 id, BrowserFetchResult result) {
 // joins the body into one line: every statement ends in a semicolon.
 // clang-format off
 EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const char* path_utf8, double max_bytes,
-                                     int idle_timeout_ms, int piece_bytes, int report_progress,
+                                     int idle_timeout_ms, int hash, int report_progress,
                                      const char* cache_key_utf8), {
   const kOk = 0;
   const kNetwork = 1;
@@ -113,6 +112,7 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
   const kIdleTimeout = 4;
   const kWriteFailed = 5;
   const kInsecureRedirect = 6;
+  const kHashFailed = 7;
   const url = UTF8ToString(url_utf8);
   const path = UTF8ToString(path_utf8);
   const cacheKey = UTF8ToString(cache_key_utf8);
@@ -189,15 +189,6 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
         }
         status = kWriteFailed;
         FS.write(stream, bytes, 0, bytes.length, received);
-        for (let offset = 0; piece_bytes > 0 && offset < bytes.length; offset += piece_bytes) {
-          const piece = bytes.subarray(offset, offset + piece_bytes);
-          const buffer = Module._pj_browser_fetch_piece(id);
-          if (!buffer) {
-            return;
-          }
-          HEAPU8.set(piece, buffer);
-          Module._pj_browser_fetch_hash(id, piece.length);
-        }
         received += bytes.length;
         if (total >= 0 && received > total) {
           total = -1;
@@ -213,6 +204,18 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
       status = kWriteFailed;
       if (received !== declared) {
         FS.ftruncate(stream.fd, received);
+      }
+      if (hash) {
+        clearTimeout(timer);
+        status = kHashFailed;
+        const node = stream.node;
+        const body = node.contents ? node.contents.subarray(0, node.usedBytes) : new Uint8Array(0);
+        const digest = await crypto.subtle.digest('SHA-256', body);
+        const buffer = Module._pj_browser_fetch_digest_buffer(id);
+        if (!buffer) {
+          return;
+        }
+        HEAPU8.set(new Uint8Array(digest), buffer);
       }
       status = kOk;
     } catch (error) {
@@ -335,8 +338,8 @@ quint32 startFetch(
   }
   Transfer& transfer = transfers()[id];
   if (hash) {
-    transfer.hash.emplace(QCryptographicHash::Sha256);
-    transfer.piece = QByteArray(kHashPieceBytes, Qt::Uninitialized);
+    transfer.hash = true;
+    transfer.digest = QByteArray(kSha256Bytes, '\0');
     if (!pinned_sha256.isEmpty()) {
       transfer.pinned_sha256 = pinned_sha256;
       transfer.cache_key = recordingCacheKey(pinned_sha256, url);
@@ -345,8 +348,8 @@ quint32 startFetch(
   }
   pj_browser_fetch_start(
       id, url.toString(QUrl::FullyEncoded).toUtf8().constData(), path.toUtf8().constData(),
-      static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), hash ? kHashPieceBytes : 0,
-      report_progress ? 1 : 0, transfer.cache_key.toUtf8().constData());
+      static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), hash ? 1 : 0, report_progress ? 1 : 0,
+      transfer.cache_key.toUtf8().constData());
   return id;
 }
 
@@ -402,18 +405,11 @@ void cancelBrowserFetch(quint32 id) {
 
 // The page calls these back from pj_browser_fetch_start's script; each ignores a cancelled transfer.
 
-/// Where the page copies the next piece of transfer `id`'s body to hash it; null once it is cancelled.
-extern "C" EMSCRIPTEN_KEEPALIVE char* pj_browser_fetch_piece(quint32 id) {
+/// Where the page writes the SHA-256 (32 bytes) of transfer `id`'s finished body; null once it is cancelled or when
+/// the transfer does not hash.
+extern "C" EMSCRIPTEN_KEEPALIVE char* pj_browser_fetch_digest_buffer(quint32 id) {
   const auto found = PJ::transfers().find(id);
-  return found == PJ::transfers().end() || !found->second.hash ? nullptr : found->second.piece.data();
-}
-
-/// Adds the first `bytes` of the piece buffer to transfer `id`'s hash.
-extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_hash(quint32 id, int bytes) {
-  const auto found = PJ::transfers().find(id);
-  if (found != PJ::transfers().end() && found->second.hash) {
-    found->second.hash->addData(QByteArrayView(found->second.piece.constData(), bytes));
-  }
+  return found == PJ::transfers().end() || !found->second.hash ? nullptr : found->second.digest.data();
 }
 
 /// Transfer `id` has received `bytes` so far, of `total` (-1: unknown). Delivered from the event loop, like `done`, so
@@ -442,7 +438,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(
   switch (static_cast<PJ::FetchStatus>(status)) {
     case PJ::FetchStatus::kOk:
       if (transfer.hash) {
-        result.sha256 = QString::fromLatin1(transfer.hash->result().toHex());
+        result.sha256 = QString::fromLatin1(transfer.digest.toHex());
       }
       if (!transfer.cache_key.isEmpty()) {
         const QByteArray key = transfer.cache_key.toUtf8();
@@ -468,6 +464,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(
       break;
     case PJ::FetchStatus::kInsecureRedirect:
       result.error = u"an https download was redirected to http"_s;
+      break;
+    case PJ::FetchStatus::kHashFailed:
+      result.error = u"the download could not be verified: this browser cannot compute its SHA-256"_s;
       break;
     case PJ::FetchStatus::kNetwork:
     default:

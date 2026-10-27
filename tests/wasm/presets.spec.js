@@ -624,6 +624,25 @@ test('a pinned recording downloads once and later visits load it without the net
   }
 });
 
+// A pinned recording that spans several 8 MiB pieces and ends inside one is hashed whole: its pin matches.
+test('a pinned recording larger than 8 MiB, ending mid-piece, matches its pin', async ({ page }) => {
+  test.setTimeout(240000);
+  const errors = [];
+  const preset = await startDeepLinkPreset();
+  try {
+    const rows = Array.from({ length: 400000 }, (_, row) => `${1000 + row * 0.02},0,1,1,-1,0,1\n`);
+    const body = Buffer.concat([fs.readFileSync(path.join(SIGNALS_FIXTURE, 'data.csv')), Buffer.from(rows.join(''))]);
+    expect(body.length).toBeGreaterThan(8 * 1024 * 1024);
+    expect(body.length % (8 * 1024 * 1024)).not.toBe(0);
+    preset.pin(body);
+    const run = await loadSignals(page.context(), errors, preset);
+    expect(run.outcome).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(errors).toEqual([]);
+  } finally {
+    await preset.server.close();
+  }
+});
+
 // A kept recording is checked against its pin like a download: one that no longer matches is refused for
 // its fingerprint and dropped, so the next visit downloads it again.
 test('a kept recording that no longer matches its pin is dropped, and the next visit downloads it', async ({ page }) => {
