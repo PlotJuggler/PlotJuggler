@@ -16,6 +16,7 @@
 
 #include "mesh_import.h"
 #include "mesh_loader.h"
+#include "pj_runtime/HttpUrl.h"
 #include "pj_scene3d_core/scene_limits.h"
 #include "url_fetcher.h"
 
@@ -37,7 +38,7 @@ QUrl textureUrl(const QUrl& mesh_url, const QString& ref) {
     return {};
   }
   const QUrl url = mesh_url.resolved(QUrl(ref));
-  return isNetworkUrl(url) ? url : QUrl{};
+  return PJ::isHttpUrl(url) ? url : QUrl{};
 }
 
 bool hasUnresolvedRef(const Material& material) {

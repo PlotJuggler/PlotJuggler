@@ -13,10 +13,11 @@
 #include <QTemporaryFile>
 #include <QTimer>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 
-#include "pj_runtime/HttpUrl.h"
+#include "pj_runtime/HttpGet.h"
 
 using namespace Qt::StringLiterals;
 
@@ -39,8 +40,9 @@ constexpr int kHashPieceBytes = 256 * 1024;
 
 struct Transfer {
   std::function<void(BrowserFetchResult)> done;
-  QCryptographicHash hash{QCryptographicHash::Sha256};
-  QByteArray piece{kHashPieceBytes, Qt::Uninitialized};
+  /// Engaged only for a transfer that reports its SHA-256; `piece` is the page's copy buffer for it.
+  std::optional<QCryptographicHash> hash;
+  QByteArray piece;
   qint64 max_bytes = 0;
   std::chrono::milliseconds idle_timeout{0};
 };
@@ -78,8 +80,9 @@ void complete(quint32 id, BrowserFetchResult result) {
 // the file outside the wasm heap. The file is sized once from Content-Length (MEMFS would otherwise regrow, and
 // copy, it as chunks extend it); a compressed response declares its encoded length, which the final truncate
 // corrects. The idle timer restarts with every chunk, so a large body may take as long as it keeps arriving.
-// `status` tracks the phase so an exception maps to its FetchStatus. A body-less answer (a 204 may come without
-// one) is an empty file. The macro joins the body into one line: every statement ends in a semicolon.
+// A `piece_bytes` of 0 skips hashing. `status` tracks the phase so an exception maps to its FetchStatus. A body-less
+// answer (a 204 may come without one) is an empty file. The macro joins the body into one line: every statement ends in
+// a semicolon.
 // clang-format off
 EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const char* path_utf8, double max_bytes,
                                      int idle_timeout_ms, int piece_bytes), {
@@ -145,7 +148,7 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
         }
         status = kWriteFailed;
         FS.write(stream, bytes, 0, bytes.length, received);
-        for (let offset = 0; offset < bytes.length; offset += piece_bytes) {
+        for (let offset = 0; piece_bytes > 0 && offset < bytes.length; offset += piece_bytes) {
           const piece = bytes.subarray(offset, offset + piece_bytes);
           const buffer = Module._pj_browser_fetch_piece(id);
           if (!buffer) {
@@ -191,21 +194,33 @@ EM_JS(void, pj_browser_fetch_abort, (unsigned id), {
 });
 // clang-format on
 
+// browserFetchToFile(), hashing the body only when `hash` is set.
+quint32 startFetch(
+    const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout, bool hash,
+    std::function<void(BrowserFetchResult)> done) {
+  const quint32 id = addTransfer(std::move(done), max_bytes, idle_timeout);
+  if (!isHttpUrl(url)) {
+    complete(id, {.error = u"only http(s) URLs can be fetched: %1"_s.arg(url.toString())});
+    return id;
+  }
+  if (hash) {
+    Transfer& transfer = transfers()[id];
+    transfer.hash.emplace(QCryptographicHash::Sha256);
+    transfer.piece = QByteArray(kHashPieceBytes, Qt::Uninitialized);
+  }
+  pj_browser_fetch_start(
+      id, url.toString(QUrl::FullyEncoded).toUtf8().constData(), path.toUtf8().constData(),
+      static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), hash ? kHashPieceBytes : 0);
+  return id;
+}
+
 }  // namespace
 
 quint32 browserFetchToFile(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout,
     std::function<void(BrowserFetchResult)> done) {
   Q_ASSERT(emscripten_is_main_browser_thread());
-  const quint32 id = addTransfer(std::move(done), max_bytes, idle_timeout);
-  if (!isHttpUrl(url)) {
-    complete(id, {.error = u"only http(s) URLs can be fetched: %1"_s.arg(url.toString())});
-    return id;
-  }
-  pj_browser_fetch_start(
-      id, url.toString(QUrl::FullyEncoded).toUtf8().constData(), path.toUtf8().constData(),
-      static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), kHashPieceBytes);
-  return id;
+  return startFetch(url, path, max_bytes, idle_timeout, /*hash=*/true, std::move(done));
 }
 
 quint32 browserFetchToBytes(
@@ -230,7 +245,7 @@ quint32 browserFetchToBytes(
   };
   quint32 id = 0;
   if (scratch->open()) {
-    id = browserFetchToFile(url, scratch->fileName(), max_bytes, idle_timeout, std::move(deliver));
+    id = startFetch(url, scratch->fileName(), max_bytes, idle_timeout, /*hash=*/false, std::move(deliver));
   } else {
     id = addTransfer(std::move(deliver), max_bytes, idle_timeout);
     complete(id, {.error = u"could not create a download file: %1"_s.arg(scratch->errorString())});
@@ -253,14 +268,14 @@ void cancelBrowserFetch(quint32 id) {
 /// Where the page copies the next piece of transfer `id`'s body to hash it; null once it is cancelled.
 extern "C" EMSCRIPTEN_KEEPALIVE char* pj_browser_fetch_piece(quint32 id) {
   const auto found = PJ::transfers().find(id);
-  return found == PJ::transfers().end() ? nullptr : found->second.piece.data();
+  return found == PJ::transfers().end() || !found->second.hash ? nullptr : found->second.piece.data();
 }
 
 /// Adds the first `bytes` of the piece buffer to transfer `id`'s hash.
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_hash(quint32 id, int bytes) {
   const auto found = PJ::transfers().find(id);
-  if (found != PJ::transfers().end()) {
-    found->second.hash.addData(QByteArrayView(found->second.piece.constData(), bytes));
+  if (found != PJ::transfers().end() && found->second.hash) {
+    found->second.hash->addData(QByteArrayView(found->second.piece.constData(), bytes));
   }
 }
 
@@ -274,14 +289,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(quint32 id, int statu
   PJ::BrowserFetchResult result{.size = static_cast<qint64>(bytes)};
   switch (static_cast<PJ::FetchStatus>(status)) {
     case PJ::FetchStatus::kOk:
-      result.sha256 = QString::fromLatin1(found->second.hash.result().toHex());
+      if (transfer.hash) {
+        result.sha256 = QString::fromLatin1(transfer.hash->result().toHex());
+      }
       break;
     case PJ::FetchStatus::kHttpError:
       result.error = u"the server answered HTTP %1"_s.arg(http_status);
       break;
     case PJ::FetchStatus::kTooLarge:
       result.limit_exceeded = true;
-      result.error = u"download exceeds the %1 MiB limit"_s.arg(transfer.max_bytes / (1024 * 1024));
+      result.error = PJ::downloadLimitMessage(transfer.max_bytes);
       break;
     case PJ::FetchStatus::kIdleTimeout:
       result.error = u"no data arrived for %1 ms"_s.arg(transfer.idle_timeout.count());

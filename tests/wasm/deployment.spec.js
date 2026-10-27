@@ -131,7 +131,7 @@ test('cold Chromium boot runs the threaded app from the content-addressed packag
   const startup = await page.waitForFunction(() => {
     const state = document.body?.dataset.state;
     if (state === 'failed') {
-      return { error: document.querySelector('#qtstatus')?.textContent || '' };
+      return { error: document.querySelector('#status')?.textContent || '' };
     }
     const screen = document.querySelector('#screen');
     if (state === 'ready' && screen && getComputedStyle(screen).display !== 'none') {

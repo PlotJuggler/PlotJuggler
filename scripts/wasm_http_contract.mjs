@@ -1,9 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The HTTP response contract of a deployment package (WASM_DEPLOYMENT.md "Required HTTP
-// contract"): its headers, cache classes and representation choice. No Node imports, so the
-// reference server (serve_wasm.mjs) and the hosted Worker (packaging/web) share it.
+// The HTTP contract of a deployment package (WASM_DEPLOYMENT.md "Required HTTP contract"): which
+// file a request names, and the headers, cache classes and representation of the response. No Node
+// imports, so the reference server (serve_wasm.mjs) and the hosted Worker (packaging/web) share it.
 
 export const CACHE_CONTROL = {
   revalidate: 'no-cache',
@@ -15,6 +15,33 @@ export const ISOLATION_HEADERS = {
   'Cross-Origin-Resource-Policy': 'same-origin',
   'X-Content-Type-Options': 'nosniff',
 };
+
+// The decoded path of a request URL, or undefined when it is malformed.
+export function decodedPathname(requestUrl) {
+  try {
+    return decodeURIComponent(new URL(requestUrl, 'http://localhost').pathname);
+  } catch {
+    return undefined;
+  }
+}
+
+// The package-relative file a decoded request path names ('/' is the entrypoint), or undefined for
+// one that is empty or could leave the package.
+export function safeLogicalPath(pathname, entrypoint) {
+  const logicalPath = pathname === '/' ? entrypoint : pathname.replace(/^\/+/, '');
+  return logicalPath && !logicalPath.includes('\\') && !logicalPath.split('/').includes('..')
+    ? logicalPath : undefined;
+}
+
+// The file entry for manifest.json, which the manifest does not list.
+export function manifestFile(identity) {
+  return {
+    path: 'manifest.json',
+    contentType: 'application/json; charset=utf-8',
+    cache: 'revalidate',
+    representations: { identity },
+  };
+}
 
 export function parseAcceptEncoding(header) {
   const qualities = new Map();
@@ -56,4 +83,24 @@ export function conditionalMatch(header, value) {
   return (header || '').split(',').map(candidate => candidate.trim()).some(
     candidate => candidate === '*' || candidate === value || candidate === `W/${value}`,
   );
+}
+
+// The headers of a response with the `selected` representation of `file`, without Content-Length.
+// A representation without a hash (the Worker does not hash manifest.json) carries no ETag.
+export function responseHeaders(file, selected) {
+  const headers = {
+    ...ISOLATION_HEADERS,
+    'Cache-Control': CACHE_CONTROL[file.cache],
+    'Content-Type': file.contentType,
+  };
+  if (selected.sha256) {
+    headers.ETag = etag(selected);
+  }
+  if (file.representations.br || file.representations.gzip) {
+    headers.Vary = 'Accept-Encoding';
+  }
+  if (selected.contentEncoding) {
+    headers['Content-Encoding'] = selected.contentEncoding;
+  }
+  return headers;
 }

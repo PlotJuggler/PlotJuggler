@@ -7,7 +7,6 @@
 // fetches those layers used to spin from attach()/render() paths.
 
 #include <QByteArray>
-#include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
 #include <QUrl>
@@ -15,22 +14,17 @@
 
 #include "pj_scene3d_core/model_budget.h"
 
-namespace pj::scene3d {
+class QNetworkAccessManager;
 
-// An http(s) URL: the only sources UrlFetcher reaches the network for.
-[[nodiscard]] inline bool isNetworkUrl(const QUrl& url) {
-  const QString scheme = url.scheme();
-  return scheme == QLatin1StringView("http") || scheme == QLatin1StringView("https");
-}
+namespace pj::scene3d {
 
 // Outcome of one UrlFetcher::fetch. `bytes` and `final_url` are meaningful only when `ok`.
 struct FetchResult {
   bool ok{false};
   QByteArray bytes;
   QString error;
-  // Where a network fetch was served from: the reply's URL after redirects;
-  // empty for a local source. The browser follows redirects inside its fetch
-  // API and Qt's WASM backend reports the requested URL instead.
+  // Where a network fetch was served from after redirects (in the browser, the
+  // requested URL: it follows redirects out of sight); empty for a local source.
   QUrl final_url;
 };
 
@@ -43,15 +37,13 @@ struct FetchResult {
 //    even for local files and immediate errors (deferred via a queued
 //    single-shot) — so a caller never re-enters its own stack from fetch().
 //  - Local sources (file:// URLs and scheme-less bare paths) are read with
-//    QFile inside the fetcher; only http/https ever reach the network; any
-//    other scheme fails with "unsupported URL scheme". WASM checks the MEMFS
-//    file size against kMaxFetchBytes before allocating its QByteArray; native
-//    local-file behavior remains unchanged.
-//  - In WASM, network requests go through pj_runtime's BrowserFetch.h instead
-//    (same cap; 15 s idle; the browser's redirect policy, minus https->http).
-//  - Network requests use QNetworkRequest::setTransferTimeout (15 s) and
-//    NoLessSafeRedirectPolicy capped at 4 redirects — bounded, with no
-//    https->http downgrade. There is no host allowlist; the egress bound is the
+//    QFile inside the fetcher; only http(s) URLs (PJ::isHttpUrl) ever reach the
+//    network; any other scheme fails with "unsupported URL scheme". WASM checks
+//    the MEMFS file size against kMaxFetchBytes before allocating its QByteArray;
+//    native local-file behavior remains unchanged.
+//  - Network requests go through pj_runtime's PJ::fetchBytesWithLimit (HttpGet.h):
+//    a 15 s inactivity timeout and at most 4 redirects with no https->http
+//    downgrade (in the browser, the browser's own hop limit). There is no host allowlist; the egress bound is the
 //    scheme/redirect/size/timeout envelope itself, which a redirect cannot
 //    escalate beyond. (WHETHER a data-supplied URL is fetched at all is the
 //    caller's policy decision — see SceneEntitiesLayer's remote-fetch gate.)
@@ -77,9 +69,6 @@ class UrlFetcher : public QObject {
   static constexpr qint64 kMaxFetchBytes = static_cast<qint64>(kSceneLimits.max_model_source_bytes);
 
   explicit UrlFetcher(QObject* parent = nullptr);
-  // Cancels every request in flight, muted, while the fetcher is whole: `manager_` deletes its
-  // replies first, and a browser reply deleted while running would deliver its callback.
-  ~UrlFetcher() override;
 
   // Start one fetch. `on_done` is invoked exactly once, via the event loop,
   // unless the fetcher is destroyed first (then never).
@@ -91,8 +80,8 @@ class UrlFetcher : public QObject {
   // `this`, so destruction drops pending deliveries too.
   void deliverLater(std::function<void(FetchResult)> on_done, FetchResult result);
 
-  // A child of the fetcher, so its in-flight replies are among the fetcher's descendants.
-  QNetworkAccessManager manager_;
+  // Desktop: the disk-cached manager, owned by `this`; null in the browser.
+  QNetworkAccessManager* network_ = nullptr;
 };
 
 }  // namespace pj::scene3d

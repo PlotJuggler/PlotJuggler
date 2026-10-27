@@ -62,13 +62,6 @@ QString pluginConfigKey(const std::string& plugin_id) {
   return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
 }
 
-// Looks up a streaming plugin by its manifest id (when one is given), then by
-// display name. Returns nullptr when none matches — the caller surfaces the error.
-const LoadedDataSource* resolveStreamSource(
-    const ExtensionCatalogService& extensions, const QString& manifest_id, const QString& plugin_id) {
-  return findDataSourceByIdentity(extensions.streamSources(), manifest_id, plugin_id);
-}
-
 }  // namespace
 
 // Per-session state. Held by unique_ptr in the manager's map so the worker
@@ -484,7 +477,7 @@ void StreamingSourceManager::discardDataset(DatasetId dataset_id) {
 }
 
 void StreamingSourceManager::startSession(const QString& plugin_id) {
-  const LoadedDataSource* source_ptr = resolveStreamSource(extensions_, {}, plugin_id);
+  const LoadedDataSource* source_ptr = findDataSourceByIdentity(extensions_.streamSources(), {}, plugin_id);
   if (source_ptr == nullptr) {
     qCWarning(lcStream) << "Stream plugin not found:" << plugin_id;
     emit setupError(tr("Stream plugin '%1' not found.").arg(plugin_id));
@@ -570,18 +563,17 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
 }
 
 DatasetId StreamingSourceManager::startFromLayout(
-    const layout_xml::StreamingSourceRef& source, const QString& expanded_config, QString* error) {
-  QString unused_error;
-  QString& message = error != nullptr ? *error : unused_error;
-  message.clear();
-  const LoadedDataSource* plugin = resolveStreamSource(extensions_, source.plugin_manifest_id, source.plugin_id);
+    const layout_xml::StreamingSourceRef& source, const QString& expanded_config, QString& error) {
+  error.clear();
+  const LoadedDataSource* plugin =
+      findDataSourceByIdentity(extensions_.streamSources(), source.plugin_manifest_id, source.plugin_id);
   if (plugin == nullptr) {
-    message = tr("Stream plugin '%1' is not installed.")
-                  .arg(source.plugin_id.isEmpty() ? source.plugin_manifest_id : source.plugin_id);
+    error = tr("Stream plugin '%1' is not installed.")
+                .arg(source.plugin_id.isEmpty() ? source.plugin_manifest_id : source.plugin_id);
     return 0;
   }
   const QString label = source.source_name.isEmpty() ? QString::fromStdString(plugin->name) : source.source_name;
-  std::unique_ptr<StreamingSession> session = createSession(*plugin, label, message);
+  std::unique_ptr<StreamingSession> session = createSession(*plugin, label, error);
   if (session == nullptr) {
     return 0;
   }
@@ -589,13 +581,13 @@ DatasetId StreamingSourceManager::startFromLayout(
   session->layout_id = source.id;
   session->config_template = source.plugin_config_json;
   if (auto status = session->handle.loadConfig(expanded_config.toStdString()); !status) {
-    message = tr("Plugin '%1' refused the saved configuration: %2")
-                  .arg(QString::fromStdString(plugin->name), QString::fromStdString(status.error()));
+    error = tr("Plugin '%1' refused the saved configuration: %2")
+                .arg(QString::fromStdString(plugin->name), QString::fromStdString(status.error()));
     session.reset();
     discardDataset(dataset_id);
     return 0;
   }
-  if (!launchSession(std::move(session), message)) {
+  if (!launchSession(std::move(session), error)) {
     discardDataset(dataset_id);
     return 0;
   }

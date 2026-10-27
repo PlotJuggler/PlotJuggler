@@ -9,7 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CACHE_CONTROL, ISOLATION_HEADERS, conditionalMatch, etag, selectRepresentation,
+  CACHE_CONTROL, ISOLATION_HEADERS, conditionalMatch, decodedPathname, manifestFile, responseHeaders,
+  safeLogicalPath, selectRepresentation,
 } from './wasm_http_contract.mjs';
 import { sha256 } from './wasm_manifest.mjs';
 
@@ -119,17 +120,11 @@ async function loadDeployment(root) {
     files.set(file.path, file);
   }
 
-  const manifestRepresentation = {
+  files.set('manifest.json', manifestFile({
     path: 'manifest.json',
     bytes: manifestBytes.length,
     sha256: sha256(manifestBytes),
-  };
-  files.set('manifest.json', {
-    path: 'manifest.json',
-    contentType: 'application/json; charset=utf-8',
-    cache: 'revalidate',
-    representations: { identity: manifestRepresentation },
-  });
+  }));
   return { manifest, files };
 }
 
@@ -156,15 +151,13 @@ export async function createWasmServer(rootDirectory) {
         return;
       }
 
-      let pathname;
-      try {
-        pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-      } catch {
+      const pathname = decodedPathname(request.url);
+      if (pathname === undefined) {
         sendError(response, 400, 'Malformed request URL');
         return;
       }
-      const logicalPath = pathname === '/' ? deployment.manifest.entrypoint : pathname.replace(/^\/+/, '');
-      if (!logicalPath || logicalPath.includes('\\') || logicalPath.split('/').includes('..')) {
+      const logicalPath = safeLogicalPath(pathname, deployment.manifest.entrypoint);
+      if (!logicalPath) {
         sendError(response, 404, 'Not found');
         return;
       }
@@ -180,28 +173,14 @@ export async function createWasmServer(rootDirectory) {
         return;
       }
 
-      const selectedEtag = etag(selected);
-      const headers = {
-        ...ISOLATION_HEADERS,
-        'Cache-Control': CACHE_CONTROL[file.cache],
-        'Content-Type': file.contentType,
-        'Content-Length': selected.bytes,
-        ETag: selectedEtag,
-      };
-      if (file.representations.br || file.representations.gzip) {
-        headers.Vary = 'Accept-Encoding';
-      }
-      if (selected.contentEncoding) {
-        headers['Content-Encoding'] = selected.contentEncoding;
-      }
-      if (conditionalMatch(request.headers['if-none-match'], selectedEtag)) {
-        delete headers['Content-Length'];
+      const headers = responseHeaders(file, selected);
+      if (conditionalMatch(request.headers['if-none-match'], headers.ETag)) {
         response.writeHead(304, headers);
         response.end();
         return;
       }
 
-      response.writeHead(200, headers);
+      response.writeHead(200, { ...headers, 'Content-Length': selected.bytes });
       if (request.method === 'HEAD') {
         response.end();
         return;

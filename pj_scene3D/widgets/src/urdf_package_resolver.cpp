@@ -12,7 +12,7 @@
 #include <QUrl>
 #include <QVariantMap>
 
-#include "url_fetcher.h"  // isNetworkUrl
+#include "pj_runtime/HttpUrl.h"
 
 using namespace Qt::StringLiterals;
 
@@ -65,7 +65,7 @@ bool allowsNetworkRoot(bool source_is_url, bool remote_only) {
 // climbs out of it.
 std::string resolveUnderRoot(const QUrl& root, const std::string& rel, bool local_files) {
   const bool local = root.isLocalFile();
-  if (local ? !local_files : !isNetworkUrl(root)) {
+  if (local ? !local_files : !PJ::isHttpUrl(root)) {
     return {};
   }
   QUrl directory = root.adjusted(QUrl::NormalizePathSegments);
@@ -243,7 +243,7 @@ std::string UrdfPackageResolver::resolve(
   // so a miss under it never falls back to a heuristic that might find another copy.
   // A network root this model may not fetch is skipped: the package resolves here.
   if (const auto root = package_url_roots.constFind(QString::fromStdString(pkg));
-      root != package_url_roots.cend() && (!isNetworkUrl(*root) || allowsNetworkRoot(source_is_url, remote_only))) {
+      root != package_url_roots.cend() && (!PJ::isHttpUrl(*root) || allowsNetworkRoot(source_is_url, remote_only))) {
     return resolveUnderRoot(*root, rel, allowsLocalFiles(remote_only));
   }
   // Step 0 — embedded-asset exact-name lookup.

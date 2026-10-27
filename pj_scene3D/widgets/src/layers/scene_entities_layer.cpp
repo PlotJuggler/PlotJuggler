@@ -30,6 +30,7 @@
 #include "mesh_import.h"
 #include "mesh_load_queue.h"
 #include "pj_base/time.hpp"
+#include "pj_runtime/HttpUrl.h"
 #include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/model_budget.h"
@@ -42,7 +43,6 @@
 #include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
-#include "url_fetcher.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -765,7 +765,7 @@ void SceneEntitiesLayer::startModelLoad(
     const QUrl url(QString::fromStdString(primitive.url));
     // Local sources (bare paths / file:// URLs) stay ungated: reading the
     // user's disk is not network egress. Fetched bytes are capped by UrlFetcher.
-    const bool remote = isNetworkUrl(url);
+    const bool remote = PJ::isHttpUrl(url);
     if (remote && !remoteModelFetchAllowed()) {
       // Decided once per (key, signature), never re-checked per tick.
       load.phase = ModelLoad::Phase::kBlocked;

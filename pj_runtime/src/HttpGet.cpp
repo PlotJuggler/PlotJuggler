@@ -6,12 +6,22 @@
 #include <QMetaObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QPointer>
+#include <QTimer>
 #include <memory>
 #include <utility>
+
+#ifdef PJ_TARGET_WASM
+#include "pj_runtime/BrowserFetch.h"
+#endif
+
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
 namespace {
+
+constexpr int kMaxRedirects = 4;
 
 // Shared tail of every one-shot request: deliver the finished reply to the
 // callback on `context`'s thread, then release it.
@@ -94,6 +104,66 @@ QNetworkReply* httpGetWithLimit(
     }
   });
   return reply;
+}
+
+CancelFetch fetchBytesWithLimit(
+    const QUrl& url, qint64 max_bytes, std::chrono::milliseconds timeout, QObject* context,
+    std::function<void(FetchedBytes)> done, QNetworkAccessManager* network) {
+  auto cancelled = std::make_shared<bool>(false);
+  auto deliver = [cancelled, done = std::move(done)](FetchedBytes fetched) {
+    if (!*cancelled) {
+      done(std::move(fetched));
+    }
+  };
+  const CancelFetch cancel = [cancelled]() { *cancelled = true; };
+  if (!isHttpUrl(url)) {
+    QTimer::singleShot(0, context, [url, deliver = std::move(deliver)]() {
+      deliver({.final_url = url, .error = u"only http(s) URLs can be fetched: %1"_s.arg(url.toString())});
+    });
+    return cancel;
+  }
+#ifdef PJ_TARGET_WASM
+  Q_UNUSED(network);
+  const quint32 id = browserFetchToBytes(
+      url, max_bytes, timeout, context,
+      [url, deliver = std::move(deliver)](QByteArray bytes, QString error, bool limit_exceeded) {
+        deliver({std::move(bytes), url, std::move(error), limit_exceeded});
+      });
+  return [id]() { cancelBrowserFetch(id); };
+#else
+  if (network == nullptr) {
+    network = context->findChild<QNetworkAccessManager*>(QString(), Qt::FindDirectChildrenOnly);
+  }
+  if (network == nullptr) {
+    network = new QNetworkAccessManager(context);
+  }
+  QNetworkRequest request(url);
+  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+  request.setMaximumRedirectsAllowed(kMaxRedirects);
+  const QPointer<QNetworkReply> reply = httpGetWithLimit(
+      *network, request, max_bytes, timeout, context,
+      [max_bytes, deliver = std::move(deliver)](QNetworkReply& finished, bool limit_exceeded) {
+        FetchedBytes fetched{.final_url = finished.url(), .limit_exceeded = limit_exceeded};
+        if (limit_exceeded) {
+          fetched.error = downloadLimitMessage(max_bytes);
+        } else if (finished.error() != QNetworkReply::NoError) {
+          fetched.error = finished.errorString();
+        } else {
+          fetched.bytes = finished.readAll();
+        }
+        deliver(std::move(fetched));
+      });
+  return [cancel, reply]() {
+    cancel();
+    if (reply && !reply->isFinished()) {
+      reply->abort();  // finishes synchronously, muted by `cancel`
+    }
+  };
+#endif
+}
+
+QString downloadLimitMessage(qint64 max_bytes) {
+  return u"download exceeds the %1 MiB limit"_s.arg(max_bytes / (1024 * 1024));
 }
 
 }  // namespace PJ

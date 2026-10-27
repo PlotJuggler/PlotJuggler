@@ -13,7 +13,7 @@
 #include <optional>
 #include <vector>
 
-#include "url_fetcher.h"
+#include "pj_runtime/HttpUrl.h"
 
 using namespace Qt::StringLiterals;
 
@@ -21,7 +21,7 @@ namespace pj::scene3d {
 namespace {
 
 bool isAllowedAbsolute(const QUrl& url) {
-  return isNetworkUrl(url) || url.scheme() == "file"_L1;
+  return PJ::isHttpUrl(url) || url.scheme() == "file"_L1;
 }
 
 }  // namespace
@@ -79,7 +79,7 @@ bool resolveLayoutResourceUrls(QDomDocument& document, const QUrl& layout_locati
   // Resolving keeps the location's scheme, so an allowed anchor yields allowed URLs.
   const bool anchored = layout_location.isValid() && isAllowedAbsolute(layout_location);
   // A web-hosted layout never points the app at local files.
-  const bool web_hosted = anchored && isNetworkUrl(layout_location);
+  const bool web_hosted = anchored && PJ::isHttpUrl(layout_location);
 
   // Collected first and applied only once every model is known to be valid.
   struct Edit {
@@ -102,7 +102,7 @@ bool resolveLayoutResourceUrls(QDomDocument& document, const QUrl& layout_locati
         return unanchored(source);
       }
       edits.push_back({model, u"source_value"_s, layout_location.resolved(QUrl(source)).toString(QUrl::FullyEncoded)});
-    } else if (web_hosted && url_source && !source.isEmpty() && !isNetworkUrl(QUrl(source))) {
+    } else if (web_hosted && url_source && !source.isEmpty() && !PJ::isHttpUrl(QUrl(source))) {
       return local(source);
     }
     if (web_hosted) {
@@ -126,7 +126,7 @@ bool resolveLayoutResourceUrls(QDomDocument& document, const QUrl& layout_locati
     }
     if (web_hosted) {
       for (const QUrl& root : std::as_const(*roots)) {
-        if (!root.isRelative() && !isNetworkUrl(root)) {
+        if (!root.isRelative() && !PJ::isHttpUrl(root)) {
           return local(root.toString());
         }
       }

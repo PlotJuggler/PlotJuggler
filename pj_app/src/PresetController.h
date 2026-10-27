@@ -4,17 +4,14 @@
 
 #include <QByteArray>
 #include <QList>
-#include <QNetworkAccessManager>
 #include <QObject>
-#include <QPointer>
 #include <QString>
 #include <QUrl>
 #include <functional>
 
 #include "pj_runtime/BrowserFetch.h"
+#include "pj_runtime/HttpGet.h"
 #include "pj_runtime/PresetCatalog.h"
-
-class QNetworkReply;
 
 namespace PJ {
 
@@ -23,8 +20,8 @@ namespace PJ {
  * and discovers the presets a page publishes.
  *
  * Every download is capped: at `kMaxPresetDownloadBytes` (PresetCatalog.h) unless the caller passes a
- * limit (a recording takes `kMaxPresetDataBytes`). The browser fetches through `pj_runtime`'s BrowserFetch.h,
- * never Qt's network backend (see its file comment).
+ * limit (a recording takes `kMaxPresetDataBytes`). Files go through `pj_runtime`'s fetchBytesWithLimit() (HttpGet.h);
+ * a browser recording streams to its file through BrowserFetch.h.
  * GUI thread only; asynchronous, never nests an event loop. The completion is never called from
  * inside `download()`, after `cancel()`, or after the controller is destroyed.
  */
@@ -39,8 +36,7 @@ class PresetController : public QObject {
   using DownloadDone = std::function<void(QByteArray bytes, QUrl final_url, QString error)>;
 
   explicit PresetController(QObject* parent = nullptr);
-  /// Cancels the download in flight while the controller is whole: `network_` deletes its replies
-  /// first, and a browser reply deleted while running would deliver its completion.
+  /// Cancels the download in flight: a browser downloadToFile() is not tied to the controller's lifetime.
   ~PresetController() override;
 
   /// Starts fetching `url` (http/https only; redirects follow, never to a less secure scheme).
@@ -75,21 +71,8 @@ class PresetController : public QObject {
   void discovered(const QList<PJ::PresetEntry>& entries, const QString& deep_link, const QString& deep_link_error);
 
  private:
-  using Fetched = std::function<void(QByteArray bytes, QUrl final_url, QString error, bool limit_exceeded)>;
-
-  /// Fetches `url` into memory, refusing any scheme but http(s); `done` runs only for the generation it
-  /// started under.
-  void get(const QUrl& url, qint64 limit, Fetched done);
-
-  QNetworkAccessManager network_{this};
-  QPointer<QNetworkReply> reply_;
-#ifdef PJ_TARGET_WASM
-  /// The BrowserFetch transfer in flight; 0 when none.
-  quint32 fetch_ = 0;
-#endif
-  /// Bumped by every download() and cancel(); a completion delivers only for the generation it
-  /// was started under.
-  quint64 generation_ = 0;
+  /// Drops the transfer in flight, so its completion never runs; empty when none was started.
+  CancelFetch cancel_fetch_;
 };
 
 }  // namespace PJ

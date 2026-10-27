@@ -637,6 +637,9 @@ Specification: [docs/RECORDING_AND_CACHING.md §3.4](../../docs/RECORDING_AND_CA
 - `httpGetWithTimeout` / `httpPostWithTimeout`: the callback runs on the caller's thread,
   also on error, abort or timeout; the reply is `deleteLater`'d after it, so never retain
   it. Used by `UpdateChecker`, `TelemetryPing` and `pj_app`'s registry-URL probe.
+- `fetchBytesWithLimit`: the size-capped GET of an untrusted body, on desktop over
+  `httpGetWithLimit` and in the browser over `BrowserFetch.h`; returns a `CancelFetch`.
+  Used by `pj_app`'s `PresetController` and Scene3D's `UrlFetcher`.
 - `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend ([why](./TECHNICAL_NOTES.md)).
 - `UpdateChecker` asks the install's channel (`PJ_INSTALLATION`): `deb` runs
   `apt-cache policy plotjuggler4`, `windows` runs `maintenancetool check-updates`, anything

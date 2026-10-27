@@ -391,7 +391,7 @@ TEST_F(StreamingPresetTest, FailedSetupKeepsPreviousPreset) {
   unowned.plugin_id = QString::fromLatin1(kPluginId);
   unowned.plugin_config_json = uR"({"topic":"mine/data"})"_s;
   const PJ::DatasetId mine =
-      PresetTestPeer::streams(*window_).startFromLayout(unowned, unowned.plugin_config_json, &error);
+      PresetTestPeer::streams(*window_).startFromLayout(unowned, unowned.plugin_config_json, error);
   ASSERT_NE(mine, 0U) << error.toStdString();
   // The user paused on the stream they follow, at its first sample: a failed preset
   // must leave that as it is. The first sample, because the range only grows past it

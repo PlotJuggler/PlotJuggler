@@ -11,6 +11,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { readVersion } from '../../scripts/wasm_manifest.mjs';
 import {
   declaredDependencies, dependencyArchive, planSourceOffer, renderSourceOffer,
 } from '../../scripts/wasm_source_offer.mjs';
@@ -27,7 +28,7 @@ test('FFmpeg is the tarball cmake/PjWasmFfmpeg.cmake compiles', async () => {
 });
 
 test('the Qt sources are the PJ_QT_VERSION modules the notices attribute, each with a pinned hash', async () => {
-  const version = (await read('versions.env')).match(/^PJ_QT_VERSION=(.+)$/m)[1].trim();
+  const version = await readVersion('PJ_QT_VERSION');
   const modules = (await read('cmake/PjWasmNotices.cmake')).match(/foreach\(module IN ITEMS ([^)]+)\)/)[1].split(' ');
   const qt = (await planSourceOffer()).archives.filter(archive => modules.includes(archive.dependency));
   assert.deepEqual(

@@ -12,10 +12,11 @@
 // again with an older package). Runs the pinned wrangler through npx, logged in to the account.
 
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { sha256 } from '../../scripts/wasm_manifest.mjs';
 
 const BUCKET = 'plotjuggler-web';
 const WRANGLER = 'wrangler@4.118.0';
@@ -62,11 +63,8 @@ const manifestBytes = readFileSync(path.join(root, 'manifest.json'));
 const manifest = JSON.parse(manifestBytes);
 const offer = path.join(root, 'sources', 'SOURCE-OFFER.txt');
 // The offer is outside the manifest: hashing it too keeps a regenerated offer from replacing a live release's.
-const releaseHash = createHash('sha256').update(manifestBytes);
-if (existsSync(offer)) {
-  releaseHash.update(readFileSync(offer));
-}
-const release = `releases/${releaseHash.digest('hex').slice(0, 16)}`;
+const hashed = existsSync(offer) ? [manifestBytes, readFileSync(offer)] : [manifestBytes];
+const release = `releases/${sha256(Buffer.concat(hashed)).slice(0, 16)}`;
 
 const files = new Set(['manifest.json']);
 for (const file of manifest.files) {

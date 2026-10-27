@@ -22,9 +22,10 @@ whole body (`tests/wasm/scene3d_url_models.spec.js`, "a URL robot mesh leaves no
 **What the code does.** `browserFetchToFile()` (`BrowserFetch.h`) bypasses Qt: the
 page's `fetch()` writes each chunk into a MEMFS file, which MEMFS keeps as a JavaScript
 array outside the wasm heap, and copies it through a 256 KiB buffer only to hash it.
-`pj_app`'s `PresetController` (every preset download) and Scene3D's `UrlFetcher` (robot
-URDFs, meshes and textures) route browser downloads through it; one that wants the bytes
-uses `browserFetchToBytes()`, which reads a scratch file back into a `QByteArray`.
+`pj_app`'s `PresetController` streams preset recordings through it; every download that
+wants the bytes (the other preset files, Scene3D's `UrlFetcher` for robot URDFs, meshes and
+textures) goes through `HttpGet.h`'s `fetchBytesWithLimit()`, whose browser side is
+`browserFetchToBytes()`: no hashing, a scratch file read back into a `QByteArray`.
 
 **Re-test** on every Qt bump: once `downloadSucceeded()` closes the fetch, a
 `QNetworkAccessManager` download stops leaking (it still peaks at the extra copies).

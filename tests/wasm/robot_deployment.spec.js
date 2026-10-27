@@ -17,7 +17,7 @@ const { chromium, test, expect } = require('@playwright/test');
 const { observeRuntimeTarget, waitForQtApp } = require('./support/app');
 const { launchOptions, OFFLINE_RESOLVER_RULES } = require('./support/browser');
 const { COUNTER_AND_SINE, drawnPlots, robotPreset, startBridgeServer } = require('./support/bridge');
-const { layoutOutcome: layoutOutcomeOf } = require('./support/console');
+const { latest, layoutOutcome: layoutOutcomeOf } = require('./support/console');
 const {
   expectEntrypoint,
   expectServedAsDeclared,
@@ -332,9 +332,9 @@ test('a page that is not secure, or not isolated, says why it cannot start', asy
     await page.goto(url);
     expect(await page.evaluate(() => [isSecureContext, crossOriginIsolated]), url).toEqual(context);
     // The preflight returns in the block that sets this text: once it shows, the runtime never loads.
-    await expect(page.locator('#qtstatus')).toHaveText(`PlotJuggler cannot start: ${reason} ${requirement}`,
+    await expect(page.locator('#status')).toHaveText(`PlotJuggler cannot start: ${reason} ${requirement}`,
       { timeout: 30000 });
-    await expect(page.locator('#qtstatus')).toBeVisible();
+    await expect(page.locator('#status')).toBeVisible();
     expect(requests.filter(request => request.includes('plotjuggler4.wasm')), url).toEqual([]);
     expect(errors, url).toEqual([]);
     await page.close();
@@ -362,8 +362,7 @@ test('a ws:// bridge URL on the HTTPS page fails its stream with a visible reaso
   expect(await layoutOutcome(run, `${robot.origin}/presets/plain/layout.pj4.xml`))
     .toContain('PJ_WASM_LAYOUT_LOAD_OK');
   // Mixed content: the browser refuses the socket before any connection is made.
-  const report = () => run.messages.filter(message => message.includes('PJ_WASM_LAYOUT_DIALOG present='))
-    .at(-1) || '';
+  const report = () => latest(run.messages, 'PJ_WASM_LAYOUT_DIALOG present=');
   await expect.poll(async () => {
     await run.page.evaluate(() => window.pjWasmReportLayoutDialogProbe());
     return report();

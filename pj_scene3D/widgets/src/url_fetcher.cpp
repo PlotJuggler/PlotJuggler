@@ -4,10 +4,9 @@
 
 #include <QFile>
 #ifndef PJ_TARGET_WASM
+#include <QNetworkAccessManager>
 #include <QNetworkDiskCache>
 #endif
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QStandardPaths>
 #include <QString>
 #include <QTimer>
@@ -16,9 +15,6 @@
 #include <utility>
 
 #include "pj_runtime/HttpGet.h"
-#ifdef PJ_TARGET_WASM
-#include "pj_runtime/BrowserFetch.h"
-#endif
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -36,14 +32,13 @@ FetchResult readLocalFile(const QString& path) {
   // them before QByteArray allocation; native retains its existing unbounded
   // local-file behavior below.
   const qint64 size = file.size();
-  if (size < 0 || size > UrlFetcher::kMaxFetchBytes) {
-    result.error = QString(u"local model exceeds the %1 MiB limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
-    return result;
+  const bool fits = size >= 0 && size <= UrlFetcher::kMaxFetchBytes;
+  if (fits) {
+    result.bytes = file.read(size);
   }
-  result.bytes = file.read(size);
-  if (!file.atEnd()) {
+  if (!fits || !file.atEnd()) {
     result.bytes.clear();
-    result.error = QString(u"local model exceeds the %1 MiB limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
+    result.error = u"local model exceeds the %1 MiB limit"_s.arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
     return result;
   }
 #else
@@ -76,7 +71,7 @@ std::optional<QString> localFilePath(const QUrl& url) {
 
 }  // namespace
 
-UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent), manager_(this) {
+UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {
   // Persist fetched remote models so re-opening the dataset (or the next session)
   // serves them from disk instead of re-downloading. QNetworkDiskCache honors HTTP
   // Cache-Control/ETag: a fresh entry is served without touching the network; a
@@ -92,20 +87,12 @@ UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent), manager_(this) {
   if (cache_dir.isEmpty()) {
     cache_dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + u"/models"_s;
   }
-  auto* cache = new QNetworkDiskCache(this);
+  network_ = new QNetworkAccessManager(this);
+  auto* cache = new QNetworkDiskCache(network_);
   cache->setCacheDirectory(cache_dir);
   cache->setMaximumCacheSize(256LL * 1024 * 1024);
-  manager_.setCache(cache);
+  network_->setCache(cache);
 #endif
-}
-
-UrlFetcher::~UrlFetcher() {
-  for (QNetworkReply* reply : manager_.findChildren<QNetworkReply*>()) {
-    reply->disconnect(this);
-    if (!reply->isFinished()) {
-      reply->abort();
-    }
-  }
 }
 
 void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchResult result) {
@@ -120,47 +107,24 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
     deliverLater(std::move(on_done), readLocalFile(*local));
     return;
   }
-  if (!isNetworkUrl(url)) {
+  if (!PJ::isHttpUrl(url)) {
     FetchResult result;
     result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
     deliverLater(std::move(on_done), std::move(result));
     return;
   }
-
-#ifdef PJ_TARGET_WASM
-  PJ::browserFetchToBytes(
+  // `this` as context: destroying the fetcher drops the callback.
+  PJ::fetchBytesWithLimit(
       url, kMaxFetchBytes, std::chrono::seconds(15), this,
-      [url, on_done = std::move(on_done)](QByteArray bytes, QString error, bool) {
+      [on_done = std::move(on_done)](PJ::FetchedBytes fetched) {
         FetchResult result;
-        result.ok = error.isEmpty();
-        result.error = std::move(error);
-        result.bytes = std::move(bytes);
-        result.final_url = url;  // the browser follows redirects out of sight
+        result.ok = fetched.error.isEmpty();
+        result.error = std::move(fetched.error);
+        result.bytes = std::move(fetched.bytes);
+        result.final_url = std::move(fetched.final_url);
         on_done(std::move(result));
-      });
-#else
-  QNetworkRequest request(url);
-  // Bounded redirects with no https->http downgrade (see the class contract for
-  // why this is the chosen policy).
-  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-  request.setMaximumRedirectsAllowed(4);
-  // `this` as context: destroying the fetcher aborts the reply and drops the callback.
-  PJ::httpGetWithLimit(
-      manager_, request, kMaxFetchBytes, std::chrono::seconds(15), this,
-      [on_done = std::move(on_done)](QNetworkReply& reply, bool limit_exceeded) {
-        FetchResult result;
-        if (limit_exceeded) {
-          result.error = tr("response exceeds the %1 MiB limit").arg(kMaxFetchBytes / (1024 * 1024));
-        } else if (reply.error() != QNetworkReply::NoError) {
-          result.error = reply.errorString();
-        } else {
-          result.bytes = reply.readAll();
-          result.final_url = reply.url();
-          result.ok = true;
-        }
-        on_done(std::move(result));
-      });
-#endif
+      },
+      network_);
 }
 
 }  // namespace pj::scene3d

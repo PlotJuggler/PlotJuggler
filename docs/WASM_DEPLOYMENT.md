@@ -97,8 +97,9 @@ only replaces an absent directory, an empty directory, or a prior package with
 a valid PlotJuggler deployment manifest. It emits a stable entrypoint and
 content-addressed assets. The entrypoint is PlotJuggler's own page,
 `packaging/web/loading.html.in`, not Qt's generated `plotjuggler4.html`: it
-streams the module into `WebAssembly.compileStreaming` through a byte counter,
-hands the compiled module to Qt's loader (`qt.module`), and shows the progress
+streams the module into `WebAssembly.compileStreaming` through a byte counter
+from the moment the page runs (beside the loader scripts), hands the compiled
+module to Qt's loader (`qt.module`) once the page has loaded, and shows the progress
 against the decoded module size the packager writes into it (the browser counts
 decoded bytes, while `Content-Length` is the compressed size). A failed start
 shows its reason and a Reload button.

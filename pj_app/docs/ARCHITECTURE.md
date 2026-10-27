@@ -366,7 +366,7 @@ See `../../docs/derived_objects/ARCHITECTURE.md` section 8.
 On WebAssembly the shell owns the browser boundary: `BrowserFileStore` (upload
 staging and identity, bytes behind a lifetime lease in MEMFS), `FileSelectionService`
 (the asynchronous content-based file picker) and `BrowserPersistence` (the durable-settings bridge).
-`PresetController` downloads through `pj_runtime`'s `BrowserFetch.h` there ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)).
+`PresetController` downloads through `pj_runtime`'s `fetchBytesWithLimit()` and streams recordings through `BrowserFetch.h` there ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)).
 Browser-only integration is tied to the executable's lifetime and policy, so it lives
 here rather than in a library.
 

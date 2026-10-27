@@ -28,6 +28,18 @@ function observeRuntimeTarget(target, targetMessages, allMessages, errors) {
 }
 
 
+// Opens the app in `page` and waits until it is ready. `messages` and `errors` collect the page's
+// console log and uncaught errors; returns them with the screen's bounding box.
+async function bootApp(page, messages = [], errors = []) {
+  observeRuntimeTarget(page, messages, [], errors);
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, messages);
+  const screen = await page.locator('#screen').boundingBox();
+  expect(screen).not.toBeNull();
+  return { messages, errors, screen };
+}
+
+
 async function replaceRuntimeTarget(currentPage, allMessages, errors, { hideOpenFilePicker = false } = {}) {
   const context = currentPage.context();
   await currentPage.close();
@@ -55,4 +67,4 @@ async function wasmHeap(page, messages) {
   return { inUse, memory, pool };
 }
 
-module.exports = { waitForQtApp, observeRuntimeTarget, replaceRuntimeTarget, wasmHeap };
+module.exports = { bootApp, waitForQtApp, observeRuntimeTarget, replaceRuntimeTarget, wasmHeap };

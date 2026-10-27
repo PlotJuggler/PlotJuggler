@@ -4,7 +4,6 @@
 // mirror. The suites never reach the network (browser.js), so a sample that loads from the host
 // gets its files from a mirror that `npm run fetch:assets` fills once, each file checked against
 // its SHA-256 in fixtures/hosted_assets.json. PJ_WASM_ASSETS_MIRROR moves the mirror.
-const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -12,16 +11,8 @@ const path = require('path');
 const MANIFEST = require('../fixtures/hosted_assets.json');
 const MIRROR = path.resolve(
   process.env.PJ_WASM_ASSETS_MIRROR || path.join(__dirname, '..', '..', '..', 'build-wasm-assets'));
-const CONTENT_TYPES = {
-  '.dae': 'model/vnd.collada+xml',
-  '.jpg': 'image/jpeg',
-  '.mcap': 'application/octet-stream',
-  '.urdf': 'application/xml',
-};
-
-function sha256(bytes) {
-  return crypto.createHash('sha256').update(bytes).digest('hex');
-}
+// The deployment's types (scripts/package_wasm.mjs) plus the hosted samples' own.
+const HOSTED_CONTENT_TYPES = [['.jpg', 'image/jpeg'], ['.urdf', 'application/xml']];
 
 // Serves the mirror on loopback, with the CORS header the host sends, and returns
 // { origin, route(context, samples_origin), close() }. route() rewrites the asset host to that
@@ -31,6 +22,8 @@ function sha256(bytes) {
 // Rewriting the small layouts, not fulfilling the files themselves: Chromium does not deliver a
 // fulfilled body as large as a recording.
 async function startHostedAssetMirror() {
+  const { CONTENT_TYPES } = await import('../../../scripts/package_wasm.mjs');
+  const contentTypes = new Map([...CONTENT_TYPES, ...HOSTED_CONTENT_TYPES]);
   // Present at its manifest size (a stale file would stream a truncated body); the hash is fetch:assets' job.
   const missing = Object.entries(MANIFEST.files).filter(
     ([file, { bytes }]) => !fs.existsSync(path.join(MIRROR, file)) || fs.statSync(path.join(MIRROR, file)).size !== bytes);
@@ -46,7 +39,7 @@ async function startHostedAssetMirror() {
     }
     response.writeHead(200, {
       'Access-Control-Allow-Origin': '*',
-      'Content-Type': CONTENT_TYPES[path.extname(file)] || 'text/plain; charset=utf-8',
+      'Content-Type': contentTypes.get(path.extname(file)) || contentTypes.get(''),
       'Content-Length': MANIFEST.files[file].bytes,
     });
     fs.createReadStream(path.join(MIRROR, file)).pipe(response);
@@ -66,6 +59,7 @@ async function startHostedAssetMirror() {
 
 // Downloads every manifest file the mirror lacks or holds with other bytes.
 async function fetchHostedAssets() {
+  const { sha256 } = await import('../../../scripts/wasm_manifest.mjs');
   for (const [file, { sha256: expected }] of Object.entries(MANIFEST.files)) {
     const target = path.join(MIRROR, file);
     if (fs.existsSync(target) && sha256(fs.readFileSync(target)) === expected) {

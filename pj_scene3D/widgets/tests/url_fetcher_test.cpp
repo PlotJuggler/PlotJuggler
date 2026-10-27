@@ -161,10 +161,8 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
   EXPECT_FALSE(called) << "callback fired after the fetcher was destroyed";
 }
 
-// A browser reply deleted while running aborts and emits finished, and the fetcher's manager
-// deletes its replies before the fetcher's own teardown: the fetcher must cancel them while it
-// is still whole. Natively the cancellation is what shows: the reply finishes during the
-// fetcher's destruction, and the callback still never runs.
+// Destroying the fetcher mid-request cancels the request while the fetcher is still whole: the
+// reply finishes during the fetcher's destruction, and the callback still never runs.
 TEST(UrlFetcherTest, DestructionCancelsInFlightRequestsWhileTheFetcherIsWhole) {
   QTcpServer server;
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();

@@ -220,10 +220,8 @@ TEST(PresetControllerTest, DestroyDropsTheCompletion) {
   EXPECT_EQ(completion.calls, 0);
 }
 
-// A browser reply deleted while running aborts and emits finished, and the controller's network
-// manager deletes its replies before the controller's own teardown: the controller must cancel the
-// transfer while it is still whole. Natively the cancellation is what shows: the reply finishes
-// during the controller's destruction, and the completion still never runs.
+// Destroying the controller mid-transfer cancels the transfer while the controller is still whole:
+// the reply finishes during the controller's destruction, and the completion still never runs.
 TEST(PresetControllerTest, DestroyMidTransferCancelsWhileTheControllerIsWhole) {
   pj_app_test::RouteServer server;
   server.route(u"/held"_s, "late");

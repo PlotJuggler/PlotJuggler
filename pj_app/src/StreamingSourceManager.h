@@ -87,12 +87,12 @@ class StreamingSourceManager : public QObject {
   // written to the remembered plugin settings, and a plugin that refuses it fails
   // the start instead of falling back to anything else. The plugin resolves by
   // manifest id first, display name second. Returns the new session's dataset,
-  // or 0 with `*error` (may be null) set and nothing left behind. Emits
+  // or 0 with `error` set and nothing left behind. Emits
   // streamStarted on success and never setupError/streamError for a failed
   // start; failures after start() keep the usual streamError/streamStopped path.
   // GUI thread only; synchronous (the plugin's start() must not block).
   [[nodiscard]] DatasetId startFromLayout(
-      const layout_xml::StreamingSourceRef& source, const QString& expanded_config, QString* error);
+      const layout_xml::StreamingSourceRef& source, const QString& expanded_config, QString& error);
 
   // One record per live session, in start order, as a source-bound save writes
   // it: the configuration is the template it started from (layout sessions) or

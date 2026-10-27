@@ -22,6 +22,8 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
+import { readVersion } from './wasm_manifest.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ADS_DIRECTORY = '3rdparty/Qt-Advanced-Docking';
 const ISSUES = 'https://github.com/PlotJuggler/PJ4/issues';
@@ -125,9 +127,7 @@ export function dependencyArchive({ name, file, url, urlHash, repository, tag })
 }
 
 export async function planSourceOffer({ qtVersion } = {}) {
-  const versions = await read('versions.env');
-  const pinned = key => versions.match(new RegExp(`^${key}=(.+)$`, 'm'))[1].trim();
-  const qt = qtVersion ?? pinned('PJ_QT_VERSION');
+  const qt = qtVersion ?? await readVersion('PJ_QT_VERSION');
   const hashes = QT_SHA256[qt];
   if (!hashes) {
     throw new Error(`no pinned SHA-256 for Qt ${qt}: add the .sha256 of its qtbase, qtsvg and qttools archives `
@@ -182,8 +182,8 @@ export async function planSourceOffer({ qtVersion } = {}) {
     },
     revision,
     qt,
-    emscripten: pinned('PJ_EMSCRIPTEN_VERSION'),
-    node: pinned('PJ_WASM_NODE_VERSION'),
+    emscripten: await readVersion('PJ_EMSCRIPTEN_VERSION'),
+    node: await readVersion('PJ_WASM_NODE_VERSION'),
   };
 }
 

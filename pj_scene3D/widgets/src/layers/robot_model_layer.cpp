@@ -44,6 +44,7 @@
 #include "mesh_load_queue.h"
 #include "pj_base/builtin/robot_description.hpp"
 #include "pj_base/time.hpp"
+#include "pj_runtime/HttpUrl.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/parse_locked.h"
 #include "pj_scene3d_core/model_budget.h"
@@ -1154,7 +1155,7 @@ bool RobotModelLayer::loadFromCurrentSource() {
 
   const QUrl url(source_value_);
 #ifdef PJ_TARGET_WASM
-  if (!url.isValid() || !isNetworkUrl(url)) {
+  if (!PJ::isHttpUrl(url)) {
     fail(tr("Only http(s) URDF URLs are supported in the browser"));
     return false;
   }
@@ -1296,7 +1297,7 @@ void RobotModelLayer::queueMeshLoads() {
     MeshLoadQueue::Source source;
     source.location = QString::fromStdString(mesh->resolved_path);
     const QUrl url(source.location);
-    source.kind = isNetworkUrl(url) ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kPath;
+    source.kind = PJ::isHttpUrl(url) ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kPath;
     source.format_hint = formatHint(source.location);
     // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent).
     const bool collada = source.format_hint == "dae"_L1 || source.format_hint == "collada"_L1;

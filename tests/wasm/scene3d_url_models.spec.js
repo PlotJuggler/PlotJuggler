@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { wasmHeap } = require('./support/app');
-const { layoutOutcome } = require('./support/console');
+const { latest, layoutOutcome } = require('./support/console');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { openLayoutChooser } = require('./support/pickers');
 const { startSecondOrigin } = require('./support/second_origin');
@@ -71,9 +71,8 @@ test('a topic robot_description fetches package meshes through the layout roots'
     expect(relative).toContain('PJ_WASM_LAYOUT_LOAD_FAILED');
     expect(relative).toContain('reason=resources');
     await page.evaluate(() => window.pjWasmReportLayoutDialogProbe());
-    await expect.poll(
-      () => messages.filter(message => message.includes('PJ_WASM_LAYOUT_DIALOG present=1')).at(-1) || '',
-    ).toContain('assets/pj_fixture_description/');
+    await expect.poll(() => latest(messages, 'PJ_WASM_LAYOUT_DIALOG present=1'))
+      .toContain('assets/pj_fixture_description/');
     await page.evaluate(() => window.pjWasmDismissLayoutDialogProbe());
     const unchanged = await waitForModels(page, messages, models => models.robots.live === 0);
     expect(unchanged.docks[0].identity).toBe(before.docks[0].identity);

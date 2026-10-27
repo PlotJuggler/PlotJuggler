@@ -14,32 +14,27 @@
 // launch ping to https://app.plotjuggler.io/telemetry.
 
 import {
-  CACHE_CONTROL, ISOLATION_HEADERS, conditionalMatch, etag, selectRepresentation,
+  CACHE_CONTROL, ISOLATION_HEADERS, conditionalMatch, decodedPathname, manifestFile, responseHeaders,
+  safeLogicalPath, selectRepresentation,
 } from '../../scripts/wasm_http_contract.mjs';
 
-// The release's file table, kept per isolate: a release is immutable once uploaded.
+// The release's file table and entrypoint, kept per isolate: a release is immutable once uploaded.
 let loaded = null;
 
 async function fileTable(env) {
   if (loaded?.release === env.RELEASE) {
-    return loaded.files;
+    return loaded;
   }
   const object = await env.SITE.get(`${env.RELEASE}/manifest.json`);
   if (!object) {
     throw new Error(`release ${env.RELEASE} has no manifest.json`);
   }
-  const manifestText = await object.text();
-  const manifest = JSON.parse(manifestText);
+  const manifest = JSON.parse(await object.text());
   const files = new Map(manifest.files.map(file => [file.path, file]));
-  files.set('manifest.json', {
-    path: 'manifest.json',
-    contentType: 'application/json; charset=utf-8',
-    cache: 'revalidate',
-    representations: { identity: { path: 'manifest.json', bytes: object.size, sha256: '' } },
-  });
-  files.entrypoint = manifest.entrypoint;
-  loaded = { release: env.RELEASE, files };
-  return files;
+  // No hash: manifest.json is served without an ETag.
+  files.set('manifest.json', manifestFile({ path: 'manifest.json', bytes: object.size, sha256: '' }));
+  loaded = { release: env.RELEASE, files, entrypoint: manifest.entrypoint };
+  return loaded;
 }
 
 function textResponse(status, message, extra = {}) {
@@ -72,26 +67,24 @@ export default {
     if (!['GET', 'HEAD'].includes(request.method)) {
       return textResponse(405, 'Method not allowed', { Allow: 'GET, HEAD' });
     }
-    let pathname;
-    try {
-      pathname = decodeURIComponent(url.pathname);
-    } catch {
+    const pathname = decodedPathname(request.url);
+    if (pathname === undefined) {
       return textResponse(400, 'Malformed request URL');
     }
-    let files;
+    let table;
     try {
-      files = await fileTable(env);
+      table = await fileTable(env);
     } catch (error) {
       return textResponse(500, error.message);
     }
-    const logicalPath = pathname === '/' ? files.entrypoint : pathname.replace(/^\/+/, '');
-    if (!logicalPath || logicalPath.includes('\\') || logicalPath.split('/').includes('..')) {
+    const logicalPath = safeLogicalPath(pathname, table.entrypoint);
+    if (!logicalPath) {
       return textResponse(404, 'Not found');
     }
     if (logicalPath.startsWith('sources/')) {
       return sourceOffer(request, env, logicalPath);
     }
-    const file = files.get(logicalPath);
+    const file = table.files.get(logicalPath);
     if (!file) {
       return textResponse(404, 'Not found');
     }
@@ -102,20 +95,7 @@ export default {
       return textResponse(406, 'No acceptable content encoding');
     }
 
-    const headers = {
-      ...ISOLATION_HEADERS,
-      'Cache-Control': CACHE_CONTROL[file.cache],
-      'Content-Type': file.contentType,
-    };
-    if (selected.sha256) {
-      headers.ETag = etag(selected);
-    }
-    if (file.representations.br || file.representations.gzip) {
-      headers.Vary = 'Accept-Encoding';
-    }
-    if (selected.contentEncoding) {
-      headers['Content-Encoding'] = selected.contentEncoding;
-    }
+    const headers = responseHeaders(file, selected);
     if (headers.ETag && conditionalMatch(request.headers.get('If-None-Match'), headers.ETag)) {
       return new Response(null, { status: 304, headers });
     }

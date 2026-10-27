@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 const { test, expect } = require('@playwright/test');
-const { observeRuntimeTarget, waitForQtApp } = require('./support/app');
+const { bootApp, waitForQtApp } = require('./support/app');
 const { dragQtCanvas } = require('./support/canvas');
-const { count } = require('./support/console');
+const { count, latest } = require('./support/console');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { requestMultiPlotState } = require('./support/plot_probes');
 const {
@@ -355,13 +355,7 @@ async function plotTitles(page, messages) {
 
 test('a stream preset starts its saved streams with no dialog and binds their curves as topics arrive', async ({ page }) => {
   test.setTimeout(180000);
-  const errors = [];
-  const messages = [];
-  observeRuntimeTarget(page, messages, [], errors);
-  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
-  await waitForQtApp(page, messages);
-  const screen = await page.locator('#screen').boundingBox();
-  expect(screen).not.toBeNull();
+  const { messages, errors, screen } = await bootApp(page);
 
   // The deployment origin is filled in from this page; a re-save keeps the template.
   const template = '{"url":"${deployment.ws_origin}/bridge"}';
@@ -385,8 +379,7 @@ test('a stream preset starts its saved streams with no dialog and binds their cu
       .toEqual([['dummy/sin_cos/sin'], ['dummy/sin_cos/cos']]);
     expect(await datasetCount(page, messages)).toBe(2);
     await page.evaluate(() => window.pjWasmReportLayoutDialogProbe());
-    await expect.poll(() => messages.filter(message => message.includes('PJ_WASM_LAYOUT_DIALOG present=')).at(-1) || '')
-      .toContain('present=0');
+    await expect.poll(() => latest(messages, 'PJ_WASM_LAYOUT_DIALOG present=')).toContain('present=0');
 
     // Save Layout with Sources writes each stream's record, its template unexpanded;
     // a generic save carries no stream at all.

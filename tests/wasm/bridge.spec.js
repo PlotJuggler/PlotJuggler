@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 const { test, expect } = require('@playwright/test');
-const { observeRuntimeTarget, waitForQtApp } = require('./support/app');
+const { bootApp } = require('./support/app');
 const { COUNTER_AND_SINE, drawnPlots, robotPreset, startBridgeServer } = require('./support/bridge');
-const { count } = require('./support/console');
+const { count, latest } = require('./support/console');
 const { datasetCount, openPreset, startPresetServer, streamPreset } = require('./support/preset_server');
-
-async function openApp(page) {
-  const messages = [];
-  const errors = [];
-  observeRuntimeTarget(page, messages, [], errors);
-  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
-  await waitForQtApp(page, messages);
-  return { messages, errors };
-}
 
 async function visibleDialogs(page, messages) {
   const before = count(messages, 'PJ_WASM_VISIBLE_DIALOGS count=');
   await page.evaluate(() => window.pjWasmReportVisibleDialogsProbe());
   await expect.poll(() => count(messages, 'PJ_WASM_VISIBLE_DIALOGS count=')).toBeGreaterThan(before);
-  return messages.filter(message => message.includes('PJ_WASM_VISIBLE_DIALOGS count=')).at(-1);
+  return latest(messages, 'PJ_WASM_VISIBLE_DIALOGS count=');
 }
 
 test('bridge preset loads without a dialog', async ({ page }) => {
   test.setTimeout(120000);
-  const { messages, errors } = await openApp(page);
+  const { messages, errors } = await bootApp(page);
   const bridge = await startBridgeServer();
   const presets = await startPresetServer({ 'robot/layout.pj4.xml': robotPreset(bridge.url, COUNTER_AND_SINE) });
   try {
@@ -43,7 +34,7 @@ test('bridge preset loads without a dialog', async ({ page }) => {
 
 test('compressed frames populate saved views', async ({ page }) => {
   test.setTimeout(120000);
-  const { messages, errors } = await openApp(page);
+  const { messages, errors } = await bootApp(page);
   const bridge = await startBridgeServer();
   const presets = await startPresetServer({ 'robot/layout.pj4.xml': robotPreset(bridge.url, COUNTER_AND_SINE) });
   try {
@@ -81,7 +72,7 @@ test('close during connection releases the socket', async ({ page, browserName }
       }
     };
   });
-  const { messages, errors } = await openApp(page);
+  const { messages, errors } = await bootApp(page);
   // The server reads the upgrade request and never answers: the browser socket stays connecting.
   const bridge = await startBridgeServer(['--hold-handshake']);
   const presets = await startPresetServer({

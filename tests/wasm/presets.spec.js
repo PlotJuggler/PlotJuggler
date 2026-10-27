@@ -4,14 +4,16 @@
 // its presets in presets/index.json beside the page; the welcome dialog offers
 // them (and "Upload your own…"), and ?preset=<id> opens one directly.
 const { test, expect } = require('@playwright/test');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp, wasmHeap } = require('./support/app');
+const {
+  bootApp, observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp, wasmHeap,
+} = require('./support/app');
 const { count, latest } = require('./support/console');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { startHostedAssetMirror } = require('./support/hosted_assets');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
+const { elementAttributes, setElementAttributeAt } = require('./support/layout_xml');
 const { openFileChooser } = require('./support/pickers');
 const { requestMultiPlotState } = require('./support/plot_probes');
 const { datasetCount, dismissDialogs, openPreset, startPresetServer } = require('./support/preset_server');
@@ -23,31 +25,6 @@ const { downloadSourceLayoutFromFileMenu } = require('./support/source_layout');
 // Same basename and the same columns: only where each file lives tells them apart.
 const left = Buffer.from('time,value\n0,1\n1,2\n2,3\n');
 const right = Buffer.from('time,value\n0,8\n1,9\n2,10\n');
-const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-
-function attributes(xml, tag, attribute) {
-  return [...xml.matchAll(new RegExp(`<${tag}\\b[^>]*\\b${attribute}="([^"]*)"`, 'g'))].map(match => match[1]);
-}
-
-// Sets `attribute` on the index-th `tag` element.
-function setAttributeAt(xml, tag, index, attribute, value) {
-  let current = 0;
-  return xml.replace(new RegExp(`<${tag}\\b[^>]*>`, 'g'), (element) => {
-    if (current++ !== index) {
-      return element;
-    }
-    return element.replace(new RegExp(`\\b${attribute}="[^"]*"`), `${attribute}="${value}"`);
-  });
-}
-
-async function boot(page, messages, errors) {
-  observeRuntimeTarget(page, messages, [], errors);
-  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
-  await waitForQtApp(page, messages);
-  const screen = await page.locator('#screen').boundingBox();
-  expect(screen).not.toBeNull();
-  return screen;
-}
 
 async function loadCsv(page, screen, messages, bytes) {
   const loaded = count(messages, 'PJ_FILE_LOAD_OK');
@@ -63,11 +40,11 @@ async function authorPresetLayout(page, screen, messages) {
   await loadCsv(page, screen, messages, left);
   await loadCsv(page, screen, messages, right);
   const layout = (await downloadSourceLayoutFromFileMenu(page, screen, messages)).bytes.toString('utf8');
-  expect(attributes(layout, 'fileInfo', 'filename')).toEqual([
+  expect(elementAttributes(layout, 'fileInfo', 'filename')).toEqual([
     'pj4-sources/0/duplicate.csv',
     'pj4-sources/1/duplicate.csv',
   ]);
-  expect(attributes(layout, 'plugin', 'manifest_id')).toHaveLength(2);
+  expect(elementAttributes(layout, 'plugin', 'manifest_id')).toHaveLength(2);
   expect(layout).toContain('<DockArea');
   return layout;
 }
@@ -94,7 +71,7 @@ test('a preset loads its relative sources with no picker, duplicate basenames in
   test.setTimeout(180000);
   const errors = [];
   let messages = [];
-  const screen = await boot(page, messages, errors);
+  const { screen } = await bootApp(page, messages, errors);
   const layout = await authorPresetLayout(page, screen, messages);
   const server = await startPresetServer(presetFiles('pair', layout));
   try {
@@ -116,11 +93,12 @@ test('a preset loads its relative sources with no picker, duplicate basenames in
     // Saving keeps the existing contract: logical names plus fingerprints,
     // reselected on the next open; neither staging paths nor download URLs leak.
     const saved = (await downloadSourceLayoutFromFileMenu(fresh.page, fresh.screen, messages)).bytes.toString('utf8');
-    expect(attributes(saved, 'fileInfo', 'filename')).toEqual([
+    expect(elementAttributes(saved, 'fileInfo', 'filename')).toEqual([
       'pj4-sources/0/duplicate.csv',
       'pj4-sources/1/duplicate.csv',
     ]);
-    expect(attributes(saved, 'fileInfo', 'content_sha256')).toEqual([sha256(left), sha256(right)]);
+    const { sha256 } = await import('../../scripts/wasm_manifest.mjs');
+    expect(elementAttributes(saved, 'fileInfo', 'content_sha256')).toEqual([sha256(left), sha256(right)]);
     const generic = (await downloadLayoutFromFileMenu(fresh.page, fresh.screen, messages)).bytes.toString('utf8');
     for (const bytes of [saved, generic]) {
       expect(bytes).not.toContain('pj-upload://');
@@ -137,23 +115,24 @@ test('a preset that fails anywhere leaves the workspace as it was', async ({ pag
   test.setTimeout(240000);
   const errors = [];
   let messages = [];
-  const screen = await boot(page, messages, errors);
+  const { screen } = await bootApp(page, messages, errors);
   const layout = await authorPresetLayout(page, screen, messages);
+  const { sha256 } = await import('../../scripts/wasm_manifest.mjs');
   const otherSha = sha256(Buffer.from('other bytes'));
   const brokenScene = layout.replace(
     /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/,
     '$1<scene3d><layer object_type="not_a_type"/></scene3d>$2',
   );
-  const missingPlugin = setAttributeAt(
-    setAttributeAt(layout, 'plugin', 1, 'manifest_id', 'pj-missing-plugin'), 'plugin', 1, 'ID', 'Missing Plugin');
+  const missingPlugin = setElementAttributeAt(
+    setElementAttributeAt(layout, 'plugin', 1, 'manifest_id', 'pj-missing-plugin'), 'plugin', 1, 'ID', 'Missing Plugin');
   const server = await startPresetServer({
     ...presetFiles('good', layout),
     // The second file is absent.
     ...presetFiles('missing', layout, { 'missing/pj4-sources/1/duplicate.csv': undefined }),
     // The second file is not the one the layout was saved with.
-    ...presetFiles('mismatch', setAttributeAt(layout, 'fileInfo', 1, 'content_sha256', otherSha)),
+    ...presetFiles('mismatch', setElementAttributeAt(layout, 'fileInfo', 1, 'content_sha256', otherSha)),
     // The second fingerprint is unreadable: refused before anything downloads.
-    ...presetFiles('malformed', setAttributeAt(layout, 'fileInfo', 1, 'content_sha256', 'ABCDEF')),
+    ...presetFiles('malformed', setElementAttributeAt(layout, 'fileInfo', 1, 'content_sha256', 'ABCDEF')),
     // The second file's host does not allow this page to read it.
     ...presetFiles('denied', layout, { 'denied/pj4-sources/1/duplicate.csv': { body: right, cors: false } }),
     // The second file names a plugin this build lacks, after the first imported.
@@ -285,7 +264,7 @@ test('the welcome dialog lists the presets, keeps broken thumbnails on a placeho
   test.setTimeout(240000);
   const errors = [];
   const messages = [];
-  const screen = await boot(page, messages, errors);
+  const { screen } = await bootApp(page, messages, errors);
   // No index is deployed here: the dialog never opened and File → Presets is not offered.
   await expect.poll(() => count(messages, 'PJ_WASM_PRESETS_DISCOVERED count=0'), { timeout: 30000 }).toBe(1);
   const layout = await authorPresetLayout(page, screen, messages);
@@ -403,7 +382,7 @@ test('a ?preset= deep link opens that preset directly; an unknown or repeated on
   test.setTimeout(240000);
   const errors = [];
   const messages = [];
-  const screen = await boot(page, messages, errors);
+  const { screen } = await bootApp(page, messages, errors);
   const layout = await authorPresetLayout(page, screen, messages);
   const server = await startPresetServer(
     presetFiles('pair', layout, { 'pair/pj4-sources/1/duplicate.csv': { body: right, hold: true } }));
@@ -782,7 +761,7 @@ test('a preset recording downloads without passing through the wasm heap', async
   test.setTimeout(180000);
   const errors = [];
   const messages = [];
-  await boot(page, messages, errors);
+  await bootApp(page, messages, errors);
   const recordingBytes = 96 * 1024 * 1024;
   const server = await startPresetServer({
     'big/layout.pj4.xml': fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'layout.pj4.xml')),
@@ -812,7 +791,7 @@ test('a recording answered with no body is refused for its fingerprint', async (
   test.setTimeout(120000);
   const errors = [];
   const messages = [];
-  await boot(page, messages, errors);
+  await bootApp(page, messages, errors);
   const server = await startPresetServer({
     'empty/layout.pj4.xml': fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'layout.pj4.xml')),
     'empty/data.csv': { body: '', status: 204 },

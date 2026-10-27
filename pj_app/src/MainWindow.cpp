@@ -5947,8 +5947,8 @@ void MainWindow::downloadNextReplaySource() {
         if (!isActiveReplayDownload(generation)) {
           return;
         }
-        // Over the remaining budget once earlier sources took part of it; over the whole cap otherwise.
-        if (file.limit_exceeded && browser_layout_runtime_->replay->staged_bytes > 0) {
+        // The limit is what is left of the preset's cap, so any source over it takes the preset over the cap.
+        if (file.limit_exceeded) {
           failReplayOverCap();
           return;
         }
@@ -6231,7 +6231,7 @@ QString MainWindow::startReplayStreamsAndApply(QDomDocument apply_doc, const QSt
   LayoutTimelinePlan stream_tracks;
   for (const BrowserLayoutRuntime::ReplayStream& stream : replay.streams) {
     QString error;
-    const DatasetId dataset_id = streaming_manager_->startFromLayout(stream.record, stream.expanded_config, &error);
+    const DatasetId dataset_id = streaming_manager_->startFromLayout(stream.record, stream.expanded_config, error);
     if (dataset_id == 0) {
       showBrowserLayoutWarning(
           this, tr("Load source-bound layout"), tr("Stream '%1' could not start: %2").arg(stream.record.id, error));
