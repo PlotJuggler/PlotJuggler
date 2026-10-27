@@ -36,15 +36,6 @@ async function fixture(
   const source = path.join(root, 'source');
   await mkdir(source);
   await Promise.all([
-    writeFile(
-      path.join(source, 'plotjuggler4.html'),
-      '<title>plotjuggler4</title>\n'
-        + '<script src="qtloader.js"></script>\n'
-        + '<img src="qtlogo.svg" width="320" height="200">\n'
-        + '<strong>Qt for WebAssembly: plotjuggler4</strong>\n'
-        + '<script src="plotjuggler4.js"></script>\n'
-        + 'const instance = await qtLoad({\n});\n',
-    ),
     writeFile(path.join(source, 'plotjuggler4.js'), javascript),
     writeFile(path.join(source, 'plotjuggler4.wasm'), Buffer.from([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0])),
     writeFile(path.join(source, 'qtloader.js'), 'export const qtLoad = async () => {};\n'),
@@ -184,22 +175,35 @@ test('the entrypoint explains a page that cannot run instead of booting it', asy
     + 'Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp.'));
 });
 
-test("the loading screen shows PlotJuggler's logo and name, not Qt's template ones", async t => {
+test("the loading page is PlotJuggler's own, with no Qt template text", async t => {
   const { root, source } = await fixture(t);
   const output = path.join(root, 'deploy');
   const manifest = await packageWasm({ source, output, version: 'test' });
   const entrypoint = await readFile(path.join(output, 'index.html'), 'utf8');
 
   const logo = `assets/${manifest.bundleId}/plotjuggler.svg`;
-  assert.ok(entrypoint.includes(`<img src="${logo}"`));
+  assert.ok(entrypoint.includes(`<link rel="icon" href="${logo}"`));
   assert.ok(entrypoint.includes('<title>PlotJuggler</title>'));
-  assert.ok(entrypoint.includes('<strong>PlotJuggler</strong>'));
   assert.doesNotMatch(entrypoint, /qtlogo|Qt for WebAssembly|plotjuggler4</);
+  assert.doesNotMatch(entrypoint, /@[A-Z_]+@/, 'every template placeholder is filled');
   assert.deepEqual(
     await readFile(path.join(output, logo)),
     await readFile(path.join(ROOT, 'resources', 'plotjuggler.svg')),
   );
   assert.ok(!manifest.files.some(file => file.path.endsWith('qtlogo.svg')));
+});
+
+test('the loading page measures the download against the unpacked module', async t => {
+  const { root, source } = await fixture(t);
+  const output = path.join(root, 'deploy');
+  const manifest = await packageWasm({ source, output, version: 'test' });
+  const entrypoint = await readFile(path.join(output, 'index.html'), 'utf8');
+
+  // Browsers count decoded bytes, while Content-Length is the compressed size, so the page carries the real one.
+  assert.ok(entrypoint.includes('const WASM_BYTES = 8;'));
+  assert.ok(entrypoint.includes(`'assets/${manifest.bundleId}/plotjuggler4.wasm'`));
+  // The page compiles the module itself and hands it to Qt's loader, which then never fetches it.
+  assert.match(entrypoint, /await qtLoad\(\{[\s\S]*module: wasmModule/);
 });
 
 // docs/wasm/Caddyfile serves packages on robots. Caddy cannot read the manifest, so its MIME table

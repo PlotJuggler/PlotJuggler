@@ -78,19 +78,12 @@ const BROTLI_QUALITY = 9;
 const BROTLI_WINDOW = 22;
 const GZIP_LEVEL = 9;
 const DEPLOYMENT_FORMAT = 'org.plotjuggler.wasm-deployment.v1';
-// Runs in the entrypoint before the threaded runtime loads: without a secure,
-// cross-origin isolated page (no SharedArrayBuffer) it would stop on "Loading...".
+// The entry page states it before the threaded runtime loads: without a secure,
+// cross-origin isolated page (no SharedArrayBuffer) it would never start.
 const ISOLATION_REQUIREMENT = 'The app must be served over HTTPS, or from localhost, with the headers '
   + 'Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp.';
-const ISOLATION_PREFLIGHT = `if (!window.isSecureContext || !window.crossOriginIsolated) {
-                    status.textContent = 'PlotJuggler cannot start: this page '
-                        + (window.isSecureContext ? 'is not cross-origin isolated. ' : 'was not served over HTTPS. ')
-                        + ${JSON.stringify(ISOLATION_REQUIREMENT)};
-                    status.setAttribute('role', 'alert');
-                    console.error(status.textContent);
-                    return;
-                }
-                `;
+// PlotJuggler's own entry page; Qt's generated plotjuggler4.html is not deployed.
+const ENTRY_TEMPLATE = path.join(REPOSITORY_ROOT, 'packaging', 'web', 'loading.html.in');
 
 function usage() {
   return `Usage: node scripts/package_wasm.mjs [options]
@@ -164,12 +157,13 @@ function isCompressible(fileName) {
   return COMPRESSIBLE_TYPES.has(path.extname(fileName).toLowerCase());
 }
 
-function replaceExactlyOnce(contents, source, replacement) {
-  const first = contents.indexOf(source);
-  if (first < 0 || contents.indexOf(source, first + source.length) >= 0) {
-    throw new Error(`Expected exactly one ${JSON.stringify(source)} in plotjuggler4.html`);
-  }
-  return `${contents.slice(0, first)}${replacement}${contents.slice(first + source.length)}`;
+function fillTemplate(template, values) {
+  return template.replace(/@([A-Z_]+)@/g, (placeholder, name) => {
+    if (!(name in values)) {
+      throw new Error(`${ENTRY_TEMPLATE} has an unknown placeholder ${placeholder}`);
+    }
+    return values[name];
+  });
 }
 
 async function compressedRepresentations(contents) {
@@ -325,7 +319,7 @@ ${withPresets ? '\n/presets/*\n  Cache-Control: no-cache\n' : ''}`;
 }
 
 async function validateSource(sourceRoot) {
-  const required = ['plotjuggler4.html', ...REQUIRED_ARTIFACTS, NOTICES];
+  const required = [...REQUIRED_ARTIFACTS, NOTICES];
   await Promise.all(required.map(async fileName => {
     const candidate = path.join(sourceRoot, fileName);
     try {
@@ -444,25 +438,14 @@ export async function packageWasm(options) {
     const notices = sourceAssets.find(asset => asset.fileName === NOTICES);
     files.push(await writeAsset(stagingRoot, NOTICES, notices.contents, true));
 
-    let entrypoint = await readFile(path.join(sourceRoot, 'plotjuggler4.html'), 'utf8');
-    for (const fileName of REQUIRED_ARTIFACTS.filter(name => name !== 'plotjuggler4.wasm')) {
-      entrypoint = replaceExactlyOnce(
-        entrypoint,
-        `src="${fileName}"`,
-        `src="${bundlePath}/${fileName}"`,
-      );
-    }
-    entrypoint = replaceExactlyOnce(entrypoint, 'src="qtlogo.svg"', `src="${bundlePath}/${LOGO}"`);
-    entrypoint = replaceExactlyOnce(entrypoint, '<title>plotjuggler4</title>', '<title>PlotJuggler</title>');
-    entrypoint = replaceExactlyOnce(entrypoint, 'Qt for WebAssembly: plotjuggler4', 'PlotJuggler');
-    const qtLoadMarker = 'const instance = await qtLoad({';
-    entrypoint = replaceExactlyOnce(
-      entrypoint,
-      qtLoadMarker,
-      `${ISOLATION_PREFLIGHT}${qtLoadMarker}`
-        + `\n                    locateFile: filename => filename === 'plotjuggler4.wasm'`
-        + ` ? '${bundlePath}/plotjuggler4.wasm' : filename,`,
-    );
+    const wasm = files.find(file => file.path === `${bundlePath}/plotjuggler4.wasm`).representations;
+    const entrypoint = fillTemplate(await readFile(ENTRY_TEMPLATE, 'utf8'), {
+      BUNDLE: bundlePath,
+      VERSION: version.trim(),
+      WASM_BYTES: String(wasm.identity.bytes),
+      DOWNLOAD_MB: String(Math.max(1, Math.round((wasm.br ?? wasm.identity).bytes / 1e6))),
+      ISOLATION_REQUIREMENT: JSON.stringify(ISOLATION_REQUIREMENT),
+    });
     files.push(await writeAsset(
       stagingRoot,
       'index.html',

@@ -95,7 +95,13 @@ The packaging command refuses missing, invalid, or single-threaded build
 outputs. To prevent a mistyped `--output` from deleting unrelated data, it
 only replaces an absent directory, an empty directory, or a prior package with
 a valid PlotJuggler deployment manifest. It emits a stable entrypoint and
-content-addressed assets:
+content-addressed assets. The entrypoint is PlotJuggler's own page,
+`packaging/web/loading.html.in`, not Qt's generated `plotjuggler4.html`: it
+streams the module into `WebAssembly.compileStreaming` through a byte counter,
+hands the compiled module to Qt's loader (`qt.module`), and shows the progress
+against the decoded module size the packager writes into it (the browser counts
+decoded bytes, while `Content-Length` is the compressed size). A failed start
+shows its reason and a Reload button.
 
 ```text
 build-wasm/deploy/
@@ -107,7 +113,7 @@ build-wasm/deploy/
 │   ├── plotjuggler4.js[.br|.gz]
 │   ├── plotjuggler4.wasm[.br|.gz]
 │   ├── qtloader.js[.br|.gz]
-│   ├── plotjuggler.svg[.br|.gz]   (the loading screen's logo)
+│   ├── plotjuggler.svg[.br|.gz]   (the page icon)
 │   └── THIRD_PARTY_NOTICES.txt[.br|.gz]
 └── presets/            (with --presets: the tree, text and mesh files also as [.br|.gz])
 ```

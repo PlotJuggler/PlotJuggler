@@ -129,12 +129,12 @@ test('cold Chromium boot runs the threaded app from the content-addressed packag
 
   await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
   const startup = await page.waitForFunction(() => {
-    const status = document.querySelector('#qtstatus')?.textContent || '';
-    if (status.startsWith('Application exit')) {
-      return { error: status };
+    const state = document.body?.dataset.state;
+    if (state === 'failed') {
+      return { error: document.querySelector('#qtstatus')?.textContent || '' };
     }
     const screen = document.querySelector('#screen');
-    if (status === 'Loading...' && screen && getComputedStyle(screen).display !== 'none') {
+    if (state === 'ready' && screen && getComputedStyle(screen).display !== 'none') {
       return { ready: true };
     }
     return false;

@@ -64,7 +64,7 @@ async function expectEntrypoint(baseUrl, manifest, options = {}) {
   expectIsolationHeaders(entrypoint.headers);
   expect(entrypoint.body).toContain(`src="assets/${manifest.bundleId}/plotjuggler4.js"`);
   expect(entrypoint.body).toContain(`src="assets/${manifest.bundleId}/qtloader.js"`);
-  expect(entrypoint.body).toContain(`? 'assets/${manifest.bundleId}/plotjuggler4.wasm' : filename`);
+  expect(entrypoint.body).toContain(`const WASM_URL = 'assets/${manifest.bundleId}/plotjuggler4.wasm';`);
 }
 
 // Requests every representation a manifest `file` entry declares and checks its exact bytes,
