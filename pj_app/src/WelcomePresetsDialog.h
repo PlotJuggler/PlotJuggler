@@ -25,10 +25,10 @@ namespace PJ {
  * "Upload your own…".
  *
  * A pure view: it loads nothing. Picking an entry (or selectPreset()) emits `presetSelected` and
- * shows that load in progress, with Cancel, until the shell reports its end through
- * layoutLoadFinished(): success closes the dialog, a failure shows the reason with Retry, a cancel
- * gives the list back. Thumbnails download one at a time through the dialog's own capped
- * PresetController; one that fails or does not decode keeps its placeholder and never blocks the
+ * shows that load in progress, with Cancel (and how much of its data has downloaded, through
+ * layoutLoadProgress()), until the shell reports its end through layoutLoadFinished(): success closes the dialog, a
+ * failure shows the reason with Retry, a cancel gives the list back. Thumbnails download one at a time through the
+ * dialog's own capped PresetController; one that fails or does not decode keeps its placeholder and never blocks the
  * entry. GUI thread only; never runs a nested event loop (the shell shows it with show()).
  */
 class WelcomePresetsDialog : public Dialog {
@@ -49,6 +49,11 @@ class WelcomePresetsDialog : public Dialog {
   /// The end of a layout load by URL (MainWindow::layoutUrlLoadFinished). Ignored unless `url` is
   /// the layout of the preset this dialog is showing as loading.
   void layoutLoadFinished(const QUrl& url, bool ok, const QString& reason);
+
+  /// A download of the load shown (MainWindow::layoutUrlLoadProgress), ignored for any other `url`: fills the bar
+  /// with `received` of `total` bytes, or keeps it busy with the count alone when `total` is -1. Once
+  /// received == total the download is done and the dialog says the preset is opening, until layoutLoadFinished().
+  void layoutLoadProgress(const QUrl& url, qint64 received, qint64 total);
 
   /// Closing the dialog (✕, Escape, close()) while a load is shown also asks to cancel it.
   /// Overridden here, not closeEvent(): the title-bar ✕ and Escape reach reject() without a

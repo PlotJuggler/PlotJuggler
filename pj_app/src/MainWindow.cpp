@@ -5941,9 +5941,11 @@ void MainWindow::downloadNextReplaySource() {
     return;
   }
   const QString path = staged.input->backing_path;
+  const QUrl layout_url = browser_layout_runtime_->loading_url;
   browser_layout_runtime_->downloads->downloadToFile(
       url, path, kMaxPresetDataBytes - replay.staged_bytes,
-      [this, generation, input = std::move(*staged.input)](const PresetController::FileDownload& file) mutable {
+      [this, generation, layout_url,
+       input = std::move(*staged.input)](const PresetController::FileDownload& file) mutable {
         if (!isActiveReplayDownload(generation)) {
           return;
         }
@@ -5956,9 +5958,16 @@ void MainWindow::downloadNextReplaySource() {
           failReplayDownload(file.error);
           return;
         }
+        // Whole, also when its size was not declared up front.
+        emit layoutUrlLoadProgress(layout_url, file.size, file.size);
         browser_layout_runtime_->replay->staged_bytes += file.size;
         input.content_sha256 = file.sha256;
         addDownloadedReplaySource(generation, std::move(input), QString());
+      },
+      [this, generation, layout_url](qint64 received, qint64 total) {
+        if (isActiveReplayDownload(generation)) {
+          emit layoutUrlLoadProgress(layout_url, received, total);
+        }
       });
 }
 
@@ -6488,6 +6497,7 @@ void MainWindow::startBrowserPresets(const QUrl& page_url) {
         connect(presets_dialog_, &WelcomePresetsDialog::uploadRequested, action_open_data_, &QAction::trigger);
         connect(presets_dialog_, &WelcomePresetsDialog::cancelRequested, this, &MainWindow::cancelLayoutFromUrl);
         connect(this, &MainWindow::layoutUrlLoadFinished, presets_dialog_, &WelcomePresetsDialog::layoutLoadFinished);
+        connect(this, &MainWindow::layoutUrlLoadProgress, presets_dialog_, &WelcomePresetsDialog::layoutLoadProgress);
         ui_->actionPresets->setVisible(true);
         presets_dialog_->show();
         if (!deep_link_error.isEmpty()) {

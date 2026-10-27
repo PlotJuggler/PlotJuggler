@@ -364,6 +364,11 @@ class MainWindow : public QMainWindow {
   // the load's state is cleared, so a handler may start the next one.
   void layoutUrlLoadFinished(const QUrl& url, bool ok, const QString& reason);
 
+  // A data source of the loadLayoutFromUrl for `url` is downloading: `received` bytes so far of `total` (its
+  // declared size, or -1 when unknown), at most about ten times a second. Each source ends with received == total,
+  // its size, once it has fully arrived. A layout with several sources reports each in turn.
+  void layoutUrlLoadProgress(const QUrl& url, qint64 received, qint64 total);
+
   // Fires when any chrome metric changes. Bundled so consumers always
   // recompute layout from a consistent snapshot:
   //   band height       = (icon_size + icon_padding) + 2 * layout_padding

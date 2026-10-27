@@ -11,10 +11,15 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QCoreApplication>
+#include <QFrame>
 #include <QImage>
 #include <QLabel>
 #include <QList>
+#include <QPoint>
+#include <QProgressBar>
 #include <QPushButton>
+#include <QRect>
 #include <QSignalSpy>
 #include <QString>
 #include <QTest>
@@ -178,6 +183,94 @@ TEST(WelcomePresetsDialogTest, ClosingWhileLoadingCancels) {
   QTest::keyClick(&dialog, Qt::Key_Escape);
   EXPECT_FALSE(dialog.isVisible());
   EXPECT_EQ(cancel.size(), 2);
+}
+
+// While the picked preset's recording downloads, the bar shows how much of it has arrived; once it has, the bar
+// goes busy again while the app opens it. Progress for another URL is not this load's.
+TEST(WelcomePresetsDialogTest, DownloadProgressFillsTheBar) {
+  const PJ::PresetEntry first = presetEntry(u"first"_s);
+  const PJ::PresetEntry second = presetEntry(u"second"_s);
+  PJ::WelcomePresetsDialog dialog({first, second});
+  dialog.show();
+  auto* bar = dialog.findChild<QProgressBar*>(u"progressLoading"_s);
+  auto* status = dialog.findChild<QLabel*>(u"labelStatus"_s);
+  auto* retry_button = dialog.findChild<QPushButton*>(u"buttonRetry"_s);
+  ASSERT_NE(bar, nullptr);
+  ASSERT_NE(status, nullptr);
+  ASSERT_NE(retry_button, nullptr);
+
+  dialog.selectPreset(first.id);
+  EXPECT_EQ(bar->maximum(), 0);  // busy until a byte count arrives
+
+  dialog.layoutLoadProgress(first.layout_url, 120'000'000, 261'000'000);
+  EXPECT_EQ(bar->minimum(), 0);
+  EXPECT_EQ(bar->maximum(), 1000);
+  EXPECT_EQ(bar->value(), 459);
+  EXPECT_EQ(status->text(), u"Downloading FIRST: 120 of 261 MB"_s);
+
+  dialog.layoutLoadProgress(second.layout_url, 1, 2);
+  EXPECT_EQ(bar->value(), 459);
+  EXPECT_EQ(status->text(), u"Downloading FIRST: 120 of 261 MB"_s);
+
+  // No declared size: the count without a percentage.
+  dialog.layoutLoadProgress(first.layout_url, 130'000'000, -1);
+  EXPECT_EQ(bar->maximum(), 0);
+  EXPECT_EQ(status->text(), u"Downloading FIRST: 130 MB"_s);
+
+  dialog.layoutLoadProgress(first.layout_url, 261'000'000, 261'000'000);
+  EXPECT_EQ(bar->maximum(), 0);
+  EXPECT_EQ(status->text(), u"Opening FIRST…"_s);
+
+  // The terminal still decides; Retry starts over on a busy bar.
+  dialog.layoutLoadFinished(first.layout_url, false, u"download"_s);
+  EXPECT_EQ(status->text(), u"FIRST could not be loaded."_s);
+  dialog.layoutLoadProgress(first.layout_url, 1, 2);  // no load shown: ignored
+  EXPECT_EQ(status->text(), u"FIRST could not be loaded."_s);
+  retry_button->click();
+  EXPECT_EQ(bar->maximum(), 0);
+  EXPECT_EQ(status->text(), u"Loading FIRST…"_s);
+  dialog.layoutLoadProgress(first.layout_url, 0, 261'000'000);
+  EXPECT_EQ(bar->maximum(), 1000);
+  EXPECT_EQ(bar->value(), 0);
+  dialog.layoutLoadFinished(first.layout_url, true, {});
+  EXPECT_FALSE(dialog.isVisible());
+}
+
+// Cards line up whatever their descriptions' lengths: one height (the tallest's), thumbnails of one size on one
+// top, and the Open buttons on one line at the bottom.
+TEST(WelcomePresetsDialogTest, CardsShareOneHeightAndAlignment) {
+  PJ::PresetEntry wordy = presetEntry(u"wordy"_s);
+  wordy.description =
+      u"A long description that wraps over several lines of its card, much longer than the others, "
+      u"so that its card would be the tallest of the row on its own."_s;
+  PJ::PresetEntry terse = presetEntry(u"terse"_s);
+  terse.description = u"Short."_s;
+  const PJ::PresetEntry plain = presetEntry(u"plain"_s);
+  PJ::WelcomePresetsDialog dialog({wordy, terse, plain});
+  dialog.resize(720, 460);
+  dialog.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&dialog));
+  QCoreApplication::processEvents();
+
+  const QList<QFrame*> cards = dialog.findChildren<QFrame*>(u"presetCard"_s);
+  ASSERT_EQ(cards.size(), 3);
+  const auto top_in_dialog = [&dialog](const QWidget* widget) { return widget->mapTo(&dialog, QPoint(0, 0)).y(); };
+  QList<QRect> thumbnails;
+  QList<int> open_tops;
+  for (const PJ::PresetEntry& entry : {wordy, terse, plain}) {
+    const auto* thumbnail = entryWidget<QLabel>(dialog, u"labelPresetThumbnail"_s, entry.id);
+    const auto* open = entryWidget<QPushButton>(dialog, u"buttonOpenPreset"_s, entry.id);
+    ASSERT_NE(thumbnail, nullptr);
+    ASSERT_NE(open, nullptr);
+    thumbnails.push_back(QRect(QPoint(0, top_in_dialog(thumbnail)), thumbnail->size()));
+    open_tops.push_back(top_in_dialog(open));
+  }
+  for (int index = 1; index < 3; ++index) {
+    EXPECT_EQ(cards[index]->height(), cards[0]->height()) << index;
+    EXPECT_EQ(top_in_dialog(cards[index]), top_in_dialog(cards[0])) << index;
+    EXPECT_EQ(thumbnails[index], thumbnails[0]) << index;
+    EXPECT_EQ(open_tops[index], open_tops[0]) << index;
+  }
 }
 
 TEST(WelcomePresetsDialogTest, BrokenThumbnailKeepsThePlaceholder) {

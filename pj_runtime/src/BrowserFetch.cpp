@@ -40,6 +40,7 @@ constexpr int kHashPieceBytes = 256 * 1024;
 
 struct Transfer {
   std::function<void(BrowserFetchResult)> done;
+  FetchProgress progress;
   /// Engaged only for a transfer that reports its SHA-256; `piece` is the page's copy buffer for it.
   std::optional<QCryptographicHash> hash;
   QByteArray piece;
@@ -80,12 +81,14 @@ void complete(quint32 id, BrowserFetchResult result) {
 // the file outside the wasm heap. The file is sized once from Content-Length (MEMFS would otherwise regrow, and
 // copy, it as chunks extend it); a compressed response declares its encoded length, which the final truncate
 // corrects. The idle timer restarts with every chunk, so a large body may take as long as it keeps arriving.
-// A `piece_bytes` of 0 skips hashing. `status` tracks the phase so an exception maps to its FetchStatus. A body-less
-// answer (a 204 may come without one) is an empty file. The macro joins the body into one line: every statement ends in
-// a semicolon.
+// A `piece_bytes` of 0 skips hashing; `report_progress` reports the bytes received on the first chunk, then every
+// 100 ms or so, and once at the end. Without a Content-Encoding header (CORS hides it cross-origin unless exposed) a
+// body that outgrows its declared length is a decoded one, so its total becomes unknown. `status` tracks the phase so
+// an exception maps to its FetchStatus. A body-less answer (a 204 may come without one) is an empty file. The macro
+// joins the body into one line: every statement ends in a semicolon.
 // clang-format off
 EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const char* path_utf8, double max_bytes,
-                                     int idle_timeout_ms, int piece_bytes), {
+                                     int idle_timeout_ms, int piece_bytes, int report_progress), {
   const kOk = 0;
   const kNetwork = 1;
   const kHttpError = 2;
@@ -128,6 +131,8 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
         status = kTooLarge;
         return;
       }
+      let total = declared > 0 && !response.headers.get('Content-Encoding') ? declared : -1;
+      let reported = -Infinity;
       status = kWriteFailed;
       stream = FS.open(path, 'w');
       if (declared > 0) {
@@ -158,6 +163,16 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
           Module._pj_browser_fetch_hash(id, piece.length);
         }
         received += bytes.length;
+        if (total >= 0 && received > total) {
+          total = -1;
+        }
+        if (report_progress && performance.now() - reported >= 100) {
+          reported = performance.now();
+          Module._pj_browser_fetch_progress(id, received, total);
+        }
+      }
+      if (report_progress) {
+        Module._pj_browser_fetch_progress(id, received, total);
       }
       status = kWriteFailed;
       if (received !== declared) {
@@ -197,8 +212,10 @@ EM_JS(void, pj_browser_fetch_abort, (unsigned id), {
 // browserFetchToFile(), hashing the body only when `hash` is set.
 quint32 startFetch(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout, bool hash,
-    std::function<void(BrowserFetchResult)> done) {
+    std::function<void(BrowserFetchResult)> done, FetchProgress progress = {}) {
   const quint32 id = addTransfer(std::move(done), max_bytes, idle_timeout);
+  const bool report_progress = static_cast<bool>(progress);
+  transfers()[id].progress = std::move(progress);
   if (!isHttpUrl(url)) {
     complete(id, {.error = u"only http(s) URLs can be fetched: %1"_s.arg(url.toString())});
     return id;
@@ -210,7 +227,8 @@ quint32 startFetch(
   }
   pj_browser_fetch_start(
       id, url.toString(QUrl::FullyEncoded).toUtf8().constData(), path.toUtf8().constData(),
-      static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), hash ? kHashPieceBytes : 0);
+      static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), hash ? kHashPieceBytes : 0,
+      report_progress ? 1 : 0);
   return id;
 }
 
@@ -218,9 +236,9 @@ quint32 startFetch(
 
 quint32 browserFetchToFile(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout,
-    std::function<void(BrowserFetchResult)> done) {
+    std::function<void(BrowserFetchResult)> done, FetchProgress progress) {
   Q_ASSERT(emscripten_is_main_browser_thread());
-  return startFetch(url, path, max_bytes, idle_timeout, /*hash=*/true, std::move(done));
+  return startFetch(url, path, max_bytes, idle_timeout, /*hash=*/true, std::move(done), std::move(progress));
 }
 
 quint32 browserFetchToBytes(
@@ -277,6 +295,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_hash(quint32 id, int bytes
   if (found != PJ::transfers().end() && found->second.hash) {
     found->second.hash->addData(QByteArrayView(found->second.piece.constData(), bytes));
   }
+}
+
+/// Transfer `id` has received `bytes` so far, of `total` (-1: unknown). Delivered from the event loop, like `done`, so
+/// a progress queued before the completion runs before it.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_progress(quint32 id, double bytes, double total) {
+  QTimer::singleShot(0, [id, received = static_cast<qint64>(bytes), declared = static_cast<qint64>(total)]() {
+    const auto found = PJ::transfers().find(id);
+    if (found == PJ::transfers().end() || !found->second.progress) {
+      return;
+    }
+    const PJ::FetchProgress progress = found->second.progress;  // a copy: the callback may cancel the transfer
+    progress(received, declared);
+  });
 }
 
 /// The page's fetch for transfer `id` ended with `status` (a FetchStatus) after writing `bytes`.

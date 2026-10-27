@@ -24,6 +24,7 @@
 #include <QWidget>
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 #include "FileLoader.h"
 #include "LayoutXml.h"
@@ -224,9 +225,22 @@ TEST_F(RemotePresetReplayTest, RecordingAboveTheSmallFileCapLoads) {
   const QByteArray recording(static_cast<qsizetype>(PJ::kMaxPresetDownloadBytes + 1), 'x');
   server_.route(u"/large/layout.pj4.xml"_s, presetLayout({{u"recording.mock"_s, sha256(recording)}}));
   server_.route(u"/large/recording.mock"_s, recording);
+  // The download's progress is reported for the layout's URL, ending with the whole recording.
+  QList<QUrl> progress_urls;
+  std::pair<qint64, qint64> last_progress{-1, -1};
+  QObject::connect(
+      window_.get(), &PJ::MainWindow::layoutUrlLoadProgress, [&](const QUrl& url, qint64 received, qint64 total) {
+        progress_urls.push_back(url);
+        last_progress = {received, total};
+      });
 
   EXPECT_EQ(loadPreset(u"/large/layout.pj4.xml"_s), u"ok"_s);
   EXPECT_EQ(datasetSources(*window_).size(), 1);
+  ASSERT_FALSE(progress_urls.isEmpty());
+  for (const QUrl& url : progress_urls) {
+    EXPECT_EQ(url, server_.url(u"/large/layout.pj4.xml"_s));
+  }
+  EXPECT_EQ(last_progress, (std::pair<qint64, qint64>{recording.size(), recording.size()}));
 }
 
 // A preset that loads replaces the data the preset before it brought, and only

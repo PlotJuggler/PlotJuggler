@@ -18,6 +18,8 @@
 #include <chrono>
 #include <functional>
 
+#include "pj_runtime/HttpGet.h"
+
 class QObject;
 
 namespace PJ {
@@ -38,13 +40,17 @@ struct BrowserFetchResult {
  * is redirected to http. Other redirects follow the browser's own policy and limit (not the desktop's
  * `NoLessSafeRedirectPolicy` with 4 hops), out of the caller's sight: there is no final URL to report.
  *
+ * `progress`, when set, runs from the event loop as chunks arrive, at most about every 100 ms plus once when the
+ * body has ended, always before `done` and never after a cancel. Its total is -1 when the response declares no length,
+ * or a Content-Encoding (the page counts decoded bytes, Content-Length the encoded ones).
+ *
  * `done` runs exactly once, later, from the event loop, unless cancelBrowserFetch() runs first. On failure the
  * file may hold part of the body: removing it is the caller's job, also after a cancel. Browser main (GUI)
  * thread only. Returns the id cancelBrowserFetch() takes.
  */
 quint32 browserFetchToFile(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout,
-    std::function<void(BrowserFetchResult)> done);
+    std::function<void(BrowserFetchResult)> done, FetchProgress progress = {});
 
 /**
  * browserFetchToFile() for a caller that wants the body in memory (a small file): it goes through a scratch MEMFS

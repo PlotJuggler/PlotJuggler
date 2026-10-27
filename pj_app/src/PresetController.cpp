@@ -37,14 +37,16 @@ void PresetController::download(const QUrl& url, DownloadDone done, qint64 limit
       });
 }
 
-void PresetController::downloadToFile(const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done) {
+void PresetController::downloadToFile(
+    const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done, FetchProgress progress) {
   cancel();
 #ifdef PJ_TARGET_WASM
-  const quint32 id = browserFetchToFile(url, path, limit, kTransferTimeout, std::move(done));
+  const quint32 id = browserFetchToFile(url, path, limit, kTransferTimeout, std::move(done), std::move(progress));
   cancel_fetch_ = [id]() { cancelBrowserFetch(id); };
 #else
-  cancel_fetch_ =
-      fetchBytesWithLimit(url, limit, kTransferTimeout, this, [path, done = std::move(done)](FetchedBytes fetched) {
+  cancel_fetch_ = fetchBytesWithLimit(
+      url, limit, kTransferTimeout, this,
+      [path, done = std::move(done)](FetchedBytes fetched) {
         FileDownload file;
         file.error = std::move(fetched.error);
         file.limit_exceeded = fetched.limit_exceeded;
@@ -60,7 +62,8 @@ void PresetController::downloadToFile(const QUrl& url, const QString& path, qint
           }
         }
         done(std::move(file));
-      });
+      },
+      nullptr, std::move(progress));
 #endif
 }
 

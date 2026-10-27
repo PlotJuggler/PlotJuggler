@@ -7,7 +7,7 @@ const { startSecondOrigin } = require('./second_origin');
 // Hosts preset folders under /presets/ on a real second origin, so every
 // download crosses the browser's CORS checks like a preset on its own host.
 // `files` maps a path below /presets/ to its body, or to a second_origin route
-// ({ body, cors = true, hold }). url(path) names a hosted (or missing) path.
+// ({ body, cors = true, hold, headers }). url(path) names a hosted (or missing) path.
 async function startPresetServer(files) {
   const routes = Object.fromEntries(Object.entries(files).map(([path, file]) => [
     `/presets/${path}`,

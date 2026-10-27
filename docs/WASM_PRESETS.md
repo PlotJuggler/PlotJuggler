@@ -16,7 +16,7 @@ A preset tree is a directory with an `index.json` and one folder per preset:
 ```text
 presets/
 ├── index.json
-└── signals/
+└── waveforms/
     ├── layout.pj4.xml
     ├── data.csv
     └── thumbnail.png
@@ -26,8 +26,8 @@ presets/
 against the index URL:
 
 ```json
-{"presets": [{"id": "signals", "title": "Signals", "description": "...",
-              "layout": "signals/layout.pj4.xml", "thumbnail": "signals/thumbnail.png"}]}
+{"presets": [{"id": "waveforms", "title": "Waveforms", "description": "...",
+              "layout": "waveforms/layout.pj4.xml", "thumbnail": "waveforms/thumbnail.png"}]}
 ```
 
 The layout is what **File → Save Layout with sources** writes
@@ -252,13 +252,14 @@ fake bridge behind Caddy and `docs/wasm/Caddyfile` (see
 They open every sample into its views (the ANYmal robot with all its meshes, its
 compressed lidar scan, its three camera views and its joint, IMU and speed plots;
 the self-driving car's camera, lidar following the car and motion plots; the
-signals plots), check that seeking
+built-in filters sample's raw and moving-average plots, its filter restored from
+the layout), check that seeking
 between two points inside the recording changes what the 3D view draws (a scene
 drawn once and then frozen fails), reopen ANYmal after switching sample while
 watching the page's longest frame gap, and make loads fail after staging
 and after importing to check that the staged files are released and the open
-sample is left as it was. The suites never reach the network, so the ANYmal cases get
-its recording and robot (about 86 MB) from a local mirror of
+sample is left as it was. The suites never reach the network, so the samples get
+their hosted recordings and models from a local mirror of
 `https://assets.plotjuggler.io`: `npm --prefix tests/wasm run fetch:assets` fills
 `build-wasm-assets/` (`PJ_WASM_ASSETS_MIRROR` moves it), checking every file
 against `tests/wasm/fixtures/hosted_assets.json`; a hosted file a sample adds
@@ -330,5 +331,5 @@ curl -fsSI "$BASE/presets/index.json" | grep -iE '^(cross-origin|cache-control|c
 curl -fsS "$BASE/presets/index.json" | node -e 'JSON.parse(require("fs").readFileSync(0))'
 ```
 
-Then open `$BASE/?preset=signals` in Chromium and Firefox: its two plots appear,
+Then open `$BASE/?preset=builtin_filters` in Chromium and Firefox: its two plots appear,
 and the browser console shows no errors.

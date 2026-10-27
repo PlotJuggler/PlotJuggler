@@ -452,7 +452,10 @@ test('a ?preset= deep link opens that preset directly; an unknown or repeated on
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_DIRECTORY = path.join(__dirname, '..', '..', 'resources', 'wasm-presets');
-const SAMPLE_IDS = ['anymal', 'city_drive', 'signals'];
+const SAMPLE_IDS = ['builtin_filters', 'anymal', 'city_drive'];
+const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
+// A small CSV preset the download and robot-hosting cases serve; not a deployed sample.
+const SIGNALS_FIXTURE = path.join(__dirname, 'fixtures', 'signals');
 
 async function startSamples() {
   if (!fs.existsSync(path.join(SAMPLES_PACKAGE, 'manifest.json'))) {
@@ -612,8 +615,18 @@ async function expectCityDriveViews(run) {
   await expectSceneMoves(run, cityDriveReady);
 }
 
-async function expectSignalsViews(run) {
-  await expectPlots(run, [['data/sine', 'data/cosine', 'data/square'], ['data/sawtooth', 'data/chirp', 'data/damped']]);
+// The Built-in filters sample: the raw gyro yaw rate, the same signal through the built-in
+// moving_average, and its built-in integral (the heading change), restored from the layout's
+// <data_processors> and drawn.
+const FILTERS_YAW_RATE = 'nissan/gps/duro/imu/angular_velocity/z';
+async function expectFiltersViews(run) {
+  await expectPlots(run, [
+    [FILTERS_YAW_RATE], [`${FILTERS_YAW_RATE}[Moving Average]/value`], [`${FILTERS_YAW_RATE}[Integral]/value`],
+  ]);
+  const before = count(run.messages, 'PJ_WASM_FILTER_RECIPES count=');
+  await run.page.evaluate(() => window.pjWasmReportFilterResultProbe());
+  await expect.poll(() => count(run.messages, 'PJ_WASM_FILTER_RECIPES count=')).toBeGreaterThan(before);
+  expect(latest(run.messages, 'PJ_WASM_FILTER_RECIPES count=')).toMatch(/count=2 ids=(integral,moving_average|moving_average,integral) /);
 }
 
 test('every deployed sample opens into its own views', async ({ page }) => {
@@ -624,7 +637,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     const context = page.context();
     await page.close();
     for (const [id, expectViews] of [
-      ['anymal', expectAnymalViews], ['city_drive', expectCityDriveViews], ['signals', expectSignalsViews],
+      ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['city_drive', expectCityDriveViews],
     ]) {
       const run = await bootSamples(context, errors, samples);
       let dialog;
@@ -686,16 +699,15 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
       console.log(`anymal ${pass}: longest frame gap ${Math.round(longest)} ms`);
       expect(longest, pass).toBeLessThan(MAX_FRAME_GAP_MS);
       // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a
-      // replaced sample releases its own, and the CSV parses eagerly and lets
-      // its file go, so nothing else is left behind.
+      // replaced sample releases its own, so nothing else is left behind.
       expect(await stagedFiles(run.page, run.messages), pass).toBe(staged);
     };
 
     await openAnymal('load', 1);
     // Switching to another sample brings its views and replaces the one it
     // switched from; reopening ANYmal brings its robot back.
-    expect(await pickSample(run, samples, 'signals')).toContain('PJ_WASM_LAYOUT_LOAD_OK');
-    await expectSignalsViews(run);
+    expect(await pickSample(run, samples, 'builtin_filters')).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    await expectFiltersViews(run);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
     await openAnymal('reopen', 1);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
@@ -723,30 +735,33 @@ test('a sample that fails releases what it staged and leaves the open sample as 
     const workspace = comparableWorkspace(await workspaceSnapshot(run.page, run.messages));
     const staged = await stagedFiles(run.page, run.messages);
 
-    const signalsCsv = fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'data.csv'));
-    const signalsLayout = fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'layout.pj4.xml'), 'utf8');
-    for (const [file, body, reason] of [
+    // The sample's layout and recording, as the mirror serves them.
+    const filtersLayout = fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'builtin_filters', 'layout.pj4.xml'), 'utf8')
+      .replaceAll(HOSTED_ORIGIN, samples.mirror.origin);
+    const recordingUrl = elementAttributes(filtersLayout, 'fileInfo', 'filename')[0];
+    for (const [url, body, reason] of [
       // Staged, then refused: these bytes are not the file the layout names.
-      ['signals/data.csv', Buffer.concat([signalsCsv, Buffer.from('9.98,0,1,1,1,0,1\n')]), 'fingerprint'],
+      [recordingUrl, Buffer.from('not the recording'), 'fingerprint'],
       // Imported, then rolled back: the layout cannot apply.
-      ['signals/layout.pj4.xml', signalsLayout.replace(
+      [samples.url('builtin_filters/layout.pj4.xml'), filtersLayout.replace(
         /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/, '$1<scene3d><layer object_type="not_a_type"/></scene3d>$2'),
       'apply-after-source-load'],
     ]) {
-      const url = samples.url(file);
-      await run.page.route(url, route => route.fulfill({ status: 200, body }));
-      const outcome = await pickSample(run, samples, 'signals');
+      // A page route wins over the context's mirror route; the recording is cross-origin.
+      await run.page.route(url, route => route.fulfill({
+        status: 200, body, headers: { 'Access-Control-Allow-Origin': '*' } }));
+      const outcome = await pickSample(run, samples, 'builtin_filters');
       await run.page.unroute(url);
-      expect(outcome, file).toContain('PJ_WASM_LAYOUT_LOAD_FAILED');
-      expect(outcome, file).toContain(`reason=${reason}`);
+      expect(outcome, url).toContain('PJ_WASM_LAYOUT_LOAD_FAILED');
+      expect(outcome, url).toContain(`reason=${reason}`);
       await dismissDialogs(run.page, run.messages);
       await expect.poll(() => stagedFiles(run.page, run.messages), { timeout: 15000 }).toBe(staged);
-      expect(await datasetCount(run.page, run.messages), file).toBe(1);
-      expect(comparableWorkspace(await workspaceSnapshot(run.page, run.messages)), file).toBe(workspace);
+      expect(await datasetCount(run.page, run.messages), url).toBe(1);
+      expect(comparableWorkspace(await workspaceSnapshot(run.page, run.messages)), url).toBe(workspace);
     }
     // Served its own files again, it opens in place of the open sample.
-    expect(await pickSample(run, samples, 'signals')).toContain('PJ_WASM_LAYOUT_LOAD_OK');
-    await expectSignalsViews(run);
+    expect(await pickSample(run, samples, 'builtin_filters')).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    await expectFiltersViews(run);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
     expect(errors).toEqual([]);
   } finally {
@@ -767,13 +782,20 @@ test('a preset recording downloads without passing through the wasm heap', async
   await bootApp(page, messages, errors);
   const recordingBytes = 96 * 1024 * 1024;
   const server = await startPresetServer({
-    'big/layout.pj4.xml': fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'layout.pj4.xml')),
-    'big/data.csv': Buffer.alloc(recordingBytes, '0'),
+    'big/layout.pj4.xml': fs.readFileSync(path.join(SIGNALS_FIXTURE, 'layout.pj4.xml')),
+    'big/data.csv': { body: Buffer.alloc(recordingBytes, '0'), headers: { 'content-length': String(recordingBytes) } },
   });
   try {
     const before = await wasmHeap(page, messages);
     expect(await openPreset(page, messages, server.url('big/layout.pj4.xml'))).toContain('reason=fingerprint');
     expect(server.requests).toEqual(['GET /presets/big/layout.pj4.xml', 'GET /presets/big/data.csv']);
+    // Its progress arrived against the declared size while it downloaded, and ended whole.
+    const progress = messages
+      .map(message => message.match(/PJ_WASM_LAYOUT_URL_PROGRESS received=(-?\d+) total=(-?\d+)/))
+      .filter(Boolean)
+      .map(match => ({ received: Number(match[1]), total: Number(match[2]) }));
+    expect(progress.at(-1)).toEqual({ received: recordingBytes, total: recordingBytes });
+    expect(progress.some(({ received, total }) => total === recordingBytes && received < total)).toBe(true);
     await dismissDialogs(page, messages);
 
     const after = await wasmHeap(page, messages);
@@ -796,7 +818,7 @@ test('a recording answered with no body is refused for its fingerprint', async (
   const messages = [];
   await bootApp(page, messages, errors);
   const server = await startPresetServer({
-    'empty/layout.pj4.xml': fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'signals', 'layout.pj4.xml')),
+    'empty/layout.pj4.xml': fs.readFileSync(path.join(SIGNALS_FIXTURE, 'layout.pj4.xml')),
     'empty/data.csv': { body: '', status: 204 },
   });
   try {

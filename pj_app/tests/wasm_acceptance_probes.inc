@@ -262,11 +262,21 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_supersede_source_layout_picker
 }
 
 // Opens globalThis.pjWasmProbeLayoutUrl through MainWindow::loadLayoutFromUrl,
-// the entry point a preset deep link and the preset dialog use.
+// the entry point a preset deep link and the preset dialog use. From the first
+// call on, every layoutUrlLoadProgress is logged as PJ_WASM_LAYOUT_URL_PROGRESS.
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_load_layout_url() {
   const QUrl url(QString::fromStdString(emscripten::val::global("pjWasmProbeLayoutUrl").as<std::string>()));
   for (QWidget* widget : QApplication::topLevelWidgets()) {
     if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      static bool progress_logged = false;
+      if (!std::exchange(progress_logged, true)) {
+        QObject::connect(
+            main_window, &PJ::MainWindow::layoutUrlLoadProgress, [](const QUrl&, qint64 received, qint64 total) {
+              qInfo(
+                  "PJ_WASM_LAYOUT_URL_PROGRESS received=%lld total=%lld", static_cast<long long>(received),
+                  static_cast<long long>(total));
+            });
+      }
       QMetaObject::invokeMethod(
           main_window, [main_window, url]() { main_window->loadLayoutFromUrl(url); }, Qt::QueuedConnection);
       return;

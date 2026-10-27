@@ -1,0 +1,41 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="source" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="filters-tab" tab_name="Built-in filters">
+      <Container>
+        <DockSplitter count="3" orientation="-" sizes="0.33333333;0.33333333;0.33333334">
+          <DockArea id="filters-raw" name="Yaw rate (rad/s)">
+            <plot id="filters-raw-plot" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <curve color="#1f77b4" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" dataset_source="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" field="angular_velocity/z" markers_visible="false" topic="/nissan/gps/duro/imu" visible="true"/>
+            </plot>
+          </DockArea>
+          <DockArea id="filters-smoothed" name="Yaw rate, moving average (rad/s)">
+            <plot id="filters-smoothed-plot" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <curve color="#d62728" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" dataset_source="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" field="value" markers_visible="false" topic="nissan/gps/duro/imu/angular_velocity/z[Moving Average]" visible="true"/>
+            </plot>
+          </DockArea>
+          <DockArea id="filters-integral" name="Heading change, integral of the yaw rate (rad)">
+            <plot id="filters-integral-plot" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <curve color="#2ca02c" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" dataset_source="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" field="value" markers_visible="false" topic="nissan/gps/duro/imu/angular_velocity/z[Integral]" visible="true"/>
+            </plot>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+  <data_processors>
+    <processor input_dataset_id="1" input_dataset_path="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" input_dataset_source="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" input_field="angular_velocity/z" input_topic="/nissan/gps/duro/imu" output_name="nissan/gps/duro/imu/angular_velocity/z[Moving Average]" processor_id="moving_average"><![CDATA[{"compensate_time_offset":true,"window":100}]]></processor>
+    <processor input_dataset_id="1" input_dataset_path="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" input_dataset_source="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" input_field="angular_velocity/z" input_topic="/nissan/gps/duro/imu" output_name="nissan/gps/duro/imu/angular_velocity/z[Integral]" processor_id="integral"><![CDATA[{"custom_dt":1.0,"use_custom_dt":false}]]></processor>
+  </data_processors>
+  <previouslyLoaded_Datafiles>
+    <fileInfo content_sha256="cd16c23dfc5566764376c55fb39fc7afd5666139341fe1491ec743e3e028f154" display_offset_ns="0" filename="https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap" prefix="" timeline_order="0">
+      <dataset display_offset_ns="0" source_index="0" source_name="nissan_leaf_drive.mcap" timeline_order="0"/>
+      <plugin ID="MCAP Loader" filepath_mode="source" manifest_id="mcap-loader"><![CDATA[{"clamp_large_arrays":true,"filepath":"https://assets.plotjuggler.io/v1/nissan_leaf/nissan_leaf_drive.mcap","max_array_size":500,"selected_topics":["/nissan/gps/duro/imu"],"use_header_timestamp":false,"use_log_time":false}]]></plugin>
+    </fileInfo>
+  </previouslyLoaded_Datafiles>
+  <right_panel_state splitter_sizes="1278,0" style="0" width="1"/>
+  <left_panel_state sources_tab="file" streaming_buffer="5" streaming_source=""/>
+  <curve_list_state custom_filter="" datasets_filter="" show_topics="true" show_values="false"/>
+  <chrome_state main_splitter_sizes="400,844"/>
+</root>

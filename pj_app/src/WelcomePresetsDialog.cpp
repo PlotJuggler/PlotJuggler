@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QPixmap>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSize>
 #include <QVBoxLayout>
@@ -29,6 +30,9 @@ constexpr int kColumns = 3;
 constexpr QSize kThumbnailSize{192, 108};
 // A thumbnail decodes whole; an index-supplied image must not claim more than this.
 constexpr int kThumbnailAllocationLimitMb = 64;
+// The bar's resolution while a download's size is known: a tenth of a percent.
+constexpr int kProgressSteps = 1000;
+constexpr qint64 kBytesPerMb = 1'000'000;
 
 }  // namespace
 
@@ -69,6 +73,7 @@ void WelcomePresetsDialog::selectPreset(const QString& id) {
   }
   loading_id_ = id;
   retry_id_.clear();
+  ui_->progressLoading->setRange(0, 0);
   ui_->labelStatus->setText(tr("Loading %1…").arg(selected->title));
   updateControls();
   emit presetSelected(id, selected->layout_url);
@@ -98,6 +103,27 @@ void WelcomePresetsDialog::layoutLoadFinished(const QUrl& url, bool ok, const QS
   updateControls();
   if (ok) {
     close();
+  }
+}
+
+void WelcomePresetsDialog::layoutLoadProgress(const QUrl& url, qint64 received, qint64 total) {
+  const PresetEntry* loading = findPreset(entries_, loading_id_);
+  if (loading == nullptr || loading->layout_url != url) {
+    return;
+  }
+  // The title is untrusted: it goes in through a multi-arg arg(), so a "%2" in it is never substituted.
+  if (total >= 0 && received >= total) {
+    ui_->progressLoading->setRange(0, 0);
+    ui_->labelStatus->setText(tr("Opening %1…").arg(loading->title));
+  } else if (total > 0) {
+    ui_->progressLoading->setRange(0, kProgressSteps);
+    ui_->progressLoading->setValue(static_cast<int>(received * kProgressSteps / total));
+    ui_->labelStatus->setText(
+        tr("Downloading %1: %2 of %3 MB")
+            .arg(loading->title, QString::number(received / kBytesPerMb), QString::number(total / kBytesPerMb)));
+  } else {
+    ui_->progressLoading->setRange(0, 0);
+    ui_->labelStatus->setText(tr("Downloading %1: %2 MB").arg(loading->title, QString::number(received / kBytesPerMb)));
   }
 }
 
@@ -146,7 +172,9 @@ void WelcomePresetsDialog::addEntryCard(const PresetEntry& preset, int index) {
   layout->addWidget(description);
   layout->addStretch();
   layout->addWidget(open);
-  ui_->gridPresets->addWidget(card, index / kColumns, index % kColumns, Qt::AlignTop);
+  // No alignment: the card fills its cell, so a row's cards share the tallest one's height and the stretch above
+  // keeps every Open button on the bottom line.
+  ui_->gridPresets->addWidget(card, index / kColumns, index % kColumns);
   entry_widgets_.push_back({thumbnail, open});
 }
 

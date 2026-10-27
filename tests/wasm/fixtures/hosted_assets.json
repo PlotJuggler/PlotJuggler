@@ -173,6 +173,10 @@
    "sha256": "9288ebb7caccdfe60bdeda3281bc198e2399f14cd58238c648a788ff1263bafe",
    "bytes": 72501497
   },
+  "v1/nissan_leaf/nissan_leaf_drive.mcap": {
+   "sha256": "cd16c23dfc5566764376c55fb39fc7afd5666139341fe1491ec743e3e028f154",
+   "bytes": 2532014
+  },
   "v2/boreas_vehicle/LICENSE": {
    "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
    "bytes": 7048

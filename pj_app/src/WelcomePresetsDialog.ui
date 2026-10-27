@@ -88,10 +88,16 @@
      </item>
      <item>
       <widget class="QProgressBar" name="progressLoading">
-       <property name="maximumSize">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>1</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize">
         <size>
-         <width>140</width>
-         <height>16777215</height>
+         <width>260</width>
+         <height>0</height>
         </size>
        </property>
        <property name="maximum">

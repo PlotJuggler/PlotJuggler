@@ -51,8 +51,10 @@ class PresetController : public QObject {
   /// Writes `url`'s body into the file `path`, created or truncated. The browser streams it there, so a
   /// recording never passes through the wasm heap; the desktop writes it once downloaded. The same
   /// cancellation and http(s) rules as download(); over `limit` sets `limit_exceeded`. The caller owns
-  /// `path`, also after a failure or a cancel.
-  void downloadToFile(const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done);
+  /// `path`, also after a failure or a cancel. `progress` reports the bytes received against the declared size (-1:
+  /// unknown), throttled to about ten calls a second plus the last, always before `done` and never after a cancel.
+  void downloadToFile(
+      const QUrl& url, const QString& path, qint64 limit, FileDownloadDone done, FetchProgress progress = {});
 
   /// Aborts the download in flight, if any, without calling its completion. Idempotent.
   void cancel();

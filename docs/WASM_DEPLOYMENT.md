@@ -363,7 +363,7 @@ references, which a later open reselects.
 ## Presets
 
 A deployment offers presets by publishing `presets/index.json` in the page's
-directory: the page `https://host/app/index.html?preset=signals` reads
+directory: the page `https://host/app/index.html?preset=builtin_filters` reads
 `https://host/app/presets/index.json` (the page's query and fragment play no
 part). The page URL must end in `/` or a file name, because `presets/index.json`
 resolves against it: `https://host/app` would read
@@ -376,7 +376,8 @@ together.
 - **Presets listed:** once the window is up, a welcome dialog offers them (with
   their thumbnails) beside "Upload your own…", which opens the ordinary
   data-file picker; File → Presets reopens it. Picking one opens its layout as
-  above, with Cancel while it loads and Retry if it fails. A thumbnail that does
+  above, with Cancel while it loads (a bar shows how much of each data file
+  has downloaded) and Retry if it fails. A thumbnail that does
   not download or decode shows a placeholder and leaves its preset usable.
 - **No index, or an empty `presets` list:** the page starts exactly as it would
   without the feature: no dialog, no File → Presets, no message (the browser
@@ -389,10 +390,10 @@ together.
   a deep link on a page without a usable index reports an error and loads
   nothing. Other query keys are ignored.
 
-The repository ships three samples in `resources/wasm-presets/` (an ANYmal
-walking a forest trail, whose cameras, lidar, recording and robot model load from
-`https://assets.plotjuggler.io`; a mobile robot on a map; a CSV of waveforms), deployed
-with `--presets`. Preset files are served `no-cache`. How to author a preset,
+The repository ships three samples in `resources/wasm-presets/` (a car's gyro
+through a built-in filter; an ANYmal walking a forest trail; a self-driving car
+with its camera and lidar; their recordings and models load from
+`https://assets.plotjuggler.io`), deployed with `--presets`. Preset files are served `no-cache`. How to author a preset,
 what the packager refuses, and the hosting limits are in
 [`WASM_PRESETS.md`](./WASM_PRESETS.md).
 

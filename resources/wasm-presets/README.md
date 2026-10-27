@@ -11,14 +11,49 @@ for the repository. How to author one, the packaging rules and the hosting notes
 
 | Sample | Files | Bytes |
 |---|---|---|
+| `builtin_filters/` | layout, thumbnail (recording hosted, see below) | 15,010 |
 | `anymal/` | layout, thumbnail (recording and robot models hosted, see below) | 32,273 |
 | `city_drive/` | layout, thumbnail (recording and car model hosted, see below) | 54,455 |
-| `signals/` | layout, CSV, thumbnail | 73,150 |
 
-The layouts, the CSV and this file are authored for this repository and fall
+The layouts and this file are authored for this repository and fall
 under its license (MPL-2.0), and so do the thumbnails: PlotJuggler renders of
 the loaded samples (browser screenshots, downscaled to 384x216, 8-bit palette; the
-ANYmal and city-drive ones show only their 3D view).
+ANYmal and city-drive ones show only their 3D view, the built-in filters one its
+two plots).
+
+## `builtin_filters/` — built-in filters
+
+| File | Bytes |
+|---|---|
+| `layout.pj4.xml` | 4,144 |
+| `thumbnail.png` | 10,866 |
+
+Three plots of one signal: a car's gyro yaw rate (`/nissan/gps/duro/imu`,
+`angular_velocity/z`, about 99 Hz) as recorded, the same signal through the
+built-in `moving_average` filter, and its built-in `integral`, the car's heading
+change in radians (both in `resources/filters/builtin_filters.luau`), which the
+layout's `<data_processors>` applies when it opens. The window is 100
+samples (about 1 s), with **Center timestamp** on so the smoothed curve does not
+lag the raw one by half a window (about 0.5 s). The gyro is quiet (about 0.0025
+rad/s of sample-to-sample noise against turns of ±0.6 rad/s), so the window is
+wide enough to show what a low-pass costs as well as what it removes: the jitter
+goes, and the sharpest turns come out lower and broader. The integral starts at 0 and, as
+a plain sum of a real gyro, drifts slowly. The layout names no filter source
+(`<source_fallback>`): every PlotJuggler has the built-ins.
+
+The layout loads `v1/nissan_leaf/nissan_leaf_drive.mcap` (2,532,014 bytes,
+SHA-256 `cd16c23dfc5566764376c55fb39fc7afd5666139341fe1491ec743e3e028f154`,
+pinned by the layout's `content_sha256`) from the asset host: the file
+`nissan_zala_90_mixed_0.mcap` of
+[JKK_DATASET_02](https://jkk-research.github.io/dataset/jkk_dataset_02/) by the
+JKK Research Center, Széchenyi István University (SZE-JKK), a Nissan Leaf
+driving for 3 min 52 s (51,822 messages: IMU, magnetometer, GNSS pose and
+status, vehicle speed and steering). It is re-compressed with zstd
+(`mcap compress`, 4 MiB chunks; the original's 14 chunks were uncompressed,
+11.2 MB); the messages are unchanged. The layout reads only the IMU topic.
+
+Redistribution basis: the dataset's authors provide it "for research and
+educational purposes" (© SZE-JKK).
 
 ## `anymal/` — ANYmal GrandTour
 
@@ -107,28 +142,3 @@ made, as the license requires. The car model is released under CC0 1.0
 (`LICENSE` beside it). The recording was made with a converter outside
 this repository from the dataset's files; the topics, rates and processing
 above are what it did.
-
-## `signals/` — six waveforms
-
-| File | Bytes |
-|---|---|
-| `layout.pj4.xml` | 3,007 |
-| `data.csv` | 55,522 |
-| `thumbnail.png` | 14,621 |
-
-`data.csv` is generated: 1,001 rows at 50 Hz over 20 s, first column `time` in
-seconds. It is reproduced byte for byte by:
-
-```python
-import math
-fixed = lambda value: "%.6f" % (round(value, 6) + 0.0)
-rows = ["time,sine,cosine,square,sawtooth,chirp,damped"]
-for row in range(1001):
-    seconds = row / 50.0
-    rows.append(",".join([
-        "%.2f" % seconds, fixed(math.sin(math.pi * seconds / 2)), fixed(math.cos(math.pi * seconds / 2)),
-        "1" if (row % 200) < 100 else "-1", fixed((row % 250) / 125.0 - 1),
-        fixed(math.sin(2 * math.pi * (0.05 * seconds + 0.02 * seconds * seconds))),
-        fixed(math.exp(-0.15 * seconds) * math.cos(1.6 * math.pi * seconds))]))
-open("data.csv", "w").write("\n".join(rows) + "\n")
-```

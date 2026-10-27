@@ -15,7 +15,7 @@ async function requestPlotState(page, consoleMessages, previousCount) {
   ).toBeGreaterThan(previousCount);
   const message = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STATE count=')).at(-1) || '';
   const match = message.match(
-    /count=(\d+) titles=([^ ]*) canvas=(\d+),(\d+),(\d+)x(\d+) view=([^,]+),([^,]+),([^,]+),([^ ]+) time=([^ ]+) tracker_enabled=(\d+) tracker_parameter=(\d+) xy=(\d+) style=(\d+) width=(\d+)/,
+    /count=(\d+) titles=(.*?) canvas=(\d+),(\d+),(\d+)x(\d+) view=([^,]+),([^,]+),([^,]+),([^ ]+) time=([^ ]+) tracker_enabled=(\d+) tracker_parameter=(\d+) xy=(\d+) style=(\d+) width=(\d+)/,
   );
   expect(match).not.toBeNull();
   return {
@@ -80,7 +80,7 @@ async function requestMultiPlotState(page, consoleMessages, previousCount) {
 
   const readbacksByPlot = new Map(forSequence('PJ_WASM_MULTI_READBACK').map((message) => {
     const match = message.match(
-      /index=(\d+) plot_id=([^ ]+) curves=([^ ]*) tracker_pixels=(\d+) tracker_bounds=(-?\d+),(-?\d+)\.\.(-?\d+),(-?\d+) text_pixels=(\d+) text_bounds=(-?\d+),(-?\d+)\.\.(-?\d+),(-?\d+) framebuffer=(\d+)x(\d+)/,
+      /index=(\d+) plot_id=([^ ]+) curves=(.*?) tracker_pixels=(\d+) tracker_bounds=(-?\d+),(-?\d+)\.\.(-?\d+),(-?\d+) text_pixels=(\d+) text_bounds=(-?\d+),(-?\d+)\.\.(-?\d+),(-?\d+) framebuffer=(\d+)x(\d+)/,
     );
     expect(match, `unparseable multi-readback message: ${message}`).not.toBeNull();
     const curves = match[3] ? match[3].split(',').map((entry) => {
@@ -110,7 +110,7 @@ async function requestMultiPlotState(page, consoleMessages, previousCount) {
 
   const plots = forSequence('PJ_WASM_MULTI_PLOT').map((message) => {
     const match = message.match(
-      /index=(\d+) dock_id=([^ ]+) plot_id=([^ ]+) titles=([^ ]*) canvas=(\d+),(\d+),(\d+)x(\d+) view=([^,]+),([^,]+),([^,]+),([^ ]+) backend=([^ ]*) vertices=(\d+)/,
+      /index=(\d+) dock_id=([^ ]+) plot_id=([^ ]+) titles=(.*?) canvas=(\d+),(\d+),(\d+)x(\d+) view=([^,]+),([^,]+),([^,]+),([^ ]+) backend=([^ ]*) vertices=(\d+)/,
     );
     expect(match, `unparseable multi-plot message: ${message}`).not.toBeNull();
     return {

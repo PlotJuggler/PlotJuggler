@@ -75,6 +75,9 @@ struct FetchedBytes {
   bool limit_exceeded = false;  ///< The body was larger than `max_bytes`; `error` is downloadLimitMessage().
 };
 
+/// A transfer's bytes received so far and its total: the declared Content-Length, or -1 when unknown.
+using FetchProgress = std::function<void(qint64 received, qint64 total)>;
+
 /// Drops a fetchBytesWithLimit() transfer: its `done` never runs afterwards. Calling it again, or after `done`
 /// ran, does nothing.
 using CancelFetch = std::function<void()>;
@@ -87,11 +90,12 @@ using CancelFetch = std::function<void()>;
  * `done` runs exactly once, later, on `context`'s thread, unless the returned CancelFetch runs or `context` is
  * destroyed first. Desktop: the GET goes through `network` (e.g. one with a disk cache), or, when null, through a
  * manager `context` owns and reuses across calls. The browser bypasses Qt's network backend (BrowserFetch.h) and
- * ignores `network`. GUI thread only; `context` must not be null.
+ * ignores `network`. `progress`, when set, runs as the desktop body arrives (never after `done`); the browser's
+ * in-memory fetch reports none (browserFetchToFile() does). GUI thread only; `context` must not be null.
  */
 CancelFetch fetchBytesWithLimit(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds timeout, QObject* context,
-    std::function<void(FetchedBytes)> done, QNetworkAccessManager* network = nullptr);
+    std::function<void(FetchedBytes)> done, QNetworkAccessManager* network = nullptr, FetchProgress progress = {});
 
 /// The error of a download over `max_bytes`, worded in MiB.
 QString downloadLimitMessage(qint64 max_bytes);

@@ -92,7 +92,7 @@ async function makeSiteRoot(directory) {
   };
   write('presets/index.json', JSON.stringify(PRESET_INDEX));
   write('presets/robot/layout.pj4.xml', robotPreset('${deployment.ws_origin}/bridge', COUNTER_AND_SINE));
-  fs.cpSync(path.join(REPOSITORY, 'resources', 'wasm-presets', 'signals'), path.join(root, 'presets', 'signals'),
+  fs.cpSync(path.join(__dirname, 'fixtures', 'signals'), path.join(root, 'presets', 'signals'),
     { recursive: true });
   const typeFiles = [];
   for (const [extension, contentType] of CONTENT_TYPES) {

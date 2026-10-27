@@ -108,7 +108,7 @@ QNetworkReply* httpGetWithLimit(
 
 CancelFetch fetchBytesWithLimit(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds timeout, QObject* context,
-    std::function<void(FetchedBytes)> done, QNetworkAccessManager* network) {
+    std::function<void(FetchedBytes)> done, QNetworkAccessManager* network, FetchProgress progress) {
   auto cancelled = std::make_shared<bool>(false);
   auto deliver = [cancelled, done = std::move(done)](FetchedBytes fetched) {
     if (!*cancelled) {
@@ -124,6 +124,7 @@ CancelFetch fetchBytesWithLimit(
   }
 #ifdef PJ_TARGET_WASM
   Q_UNUSED(network);
+  Q_UNUSED(progress);
   const quint32 id = browserFetchToBytes(
       url, max_bytes, timeout, context,
       [url, deliver = std::move(deliver)](QByteArray bytes, QString error, bool limit_exceeded) {
@@ -153,6 +154,16 @@ CancelFetch fetchBytesWithLimit(
         }
         deliver(std::move(fetched));
       });
+  if (progress) {
+    // Qt already throttles downloadProgress (about every 100 ms, plus the last one).
+    QObject::connect(
+        reply, &QNetworkReply::downloadProgress, context,
+        [cancelled, progress = std::move(progress)](qint64 received, qint64 total) {
+          if (!*cancelled) {
+            progress(received, total);
+          }
+        });
+  }
   return [cancel, reply]() {
     cancel();
     if (reply && !reply->isFinished()) {

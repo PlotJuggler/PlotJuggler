@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <tuple>
+#include <utility>
 
 #include "PresetController.h"
 #include "http_test_utils.h"
@@ -131,6 +132,41 @@ TEST(PresetControllerTest, DownloadToFileWritesTheBodyAndItsFingerprint) {
   QFile written(path);
   ASSERT_TRUE(written.open(QIODevice::ReadOnly));
   EXPECT_EQ(written.readAll(), QByteArray("recording bytes"));
+}
+
+// The bytes received so far are reported as they arrive, against the declared size, ending at the whole body
+// before the completion runs.
+TEST(PresetControllerTest, DownloadToFileReportsProgress) {
+  LocalHttpServer server;
+  const QByteArray body(2 * 1024 * 1024, 'x');
+  server.setResponse("200 OK", body);
+  QTemporaryDir directory;
+  ASSERT_TRUE(directory.isValid());
+  PJ::PresetController controller;
+  std::optional<PJ::PresetController::FileDownload> result;
+  QList<std::pair<qint64, qint64>> progress;
+  qsizetype progress_at_completion = -1;
+
+  controller.downloadToFile(
+      server.url(), directory.filePath(u"data.mcap"_s), 4 * 1024 * 1024,
+      [&](PJ::PresetController::FileDownload file) {
+        result = std::move(file);
+        progress_at_completion = progress.size();
+      },
+      [&progress](qint64 received, qint64 total) { progress.push_back({received, total}); });
+
+  ASSERT_TRUE(QTest::qWaitFor([&] { return result.has_value(); }, 10000));
+  settle();
+  EXPECT_TRUE(result->error.isEmpty()) << result->error.toStdString();
+  ASSERT_FALSE(progress.isEmpty());
+  EXPECT_EQ(progress_at_completion, progress.size());
+  qint64 previous = 0;
+  for (const auto& [received, total] : progress) {
+    EXPECT_EQ(total, body.size());
+    EXPECT_GE(received, previous);
+    previous = received;
+  }
+  EXPECT_EQ(progress.back().first, body.size());
 }
 
 // Over the caller's limit is flagged apart from other failures: the replay words it as its cap.
