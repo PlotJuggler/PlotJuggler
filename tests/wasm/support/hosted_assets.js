@@ -12,7 +12,7 @@ const MANIFEST = require('../fixtures/hosted_assets.json');
 const MIRROR = path.resolve(
   process.env.PJ_WASM_ASSETS_MIRROR || path.join(__dirname, '..', '..', '..', 'build-wasm-assets'));
 // The deployment's types (scripts/package_wasm.mjs) plus the hosted samples' own.
-const HOSTED_CONTENT_TYPES = [['.jpg', 'image/jpeg'], ['.urdf', 'application/xml']];
+const HOSTED_CONTENT_TYPES = [['.glb', 'model/gltf-binary'], ['.jpg', 'image/jpeg'], ['.urdf', 'application/xml']];
 
 // Serves the mirror on loopback, with the CORS header the host sends, and returns
 // { origin, route(context, samples_origin), close() }. route() rewrites the asset host to that

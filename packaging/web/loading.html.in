@@ -85,7 +85,7 @@
     body[data-state="failed"] .live { filter: grayscale(1); opacity: 0.35; }
     .hint { margin: 14px 0 0; color: var(--muted); font-size: 13px; opacity: 0.8; }
     body[data-state="failed"] .hint { display: none; }
-    #retry {
+    #retry, #continue {
       margin-top: 18px;
       padding: 9px 22px;
       border: 0;
@@ -96,6 +96,12 @@
       font-size: 14px;
       cursor: pointer;
     }
+    #mobile { display: none; max-width: 30em; margin: 6px 0 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+    #mobile strong { color: var(--fg); font-weight: 600; }
+    body[data-state="confirm"] #mobile { display: block; }
+    body[data-state="confirm"] .meter, body[data-state="confirm"] .hint { display: none; }
+    #continue { display: none; }
+    body[data-state="confirm"] #continue { display: inline-block; }
     #loader > footer { position: absolute; bottom: 18px; left: 0; right: 0; font-size: 12px; color: var(--muted); }
     footer a { color: inherit; }
     @media (prefers-reduced-motion: reduce) {
@@ -129,6 +135,9 @@
       <span id="status">Downloading</span>
     </div>
     <p class="hint">The first visit downloads about @DOWNLOAD_MB@ MB; later visits start from the browser cache.</p>
+    <p id="mobile"><strong>PlotJuggler is not intended for mobile devices.</strong> It is a desktop application:
+      on a phone its windows do not fit the screen. Continuing downloads about @DOWNLOAD_MB@ MB.</p>
+    <button id="continue" type="button">Continue anyway</button>
     <button id="retry" type="button" hidden onclick="location.reload()">Reload</button>
     <noscript>JavaScript is disabled. Please enable JavaScript to use this application.</noscript>
     <footer>PlotJuggler @VERSION@ · <a href="https://plotjuggler.io" target="_blank" rel="noopener">plotjuggler.io</a></footer>
@@ -206,15 +215,19 @@
       'PlotJuggler cannot start: this page '
       + (window.isSecureContext ? 'is not cross-origin isolated. ' : 'was not served over HTTPS. ')
       + @ISOLATION_REQUIREMENT@);
-    // The module downloads and compiles while the scripts below load; a failure reaches init through qtLoad.
-    const wasmModule = isolationFailure ? undefined : compileWithProgress();
-    wasmModule?.then(() => setPhase('preparing', 'Starting'), () => {});
+    // A phone gets the desktop layout, which does not fit: it asks before spending the download.
+    const smallTouchScreen = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600;
+    const pageLoaded = new Promise(resolve => window.addEventListener('load', resolve, { once: true }));
 
-    async function init() {
-      if (isolationFailure) {
-        fail(isolationFailure);
-        return;
-      }
+    // The module downloads and compiles while the scripts below load; a failure reaches init through qtLoad.
+    function start() {
+      body.dataset.state = 'loading';
+      const wasmModule = compileWithProgress();
+      wasmModule.then(() => setPhase('preparing', 'Starting'), () => {});
+      pageLoaded.then(() => init(wasmModule));
+    }
+
+    async function init(wasmModule) {
       const screen = document.querySelector('#screen');
       try {
         await qtLoad({
@@ -240,7 +253,14 @@
       }
     }
 
-    window.addEventListener('load', init);
+    if (isolationFailure) {
+      pageLoaded.then(() => fail(isolationFailure));
+    } else if (smallTouchScreen) {
+      body.dataset.state = 'confirm';
+      document.querySelector('#continue').addEventListener('click', start, { once: true });
+    } else {
+      start();
+    }
   </script>
   <script src="@BUNDLE@/plotjuggler4.js"></script>
   <script src="@BUNDLE@/qtloader.js"></script>

@@ -592,12 +592,15 @@ async function expectAnymalViews(run) {
   await expectSceneMoves(run, anymalReady);
 }
 
-// The lidar scan (Cloudini-compressed) restored in the map frame and drawn. Only once the cursor
-// has passed the first scan, a few tens of milliseconds into the clip.
-const cityDriveReady = (_models, dock) => dock.fixed === 'map' && dock.data.points.live === 1
+// The car model (one mesh, from the asset host) drawn, and the lidar scan (Cloudini-compressed)
+// restored in the map frame and drawn. Only once the cursor has passed the first scan, a few tens
+// of milliseconds into the clip.
+const cityDriveReady = (models, dock) => models.robots.live === 1 && models.robots.placeholders === 0
+  && models.robots.draws > 0 && models.robots.status.length === 1 && /\b1\/1 meshes/.test(models.robots.status[0])
+  && dock.fixed === 'map' && dock.data.points.live === 1
   && dock.data.points.compressed === 1 && dock.data.points.rendered > 0;
 
-// The City drive sample's plots, its front camera view, and the lidar scan following the car.
+// The City drive sample's plots, its front camera view, and the car and its lidar scan moving.
 async function expectCityDriveViews(run) {
   await expectPlots(run, [
     ['applanix/odom/twist/twist/linear/y'],

@@ -2,7 +2,7 @@
 const { createHash } = require('node:crypto');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
-const { test, expect } = require('@playwright/test');
+const { test, expect, devices } = require('@playwright/test');
 const {
   expectEntrypoint,
   expectIsolationHeaders,
@@ -159,4 +159,33 @@ test('cold Chromium boot runs the threaded app from the content-addressed packag
   // The production build discovers the samples deployed beside the page.
   await expect.poll(() => responses.get(`${baseUrl}/presets/index.json`)?.['cache-control']).toBe('no-cache');
   expect(pageErrors).toEqual([]);
+});
+
+test('a phone is warned before the download and starts only on Continue anyway', async ({ browser }) => {
+  const context = await browser.newContext({ ...devices['Pixel 7'] });
+  const page = await context.newPage();
+  const pageErrors = [];
+  const wasmRequests = [];
+  page.on('pageerror', error => pageErrors.push(error.stack || error.message));
+  page.on('request', request => {
+    if (request.url().endsWith('.wasm')) {
+      wasmRequests.push(request.url());
+    }
+  });
+  try {
+    await page.goto(`${baseUrl}/`, { waitUntil: 'load' });
+    await expect(page.locator('#mobile')).toBeVisible();
+    await expect(page.locator('#mobile')).toContainText('not intended for mobile');
+    expect(await page.evaluate(() => document.body.dataset.state)).toBe('confirm');
+    // Nothing is fetched while the warning is up.
+    await page.waitForTimeout(1500);
+    expect(wasmRequests).toEqual([]);
+
+    await page.locator('#continue').click();
+    await page.waitForFunction(() => document.body.dataset.state === 'ready', undefined, { timeout: 90_000 });
+    expect(wasmRequests).toEqual([`${baseUrl}/assets/${manifest.bundleId}/plotjuggler4.wasm`]);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await context.close();
+  }
 });

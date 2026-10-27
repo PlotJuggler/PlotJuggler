@@ -12,7 +12,7 @@ for the repository. How to author one, the packaging rules and the hosting notes
 | Sample | Files | Bytes |
 |---|---|---|
 | `anymal/` | layout, thumbnail (recording and robot models hosted, see below) | 32,273 |
-| `city_drive/` | layout, thumbnail (recording hosted, see below) | 62,224 |
+| `city_drive/` | layout, thumbnail (recording and car model hosted, see below) | 54,455 |
 | `signals/` | layout, CSV, thumbnail | 73,150 |
 
 The layouts, the CSV and this file are authored for this repository and fall
@@ -70,8 +70,8 @@ what it did.
 
 | File | Bytes |
 |---|---|
-| `layout.pj4.xml` | 6,256 |
-| `thumbnail.png` | 55,968 |
+| `layout.pj4.xml` | 6,648 |
+| `thumbnail.png` | 47,807 |
 
 The layout loads `v1/boreas/boreas_city_drive.mcap` (261,292,684 bytes, SHA-256
 `db4e548caa266c5408c266bed953610e82676016ae7f48c890af5b53116db82b`, pinned by
@@ -89,10 +89,22 @@ points; x, y, z and intensity, stored ring by ring and Cloudini-compressed at
 citation the dataset asks for. The layout's 3D view starts centred on the car's
 first position and follows it.
 
+The car itself is `v2/boreas_vehicle/` (1.3 MB) on the asset host: `vehicle.urdf`
+places a stand-in model at the recording's `applanix` frame (on the roof, about
+2.1 m above the road by the lidar's ground returns), 0.4 m forward of centred,
+where its hood edge meets the front camera image where the real hood ends; the
+dataset ships no model of its Lincoln MKZ. The
+mesh, `meshes/prius_hybrid.glb`, is Open Robotics' "Prius Hybrid" from
+[Gazebo Fuel](https://fuel.gazebosim.org/1.0/OpenRobotics/models/Prius%20Hybrid)
+(version 3, by Ian Chen) converted to binary glTF with its textures, scaled to
+the MKZ's 4.9 m in the URDF; `PROVENANCE.txt` gives the source hashes and the
+conversion.
+
 Redistribution basis: the Boreas dataset is released under CC BY 4.0 (its
 [AWS Open Data registry entry](https://registry.opendata.aws/boreas)); the
 `README.txt` beside the recording gives the attribution and lists the changes
-made, as the license requires. The recording was made with a converter outside
+made, as the license requires. The car model is released under CC0 1.0
+(`LICENSE` beside it). The recording was made with a converter outside
 this repository from the dataset's files; the topics, rates and processing
 above are what it did.
 

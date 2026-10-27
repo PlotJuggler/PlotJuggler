@@ -102,7 +102,9 @@ from the moment the page runs (beside the loader scripts), hands the compiled
 module to Qt's loader (`qt.module`) once the page has loaded, and shows the progress
 against the decoded module size the packager writes into it (the browser counts
 decoded bytes, while `Content-Length` is the compressed size). A failed start
-shows its reason and a Reload button.
+shows its reason and a Reload button. On a small touch screen (coarse pointer,
+shorter screen side under 600 CSS px) the page first says PlotJuggler is not
+intended for mobile devices and fetches nothing until "Continue anyway".
 
 ```text
 build-wasm/deploy/

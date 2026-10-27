@@ -17,6 +17,9 @@
                 <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/boreas/boreas_city_drive.mcap" dataset_source="https://assets.plotjuggler.io/v1/boreas/boreas_city_drive.mcap" display_name="/lidar/points" object_type="kCompressedPointCloud" order="0" topic_name="/lidar/points" visible="true">
                   <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-2.2" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
                 </layer>
+                <layer dataset_id="0" display_name="Car" local="true" object_type="kRobotDescription" order="1" topic_name="" visible="true">
+                  <robot_model color="#b2b2b2" display_mode="auto" frame_prefix="" ignore_collada_up_axis="false" source_type="url" source_value="https://assets.plotjuggler.io/v2/boreas_vehicle/vehicle.urdf" visible="true"/>
+                </layer>
                 <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/boreas/boreas_city_drive.mcap" dataset_source="https://assets.plotjuggler.io/v1/boreas/boreas_city_drive.mcap" object_type="kFrameTransforms" topic_name="/tf"/>
                 <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/boreas/boreas_city_drive.mcap" dataset_source="https://assets.plotjuggler.io/v1/boreas/boreas_city_drive.mcap" object_type="kFrameTransforms" topic_name="/tf_static"/>
                 <scene_controls axes_visible="true" collision_opacity="0.40000001" collisions_visible="false" gizmo_opacity="1" gizmo_size_m="1.5" grid_divisions="20" grid_extent_m="100" grid_style="0" grid_visible="false" mesh_opacity="1" meshes_visible="true" tf_parent_lines="false"/>
