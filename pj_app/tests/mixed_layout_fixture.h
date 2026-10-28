@@ -65,7 +65,8 @@ class MixedLayout {
 
   /// A Scene2D dock showing a 64x64 rgba8 image at t = 100 ns: red top half,
   /// blue bottom half. The frame is decoded asynchronously after the viewer shows.
-  PJ::Scene2DDockWidget* createMedia();
+  /// `parent` is set at construction, as the app's dock factory does.
+  PJ::Scene2DDockWidget* createMedia(QWidget* parent = nullptr);
 
  private:
   PJ::SessionManager session_;

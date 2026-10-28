@@ -78,6 +78,9 @@ class MediaViewerWidget : public QRhiWidget {
   Q_PROPERTY(QColor clearColor READ clearColor WRITE setClearColor)
 
  public:
+  /// Construct it parentless and then insert it: Qt enables QRhi composition for a
+  /// window that is already shown only when a QRhiWidget is reparented into it, so
+  /// passing a parent here leaves that window raster ("QRhiWidget: No QRhi").
   explicit MediaViewerWidget(QWidget* parent = nullptr);
   ~MediaViewerWidget() override;
 

@@ -134,7 +134,7 @@ PJ::Scene3DDockWidget* MixedLayout::createScene3D(int cloud_side) {
   return dock;
 }
 
-PJ::Scene2DDockWidget* MixedLayout::createMedia() {
+PJ::Scene2DDockWidget* MixedLayout::createMedia(QWidget* parent) {
   constexpr uint32_t kSize = 64;
   std::vector<uint8_t> pixels(static_cast<size_t>(kSize * kSize * 4));
   for (uint32_t y = 0; y < kSize; ++y) {
@@ -160,7 +160,7 @@ PJ::Scene2DDockWidget* MixedLayout::createMedia() {
   require(topic.has_value(), "image topic");
   require(session_.objectStore().pushOwned(*topic, kObjectTime, PJ::serializeImage(image)).has_value(), "image");
 
-  auto* dock = new PJ::Scene2DDockWidget();
+  auto* dock = new PJ::Scene2DDockWidget(parent);
   dock->setSessionManager(&session_);
   require(dock->addTopic(*topic, PJ::sdk::BuiltinObjectType::kImage, u"image"_s), "image layer");
   dock->onTrackerTime(static_cast<double>(kObjectTime) / 1'000'000'000.0);

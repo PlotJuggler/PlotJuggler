@@ -526,14 +526,12 @@ QWidget* Scene2DDockWidget::createSceneView() {
   layout->addWidget(view_stack_, /*stretch=*/1);
   view_stack_->addWidget(makeEmptyPlaceholder(view_stack_));
 
-#ifdef PJ_TARGET_WASM
-  // Construct parentless so MediaViewerWidget::setApi() completes before
-  // QStackedWidget inserts it into an already-visible top-level hierarchy.
-  // QRhiWidget documents the API choice as immutable once that happens.
+  // Parentless on purpose: Qt switches a shown raster window to QRhi composition
+  // only when a QRhiWidget is reparented into it, and one constructed with its
+  // parent is not a QRhiWidget yet when QWidget's constructor sets it ("QRhiWidget:
+  // No QRhi"). It also lets setApi() finish before the widget is in a visible
+  // hierarchy, after which the API is immutable.
   viewer_ = new MediaViewerWidget();
-#else
-  viewer_ = new MediaViewerWidget(view_stack_);
-#endif
   viewer_->setObjectName(u"scene2dMediaViewer"_s);
   viewer_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   connect(viewer_, &MediaViewerWidget::viewInteractionCommitted, this, [this]() { notifyWorkspaceChanged(); });

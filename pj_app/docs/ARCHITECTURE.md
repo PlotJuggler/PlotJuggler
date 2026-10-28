@@ -439,7 +439,7 @@ Suites that keep their own executable and ctest entry, and why:
   (`QT_RHI_LEAK_CHECK`), and, through the widgets' test-hook lifecycle counters, a
   re-initialize on every float and redock; the same docks added to a window first
   shown without a GPU widget (`RhiMixedLateDockFixture`: the app needs no bootstrap
-  `QRhiWidget`); plus the media viewer's failure state beside them. Registered like
+  `QRhiWidget`) and a Scene2D dock built in place inside one (`RhiScene2DInPlaceTest`); plus the media viewer's failure state beside them. Registered like
   `rhi_dock_lifecycle_test`; both share `tests/support/rhi_dock_test_support.h`. Its
   widgets and data come from `tests/mixed_layout_fixture.h` (`pj_mixed_layout_fixture`,
   public APIs only), which the `mixed_layout_benchmark` demo (`benchmarks/`,

@@ -27,6 +27,7 @@
 #include <QRhiWidget>
 #include <QScreen>
 #include <QTest>
+#include <QVBoxLayout>
 #include <algorithm>
 #include <array>
 #include <functional>
@@ -83,6 +84,18 @@ RhiHold rhiHold(const QObject* widget) {
   return {
       widget->property("pjTestRhiAdoptions").toInt(), widget->property("pjTestRhiReleases").toInt(),
       widget->property("pjTestRhiStale").toInt()};
+}
+
+// The media fixture's image, top on top (Vulkan's clip space is y-down): red top
+// half, blue bottom half.
+bool showsMediaImage(const QImage& image) {
+  if (image.isNull()) {
+    return false;
+  }
+  const int cx = image.width() / 2;
+  const int offset = std::min(image.width(), image.height()) * 3 / 10;
+  return colourNear(image.pixel(cx, image.height() / 2 - offset), Qt::red) &&
+         colourNear(image.pixel(cx, image.height() / 2 + offset), Qt::blue);
 }
 
 ::testing::AssertionResult capturedAtPixelSize(const QImage& image, const QWidget* widget) {
@@ -187,16 +200,12 @@ class RhiMixedDockFixture : public ::testing::Test {
     EXPECT_GT(green, 200) << where << ": no point cloud drawn";
   }
 
-  // The image, top on top (Vulkan's clip space is y-down). Frames are decoded
-  // asynchronously, so this waits for the first one.
+  // Frames are decoded asynchronously, so this waits for the first one.
   void expectMediaRenders(const char* where) {
     QImage image;
     const auto shows_image = [&] {
       image = presentAndGrab(mediaViewer());
-      const int cx = image.width() / 2;
-      const int offset = std::min(image.width(), image.height()) * 3 / 10;
-      return !image.isNull() && colourNear(image.pixel(cx, image.height() / 2 - offset), Qt::red) &&
-             colourNear(image.pixel(cx, image.height() / 2 + offset), Qt::blue);
+      return showsMediaImage(image);
     };
     EXPECT_TRUE(QTest::qWaitFor(shows_image, 5000)) << where << ": the media viewer does not show the image";
     EXPECT_TRUE(capturedAtPixelSize(image, mediaViewer())) << where << ": media";
@@ -312,6 +321,36 @@ class RhiMixedLateDockFixture : public RhiMixedDockFixture {
 
 TEST_F(RhiMixedLateDockFixture, GpuDocksAddedAfterARasterOnlyFirstShowRender) {
   expectAllRender("GPU docks added after the first show");
+}
+
+// The app builds a Scene2D dock in place, its parent a dock already in the shown
+// window, and here no other GPU widget switches that raster window to QRhi
+// composition (see Scene2DDockWidget::createSceneView).
+TEST(RhiScene2DInPlaceTest, MediaDockBuiltInsideAShownRasterWindowRenders) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  WarningCollector warnings;
+  pj_mixed_layout::MixedLayout layout;
+  auto* host = new QWidget();
+  auto* host_layout = new QVBoxLayout(host);
+  host_layout->setContentsMargins(0, 0, 0, 0);
+  layout.addDock(u"host"_s, host, ads::TopDockWidgetArea);
+  layout.window().resize(1000, 760);
+  layout.window().show();
+  if (!QTest::qWaitForWindowExposed(&layout.window())) {
+    PJ_SKIP_WITHOUT_GPU("the main window was never exposed");
+  }
+
+  PJ::Scene2DDockWidget* media = layout.createMedia(host);
+  host_layout->addWidget(media);
+  auto* viewer = media->findChild<PJ::MediaViewerWidget*>(u"scene2dMediaViewer"_s);
+  ASSERT_NE(viewer, nullptr);
+  int render_failures = 0;
+  QObject::connect(viewer, &QRhiWidget::renderFailed, viewer, [&render_failures] { ++render_failures; });
+
+  EXPECT_TRUE(QTest::qWaitFor([viewer] { return showsMediaImage(presentAndGrab(viewer)); }, 5000))
+      << "the media viewer does not show the image";
+  EXPECT_EQ(render_failures, 0) << "the media viewer failed to render";
+  EXPECT_TRUE(warnings.rhiProblems().isEmpty()) << warnings.rhiProblems().join(u'\n').toStdString();
 }
 
 TEST_F(RhiMixedDockFixture, HiddenTabsRenderAgainWhenShown) {
