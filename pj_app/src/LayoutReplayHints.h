@@ -12,11 +12,10 @@ namespace PJ {
 // layout-import batch's stock cache-hit loads share: both saved plugin
 // identities ride their own tier fields, a layout that names a plugin
 // requires it, and replay is automated (dialogs prohibited, the saved preset
-// authoritative — DialogPolicy::kNever). `rewrite` asks the loader to point
-// the preset's filepath at the LoadInput path (step 6 of the §6.2 pipeline —
-// the effective path must reach the plugin, not the saved one).
-[[nodiscard]] inline LoadHints layoutReplayHints(
-    const layout_xml::DataSourceRef& source, bool prefer_reuse, bool rewrite) {
+// authoritative — DialogPolicy::kNever). Every replay points the preset (and
+// its fan-out children) at the path it actually loads, so a moved or copied
+// layout folder replays the data beside it.
+[[nodiscard]] inline LoadHints layoutReplayHints(const layout_xml::DataSourceRef& source, bool prefer_reuse) {
   const bool names_plugin = !source.plugin_manifest_id.isEmpty() || !source.plugin_id.isEmpty();
   return LoadHints{
       .expected_manifest_id = source.plugin_manifest_id,
@@ -25,7 +24,7 @@ namespace PJ {
       .dialog_policy = DialogPolicy::kNever,
       .prefer_reuse = prefer_reuse,
       .require_expected_plugin = names_plugin,
-      .rewrite_preset_filepath = rewrite,
+      .record_saved_filepath = true,
   };
 }
 

@@ -57,8 +57,11 @@ enum class DialogPolicy {
   // Automated (layout-driven) replay: dialogs are PROHIBITED and the saved
   // preset is AUTHORITATIVE — even an intentionally empty one (a plugin
   // whose saveConfig returned nothing is legitimate; it gets the minimal
-  // fresh-filepath config). A preset the plugin rejects FAILS the source
-  // (kFailed). Also skips the QSettings persist an interactive load performs.
+  // fresh-filepath config). The preset's `filepath`, and each fan-out child's,
+  // are rewritten to LoadInput::backing_path before loadConfig(), so a moved
+  // or copied layout replays the file beside it. A non-empty preset that is
+  // not a JSON object, or that the plugin rejects, FAILS the source (kFailed).
+  // Also skips the QSettings persist an interactive load performs.
   kNever,
 };
 
@@ -88,11 +91,11 @@ struct LoadHints {
   // the load visibly instead of silently choosing the first plugin. Default
   // false preserves plain interactive selection.
   bool require_expected_plugin = false;
-  // A saved browser preset contains the old upload's vanished MEMFS filepath.
-  // Rewrite only that field to LoadInput::backing_path before loadConfig().
-  // Honored by the kNever policy (automated replay is the only rewrite
-  // consumer). Default false preserves desktop preset bytes exactly.
-  bool rewrite_preset_filepath = false;
+  // With kNever: the plugin also receives the replaced absolute path as
+  // `__pj_saved_filepath` (native inputs only), so it can rebase sidecar files
+  // that lived beside the old source. Layout replays set it; other rewrites
+  // (source promotion's staging path) do not.
+  bool record_saved_filepath = false;
   // Non-zero -> this load REPLACES the given dataset regardless of source
   // identity (the dataset "Replace" action: the incoming file is usually a
   // different path). Rides the transactional reload machinery — the in-place

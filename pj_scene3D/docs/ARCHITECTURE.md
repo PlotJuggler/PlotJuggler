@@ -1388,7 +1388,12 @@ mode does. It renders in every build, the browser included.
   dock-local: synthetic registry ids that never touch the ObjectStore
   (`Scene3DDockWidget::addRobotModelLayer{,FromUrl}`). The browser receives a local
   URDF as bytes (see "WebAssembly"); native builds read the path, even for a layout
-  the browser saved. A URL source's bare mesh paths, URL-ancestor packages and
+  the browser saved. A layout file stores a file source relative to the layout's
+  folder when the URDF lies at or beneath it (absolute otherwise), and a native load
+  resolves a relative value against that folder, never the working directory
+  (`relocateLayoutResources` / `resolveLayoutResourceUrls`, `layout_resources.h`), so
+  the URDF and the meshes beside it move with the layout; undo snapshots keep the
+  absolute path. A URL source's bare mesh paths, URL-ancestor packages and
   relative package roots anchor at the URDF's final URL (`FetchResult::final_url`,
   after redirects; in the browser Qt reports the requested URL, so there a
   redirected URDF anchors where it was requested). A dock whose only content is
@@ -1601,14 +1606,19 @@ so a re-save keeps it.
 Roots relative to the layout are resolved once, at layout ingress:
 `resolveLayoutResourceUrls` (`layout_resources.h`) rewrites the application's
 copy of the document before anything restores from it, so what the layer
-applies, snapshots and saves is absolute and undo needs no layout context.
-`MainWindow` passes the layout file's `file://` URL on the desktop, the layout's
-http(s) URL for one opened by URL (a preset), and no location for a browser
+applies and snapshots is absolute and undo needs no layout context. Saving to a
+file is the inverse: `relocateLayoutResources` stores a file source's URDF and the
+`file://` roots of a topic or file source relative to the layout when they lie at
+or beneath its folder, so a re-saved layout stays movable; a URL source keeps its
+roots. `MainWindow` passes the layout file's `file://` URL on the desktop, the
+layout's http(s) URL for one opened by URL (a preset), and no location for a browser
 upload. Topic and file sources anchor their relative roots at the layout, a URL
-source's relative `source_value` too, while a URL source's own roots wait for its
-final URDF URL; a relative reference without a location, or malformed roots,
-fails the whole load with nothing changed. A web-hosted layout (an http(s)
-location) never points the app at local files: a file source, a URL source naming
+source's relative `source_value` too, and at a local location a file source's
+relative `source_value` (the browser keeps it as a file label), while a URL source's
+own roots wait for its final URDF URL; a relative root or URL source without a
+location, or malformed roots, fails the whole load with nothing changed. A
+web-hosted layout (an http(s) location) never points the app at local files: a
+file source, a URL source naming
 a local path or a non-http(s) URL, or a `file://` root fails it the same way. Its
 URDFs' own mesh references are out of the layout's sight, so every model also gets
 `remote_resources_only="true"`, which the layer keeps and saves: the resolver then

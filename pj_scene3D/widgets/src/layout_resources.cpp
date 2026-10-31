@@ -7,6 +7,7 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QDomNodeList>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -22,6 +23,15 @@ namespace {
 
 bool isAllowedAbsolute(const QUrl& url) {
   return PJ::isHttpUrl(url) || url.scheme() == "file"_L1;
+}
+
+// The relative reference to a directory: the trailing slash makes the packages beneath it
+// resolve inside it, and a first segment holding ':' would otherwise parse as a scheme.
+QUrl relativeRootUrl(const QString& relative_dir) {
+  const bool colon_in_first_segment = relative_dir.section(u'/', 0, 0).contains(u':');
+  QUrl url;
+  url.setPath((colon_in_first_segment ? u"./"_s : QString()) + relative_dir + u'/', QUrl::DecodedMode);
+  return url;
 }
 
 }  // namespace
@@ -97,6 +107,14 @@ bool resolveLayoutResourceUrls(QDomDocument& document, const QUrl& layout_locati
     if (web_hosted && source_type == "file"_L1) {
       return local(source);
     }
+#ifndef PJ_TARGET_WASM
+    // The browser keeps its file label: it re-asks for the bytes.
+    if (source_type == "file"_L1 && !source.isEmpty() && !QDir::isAbsolutePath(source) &&
+        layout_location.isLocalFile()) {
+      const QDir layout_dir = QFileInfo(layout_location.toLocalFile()).absoluteDir();
+      edits.push_back({model, u"source_value"_s, QDir::cleanPath(layout_dir.absoluteFilePath(source))});
+    }
+#endif
     if (url_source && !source.isEmpty() && QUrl(source).isRelative() && !QDir::isAbsolutePath(source)) {
       if (!anchored) {
         return unanchored(source);
@@ -157,6 +175,39 @@ bool resolveLayoutResourceUrls(QDomDocument& document, const QUrl& layout_locati
     }
   }
   return true;
+}
+
+void relocateLayoutResources(QDomDocument& document, const std::function<QString(const QString&)>& relocate) {
+  const QDomNodeList models = document.elementsByTagName(u"robot_model"_s);
+  for (int index = 0; index < models.size(); ++index) {
+    QDomElement model = models.at(index).toElement();
+    const QString source_type = model.attribute(u"source_type"_s);
+    if (source_type == "url"_L1) {
+      continue;
+    }
+    const QString source = model.attribute(u"source_value"_s);
+    if (source_type == "file"_L1 && !source.isEmpty() && QDir::isAbsolutePath(source)) {
+      model.setAttribute(u"source_value"_s, relocate(source));
+    }
+    std::optional<QMap<QString, QUrl>> roots = parsePackageUrlRoots(model.attribute(u"package_url_roots"_s));
+    if (!roots.has_value()) {
+      continue;  // the load reports it
+    }
+    bool rewritten = false;
+    for (auto root = roots->begin(); root != roots->end(); ++root) {
+      if (!root->isLocalFile()) {
+        continue;
+      }
+      const QString relocated = relocate(QDir::cleanPath(root->toLocalFile()));
+      if (!QDir::isAbsolutePath(relocated)) {
+        *root = relativeRootUrl(relocated);
+        rewritten = true;
+      }
+    }
+    if (rewritten) {
+      model.setAttribute(u"package_url_roots"_s, serializePackageUrlRoots(*roots));
+    }
+  }
 }
 
 }  // namespace pj::scene3d

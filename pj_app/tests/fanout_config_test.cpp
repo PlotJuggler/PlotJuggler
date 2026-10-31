@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,9 +18,12 @@ using namespace Qt::StringLiterals;
 namespace {
 
 using PJ::detail::extractFanout;
+using PJ::detail::kSavedFilepathKey;
 using PJ::detail::parseDisplayName;
 using PJ::detail::parseDisplaySuffix;
 using PJ::detail::rewriteReplayFilepaths;
+using PJ::detail::SavedFilepath;
+using PJ::detail::stripHostReplayKeys;
 using Vec = std::vector<std::string>;
 
 // --- extractFanout: fallback-to-single-instance paths -----------------------
@@ -134,8 +138,8 @@ TEST(RewriteReplayFilepaths, RewritesTopLevelAndRecursiveFanoutChildren) {
   input.insert(u"__pj_fanout"_s, QJsonArray{QString::fromStdString(nested), 7});
   const std::string config = QJsonDocument(input).toJson(QJsonDocument::Compact).toStdString();
 
-  const QJsonDocument rewritten =
-      QJsonDocument::fromJson(QByteArray::fromStdString(rewriteReplayFilepaths(config, u"/fresh/source.mcap"_s)));
+  const QJsonDocument rewritten = QJsonDocument::fromJson(
+      QByteArray::fromStdString(rewriteReplayFilepaths(config, u"/fresh/source.mcap"_s, SavedFilepath::kOmit).value()));
   ASSERT_TRUE(rewritten.isObject());
   const QJsonObject root = rewritten.object();
   EXPECT_EQ(root.value(u"filepath"_s).toString(), u"/fresh/source.mcap"_s);
@@ -157,17 +161,113 @@ TEST(RewriteReplayFilepaths, RewritesTopLevelAndRecursiveFanoutChildren) {
 TEST(RewriteReplayFilepaths, PreservesMalformedNestedFanoutString) {
   const std::string config = R"({"filepath":"old","__pj_fanout":["not json"]})";
   const QJsonObject rewritten =
-      QJsonDocument::fromJson(QByteArray::fromStdString(rewriteReplayFilepaths(config, u"fresh.csv"_s))).object();
+      QJsonDocument::fromJson(
+          QByteArray::fromStdString(rewriteReplayFilepaths(config, u"fresh.csv"_s, SavedFilepath::kOmit).value()))
+          .object();
   EXPECT_EQ(rewritten.value(u"filepath"_s).toString(), u"fresh.csv"_s);
   EXPECT_EQ(rewritten.value(u"__pj_fanout"_s).toArray()[0].toString(), u"not json"_s);
 }
 
-TEST(RewriteReplayFilepaths, EmptyOrMalformedOuterConfigBecomesMinimalObject) {
-  for (const std::string& input : {std::string{}, std::string{"not json"}}) {
-    const QJsonObject rewritten =
-        QJsonDocument::fromJson(QByteArray::fromStdString(rewriteReplayFilepaths(input, u"fresh.csv"_s))).object();
-    EXPECT_EQ(rewritten.size(), 1);
-    EXPECT_EQ(rewritten.value(u"filepath"_s).toString(), u"fresh.csv"_s);
+TEST(RewriteReplayFilepaths, EmptyConfigBecomesMinimalObject) {
+  const QString fresh = QDir::cleanPath(QDir::tempPath() + u"/fresh.csv"_s);
+  const std::string rewritten = rewriteReplayFilepaths("", fresh, SavedFilepath::kRecord).value();
+  EXPECT_EQ(rewritten, QJsonDocument(QJsonObject{{u"filepath"_s, fresh}}).toJson(QJsonDocument::Compact).toStdString());
+}
+
+TEST(RewriteReplayFilepaths, RecordsTheReplacedPathOnTheOuterObjectAndEveryFanoutChild) {
+  const QString root = QDir::cleanPath(QDir::tempPath());
+  const QString old_top = root + u"/old/top.csv"_s;
+  const QString old_child = root + u"/old/child.csv"_s;
+  const QString fresh = root + u"/new/top.csv"_s;
+  const QString child = QString::fromUtf8(
+      QJsonDocument(QJsonObject{{u"filepath"_s, old_child}, {u"keep"_s, 1}}).toJson(QJsonDocument::Compact));
+  const QJsonObject input{{u"filepath"_s, old_top}, {u"__pj_fanout"_s, QJsonArray{child}}};
+  const std::string config = QJsonDocument(input).toJson(QJsonDocument::Compact).toStdString();
+
+  const QJsonObject out =
+      QJsonDocument::fromJson(
+          QByteArray::fromStdString(rewriteReplayFilepaths(config, fresh, SavedFilepath::kRecord).value()))
+          .object();
+  const QString key{kSavedFilepathKey};
+  EXPECT_EQ(out.value(u"filepath"_s).toString(), fresh);
+  EXPECT_EQ(out.value(key).toString(), old_top);
+  const QJsonObject out_child =
+      QJsonDocument::fromJson(out.value(u"__pj_fanout"_s).toArray()[0].toString().toUtf8()).object();
+  EXPECT_EQ(out_child.value(u"filepath"_s).toString(), fresh);
+  EXPECT_EQ(out_child.value(key).toString(), old_child);
+  EXPECT_EQ(out_child.value(u"keep"_s).toInt(), 1);
+}
+
+TEST(RewriteReplayFilepaths, RecordsNothingWhenOmittedOrTheOldValueCannotBeRebased) {
+  const QString root = QDir::cleanPath(QDir::tempPath());
+  const QString fresh = root + u"/new/run.csv"_s;
+  const auto has_key = [&](const std::string& config, SavedFilepath saved) {
+    const QJsonObject out =
+        QJsonDocument::fromJson(QByteArray::fromStdString(rewriteReplayFilepaths(config, fresh, saved).value()))
+            .object();
+    return out.contains(u"__pj_saved_filepath"_s);
+  };
+  const auto with_old = [](const QJsonValue& value) {
+    return QJsonDocument(QJsonObject{{u"filepath"_s, value}}).toJson(QJsonDocument::Compact).toStdString();
+  };
+  EXPECT_FALSE(has_key(with_old(root + u"/old/run.csv"_s), SavedFilepath::kOmit));
+  EXPECT_TRUE(has_key(with_old(root + u"/old/run.csv"_s), SavedFilepath::kRecord));
+  EXPECT_FALSE(has_key(with_old(u"run.csv"_s), SavedFilepath::kRecord));
+  EXPECT_FALSE(has_key(with_old(u"pj-upload://x/run.csv"_s), SavedFilepath::kRecord));
+  EXPECT_FALSE(has_key(with_old(u"s3://b/x"_s), SavedFilepath::kRecord));
+  EXPECT_FALSE(has_key(with_old(root + u"/other/../new/./run.csv"_s), SavedFilepath::kRecord));
+  EXPECT_FALSE(has_key(R"({"keep":1})", SavedFilepath::kRecord));
+  EXPECT_FALSE(has_key(with_old(5), SavedFilepath::kRecord));
+}
+
+TEST(RewriteReplayFilepaths, DropsAStaleSavedFilepathItCannotVouchFor) {
+  const QString root = QDir::cleanPath(QDir::tempPath());
+  const QString fresh = root + u"/new/run.csv"_s;
+  const QJsonObject input{{u"filepath"_s, u"run.csv"_s}, {u"__pj_saved_filepath"_s, root + u"/stale.csv"_s}};
+  const std::string config = QJsonDocument(input).toJson(QJsonDocument::Compact).toStdString();
+  for (const SavedFilepath saved : {SavedFilepath::kOmit, SavedFilepath::kRecord}) {
+    const QJsonObject out =
+        QJsonDocument::fromJson(QByteArray::fromStdString(rewriteReplayFilepaths(config, fresh, saved).value()))
+            .object();
+    EXPECT_FALSE(out.contains(u"__pj_saved_filepath"_s));
+    EXPECT_EQ(out.value(u"filepath"_s).toString(), fresh);
+  }
+}
+
+TEST(RewriteReplayFilepaths, RefusesANonEmptyConfigThatIsNotAJsonObject) {
+  for (const char* input : {"not json", "[1]", "null"}) {
+    EXPECT_FALSE(rewriteReplayFilepaths(input, u"fresh.csv"_s, SavedFilepath::kRecord).has_value()) << input;
+  }
+}
+
+TEST(StripHostReplayKeys, RemovesTheKeyFromTheOuterObjectAndNestedFanoutChildren) {
+  const std::string grandchild = R"({"filepath":"g","__pj_saved_filepath":"/g"})";
+  const QJsonObject child{
+      {u"filepath"_s, u"c"_s},
+      {u"__pj_saved_filepath"_s, u"/c"_s},
+      {u"__pj_fanout"_s, QJsonArray{QString::fromStdString(grandchild)}}};
+  const QJsonObject input{
+      {u"filepath"_s, u"t"_s},
+      {u"__pj_saved_filepath"_s, u"/t"_s},
+      {u"keep"_s, 1},
+      {u"__pj_fanout"_s,
+       QJsonArray{QString::fromUtf8(QJsonDocument(child).toJson(QJsonDocument::Compact)), u"not json"_s}}};
+  const std::string stripped = stripHostReplayKeys(QJsonDocument(input).toJson(QJsonDocument::Compact).toStdString());
+  EXPECT_EQ(stripped.find("__pj_saved_filepath"), std::string::npos) << stripped;
+  const QJsonObject out = QJsonDocument::fromJson(QByteArray::fromStdString(stripped)).object();
+  EXPECT_EQ(out.value(u"keep"_s).toInt(), 1);
+  EXPECT_EQ(out.value(u"__pj_fanout"_s).toArray()[1].toString(), u"not json"_s);
+}
+
+TEST(StripHostReplayKeys, LeavesConfigsWithoutTheKeyByteForByte) {
+  const std::string config = R"({ "b":1,  "a":2 })";
+  EXPECT_EQ(stripHostReplayKeys(config), config);
+}
+
+TEST(StripHostReplayKeys, LeavesNonObjectConfigsUntouched) {
+  for (const std::string config :
+       {std::string("not json __pj_saved_filepath"), std::string(R"(["__pj_saved_filepath"])")}) {
+    EXPECT_EQ(stripHostReplayKeys(config), config);
   }
 }
 

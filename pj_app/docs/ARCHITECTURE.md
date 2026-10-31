@@ -177,7 +177,29 @@ The recording format and the write-queue budget are in
 `pj_app_unit_tests`). `LayoutReplayHints.h` builds the `LoadHints` shared by every
 replay of one layout-recorded source (desktop reload, browser source-bound
 replay, the import batch's cache-hit loads): automated, dialogs prohibited, the
-saved preset authoritative.
+saved preset authoritative, and its filepath (and its fan-out children's) pointed
+at the path the replay actually loads.
+
+Layout-relative paths: on a file save, `saveLayoutToPath` stores these paths
+relative to the layout folder when the target is at or beneath it
+(`relocatableSubpath`): the `<fileInfo>` filenames, every `*_dataset_path`
+qualifier of a source-bound layout (all widget families, scene and State
+Transitions rows included: `stampDatasetSourcePaths`, then
+`relativizeDatasetSourcePaths`), and, in both bindings, a `<robot_model>`'s URDF
+file and `file://` package roots (Scene3D's `relocateLayoutResources`).
+`loadLayoutFromPath` resolves them against the layout folder before any restore
+(`resolveDatasetSourcePaths`, Scene3D's `resolveLayoutResourceUrls`, which leaves a
+browser's file label alone). Undo snapshots and in-memory captures stay absolute,
+browser layouts never pass through either step, and a generic layout carries no
+dataset qualifier.
+
+`__pj_saved_filepath` is transient. It exists only in the config handed to a
+plugin's `loadConfig` on a layout replay of a native file (the fresh load path of
+`rewriteReplayFilepaths` with `SavedFilepath::kRecord`), and never reaches host
+state: the rewrite drops any incoming value before writing its own (so a layout
+that carries the key cannot pass it on), `captureSavedConfig` strips a plugin's
+echo from what the session records, and a `prefer_reuse` hit, which runs no plugin,
+emits its preset through the rewrite with `SavedFilepath::kOmit`.
 
 The `<data_processors>` block (filters, transforms, marker generators, on-demand
 recipes) is saved and restored by `pj_runtime`'s `DerivedObjects` (see

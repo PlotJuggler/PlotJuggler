@@ -837,6 +837,22 @@ class ScopedPointerReset {
   T*& slot_;
 };
 
+// The plugin's canonical post-load config, stripped of host-private replay
+// keys (a plugin may echo `__pj_saved_filepath` back from saveConfig, and the
+// result is what layouts persist). A saveConfig failure is non-fatal: it is
+// logged and yields an empty config, so the layout save skips plugin config.
+std::string captureSavedConfig(DataSourceHandle& handle, const QString& source_name) {
+  std::string captured_config;
+  auto status = handle.saveConfig(captured_config);
+  if (status) {
+    return detail::stripHostReplayKeys(captured_config);
+  }
+  qCWarning(lcFileLoader).noquote() << FileLoader::tr(
+                                           "Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
+                                           .arg(source_name, QString::fromStdString(status.error()));
+  return {};
+}
+
 }  // namespace
 
 // Default ingest policies the app applies to every DataSourceRuntimeHost it
@@ -1273,9 +1289,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // Reuse the id referenced by the layout; keep the recorded config
     // when legacy XML has no preset. Match the recorded source by path
     // (not just the most-recent one) so a multi-file session recovers the
-    // right file's config when reloading any of its sources.
+    // right file's config when reloading any of its sources. The emitted
+    // config is what the session records and a later Reload replays verbatim,
+    // so a preset gets the path rewrite a fresh load gets; one that is not a
+    // JSON object cannot carry a path and is emitted as it is.
     QString emit_config = hints.preset_config_json;
-    if (emit_config.isEmpty()) {
+    if (!emit_config.isEmpty()) {
+      const std::optional<std::string> rewritten =
+          detail::rewriteReplayFilepaths(emit_config.toStdString(), input.backing_path, detail::SavedFilepath::kOmit);
+      if (rewritten.has_value()) {
+        emit_config = QString::fromStdString(*rewritten);
+      }
+    } else {
       // loadedSources() paths are stored normalized; compare canonically so a
       // symlink/relative alias of a tracked file still recovers its config.
       const auto& prior = session_.loadedSources();
@@ -1376,16 +1401,22 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
 
   if (hints.dialog_policy == DialogPolicy::kNever) {
     // Automated (layout-driven) replay: the dialog is prohibited and the
-    // saved preset is AUTHORITATIVE — the browser replay's filepath rewrite
-    // when requested, the minimal fresh-filepath config for an intentionally
-    // empty preset (a plugin whose saveConfig returned nothing is
-    // legitimate), the saved bytes verbatim otherwise. A rejected preset
-    // FAILS the source: silently retrying with the QSettings pre-fill would
-    // replay the layout with a configuration the user never saved.
-    const std::string preset = hints.rewrite_preset_filepath
-                                   ? detail::rewriteReplayFilepaths(preset_bytes, input.backing_path)
-                               : preset_bytes.empty() ? buildLoadConfig(std::string_view{}, input.backing_path)
-                                                      : preset_bytes;
+    // saved preset is AUTHORITATIVE, pointed at the file being loaded
+    // (optionally recording the replaced path for the plugin to rebase
+    // sidecar files). An empty preset is legitimate: a plugin whose saveConfig
+    // returned nothing gets the minimal fresh-filepath config. A rejected
+    // preset FAILS the source: silently retrying with the QSettings pre-fill
+    // would replay the layout with a configuration the user never saved.
+    auto rewritten = detail::rewriteReplayFilepaths(
+        preset_bytes, input.backing_path,
+        hints.record_saved_filepath && !isBrowserUploadIdentity(source_identity) ? detail::SavedFilepath::kRecord
+                                                                                 : detail::SavedFilepath::kOmit);
+    if (!rewritten.has_value()) {
+      (void)fail(
+          tr("Plugin '%1': the saved configuration is not a JSON object and cannot be replayed.").arg(source_name));
+      co_return;
+    }
+    std::string preset = std::move(*rewritten);
     if (auto status = handle.loadConfig(preset); !status) {
       (void)fail(tr("Plugin '%1' rejected the layout's saved configuration: %2")
                      .arg(source_name, QString::fromStdString(status.error())));
@@ -2037,12 +2068,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // Capture the plugin's canonical post-load state AFTER start() + ingest so a
   // layout persists discovered fields / applied defaults / ingest-time policy
   // overrides. saveConfig failures here are non-fatal.
-  std::string captured_config;
-  if (auto status = handle.saveConfig(captured_config); !status) {
-    qCWarning(lcFileLoader).noquote() << tr("Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
-                                             .arg(source_name, QString::fromStdString(status.error()));
-    captured_config.clear();
-  }
+  std::string captured_config = captureSavedConfig(handle, source_name);
 
   // Remember which file each dataset came from so a later load of a DIFFERENT
   // file sharing this basename is not mistaken for a reload of it (the match
@@ -2454,12 +2480,7 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   }
 
   // Capture the plugin's canonical post-load state for layout persistence.
-  std::string captured_config;
-  if (auto status = ctx_->handle.saveConfig(captured_config); !status) {
-    qCWarning(lcFileLoader).noquote() << tr("Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
-                                             .arg(ctx_->source_name, QString::fromStdString(status.error()));
-    captured_config.clear();
-  }
+  std::string captured_config = captureSavedConfig(ctx_->handle, ctx_->source_name);
   session_.setDatasetSourcePath(dataset_id, ctx_->path);
   // Publish the loader-metadata document staged during this (now committed)
   // load — successful and kept-partial commits alike; a discarded load never

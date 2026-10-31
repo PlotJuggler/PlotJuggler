@@ -14,6 +14,7 @@
 #include <QMap>
 #include <QString>
 #include <QUrl>
+#include <functional>
 #include <optional>
 
 class QDomDocument;
@@ -24,6 +25,9 @@ namespace pj::scene3d {
 // `layout_location` (the layout file's own URL: file:// on the desktop):
 //  - a URL source's relative `source_value` (a value naming a local absolute
 //    path is a legacy desktop path and stays as it is);
+//  - a file source's relative `source_value`, only at a local `layout_location`
+//    and never in the browser, which keeps it as a file label: such a URDF is
+//    read from the layout's folder, never the process working directory;
 //  - the `package_url_roots` of a topic or file source. A URL source keeps its
 //    relative roots: they resolve against its fetched URDF's final URL.
 // Absolute references and models without relative ones are left untouched.
@@ -40,6 +44,16 @@ namespace pj::scene3d {
 // exactly as it was, `*error` (if non-null) says why, and false is returned.
 // GUI-thread only, like the document it edits.
 [[nodiscard]] bool resolveLayoutResourceUrls(QDomDocument& document, const QUrl& layout_location, QString* error);
+
+// The save-side inverse, for a document about to be written to a layout file: a
+// file source's absolute `source_value` and the file: `package_url_roots` of a
+// topic or file source go through `relocate`, so what lies with the layout moves
+// with it. `relocate` takes an absolute local path (a root's has no trailing
+// slash) and returns it relative to the layout's folder ("." for the folder
+// itself), or unchanged to keep the reference absolute. A URL source is left
+// alone: its relative roots anchor at the URDF's final URL, not the layout.
+// Malformed roots stay as they are for the load to report.
+void relocateLayoutResources(QDomDocument& document, const std::function<QString(const QString&)>& relocate);
 
 // Parses a `package_url_roots` attribute: a JSON object whose keys are
 // non-empty package names and whose values are relative references or absolute

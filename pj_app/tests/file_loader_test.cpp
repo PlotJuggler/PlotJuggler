@@ -20,6 +20,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -43,6 +44,7 @@
 #include <vector>
 
 #include "FileLoader.h"
+#include "LayoutReplayHints.h"
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/sdk/data_source_plugin_base.hpp"
 #include "pj_datastore/engine.hpp"
@@ -55,6 +57,7 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/MessageBox.h"
+#include "support/filepath_echo_source.h"
 #include "support/loader_test_support.h"
 using namespace Qt::StringLiterals;
 
@@ -816,27 +819,8 @@ class FileLoaderTest : public ::testing::Test {
     return {};
   }
 
-  // The values of the dataset's single topic, in time order. Empty when the
-  // dataset does not have exactly one topic. Row COUNT alone cannot tell one
-  // load's data from another's; the values can.
   [[nodiscard]] std::vector<double> singleTopicValues(PJ::DatasetId dataset_id) {
-    const PJ::DataReader reader = session().createReader();
-    const auto topics = reader.listTopics(dataset_id);
-    if (topics.size() != 1u) {
-      return {};
-    }
-    const auto series = reader.series(topics.front(), 0);
-    if (!series.has_value()) {
-      return {};
-    }
-    std::vector<double> values;
-    values.reserve(series->size());
-    for (std::size_t index = 0; index < series->size(); ++index) {
-      if (const auto sample = series->sampleAt(index); sample.has_value()) {
-        values.push_back(sample->value);
-      }
-    }
-    return values;
+    return pj_app_test::singleTopicValues(session().createReader(), dataset_id);
   }
 
   // Row count of the dataset's single topic, or -1 when the topic set is not
@@ -856,6 +840,23 @@ class FileLoaderTest : public ::testing::Test {
     return std::find(ids.begin(), ids.end(), dataset_id) != ids.end();
   }
 
+  void installEcho() {
+    ASSERT_TRUE(pj_app_test::registerFilepathEcho(app_session_->extensionCatalog().pluginCatalog()));
+    root_ = QDir::cleanPath(data_dir_.path());
+  }
+
+  [[nodiscard]] PJ::LoadHints replayHints(const QString& preset) const {
+    PJ::layout_xml::DataSourceRef ref;
+    ref.plugin_id = u"Filepath Echo Source"_s;
+    ref.plugin_config_json = preset;
+    return PJ::layoutReplayHints(ref, /*prefer_reuse=*/false);
+  }
+
+  [[nodiscard]] static QString presetFor(const QString& old_path) {
+    return pj_app_test::compactJson({{u"filepath"_s, old_path}, {u"keep"_s, 1}});
+  }
+
+  QString root_;
   QTemporaryDir extensions_dir_;
   QTemporaryDir data_dir_;
   std::unique_ptr<PJ::AppSession> app_session_;
@@ -1147,7 +1148,6 @@ TEST_F(FileLoaderTest, BrowserLayoutPresetRewritesOnlyFilepathToFreshBackingPath
       loadHints(uR"({"filepath":"/pj_uploads/expired/1/sensors.mock","delimiter":";","nested":{"keep":7}})"_s);
   hints.dialog_policy = PJ::DialogPolicy::kNever;  // the rewrite rides automated replay only
   hints.require_expected_plugin = true;
-  hints.rewrite_preset_filepath = true;
 
   QString emitted_config;
   bool done = false;
@@ -1209,7 +1209,6 @@ TEST_F(FileLoaderTest, BrowserLayoutEmptyPresetCanStillInjectFreshBackingPathAnd
   PJ::LoadHints hints = loadHints(QString());
   hints.dialog_policy = PJ::DialogPolicy::kNever;  // the rewrite rides automated replay only
   hints.require_expected_plugin = true;
-  hints.rewrite_preset_filepath = true;
 
   EXPECT_TRUE(loadAndWait(mock_path_, hints));
   EXPECT_NE(datasetNamed("sensors.mock"), 0u);
@@ -4055,5 +4054,201 @@ TEST_F(FileLoaderTest, FanoutReportsOneLoadFailedPerFailedEntryAndNoAggregate) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Layout replay points the preset at the loaded file (filepath_echo_source)
+// ---------------------------------------------------------------------------
+
+TEST(LayoutReplayHints, EveryReplayRewritesThePresetFilepath) {
+  for (const bool with_plugin : {false, true}) {
+    for (const bool prefer_reuse : {false, true}) {
+      PJ::layout_xml::DataSourceRef ref;
+      ref.plugin_config_json = u"{}"_s;
+      if (with_plugin) {
+        ref.plugin_id = u"Some Plugin"_s;
+        ref.plugin_manifest_id = u"some-plugin"_s;
+      }
+      const PJ::LoadHints hints = PJ::layoutReplayHints(ref, prefer_reuse);
+      EXPECT_TRUE(hints.record_saved_filepath);
+      EXPECT_EQ(hints.dialog_policy, PJ::DialogPolicy::kNever);
+      EXPECT_EQ(hints.prefer_reuse, prefer_reuse);
+      EXPECT_EQ(hints.require_expected_plugin, with_plugin);
+    }
+  }
+}
+
+TEST_F(FileLoaderTest, DesktopReplayPointsThePresetAtTheLoadedFileAndRecordsTheOldPath) {
+  installEcho();
+  const QString old_path = root_ + u"/old/run.echo"_s;
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"1"_s, u"2"_s, u"3"_s});
+
+  QString config;
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, replayHints(presetFor(old_path)), &config, &reason))
+      << reason.toStdString();
+
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_EQ(probe.configs.size(), 1u);
+  const QJsonObject received = pj_app_test::parseJsonObject(probe.configs.front());
+  EXPECT_EQ(received.value(u"filepath"_s).toString(), path);
+  EXPECT_EQ(received.value(u"__pj_saved_filepath"_s).toString(), old_path);
+  EXPECT_EQ(received.value(u"keep"_s).toInt(), 1);
+  EXPECT_FALSE(pj_app_test::parseJsonObject(config).contains(u"__pj_saved_filepath"_s))
+      << "the transient key must not reach the persisted config";
+  EXPECT_EQ(pj_app_test::parseJsonObject(config).value(u"keep"_s).toInt(), 1);
+  EXPECT_EQ(singleTopicValues(datasetNamed("run.echo")), (std::vector<double>{1, 2, 3}));
+}
+
+// The reuse short-circuit runs no plugin, but what it emits is what the session
+// records and a later Reload replays, so it follows the fresh path's rewrite.
+TEST_F(FileLoaderTest, ReuseHitEmitsTheLoadedFileAndNoHostReplayKey) {
+  installEcho();
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"1"_s});
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, replayHints(presetFor(path))));
+  pj_app_test::resetFilepathEcho();
+
+  PJ::LoadHints hints = replayHints(
+      pj_app_test::compactJson(
+          {{u"filepath"_s, root_ + u"/old/run.echo"_s},
+           {u"__pj_saved_filepath"_s, root_ + u"/older/run.echo"_s},
+           {u"keep"_s, 1}}));
+  hints.prefer_reuse = true;
+  QString config;
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, hints, &config, &reason)) << reason.toStdString();
+
+  EXPECT_TRUE(pj_app_test::filepathEchoProbe().configs.empty()) << "a reuse hit must not run the plugin";
+  const QJsonObject emitted = pj_app_test::parseJsonObject(config);
+  EXPECT_EQ(emitted.value(u"filepath"_s).toString(), path);
+  EXPECT_FALSE(emitted.contains(u"__pj_saved_filepath"_s));
+  EXPECT_EQ(emitted.value(u"keep"_s).toInt(), 1);
+}
+
+TEST_F(FileLoaderTest, ReuseHitEmitsANonObjectPresetUnchanged) {
+  installEcho();
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"1"_s});
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, replayHints(presetFor(path))));
+
+  const QString preset = u"[1,2]"_s;
+  PJ::LoadHints hints = replayHints(preset);
+  hints.prefer_reuse = true;
+  QString config;
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, hints, &config, &reason)) << reason.toStdString();
+  EXPECT_EQ(config, preset);
+}
+
+TEST_F(FileLoaderTest, SourcePromotionStyleRewriteDoesNotRecordTheReplacedPath) {
+  installEcho();
+  const QString old_path = root_ + u"/staging/run.echo"_s;
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"1"_s});
+  PJ::LoadHints hints = replayHints(presetFor(old_path));
+  hints.record_saved_filepath = false;
+
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, hints, nullptr, &reason)) << reason.toStdString();
+
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_EQ(probe.configs.size(), 1u);
+  const QJsonObject received = pj_app_test::parseJsonObject(probe.configs.front());
+  EXPECT_EQ(received.value(u"filepath"_s).toString(), path);
+  EXPECT_FALSE(received.contains(u"__pj_saved_filepath"_s));
+  EXPECT_EQ(received.value(u"keep"_s).toInt(), 1);
+}
+
+TEST_F(FileLoaderTest, FanoutReplayRewritesEveryChildAndRecordsEachChildsOwnOldPath) {
+  installEcho();
+  const QString old_top = root_ + u"/old/top.echo"_s;
+  const QString old_a = root_ + u"/old/a.echo"_s;
+  const QString old_b = root_ + u"/old/b.echo"_s;
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"5"_s});
+  const auto child = [](const QString& old_path, const QString& suffix) {
+    return pj_app_test::compactJson({{u"filepath"_s, old_path}, {u"display_suffix"_s, suffix}});
+  };
+  const QString preset = pj_app_test::compactJson(
+      {{u"filepath"_s, old_top}, {u"__pj_fanout"_s, QJsonArray{child(old_a, u"a"_s), child(old_b, u"b"_s)}}});
+
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, replayHints(preset), nullptr, &reason)) << reason.toStdString();
+
+  const auto probe = pj_app_test::filepathEchoProbe();
+  std::vector<QJsonObject> children;
+  QJsonObject outer;
+  for (const std::string& config : probe.configs) {
+    const QJsonObject object = pj_app_test::parseJsonObject(config);
+    if (object.contains(u"__pj_fanout"_s)) {
+      outer = object;
+    } else {
+      children.push_back(object);
+    }
+  }
+  ASSERT_EQ(outer.value(u"__pj_fanout"_s).toArray().size(), 2);
+  EXPECT_EQ(outer.value(u"filepath"_s).toString(), path);
+  EXPECT_EQ(outer.value(u"__pj_saved_filepath"_s).toString(), old_top);
+  ASSERT_EQ(children.size(), 2u);
+  for (const QJsonObject& object : children) {
+    EXPECT_EQ(object.value(u"filepath"_s).toString(), path);
+    const QString suffix = object.value(u"display_suffix"_s).toString();
+    EXPECT_EQ(object.value(u"__pj_saved_filepath"_s).toString(), suffix == u"a"_s ? old_a : old_b);
+  }
+}
+
+TEST_F(FileLoaderTest, LayoutReplayRefusesAPresetThatIsNotAJsonObject) {
+  installEcho();
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"1"_s});
+  std::vector<PJ::LoadOutcome> outcomes;
+  const auto finished = QObject::connect(
+      loader_.get(), &PJ::FileLoader::loadFinished, loader_.get(),
+      [&](quint64, PJ::LoadOutcome outcome, const QString&, PJ::DatasetId, const QVector<PJ::DatasetId>&) {
+        outcomes.push_back(outcome);
+      });
+
+  QString reason;
+  EXPECT_FALSE(pj_app_test::loadAndWait(*loader_, path, replayHints(u"{not json"_s), nullptr, &reason));
+  pj_app_test::flushQueuedEvents();
+  QObject::disconnect(finished);
+
+  EXPECT_TRUE(reason.contains(u"is not a JSON object"_s)) << reason.toStdString();
+  ASSERT_FALSE(outcomes.empty());
+  EXPECT_EQ(outcomes.back(), PJ::LoadOutcome::kFailed);
+  EXPECT_EQ(datasetNamed("run.echo"), 0u);
+  EXPECT_TRUE(pj_app_test::filepathEchoProbe().configs.empty());
+}
+
+TEST_F(FileLoaderTest, LayoutReplayOfAnEmptyPresetStillLoadsTheFile) {
+  installEcho();
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"4"_s});
+
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, replayHints(QString()), nullptr, &reason))
+      << reason.toStdString();
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_EQ(probe.configs.size(), 1u);
+  EXPECT_EQ(probe.configs.front(), pj_app_test::compactJson({{u"filepath"_s, path}}).toStdString());
+}
+
+TEST_F(FileLoaderTest, BrowserReplayRewritesWithoutRecordingTheReplacedPath) {
+  installEcho();
+  const QString backing = pj_app_test::writeEchoFile(root_ + u"/staged/run.echo"_s, {u"9"_s});
+  const QString preset = pj_app_test::compactJson(
+      {{u"filepath"_s, root_ + u"/pj_uploads/expired/1/run.echo"_s}, {u"delimiter"_s, u";"_s}});
+  PJ::LoadInput input{
+      .display_name = u"run.echo"_s,
+      .backing_path = backing,
+      .source_identity = u"pj-upload://fresh/2/run.echo"_s,
+      .content_sha256 = {},
+      .lease = {},
+  };
+
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, std::move(input), replayHints(preset), nullptr, &reason))
+      << reason.toStdString();
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_EQ(probe.configs.size(), 1u);
+  const QJsonObject received = pj_app_test::parseJsonObject(probe.configs.front());
+  EXPECT_EQ(received.value(u"filepath"_s).toString(), backing);
+  EXPECT_EQ(received.value(u"delimiter"_s).toString(), u";"_s);
+  EXPECT_FALSE(received.contains(u"__pj_saved_filepath"_s));
+}
 
 PJ_APP_TEST_MAIN("file_loader_test")

@@ -9,6 +9,8 @@
 #include <QDomNodeList>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -303,10 +305,9 @@ TEST(ExtractDataSource, PluginIdAndCdataJsonRoundTrip) {
   EXPECT_EQ(refs.front().prefix, u"robot"_s);
   EXPECT_EQ(refs.front().plugin_id, u"DataLoad MCAP"_s);
   EXPECT_EQ(refs.front().plugin_config_json, json);
-  EXPECT_FALSE(refs.front().rewrite_plugin_filepath);
 }
 
-TEST(ExtractDataSource, LogicalPluginFilepathMarkerOptsIntoResolvedReplayPath) {
+TEST(ExtractDataSource, SourceFilepathModeResolvesAgainstLayoutDir) {
   const QString json = uR"({"filepath":"run.csv"})"_s;
   QDomDocument doc = buildDataSourceDoc(u"run.csv"_s, QString(), u"CSV Loader"_s, json);
   QDomElement plugin = doc.documentElement()
@@ -322,7 +323,6 @@ TEST(ExtractDataSource, LogicalPluginFilepathMarkerOptsIntoResolvedReplayPath) {
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().resolved_path, layout_dir.absoluteFilePath(u"run.csv"_s));
   EXPECT_EQ(refs.front().plugin_config_json, json);
-  EXPECT_TRUE(refs.front().rewrite_plugin_filepath);
 }
 
 TEST(ExtractDataSource, PluginCdataWithClosingSequenceRoundTrips) {
@@ -1009,6 +1009,90 @@ TEST(DatasetSourcePath, DesktopResolverLeavesOpaqueUriQualifiersLiteral) {
   EXPECT_EQ(curve.attribute(u"dataset_path"_s), u"pj-upload://session/7/log.csv"_s);
 }
 
+TEST(DatasetSourcePath, RelativizeRelocatesOnlyAbsoluteFilesystemQualifiers) {
+  const QTemporaryDir root;
+  ASSERT_TRUE(root.isValid());
+  const QString inside = QDir(root.path()).filePath(u"in/data/run.mcap"_s);
+  const QString outside = QDir(root.path()).filePath(u"out/far.mcap"_s);
+
+  QDomDocument doc;
+  const QString xml =
+      u"<root>"
+      u"<scene3d><layer dataset_path=\"%1\"/><config_topic dataset_path=\"%1\"/></scene3d>"
+      u"<layer local=\"true\" dataset_id=\"0\"><robot_model source_dataset_path=\"%1\"/>"
+      u"<trail source_dataset_path=\"%1\"/></layer>"
+      u"<scene2d><layer dataset_path=\"%1\"/></scene2d>"
+      u"<state_transitions>"
+      u"<series dataset_path=\"%1\"/><series dataset_path=\"%2\"/><series dataset_path=\"\"/>"
+      u"</state_transitions>"
+      u"<curve dataset_path=\"data/run.mcap\" x_dataset_path=\"logs/http://capture.mcap\"/>"
+      u"<upload><layer dataset_path=\"pj-upload://session/7/log.csv\"/></upload>"
+      u"</root>"_s.arg(inside, outside);
+  ASSERT_TRUE(doc.setContent(xml));
+
+  QStringList calls;
+  PJ::layout_xml::relativizeDatasetSourcePaths(doc, [&](const QString& path) {
+    calls.push_back(path);
+    return path == inside ? u"data/run.mcap"_s : path;
+  });
+
+  QStringList expected(6, inside);
+  expected.push_back(outside);
+  calls.sort();
+  expected.sort();
+  EXPECT_EQ(calls, expected);
+
+  const QDomElement top = doc.documentElement();
+  const QDomElement scene3d = top.firstChildElement(u"scene3d"_s);
+  EXPECT_EQ(scene3d.firstChildElement(u"layer"_s).attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(scene3d.firstChildElement(u"config_topic"_s).attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  const QDomElement robot_layer = top.firstChildElement(u"layer"_s);
+  EXPECT_EQ(robot_layer.attribute(u"dataset_id"_s), u"0"_s);
+  EXPECT_EQ(robot_layer.firstChildElement(u"robot_model"_s).attribute(u"source_dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(robot_layer.firstChildElement(u"trail"_s).attribute(u"source_dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(
+      top.firstChildElement(u"scene2d"_s).firstChildElement(u"layer"_s).attribute(u"dataset_path"_s),
+      u"data/run.mcap"_s);
+  const QDomElement states = top.firstChildElement(u"state_transitions"_s);
+  EXPECT_EQ(states.elementsByTagName(u"series"_s).at(0).toElement().attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(states.elementsByTagName(u"series"_s).at(1).toElement().attribute(u"dataset_path"_s), outside);
+  EXPECT_EQ(states.elementsByTagName(u"series"_s).at(2).toElement().attribute(u"dataset_path"_s), QString());
+  const QDomElement curve = top.firstChildElement(u"curve"_s);
+  EXPECT_EQ(curve.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(curve.attribute(u"x_dataset_path"_s), u"logs/http://capture.mcap"_s);
+  EXPECT_EQ(
+      top.firstChildElement(u"upload"_s).firstChildElement(u"layer"_s).attribute(u"dataset_path"_s),
+      u"pj-upload://session/7/log.csv"_s);
+}
+
+// A colon in a path component is legal on POSIX: only a real source identity is opaque, on
+// save as on load, so such a file beneath the layout moves with it like any other.
+TEST(DatasetSourcePath, RelativizeAndResolveAgreeOnWhatIsOpaque) {
+  const QTemporaryDir root;
+  ASSERT_TRUE(root.isValid());
+  const QString layout = QDir::cleanPath(root.path());
+  const QString with_colon = layout + u"/logs/http://capture.mcap"_s;
+  const QString upload = u"pj-upload://session/7/log.csv"_s;
+  const QString stream = u"pj-stream://robot"_s;
+
+  QDomDocument doc;
+  QDomElement element = doc.createElement(u"curve"_s);
+  element.setAttribute(u"dataset_path"_s, with_colon);
+  element.setAttribute(u"x_dataset_path"_s, upload);
+  element.setAttribute(u"y_dataset_path"_s, stream);
+  doc.appendChild(element);
+
+  PJ::layout_xml::relativizeDatasetSourcePaths(doc, [&layout](const QString& path) {
+    return path.startsWith(layout + u'/') ? path.mid(layout.size() + 1) : path;
+  });
+  EXPECT_EQ(element.attribute(u"dataset_path"_s), u"logs/http://capture.mcap"_s);
+  EXPECT_EQ(element.attribute(u"x_dataset_path"_s), upload);
+  EXPECT_EQ(element.attribute(u"y_dataset_path"_s), stream);
+
+  PJ::layout_xml::resolveDatasetSourcePaths(doc, QDir(layout));
+  EXPECT_EQ(element.attribute(u"dataset_path"_s), QDir::cleanPath(with_colon));
+}
+
 TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   PlotDoc pd = makePlotDoc();
   QDomElement ts = addTsCurve(pd, u"/imu"_s, u"x"_s);
@@ -1141,6 +1225,31 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   EXPECT_FALSE(trail.hasAttribute(u"source_dataset_path"_s));
   EXPECT_EQ(trail.attribute(u"source_topic_name"_s), u"/poses"_s);
   EXPECT_EQ(trail.attribute(u"past_color"_s), u"#ff00ff"_s);
+}
+
+TEST(GenericLayout, StripsStateTransitionsSeriesQualifiers) {
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(
+      u"<root><state_transitions zoom_px_per_ns=\"1\"><series dataset_id=\"7\" dataset_source=\"run.mcap\" "
+      u"dataset_path=\"data/run.mcap\" topic=\"/mode\" field=\"value\" visible=\"0\"/></state_transitions>"
+      u"<other><series dataset_id=\"7\" dataset_source=\"run.mcap\" dataset_path=\"data/run.mcap\"/></other>"
+      u"</root>"_s));
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+
+  const QDomElement series =
+      doc.documentElement().firstChildElement(u"state_transitions"_s).firstChildElement(u"series"_s);
+  EXPECT_FALSE(series.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(series.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(series.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(series.attribute(u"topic"_s), u"/mode"_s);
+  EXPECT_EQ(series.attribute(u"field"_s), u"value"_s);
+  EXPECT_EQ(series.attribute(u"visible"_s), u"0"_s);
+  // The attribute names mean a dataset qualifier wherever they appear.
+  const QDomElement elsewhere = doc.documentElement().firstChildElement(u"other"_s).firstChildElement(u"series"_s);
+  EXPECT_FALSE(elsewhere.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(elsewhere.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(elsewhere.hasAttribute(u"dataset_path"_s));
 }
 
 // Stamping/removing unvalidated ids are source-bound passes and leave scene-owned

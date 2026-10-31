@@ -269,8 +269,9 @@ void SourcePromotionHost::processPromotion(quint64 promotion_id) {
   hints.expected_manifest_id = promotion->loader_plugin_id;
   hints.require_expected_plugin = true;
   hints.preset_config_json = promotion->loader_config_json;
-  hints.dialog_policy = DialogPolicy::kNever;  // no dialogs; the preset is authoritative
-  hints.rewrite_preset_filepath = true;        // the preset's filepath names the provider's staging area
+  // No dialogs; the preset is authoritative, and its filepath, which names the
+  // provider's staging area, is rewritten to the file being loaded.
+  hints.dialog_policy = DialogPolicy::kNever;
   hints.replace_dataset_id = promotion->dataset;
   hints.require_replacement = true;  // strict: a vanished target FAILS, never a fresh load
 

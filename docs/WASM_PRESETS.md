@@ -42,9 +42,10 @@ The layout is what **File → Save Layout with sources** writes
   pinned recording is also kept by each visitor's browser, so a revisit loads
   it without the network (`docs/WASM_DEPLOYMENT.md`); an unpinned one downloads
   on every visit.
-- `<plugin ID="…" manifest_id="…" filepath_mode="source">` — the existing marker
-  that rewrites the plugin configuration's `filepath` to the downloaded file. The
-  same layout therefore also opens on the desktop next to its data.
+- `<plugin ID="…" manifest_id="…" filepath_mode="source">` — every replay rewrites
+  the plugin configuration's `filepath` to the file it loads (here, the downloaded
+  file), so the same layout also opens on the desktop next to its data. The marker
+  itself exists for older 4.x builds, which rewrite only when it is present.
 - A robot whose URDF arrives on a topic resolves `package://` meshes through
   `<robot_model package_url_roots='{"pkg":"rel/dir/"}'>`, relative to the
   layout, or an absolute `https://` root on an asset host. Keep each package's

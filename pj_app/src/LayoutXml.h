@@ -99,12 +99,6 @@ struct DataSourceRef {
   // id; the loader matches by manifest id first, falling back to the display
   // name. Empty for layouts written before the attribute existed.
   QString plugin_manifest_id;
-  // Browser-authored source layouts persist a logical filename in plugin JSON
-  // because their staged backing path expires with the page. On desktop replay,
-  // this additive opt-in asks FileLoader to replace that logical filepath with
-  // resolved_path immediately before loadConfig(). Older/native layouts omit the
-  // marker and therefore retain their existing pass-through behavior.
-  bool rewrite_plugin_filepath = false;
   // Provider-generic source record from an optional <materialize> child of
   // <fileInfo> (a sibling of <plugin>): the provider plugin able to re-obtain
   // this source (provider attribute), that provider's durable identity for it
@@ -298,7 +292,8 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // x_/y_ XY variants) from plotted TS/XY curves, input_dataset_* from
 // data-processor <processor> inputs, dataset_* from <transform> inputs, marker
 // <generator>s, hidden <marker_scope> rows and scene-dock <layer> /
-// <config_topic> elements, and source_dataset_* from <robot_model> / <trail>. The
+// <config_topic> elements, source_dataset_* from <robot_model> / <trail>, and
+// dataset_* from <state_transitions> <series> rows. The
 // topic+field (or topic+type; a generator's input series) identity remains and
 // binds at apply time only when unique in the loaded data — the scene loaders
 // implement the same unique-only fallback as plots and processors. Undo
@@ -313,10 +308,10 @@ using DatasetPathLookup = std::function<QString(std::uint32_t)>;
 // Adds the FileLoader-known full-path companion (`*_dataset_path`) next to every
 // persisted `*_dataset_id` on plotted TS/XY curves, data-processor <processor> and
 // <transform> inputs, marker <generator>s and hidden <marker_scope> rows. A path the
-// element already carries is overwritten. Scene docks are NOT visited — their
-// xmlSaveState stamps the dataset_path companion itself when the dataset has a
-// source path. A dataset the lookup can't place keeps its id/source qualifier
-// unchanged.
+// element already carries is overwritten. Scene docks and State Transitions rows
+// are NOT visited: they serialize the session's absolute path themselves, and a
+// file save makes it layout-relative with relativizeDatasetSourcePaths. A dataset
+// the lookup can't place keeps its id/source qualifier unchanged.
 void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup);
 
 // Makes a document safe to persist outside the live session. A non-zero numeric
@@ -330,8 +325,8 @@ void removeUnvalidatedDatasetIds(QDomDocument& doc);
 
 // Resolves relative `*_dataset_path` qualifiers against the layout file's
 // directory before any plot/processor/scene restore consumes them, so a
-// source-bound layout moves together with its data. Undo snapshots carry no such
-// portable path attributes and are unchanged.
+// source-bound layout moves together with its data. Absolute qualifiers (every
+// undo snapshot's, and a file's paths outside its folder) are only cleaned.
 void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
 
 // Rewrites every non-empty dataset source-path qualifier in place. Covers the
@@ -342,6 +337,14 @@ void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
 // pure XML pass: it performs no filesystem access and changes no schema.
 using DatasetPathRemapper = std::function<QString(const QString&)>;
 void remapDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& remap);
+
+// Save-side inverse of resolveDatasetSourcePaths: hands every ABSOLUTE filesystem
+// qualifier of the five shapes remapDatasetSourcePaths visits to `relocate` and stores
+// its result. Relative values and opaque identities (containing "://") are skipped, so
+// a non-idempotent relocator is safe. Works by value, not by DatasetId, so it also
+// reaches the qualifiers widgets serialize themselves (scene docks, <robot_model> /
+// <trail>, <state_transitions> rows).
+void relativizeDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& relocate);
 
 // Sets `<prefix>dataset_path` to identity_for_dataset[id] on every element of the
 // document whose `<prefix>dataset_id` is a key of the map, for all five qualifier

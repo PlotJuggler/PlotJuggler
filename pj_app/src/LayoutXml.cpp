@@ -333,7 +333,6 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     if (!plugin.isNull()) {
       info.plugin_id = plugin.attribute(u"ID"_s);
       info.plugin_manifest_id = plugin.attribute(u"manifest_id"_s);
-      info.rewrite_plugin_filepath = plugin.attribute(u"filepath_mode"_s) == "source"_L1;
       // QDomElement::text() concatenates all child text/CDATA — exactly
       // the round-trip of doc.createCDATASection above.
       info.plugin_config_json = plugin.text();
@@ -670,28 +669,14 @@ void forEachElement(QDomDocument& doc, Fn&& visit) {
 
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
   // Generic layouts bind structural identities to the unique matching dataset
-  // that is live when the layout is opened. Scene2D/Scene3D loaders implement the
-  // same unique-only fallback as plots and processors; keeping their upload path
+  // that is live when the layout is opened. Scene2D/Scene3D loaders and State Transitions rows
+  // implement the same unique-only fallback as plots and processors; keeping their upload path
   // would both source-bind the layout and leak an ephemeral browser identity.
-  const auto strip_pair = [](QDomElement& element, const DatasetIdentityAttributes& pair) {
-    element.removeAttribute(pair.id);
-    element.removeAttribute(pair.source);
-    element.removeAttribute(pair.path);
-  };
-  forEachPlotCurve(doc, [&strip_pair](QDomElement curve) {
-    for (const DatasetIdentityAttributes& pair : curveQualifiers()) {
-      strip_pair(curve, pair);
-    }
-  });
-  forEachProcessor(doc, [&strip_pair](QDomElement& processor) { strip_pair(processor, qualifier(Qualifier::kInput)); });
-  forEachTransformInput(doc, [&strip_pair](QDomElement& input) { strip_pair(input, qualifier(Qualifier::kPlain)); });
-  forEachGenerator(doc, [&strip_pair](QDomElement& gen) { strip_pair(gen, qualifier(Qualifier::kPlain)); });
-  forEachMarkerScope(doc, [&strip_pair](QDomElement scope) { strip_pair(scope, qualifier(Qualifier::kPlain)); });
-  forEachElement(doc, [&strip_pair](QDomElement& element) {
-    if (element.tagName() == "layer"_L1 || element.tagName() == "config_topic"_L1) {
-      strip_pair(element, qualifier(Qualifier::kPlain));
-    } else if (element.tagName() == "robot_model"_L1 || element.tagName() == "trail"_L1) {
-      strip_pair(element, qualifier(Qualifier::kSource));
+  forEachElement(doc, [](QDomElement& element) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      element.removeAttribute(shape.id);
+      element.removeAttribute(shape.source);
+      element.removeAttribute(shape.path);
     }
   });
 }
@@ -766,8 +751,7 @@ void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {
     if (isOpaqueSourceIdentity(saved_path)) {
       return saved_path;
     }
-    const QFileInfo info(saved_path);
-    return QDir::cleanPath(info.isAbsolute() ? info.absoluteFilePath() : layout_dir.absoluteFilePath(saved_path));
+    return QDir::cleanPath(QFileInfo(saved_path).isAbsolute() ? saved_path : layout_dir.absoluteFilePath(saved_path));
   });
 }
 
@@ -840,6 +824,18 @@ void bindStreamQualifiers(QDomDocument& doc, const QHash<QString, std::uint32_t>
     if (!layer.hasAttribute(own.id) && !layer.hasAttribute(own.source) && !layer.hasAttribute(own.path)) {
       layer.setAttribute(own.id, QString::number(*bound));
     }
+  });
+}
+
+void relativizeDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& relocate) {
+  if (!relocate) {
+    return;
+  }
+  remapDatasetSourcePaths(doc, [&relocate](const QString& saved_path) -> QString {
+    if (isOpaqueSourceIdentity(saved_path) || !QFileInfo(saved_path).isAbsolute()) {
+      return saved_path;
+    }
+    return relocate(saved_path);
   });
 }
 

@@ -2,7 +2,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QLatin1StringView>
 #include <QString>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,6 +16,15 @@ namespace PJ::detail {
 // string) to ask the host to spawn N separate plugin instances — one per
 // entry, each with its own DatasetId. The doubled-underscore prefix marks the
 // key as host-private so it cannot collide with plugin-native fields.
+//
+// `__pj_saved_filepath` is a second host-private key. During layout replay the
+// host writes it with the absolute filepath it replaced (on the outer object
+// and on each fanout child, each carrying its own old value), only when the old
+// value is an absolute filesystem path (no "://") that differs from the new one
+// after QDir::cleanPath. Plugins may read it to rebase
+// auxiliary files that lived beside the old source. It is transient: the host
+// strips it where it could enter host state (a plugin's saveConfig, a layout
+// file), and plugins must never write it from saveConfig.
 //
 // Returns the list of per-instance config strings. If the key is absent or the
 // config is not the expected shape, returns `{ config }` so the host runs a
@@ -39,15 +50,26 @@ QString parseDisplaySuffix(std::string_view cfg, const QString& fallback);
 // that don't emit it are unaffected (back-compat).
 QString parseDisplayName(std::string_view cfg);
 
-// Browser source replay stages a fresh backing file, so every filepath that
-// belongs to that source must be rebound before the plugin sees its saved
-// config. Besides the top-level field, fan-out configs carry complete child
-// configs as JSON strings inside `__pj_fanout`; rewrite those recursively while
-// leaving unrelated nested objects and malformed/non-string fan-out entries
-// byte-for-byte equivalent at the value level. An empty/malformed outer config
-// retains FileLoader's historical behavior and becomes a minimal filepath
-// object. Callers must opt in explicitly; native/ordinary preset bytes never
-// pass through this helper.
-std::string rewriteReplayFilepaths(std::string_view config, const QString& fresh_path);
+inline constexpr QLatin1StringView kSavedFilepathKey{"__pj_saved_filepath"};
+
+enum class SavedFilepath { kOmit, kRecord };
+
+// Layout replay (desktop and browser) must point every filepath that belongs to
+// a source at the path actually loaded, so a moved or copied layout folder
+// replays the data beside it. Besides the top-level field, fan-out configs carry
+// complete child configs as JSON strings inside `__pj_fanout`; rewrite those
+// recursively while leaving unrelated nested objects and malformed or
+// non-string fan-out entries as they are. An empty config becomes
+// `{"filepath":fresh}`. A non-empty config that is not a JSON object yields
+// nullopt: the caller fails the source rather than replace what the user saved.
+// `saved` selects whether the replaced path is recorded under kSavedFilepathKey
+// (see its rule above); any incoming value of that key is always dropped.
+[[nodiscard]] std::optional<std::string> rewriteReplayFilepaths(
+    std::string_view config, const QString& fresh_path, SavedFilepath saved);
+
+// Removes kSavedFilepathKey from the outer object and from each fan-out child.
+// Configs that do not contain the key, or are not JSON objects, come back
+// byte-for-byte.
+[[nodiscard]] std::string stripHostReplayKeys(std::string_view config);
 
 }  // namespace PJ::detail

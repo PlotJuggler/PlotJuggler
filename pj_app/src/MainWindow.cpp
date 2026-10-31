@@ -2557,9 +2557,14 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
         plugin.setAttribute(u"manifest_id"_s, record.plugin_manifest_id);
       }
       plugin.setAttribute(u"filepath_mode"_s, u"source"_s);
-      const std::string logical_config =
-          detail::rewriteReplayFilepaths(record.plugin_config_json.toStdString(), logical_path);
-      appendJsonAsCdata(doc, plugin, QString::fromStdString(logical_config));
+      // A config that is not a JSON object cannot be rebound; fall back to the
+      // minimal `{"filepath": logical}` rather than persist it unrewritten.
+      std::optional<std::string> logical_config = detail::rewriteReplayFilepaths(
+          record.plugin_config_json.toStdString(), logical_path, detail::SavedFilepath::kOmit);
+      if (!logical_config.has_value()) {
+        logical_config = detail::rewriteReplayFilepaths({}, logical_path, detail::SavedFilepath::kOmit);
+      }
+      appendJsonAsCdata(doc, plugin, QString::fromStdString(*logical_config));
       file_info.appendChild(plugin);
     }
     wrapper.appendChild(file_info);
@@ -5405,8 +5410,7 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
         // an empty load.
         for (const auto& replay : pending) {
           file_loader_->loadFile(
-              replay.resolved_path, interactive ? this : nullptr,
-              layoutReplayHints(replay, /*prefer_reuse=*/true, replay.rewrite_plugin_filepath));
+              replay.resolved_path, interactive ? this : nullptr, layoutReplayHints(replay, /*prefer_reuse=*/true));
         }
       }
       // choice == 1 (Use current data) → fall through and apply the layout to
@@ -6074,10 +6078,7 @@ void MainWindow::startBrowserReplayImports() {
 
   for (int index = 0; index < replay.sources.size() && !replay.load_failed; ++index) {
     const layout_xml::DataSourceRef& source = replay.sources[index];
-    // The browser preset carries the previous upload's expired MEMFS path, so
-    // a saved plugin also opts into the filepath rewrite.
-    const bool has_saved_plugin = !source.plugin_manifest_id.isEmpty() || !source.plugin_id.isEmpty();
-    const LoadHints hints = layoutReplayHints(source, /*prefer_reuse=*/false, /*rewrite=*/has_saved_plugin);
+    const LoadHints hints = layoutReplayHints(source, /*prefer_reuse=*/false);
     const quint64 ticket =
         file_loader_->loadFileTicketed(std::move(replay.staged_inputs[static_cast<std::size_t>(index)]), this, hints);
     if (ticket == 0) {
@@ -7326,23 +7327,24 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   // file (source-bound) or adopt the currently-loaded dataset (generic). The
   // data-source element below is only embedded for source-bound layouts.
   doc.documentElement().setAttribute(u"binding"_s, include_data_source ? u"source"_s : u"generic"_s);
+  const QDir layout_dir(QFileInfo(path).absoluteDir());
   if (include_data_source) {
-    const QDir layout_dir(QFileInfo(path).absoluteDir());
     QDomElement ds = appendDataSourceElement(doc, layout_dir);
     if (!ds.isNull()) {
       doc.documentElement().appendChild(ds);
     }
-    // Widget serializers know DatasetIds but intentionally know nothing about
-    // FileLoader. Stamp one coherent full-path identity across plots (and any
-    // future processor/scene qualifiers) as a post-pass. Use the same relocatable
-    // subpath rule as <fileInfo>; load resolves it before binding.
-    layout_xml::stampDatasetSourcePaths(doc, [this, &layout_dir](std::uint32_t dataset_id) {
+    // The stamp fills the paths plot-family elements don't write (widget serializers
+    // know nothing of FileLoader); the relativize pass then makes every absolute
+    // qualifier, scene and State Transitions rows included, layout-relative.
+    layout_xml::stampDatasetSourcePaths(doc, [this](std::uint32_t dataset_id) {
       const QString source_path = file_loader_->sourcePathForDataset(dataset_id);
       if (source_path.isEmpty()) {
         return QString{};
       }
-      return relocatableSubpath(QFileInfo(source_path).absoluteFilePath(), layout_dir);
+      return QFileInfo(source_path).absoluteFilePath();
     });
+    layout_xml::relativizeDatasetSourcePaths(
+        doc, [&layout_dir](const QString& absolute_path) { return relocatableSubpath(absolute_path, layout_dir); });
     // A non-file dataset has no path with which a future session can validate a
     // numeric id. Keep its source fallback but drop that volatile id so a
     // duplicate basename cannot silently capture the persisted layout.
@@ -7354,6 +7356,12 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
     // to whatever data is present when the layout is opened.
     layout_xml::removeDatasetQualifiersForGenericLayout(doc);
   }
+#ifdef PJ_WITH_SCENE3D
+  // A URDF or package root at or beneath the layout folder travels with it, in
+  // both bindings; the live layer and undo snapshots keep the absolute path.
+  pj::scene3d::relocateLayoutResources(
+      doc, [&layout_dir](const QString& absolute_path) { return relocatableSubpath(absolute_path, layout_dir); });
+#endif
   // Always save right-panel state — pure UI chrome, no privacy cost,
   // not gated by Save Data Source.
   doc.documentElement().appendChild(saveRightPanelState(doc));
@@ -8371,6 +8379,9 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
       if (!src.plugin_manifest_id.isEmpty()) {
         plugin.setAttribute(u"manifest_id"_s, src.plugin_manifest_id);
       }
+      // Read by older 4.x builds, which rewrite the preset's filepath only on
+      // this marker; this build rewrites every replay's filepath regardless.
+      plugin.setAttribute(u"filepath_mode"_s, u"source"_s);
       // CDATA so the JSON survives round-tripping without XML escape mangling.
       // appendJsonAsCdata splits across multiple CDATA sections when the JSON
       // contains a literal "]]>" sequence (otherwise it'd terminate the
