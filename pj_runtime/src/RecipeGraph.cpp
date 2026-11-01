@@ -172,7 +172,12 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
   std::vector<std::vector<InputCandidate>> candidates(recipe.inputs.size());
   for (std::size_t i = 0; i < recipe.inputs.size(); ++i) {
     const std::string& input = recipe.inputs[i];
-    const UpstreamOutput named = upstreamOutput(input);
+    const auto recorded = recipe.recorded_upstreams.find(input);
+    UpstreamOutput named = upstreamOutput(input);
+    // A qualifier no loaded source explains hides the producer: the recorded upstream names it.
+    if (named.producer == nullptr && recorded != recipe.recorded_upstreams.end()) {
+      named = upstreamOutput(recorded->second.upstream + "/" + recorded->second.name);
+    }
     const std::string* producer = named.producer;
     const bool names_new_output = std::ranges::any_of(
         recipe.outputs, [&](const OutputSpec& output) { return named.output_name == key + "/" + output.name; });
@@ -181,8 +186,15 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
     }
     if (producer == nullptr) {
       candidates[i] = resolver_(input);
+      const bool on_recipe_dataset =
+          !recipe.dataset.has_value() || std::ranges::any_of(candidates[i], [&recipe](const InputCandidate& candidate) {
+            return candidate.dataset == *recipe.dataset;
+          });
+      if (const auto topic = recipe.recorded_topics.find(input);
+          (candidates[i].empty() || !on_recipe_dataset) && topic != recipe.recorded_topics.end()) {
+        candidates[i] = resolver_(topic->second);
+      }
       if (candidates[i].empty()) {
-        const auto recorded = recipe.recorded_upstreams.find(input);
         if (recorded == recipe.recorded_upstreams.end() || recorded->second.upstream == key) {
           return reject("unknown input '" + input + "'");
         }
@@ -199,7 +211,10 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
           "input '" + input + "' is an output of preview '" + *producer +
           "', which ends with its panel. Create that recipe as a persistent one first.");
     }
-    if (named.qualifier_datasets.has_value() &&
+    // A recorded producer was read when it was saved: the old recording's name in the qualifier does not refuse it.
+    const bool recorded_producer =
+        recorded != recipe.recorded_upstreams.end() && recorded->second.upstream == *producer;
+    if (named.qualifier_datasets.has_value() && !recorded_producer &&
         std::ranges::find(*named.qualifier_datasets, upstream.dataset) == named.qualifier_datasets->end()) {
       return reject("input '" + input + "' names another dataset than the one '" + *producer + "' runs on");
     }

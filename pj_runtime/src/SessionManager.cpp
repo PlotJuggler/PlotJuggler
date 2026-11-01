@@ -388,11 +388,9 @@ void SessionManager::rebindOnDemandAfterMerge(
   }
   for (auto& [recipe, raw_shift] : order) {
     const std::string key = recipe.key();
-    if (recipe.dataset) {
-      if (const auto merged = merged_into_.find(*recipe.dataset); merged != merged_into_.end()) {
-        recipe.dataset = merged->second;
-      }
-    }
+    // Every recipe here ran on the anchor or a consumed dataset. Pinning it keeps one a layout bound by uniqueness (no
+    // dataset of its own) from being re-resolved, and removed as ambiguous when another dataset carries its inputs.
+    recipe.dataset = anchor;
     if (recipe.pinned_t) {
       recipe.pinned_t = saturatingAdd(*recipe.pinned_t, raw_shift);
     }

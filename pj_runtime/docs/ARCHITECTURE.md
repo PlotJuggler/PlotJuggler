@@ -460,7 +460,9 @@ ambiguous across datasets and `dataset_source:bare` resolves back to the bound d
 On-demand recipes keep the qualified name as the script's alias; the session's resolver strips
 it for a topic, its qualifier splitter for another node's output (`RecipeGraph::QualifierSplitter`,
 [derived_objects §8](../../docs/derived_objects/ARCHITECTURE.md#8-the-on-demand-pipeline)). A dataset merged
-away stays registered, so its source keeps qualifying inputs, which bind on the anchor.
+away stays registered, so its source keeps qualifying inputs, which bind on the anchor. A
+qualified input saved in a layout also records what it read (`topic`, or `upstream` for another
+node's output), so a generic layout binds on another recording while the name stays the alias.
 
 ### Custom Topics delete policy
 

@@ -57,6 +57,10 @@ class RecipeGraph {
     /// state removing or renaming leaves a reader in, `missingInput`), instead of being refused as unknown; a node
     /// that provides it binds the others. Not part of the recipe's meaning.
     std::map<std::string, Binding, std::less<>> recorded_upstreams;
+    /// The topic a layout recorded a qualified input reading, by input name: tried when the input resolves nowhere as
+    /// written or not on `dataset`, because its qualifier names another recording (a generic layout moved to a new
+    /// one). The input stays the alias the script reads. Not part of the recipe's meaning.
+    std::map<std::string, std::string, std::less<>> recorded_topics;
     /// The dataset every input must resolve in (a layout's saved input dataset, a request's dataset id); nullopt:
     /// the one dataset carrying all of them (D7).
     std::optional<DatasetId> dataset;
@@ -92,8 +96,8 @@ class RecipeGraph {
   /// The loaded source name `input` starts with followed by ':' (longest match wins, never a blind split at ':');
   /// nullopt when none does. How the graph reads `<source>:<key>/<output>`, the form a dataset-qualified editor
   /// writes, as another node's output: it binds when the qualifier names the producer's dataset, and is refused
-  /// otherwise; naming the recipe's own output so is refused as the bare form is. Empty: only the bare form names an
-  /// output.
+  /// otherwise, unless the recipe recorded that producer; naming the recipe's own output so is refused as the bare form
+  /// is. Empty: only the bare form names an output.
   using QualifierSplitter = std::function<std::optional<Qualifier>(std::string_view input)>;
 
   struct Node {
@@ -123,13 +127,13 @@ class RecipeGraph {
   /// compiles at its first run, which reports its error, so an upsert never waits for the GIL); no input
   /// or no output; an output `scripting::parseOutputSpec` refuses (only types a script can produce); a
   /// name used twice among the inputs and outputs; a persistent id starting with `~` (`kPreviewIdPrefix`);
-  /// an input that resolves nowhere (unless recorded as an absent node's output), another node's output qualified
-  /// with a dataset that node is not on, an input that its `Recipe::dataset` does not carry, or whose datasets have
-  /// no single one in common (D7); an object input whose type has no field table; its own output, bare or qualified; an
-  /// edge that closes a cycle; a persistent recipe reading a preview's output, or a preview that a persistent node
-  /// reads (a preview ends with its panel, the persisted reader would not); `history_exempt` changing on an installed
-  /// key (history would hold its snapshots under the other authority: remove it and create it again); a new pin past
-  /// the owner's cap.
+  /// an input that resolves nowhere (unless recorded as a topic, or as an absent node's output), another node's output
+  /// qualified with a dataset that node is not on and not recorded as read, an input that its `Recipe::dataset` does
+  /// not carry, or whose datasets have no single one in common (D7); an object input whose type has no field table; its
+  /// own output, bare or qualified; an edge that closes a cycle; a persistent recipe reading a preview's output, or a
+  /// preview that a persistent node reads (a preview ends with its panel, the persisted reader would not);
+  /// `history_exempt` changing on an installed key (history would hold its snapshots under the other authority: remove
+  /// it and create it again); a new pin past the owner's cap.
   [[nodiscard]] Status upsert(Recipe recipe);
   /// Validates and binds `recipe` as `upsert` does, installing nothing: the node of a transient evaluation, at
   /// revision 0 (`GridRunner`). It may declare no output (the evaluation infers them); a pin, a preview and

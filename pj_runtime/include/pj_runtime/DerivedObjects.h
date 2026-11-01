@@ -104,9 +104,9 @@ class DerivedObjects {
   /// <processor> entries (INPUT stored as a stable (topic, field) path so it rebinds on
   /// reload) and plugin-created transforms and marker generators as <transform> /
   /// <generator> entries (script + bindings carried by value, inputs/outputs by name).
-  /// On-demand recipes are <on_demand> entries (script, inputs with their dataset and, for
-  /// another node's output, its node and type; typed outputs, pin, query clock), producers
-  /// first; a preview is never written.
+  /// On-demand recipes are <on_demand> entries (script, inputs with their dataset, what a
+  /// qualified input reads as `topic` and, for another node's output, its node and type;
+  /// typed outputs, pin, query clock), producers first; a preview is never written.
   /// `scope == kFull` tags a history-exempt <transform>/<generator>/<on_demand> with
   /// `history_exempt="1"` so it round-trips through a layout file; `kHistory` omits
   /// those entries outright (see `SnapshotScope`).

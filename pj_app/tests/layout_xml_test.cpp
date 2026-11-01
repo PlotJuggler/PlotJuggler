@@ -1753,6 +1753,22 @@ TEST(LayoutXmlTest, BindingANestedStreamReferenceMarksItsLayerPending) {
   EXPECT_FALSE(file_bound.hasAttribute(u"dataset_id"_s));
 }
 
+// An on-demand input's name is the alias its script reads, and what it binds stays recorded beside it.
+TEST(DatasetIdentityPasses, GenericLayoutKeepsAnOnDemandInputNameAndWhatItReads) {
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(
+      u"<root><on_demand id=\"crop\"><input name=\"run.mcap:cloud\" dataset_id=\"7\" dataset_source=\"run.mcap\" "
+      u"topic=\"cloud\"/></on_demand></root>"_s));
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+
+  const QDomElement input = doc.elementsByTagName(u"input"_s).at(0).toElement();
+  EXPECT_EQ(input.attribute(u"name"_s), u"run.mcap:cloud"_s);
+  EXPECT_EQ(input.attribute(u"topic"_s), u"cloud"_s);
+  EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+}
+
 TEST(LayoutXmlTest, StreamingBlockShapeAndWriterValidation) {
   using PJ::layout_xml::StreamingSourceRef;
   // Hand-authored presets often omit pj4_version. Stream records only exist from v5, so their

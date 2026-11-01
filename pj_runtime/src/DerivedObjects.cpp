@@ -379,6 +379,8 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
       if (const RecipeGraph::Binding& binding = live.bindings[index]; !binding.upstream.empty()) {
         in.setAttribute(u"upstream"_s, QString::fromStdString(binding.upstream));
         in.setAttribute(u"type"_s, QString::fromUtf8(sdk::name(binding.object_type)));
+      } else if (binding.name != recipe.inputs[index]) {
+        in.setAttribute(u"topic"_s, QString::fromStdString(binding.name));
       }
       node.appendChild(in);
     }
@@ -711,6 +713,9 @@ std::vector<WantedOnDemand> DerivedObjects::parseWantedOnDemand(const QDomElemen
         } else if (error.isEmpty()) {
           error = tr("invalid upstream of input '%1'").arg(QString::fromStdString(input));
         }
+      }
+      if (in.hasAttribute(u"topic"_s)) {
+        recipe.recorded_topics[input] = in.attribute(u"topic"_s).toStdString();
       }
       if (!error.isEmpty()) {
         continue;

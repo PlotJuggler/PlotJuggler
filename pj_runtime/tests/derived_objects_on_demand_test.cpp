@@ -67,11 +67,11 @@ std::string scaleBy(const std::string& id, const std::string& factor) {
          factor + " end } end }\n";
 }
 
-/// An AppSession with the dataset `run.mcap` (at /data/run.mcap) holding a cloud topic `cloud` (4 points at 5 s,
-/// 6 points at 10 s) and a five-sample `/imu` series; its on-demand engine runs the fake.
+/// An AppSession with the dataset `source_name` (at /data/run.mcap whatever its name) holding a cloud topic `cloud` (4
+/// points at 5 s, 6 points at 10 s) and a five-sample `/imu` series; its on-demand engine runs the fake.
 struct Fixture {
-  Fixture() {
-    dataset = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "run.mcap"}).value();
+  explicit Fixture(std::string source_name = "run.mcap") {
+    dataset = session.dataEngine().createDataset(DatasetDescriptor{.source_name = std::move(source_name)}).value();
     session.setDatasetSourcePath(dataset, u"/data/run.mcap"_s);
     cloud = session.objectStore().registerTopic({dataset, "cloud", kCloudMetadata}).value();
     pushCloud(5 * kSec, 4);
@@ -89,10 +89,10 @@ struct Fixture {
   void pushCloud(Timestamp t, size_t points) {
     EXPECT_TRUE(session.objectStore().pushOwned(cloud, t, canonicalCloud(points, t)).has_value());
   }
-  /// A second dataset `other.mcap` (at /data/other.mcap) carrying a cloud topic `cloud` too.
-  DatasetId addOther() {
-    const DatasetId other = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "other.mcap"}).value();
-    session.setDatasetSourcePath(other, u"/data/other.mcap"_s);
+  /// A second dataset `source_name` (at /data/<source_name>) carrying a cloud topic `cloud` too.
+  DatasetId addOther(const std::string& source_name = "other.mcap") {
+    const DatasetId other = session.dataEngine().createDataset(DatasetDescriptor{.source_name = source_name}).value();
+    session.setDatasetSourcePath(other, u"/data/"_s + QString::fromStdString(source_name));
     const ObjectTopicId topic = session.objectStore().registerTopic({other, "cloud", kCloudMetadata}).value();
     EXPECT_TRUE(session.objectStore().pushOwned(topic, 5 * kSec, canonicalCloud(3, 5 * kSec)).has_value());
     app.catalogModel().rebuildFromDatastore();
@@ -172,6 +172,16 @@ void expectReadsFrom(const RecipeGraph& graph, const std::string& key, const std
   ASSERT_NE(reader, nullptr) << key;
   EXPECT_EQ(reader->bindings.front().upstream, upstream);
   EXPECT_FALSE(graph.missingInput(key).has_value());
+}
+
+/// Removes the dataset a generic layout does not keep from every input of `doc`.
+void removeInputDatasets(QDomDocument& doc) {
+  const QDomNodeList inputs = doc.elementsByTagName(u"input"_s);
+  for (int index = 0; index < inputs.size(); ++index) {
+    QDomElement input = inputs.at(index).toElement();
+    input.removeAttribute(u"dataset_id"_s);
+    input.removeAttribute(u"dataset_source"_s);
+  }
 }
 
 /// The diagnostics of `report` with id "on-demand-restore-failed".
@@ -340,15 +350,145 @@ TEST(DerivedObjectsTest, AQualifiedChainRestoresFromAGenericLayout) {
     source.install(recipe("reader", {"run.mcap:owner/crop/cropped"}));
     doc = source.snapshot(RestoreIntent::kReplace);
   }
-  const QDomNodeList inputs = doc.elementsByTagName(u"input"_s);
-  for (int index = 0; index < inputs.size(); ++index) {
-    QDomElement input = inputs.at(index).toElement();
-    input.removeAttribute(u"dataset_id"_s);
-    input.removeAttribute(u"dataset_source"_s);
-  }
+  removeInputDatasets(doc);
 
   Fixture target;
   target.restoreCleanly(doc, RestoreIntent::kReplace);
+  expectReadsFrom(target.onDemand().graph(), "owner/reader", "owner/crop");
+}
+
+// A generic layout opened on another recording: the old qualifier stays the alias the script reads, and each input
+// binds to what it was recorded reading.
+TEST(DerivedObjectsTest, AQualifiedChainRestoresOnAnotherRecording) {
+  QDomDocument doc;
+  {
+    Fixture source;
+    source.install(recipe("crop", {"run.mcap:cloud"}));
+    source.install(recipe("reader", {"run.mcap:owner/crop/cropped"}));
+    doc = source.snapshot(RestoreIntent::kReplace);
+  }
+  removeInputDatasets(doc);
+
+  Fixture target("next.mcap");
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  const RecipeGraph& graph = target.onDemand().graph();
+  expectReadsFrom(graph, "owner/reader", "owner/crop");
+  const RecipeGraph::Node* crop = graph.find("owner/crop");
+  ASSERT_NE(crop, nullptr);
+  EXPECT_EQ(crop->recipe.inputs.front(), "run.mcap:cloud");
+  EXPECT_EQ(crop->bindings.front().name, "cloud");
+  EXPECT_EQ(crop->dataset, target.dataset);
+
+  target.materialize("owner/crop", 5 * kSec);
+  const std::optional<ObjectTopicId> output = target.topic("owner/crop/cropped");
+  ASSERT_TRUE(output.has_value());
+  EXPECT_TRUE(target.session.objectStore().latestAt(*output, 5 * kSec).has_value());
+}
+
+// The old recording is loaded too, without the topic: its name in the qualifier does not take the chain away.
+TEST(DerivedObjectsTest, AStaleQualifierNamingALoadedDatasetKeepsTheChain) {
+  QDomDocument doc;
+  {
+    Fixture source;
+    source.install(recipe("crop", {"run.mcap:cloud"}));
+    source.install(recipe("reader", {"run.mcap:owner/crop/cropped"}));
+    doc = source.snapshot(RestoreIntent::kReplace);
+  }
+  removeInputDatasets(doc);
+
+  Fixture target("next.mcap");
+  ASSERT_TRUE(target.session.dataEngine().createDataset(DatasetDescriptor{.source_name = "run.mcap"}).has_value());
+  target.app.catalogModel().rebuildFromDatastore();
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  expectReadsFrom(target.onDemand().graph(), "owner/reader", "owner/crop");
+  EXPECT_EQ(target.onDemand().graph().find("owner/crop")->dataset, target.dataset);
+}
+
+// The old recording, now loaded with that topic, must not take an undo away from the dataset the snapshot names.
+TEST(DerivedObjectsTest, ASnapshotKeepsItsDatasetWhenTheOldRecordingLoadsLater) {
+  QDomDocument doc;
+  {
+    Fixture source;
+    source.install(recipe("crop", {"run.mcap:cloud"}));
+    source.install(recipe("reader", {"run.mcap:owner/crop/cropped"}));
+    doc = source.snapshot(RestoreIntent::kReplace);
+  }
+  removeInputDatasets(doc);
+
+  Fixture target("next.mcap");
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  const QDomDocument snapshot = target.snapshot(RestoreIntent::kHistory);
+  target.addOther("run.mcap");
+  ASSERT_FALSE(target.onDemand().remove("owner/reader").empty());
+  ASSERT_FALSE(target.onDemand().remove("owner/crop").empty());
+
+  target.restoreCleanly(snapshot, RestoreIntent::kHistory);
+  expectReadsFrom(target.onDemand().graph(), "owner/reader", "owner/crop");
+  EXPECT_EQ(target.onDemand().graph().find("owner/crop")->dataset, target.dataset);
+}
+
+// A merge keeps a recipe a generic layout bound by uniqueness on the anchor, whoever else carries its topic by then.
+TEST(DerivedObjectsTest, AMergeKeepsAGenericRecipeOnTheAnchor) {
+  QDomDocument doc;
+  {
+    Fixture source;
+    source.install(recipe("crop", {"run.mcap:cloud"}));
+    doc = source.snapshot(RestoreIntent::kReplace);
+  }
+  removeInputDatasets(doc);
+
+  Fixture target("next.mcap");
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  const DatasetId third = target.addOther("third.mcap");
+  target.addOther("fourth.mcap");
+  ASSERT_TRUE(target.session.mergeDatasets(target.dataset, {{third, 0}}).has_value());
+  target.settle();
+
+  const RecipeGraph::Node* crop = target.onDemand().graph().find("owner/crop");
+  ASSERT_NE(crop, nullptr);
+  EXPECT_EQ(crop->dataset, target.dataset);
+}
+
+// Saving again on that recording keeps what the input reads, so the layout survives a second move.
+TEST(DerivedObjectsTest, AQualifiedInputKeepsItsTopicAcrossASecondRecording) {
+  QDomDocument doc;
+  {
+    Fixture source;
+    source.install(recipe("crop", {"run.mcap:cloud"}));
+    doc = source.snapshot(RestoreIntent::kReplace);
+  }
+  removeInputDatasets(doc);
+  {
+    Fixture second("second.mcap");
+    second.restoreCleanly(doc, RestoreIntent::kReplace);
+    doc = second.snapshot(RestoreIntent::kReplace);
+  }
+  removeInputDatasets(doc);
+
+  Fixture third("third.mcap");
+  third.restoreCleanly(doc, RestoreIntent::kReplace);
+  EXPECT_NE(third.onDemand().graph().find("owner/crop"), nullptr);
+}
+
+// After a merge the input's qualifier names the consumed dataset, not the source saved beside it.
+TEST(DerivedObjectsTest, AGenericLayoutSavedAfterAMergeRestoresOnAnotherRecording) {
+  QDomDocument doc;
+  {
+    Fixture source;
+    const DatasetId other = source.addOther();
+    source.install(recipe("crop", {"other.mcap:cloud"}));
+    source.install(recipe("reader", {"other.mcap:owner/crop/cropped"}));
+    ASSERT_TRUE(source.session.mergeDatasets(source.dataset, {{other, 0}}).has_value());
+    source.settle();
+    doc = source.snapshot(RestoreIntent::kReplace);
+  }
+  removeInputDatasets(doc);
+
+  Fixture target("next.mcap");
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  const RecipeGraph::Node* crop = target.onDemand().graph().find("owner/crop");
+  ASSERT_NE(crop, nullptr);
+  EXPECT_EQ(crop->bindings.front().name, "cloud");
   expectReadsFrom(target.onDemand().graph(), "owner/reader", "owner/crop");
 }
 

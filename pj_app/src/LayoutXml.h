@@ -296,8 +296,10 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // dataset_* from <state_transitions> <series> rows. The
 // topic+field (or topic+type; a generator's input series) identity remains and
 // binds at apply time only when unique in the loaded data — the scene loaders
-// implement the same unique-only fallback as plots and processors. Undo
-// snapshots and source-bound layouts keep their qualifiers.
+// implement the same unique-only fallback as plots and processors. An on-demand
+// <input> name keeps its qualifier, the alias its script reads; its `topic` or
+// `upstream` says what it binds. Undo snapshots and source-bound layouts keep
+// their qualifiers.
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
 
 // Maps a serialized DatasetId to its FileLoader-known full source path (empty for
