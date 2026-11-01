@@ -528,6 +528,12 @@ bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
           descriptor.dso_path.string() + ": standalone dialog plugin \"" + descriptor.name +
               "\" discovered; dialogs are loaded through owning plugins");
       return false;
+    case PluginFamily::kWidget:
+      report(
+          DiagnosticLevel::kWarning, descriptor.id,
+          descriptor.dso_path.string() + ": widget plugin \"" + descriptor.name +
+              "\" discovered; this PlotJuggler does not host widget plugins yet");
+      return false;
     case PluginFamily::kUnknown:
       break;
   }

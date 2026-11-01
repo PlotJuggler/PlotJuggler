@@ -4,7 +4,7 @@
 // Test-only Toolbox plugin standing in for the Transform Editor: its manifest declares the
 // `custom_topics_editor` capability, so the host makes it the Custom Topics editor, and its panel
 // previews the topic `/cloud` in an embedded 3D scene view (the `scenePreview` frame's
-// `scene_view` document). Its `droppedItems` label is a drop target that shows the names the
+// `scene_view` document). Its `droppedItems` label is a drop target that shows the names and data sources the
 // last drop delivered, one per line, so a test reads what the plugin received. Consumed by
 // main_window_editor_integration_test.
 
@@ -55,10 +55,10 @@ class EditorFixtureDialog : public PJ::DialogPluginTyped {
     }
     return data.toJson();
   }
-  bool onItemsDropped(std::string_view /*widget_name*/, const std::vector<std::string>& items) override {
+  bool onDroppedItems(std::string_view /*widget_name*/, const std::vector<DroppedItem>& items) override {
     dropped_.clear();
-    for (const std::string& item : items) {
-      dropped_ += dropped_.empty() ? item : "\n" + item;
+    for (const DroppedItem& item : items) {
+      dropped_ += (dropped_.empty() ? "" : "\n") + item.name + "@" + std::to_string(item.data_source_id);
     }
     return true;
   }

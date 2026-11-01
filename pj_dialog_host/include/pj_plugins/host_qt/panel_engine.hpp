@@ -4,6 +4,7 @@
 
 #include <QObject>
 #include <QWidget>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <pj_plugins/host/dialog_handle.hpp>
@@ -29,6 +30,10 @@ struct PanelEngineConfig {
   /// tree drags opaque catalog keys; plugins (Quaternion, FFT, …) expect names.
   /// If unset, or if it returns empty for a key, that key is delivered verbatim.
   std::function<std::string(const std::string& catalog_key)> catalog_key_resolver = {};
+
+  /// Optional resolver from a dragged catalog key to its data source id, delivered beside the name
+  /// (DroppedItem::data_source_id). Same-named series of two datasets differ only here.
+  std::function<uint32_t(const std::string& catalog_key)> catalog_key_data_source = {};
 
   /// Optional session + catalog. When both are non-null, QFrame chart containers
   /// use a full PlotWidget (zoom/tracker/legend) instead of ChartPreviewWidget,

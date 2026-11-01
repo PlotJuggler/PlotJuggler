@@ -591,6 +591,9 @@ QWidget* PanelEngine::openPanel() {
       if (impl_->config.catalog_key_resolver) {
         drop_filter->setKeyResolver(impl_->config.catalog_key_resolver);
       }
+      if (impl_->config.catalog_key_data_source) {
+        drop_filter->setKeyDataSourceResolver(impl_->config.catalog_key_data_source);
+      }
     }
   }
 

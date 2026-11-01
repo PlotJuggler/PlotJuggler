@@ -992,13 +992,11 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     (dest_is_new ? report.added_topics : report.modified_topics).push_back(dest_tid);
   }
 
-  // Empty the consumed source datasets (destructive). They stay registered; the
-  // host removes them from its catalog.
+  // Empty the consumed source datasets (destructive). They stay registered, with no topics: a same-named topic left
+  // on one would read as a second recording to whoever walks the datasets. The host removes them from its catalog.
   for (const auto& src : sources) {
     for (const TopicId tid : listTopics(src.dataset_id)) {
-      if (TopicStorage* st = getTopicStorage(tid)) {
-        st->clearChunks();
-      }
+      retireTopic(tid);
     }
     report.consumed_datasets.push_back(src.dataset_id);
   }

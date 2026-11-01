@@ -117,8 +117,9 @@ TEST(MainWindowEditorIntegrationTest, PlusOpensTheDeclaredEditorAndItsPreviewEmb
 }
 
 // A drop onto a plugin panel carries opaque catalog keys; the plugin receives an object topic by its topic name and a
-// scalar field by its series key, the names it addresses them by.
-TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversTopicAndSeriesNames) {
+// scalar field by its series key, the names it addresses them by, each with its data source: two datasets' same-named
+// series differ only there.
+TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversNamesAndDataSources) {
   QTemporaryDir extensions_dir;
   stageEditorFixture(extensions_dir);
   ASSERT_FALSE(HasFatalFailure());
@@ -137,6 +138,12 @@ TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversTopicAndSeriesNames)
   const std::optional<QString> speed_key = app.catalogModel().scalarColumnKey(dataset, speed, 0);
   ASSERT_TRUE(cloud_key.has_value());
   ASSERT_TRUE(speed_key.has_value());
+  const PJ::DatasetId other_dataset = pj_test::createDataset(app, "other", true);
+  ASSERT_NE(other_dataset, 0U);
+  const PJ::TopicId other_speed = pj_test::addScalarTopic(app, other_dataset, "/speed", 1'000, 2'000);
+  ASSERT_NE(other_speed, 0U);
+  const std::optional<QString> other_speed_key = app.catalogModel().scalarColumnKey(other_dataset, other_speed, 0);
+  ASSERT_TRUE(other_speed_key.has_value());
 
   QToolButton* add = addCustomButton(window);
   ASSERT_NE(add, nullptr);
@@ -154,7 +161,8 @@ TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversTopicAndSeriesNames)
 
   QMimeData mime;
   mime.setData(
-      PJ::CurveTreeView::catalogItemsMimeType(), PJ::CurveTreeView::encodeCatalogKeys({*cloud_key, *speed_key}));
+      PJ::CurveTreeView::catalogItemsMimeType(),
+      PJ::CurveTreeView::encodeCatalogKeys({*cloud_key, *speed_key, *other_speed_key}));
   QDropEvent drop(
       QPointF(target->mapTo(root, target->rect().center())), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
   // Qt delivers a Drop only to the target of a drag in progress, so the synthesized one goes to the panel's filter.
@@ -162,7 +170,7 @@ TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversTopicAndSeriesNames)
   ASSERT_NE(drop_filter, nullptr) << "the panel declares a drop target";
   EXPECT_TRUE(static_cast<QObject*>(drop_filter)->eventFilter(root, &drop));
 
-  const QString expected = u"/cloud\n/speed/value"_s;
+  const QString expected = u"/cloud@%1\n/speed/value@%1\n/speed/value@%2"_s.arg(dataset).arg(other_dataset);
   PJ::test::pumpUntil([&] { return target->text() == expected; });
   EXPECT_EQ(target->text().toStdString(), expected.toStdString());
 }

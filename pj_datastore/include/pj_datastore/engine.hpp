@@ -279,8 +279,8 @@ class DataEngine {
   /// older rows read null for a newly-introduced column) and the anchor's column
   /// order/indices are preserved (so its curve keys stay valid); a name only the
   /// sources have becomes a NEW topic under the anchor. The anchor keeps its
-  /// `DatasetId`/`TopicId`s. Each source dataset is emptied (its topics' chunks
-  /// cleared); the datasets stay registered. A shared topic whose contributors
+  /// `DatasetId`/`TopicId`s. Each source dataset is emptied (its topics retired);
+  /// the datasets stay registered. A shared topic whose contributors
   /// disagree on a field's storage type leaves the anchor's version intact and
   /// skips the conflicting source's contribution (reported in `skipped_topics`).
   /// Scalar (DataEngine) topics only — ObjectStore is untouched.

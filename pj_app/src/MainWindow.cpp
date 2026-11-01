@@ -10472,6 +10472,11 @@ void MainWindow::launchToolbox(
   panel_config.catalog_key_resolver = [this](const std::string& key) -> std::string {
     return session_->catalogModel().pluginDropName(QString::fromStdString(key)).value_or(std::string{});
   };
+  // The catalog snapshot's data source handles are the dataset ids.
+  panel_config.catalog_key_data_source = [this](const std::string& key) -> uint32_t {
+    const auto item = session_->catalogModel().itemDescriptor(QString::fromStdString(key));
+    return item.has_value() ? item->dataset_id : 0;
+  };
   auto* engine = new PanelEngine(DialogHandle::fromBorrowed(borrowed), panel_config, this);
   QWidget* panel = engine->openPanel();
   if (panel == nullptr) {

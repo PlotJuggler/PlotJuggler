@@ -190,6 +190,21 @@ TEST(PluginDataHostCatalogV2Test, SameNameOnTwoDatasetsIsTwoRowsSortedByDataset)
 // builtin_object_type is a PJ::sdk::name() value or "": a type this SDK does not know,
 // kNone, a non-string type and metadata that is not a JSON object all give "", and the
 // metadata itself is passed through as it is.
+TEST(PluginDataHostCatalogV2Test, AMergedAwayDatasetCarriesNoTopics) {
+  Fixture f;
+  const auto anchor = *f.toolbox.createDataSource("log_0.mcap");
+  const auto consumed = *f.toolbox.createDataSource("log_1.mcap");
+  ASSERT_TRUE(f.toolbox.ensureField(*f.toolbox.ensureTopic(anchor, "imu"), "x", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(f.toolbox.ensureField(*f.toolbox.ensureTopic(consumed, "imu"), "x", PrimitiveType::kFloat64).has_value());
+
+  ASSERT_TRUE(f.engine.mergeDatasets(anchor.id, {{consumed.id, 0}}).has_value());
+
+  auto snapshot = f.toolbox.catalogSnapshot();
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error();
+  ASSERT_EQ(snapshot->topics().size(), 1u);
+  EXPECT_EQ(snapshot->topics()[0].source.id, anchor.id);
+}
+
 TEST(PluginDataHostCatalogV2Test, TypeIsACanonicalNameOrEmpty) {
   Fixture f;
   const auto source = *f.toolbox.createDataSource("s");
