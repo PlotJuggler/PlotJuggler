@@ -25,9 +25,9 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Runner label (macos-14 when Depot's macOS capacity is queued)
+        description: Runner label (macos-15 when Depot's macOS capacity is queued)
         type: choice
-        options: [depot-macos-14, macos-14]
+        options: [depot-macos-14, macos-15]
         default: depot-macos-14
 
 concurrency:
@@ -86,10 +86,10 @@ jobs:
       && (github.event_name != 'pull_request' || needs.gate.outputs.build == 'true') }}
     # Depot macOS (7 cores, paravirtual Metal GPU that presents). Its capacity is
     # not elastic (one job once queued 40 min): when it queues, dispatch with
-    # runner=macos-14 (GitHub-hosted M1, 3 cores). The Conan closure has no
+    # runner=macos-15 (GitHub-hosted M1, 3 cores). The Conan closure has no
     # prebuilt macOS binaries; the cache below keeps it.
     runs-on: ${{ inputs.runner || 'depot-macos-14' }}
-    # A cold Conan closure plus a cold compile: ~15 min on Depot, ~45 on macos-14.
+    # A cold Conan closure plus a cold compile: ~15 min on Depot, ~45 on macos-15.
     timeout-minutes: 120
     permissions:
       contents: read
@@ -175,7 +175,7 @@ jobs:
       - name: Install sccache
         # Same as windows-ci.yml: a speedup, never load-bearing. On Depot runners
         # the backend is Depot Cache through the preset SCCACHE_WEBDAV_* variables
-        # (every build, PRs included, reads and writes it); on macos-14 it is a
+        # (every build, PRs included, reads and writes it); on macos-15 it is a
         # local disk cache, cold every run.
         id: setup_sccache
         continue-on-error: true
