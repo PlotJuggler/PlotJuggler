@@ -274,6 +274,11 @@ class CatalogModel : public QObject {
   // Fast alternative to items().empty(), which copies and sorts entries.
   [[nodiscard]] bool isEmpty() const noexcept;
   [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
+  /// The name a plugin addresses the item `key` by (a curve-tree drop onto a plugin panel): a scalar field's
+  /// `sdk::markerSeriesKey` (strings included; the plugin decides what it can read), a paused topic's name, or an
+  /// object topic's name, source-qualified when another dataset has that topic too. nullopt for an unknown key. GUI
+  /// thread only.
+  [[nodiscard]] std::optional<std::string> pluginDropName(const QString& key) const;
   /// The key under which `dataset` lists the object topic `topic`, or nullopt when the catalog does not list it. A
   /// hash lookup: how a caller holding topic ids finds their rows without walking `items()`.
   [[nodiscard]] std::optional<QString> objectTopicKey(DatasetId dataset, ObjectTopicId topic) const;

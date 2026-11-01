@@ -3,27 +3,34 @@
 //
 // The Custom Topics editor through MainWindow (the host half of slice 13): the toolbox whose manifest declares the
 // `custom_topics_editor` capability is the editor, the panel's "+" opens it, and the scene view its preview frame asks
-// for is embedded in its panel with the requested topic attached. The toolbox is a test fixture
-// (custom_topics_editor_fixture.cpp), staged into the extensions directory before the window scans it.
+// for is embedded in its panel with the requested topic attached, and a curve-tree drop onto the panel hands the plugin
+// names it can address. The toolbox is a test fixture (custom_topics_editor_fixture.cpp), staged into the extensions
+// directory before the window scans it.
 
 #include <gtest/gtest.h>
 
+#include <QDropEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QFrame>
+#include <QLabel>
+#include <QMimeData>
 #include <QTemporaryDir>
 #include <QToolButton>
+#include <optional>
 
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
 #include "event_pump_test_utils.h"
 #include "pj_base/sdk/object_topic_metadata.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_plugins/host_qt/drop_event_filter.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene_common/scene_dock_widget.h"
+#include "pj_widgets/CurveTreeView.h"
 #include "ui/CurveListPanel.h"
 
 #ifndef PJ_CUSTOM_TOPICS_EDITOR_FIXTURE_PATH
@@ -47,6 +54,28 @@ namespace {
 
 using Peer = PJ::MainWindowEditorIntegrationTestPeer;
 
+// Puts the custom-topics editor fixture where a MainWindow built on `extensions_dir` finds it.
+void stageEditorFixture(const QTemporaryDir& extensions_dir) {
+  ASSERT_TRUE(extensions_dir.isValid());
+  const QString fixture = QString::fromUtf8(PJ_CUSTOM_TOPICS_EDITOR_FIXTURE_PATH);
+  ASSERT_TRUE(QFile::copy(fixture, extensions_dir.filePath(QFileInfo(fixture).fileName())));
+}
+
+PJ::Expected<PJ::ObjectTopicId> registerCloud(PJ::AppSession& app, PJ::DatasetId dataset) {
+  const auto metadata =
+      PJ::sdk::ObjectTopicMetadataBuilder().builtinObjectType(PJ::sdk::BuiltinObjectType::kPointCloud).build();
+  if (!metadata) {
+    return PJ::unexpected(metadata.error());
+  }
+  return app.sessionManager().objectStore().registerTopic({dataset, "/cloud", *metadata});
+}
+
+// The "+" of the curve list panel, which launches the declared editor.
+QToolButton* addCustomButton(PJ::MainWindow& window) {
+  auto* panel = window.findChild<PJ::CurveListPanel*>(u"curveListPanel"_s);
+  return panel != nullptr ? panel->findChild<QToolButton*>(u"buttonAddCustom"_s) : nullptr;
+}
+
 // GAP-45's plugin-visible half: "+" launches the declared editor, and the `scene_view` of its preview frame is a 3D
 // scene embedded in that frame, showing the topic it names.
 TEST(MainWindowEditorIntegrationTest, PlusOpensTheDeclaredEditorAndItsPreviewEmbedsAScene) {
@@ -54,9 +83,8 @@ TEST(MainWindowEditorIntegrationTest, PlusOpensTheDeclaredEditorAndItsPreviewEmb
   GTEST_SKIP() << "this build embeds no 3D scene view";
 #else
   QTemporaryDir extensions_dir;
-  ASSERT_TRUE(extensions_dir.isValid());
-  const QString fixture = QString::fromUtf8(PJ_CUSTOM_TOPICS_EDITOR_FIXTURE_PATH);
-  ASSERT_TRUE(QFile::copy(fixture, extensions_dir.filePath(QFileInfo(fixture).fileName())));
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
   PJ::MainWindow window(extensions_dir.path());
   PJ::AppSession& app = Peer::session(window);
   ASSERT_EQ(app.extensionCatalog().customTopicsEditorId(), u"custom-topics-editor-fixture"_s)
@@ -64,15 +92,10 @@ TEST(MainWindowEditorIntegrationTest, PlusOpensTheDeclaredEditorAndItsPreviewEmb
 
   const PJ::DatasetId dataset = pj_test::createDataset(app, "drive", true);
   ASSERT_NE(dataset, 0U);
-  const auto metadata =
-      PJ::sdk::ObjectTopicMetadataBuilder().builtinObjectType(PJ::sdk::BuiltinObjectType::kPointCloud).build();
-  ASSERT_TRUE(metadata.has_value());
-  ASSERT_TRUE(app.sessionManager().objectStore().registerTopic({dataset, "/cloud", *metadata}).has_value());
+  ASSERT_TRUE(registerCloud(app, dataset).has_value());
   app.catalogModel().rebuildFromDatastore();
 
-  auto* panel = window.findChild<PJ::CurveListPanel*>(u"curveListPanel"_s);
-  ASSERT_NE(panel, nullptr);
-  auto* add = panel->findChild<QToolButton*>(u"buttonAddCustom"_s);
+  QToolButton* add = addCustomButton(window);
   ASSERT_NE(add, nullptr);
   ASSERT_FALSE(add->isHidden()) << "the declared editor shows the \"+\"";
   add->click();
@@ -91,6 +114,57 @@ TEST(MainWindowEditorIntegrationTest, PlusOpensTheDeclaredEditorAndItsPreviewEmb
   ASSERT_TRUE(cloud.has_value());
   EXPECT_EQ(scene->layers().front().topic_id.id, cloud->id);
 #endif
+}
+
+// A drop onto a plugin panel carries opaque catalog keys; the plugin receives an object topic by its topic name and a
+// scalar field by its series key, the names it addresses them by.
+TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversTopicAndSeriesNames) {
+  QTemporaryDir extensions_dir;
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = Peer::session(window);
+  // Shown, so the panel is laid out: the drop filter finds its target by geometry.
+  window.show();
+
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "drive", true);
+  ASSERT_NE(dataset, 0U);
+  const auto cloud = registerCloud(app, dataset);
+  ASSERT_TRUE(cloud.has_value());
+  const PJ::TopicId speed = pj_test::addScalarTopic(app, dataset, "/speed", 1'000, 2'000);
+  ASSERT_NE(speed, 0U);
+  const std::optional<QString> cloud_key = app.catalogModel().objectTopicKey(dataset, *cloud);
+  const std::optional<QString> speed_key = app.catalogModel().scalarColumnKey(dataset, speed, 0);
+  ASSERT_TRUE(cloud_key.has_value());
+  ASSERT_TRUE(speed_key.has_value());
+
+  QToolButton* add = addCustomButton(window);
+  ASSERT_NE(add, nullptr);
+  add->click();
+
+  QWidget* root = nullptr;
+  QLabel* target = nullptr;
+  PJ::test::pumpUntil([&] {
+    root = window.findChild<QWidget*>(u"EditorFixture"_s);
+    target = root != nullptr ? root->findChild<QLabel*>(u"droppedItems"_s) : nullptr;
+    return target != nullptr && target->isVisible();
+  });
+  ASSERT_NE(target, nullptr) << "the \"+\" opened the editor's panel";
+  ASSERT_TRUE(target->isVisible());
+
+  QMimeData mime;
+  mime.setData(
+      PJ::CurveTreeView::catalogItemsMimeType(), PJ::CurveTreeView::encodeCatalogKeys({*cloud_key, *speed_key}));
+  QDropEvent drop(
+      QPointF(target->mapTo(root, target->rect().center())), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+  // Qt delivers a Drop only to the target of a drag in progress, so the synthesized one goes to the panel's filter.
+  auto* drop_filter = root->findChild<PJ::DropEventFilter*>(Qt::FindDirectChildrenOnly);
+  ASSERT_NE(drop_filter, nullptr) << "the panel declares a drop target";
+  EXPECT_TRUE(static_cast<QObject*>(drop_filter)->eventFilter(root, &drop));
+
+  const QString expected = u"/cloud\n/speed/value"_s;
+  PJ::test::pumpUntil([&] { return target->text() == expected; });
+  EXPECT_EQ(target->text().toStdString(), expected.toStdString());
 }
 
 }  // namespace

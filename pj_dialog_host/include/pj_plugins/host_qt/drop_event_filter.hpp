@@ -35,7 +35,7 @@ class DropEventFilter : public QObject {
     targets_.insert(widget_name);
   }
 
-  /// Optional: map each dragged catalog key to a human field name before it is
+  /// Optional: map each dragged catalog key to a topic or series name before it is
   /// delivered to the plugin. Keys that resolve to empty are kept verbatim.
   void setKeyResolver(std::function<std::string(const std::string&)> resolver) {
     key_resolver_ = std::move(resolver);
@@ -65,8 +65,8 @@ class DropEventFilter : public QObject {
       auto* target_name = findTargetAt(e->position().toPoint());
       if (target_name && e->mimeData()->hasFormat(kCatalogItemsMime)) {
         auto labels = parseMime(e->mimeData()->data(kCatalogItemsMime));
-        // The PJ4 curve tree drags opaque catalog keys; resolve each to a field
-        // name the plugin can interpret. Unresolved keys pass through verbatim.
+        // The PJ4 curve tree drags opaque catalog keys; resolve each to a name
+        // the plugin can interpret. Unresolved keys pass through verbatim.
         if (key_resolver_) {
           for (auto& label : labels) {
             if (std::string name = key_resolver_(label); !name.empty()) {

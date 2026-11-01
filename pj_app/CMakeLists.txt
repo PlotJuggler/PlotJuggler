@@ -564,8 +564,9 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_on_demand_restore_test.cpp)
 
-    # The Custom Topics editor through the shell: the toolbox declaring `custom_topics_editor` opens from "+" and its
-    # preview frame embeds a scene view. The fixture toolbox is staged into the test's extensions directory.
+    # The Custom Topics editor through the shell: the toolbox declaring `custom_topics_editor` opens from "+", its
+    # preview frame embeds a scene view, and a drop onto its panel delivers names the plugin addresses. The fixture
+    # toolbox is staged into the test's extensions directory.
     add_library(custom_topics_editor_fixture_plugin SHARED tests/custom_topics_editor_fixture.cpp)
     target_compile_features(custom_topics_editor_fixture_plugin PRIVATE cxx_std_20)
     target_link_libraries(custom_topics_editor_fixture_plugin PRIVATE plotjuggler_sdk::plugin_sdk)

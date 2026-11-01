@@ -445,6 +445,32 @@ std::optional<CatalogItem> CatalogModel::itemDescriptor(const QString& key) cons
   return it->second;
 }
 
+std::optional<std::string> CatalogModel::pluginDropName(const QString& key) const {
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return std::nullopt;
+  }
+  const CatalogItem& item = it->second;
+  const std::string topic_name = item.topic_name.toStdString();
+  if (const auto* scalar = asScalarField(item); scalar != nullptr) {
+    // The shared key builder: the plugin names the series as the producer and the plot overlay do.
+    return sdk::markerSeriesKey(topic_name, scalar->field_name.toStdString());
+  }
+  if (isAdvertisedTopic(item)) {
+    return topic_name;
+  }
+  if (!isObjectTopic(item)) {
+    return std::nullopt;
+  }
+  // Only a source name addresses one of several same-named topics; a source loaded twice cannot, so it stays bare.
+  const QString source = datasetSourceName(item.dataset_id).value_or(QString{});
+  if (!source.isEmpty() && objectTopicsNamed(item.topic_name, {}).size() > 1 &&
+      objectTopicsNamed(item.topic_name, source).size() == 1) {
+    return sdk::qualifiedSeriesName(source.toStdString(), topic_name);
+  }
+  return topic_name;
+}
+
 std::optional<QString> CatalogModel::objectTopicKey(DatasetId dataset, ObjectTopicId topic) const {
   QString key = makeObjectTopicKey(dataset, topic);
   if (impl_->items.find(key) == impl_->items.end()) {

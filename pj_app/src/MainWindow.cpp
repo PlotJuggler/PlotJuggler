@@ -10400,8 +10400,8 @@ void MainWindow::launchToolbox(
     return;
   }
   // The curve tree drags opaque catalog keys ("dataset:N/topic:M/column:K"); the
-  // toolbox expects human field names ("topic/field"). CatalogModel owns that
-  // mapping, so resolve dropped keys to names before they reach onItemsDropped.
+  // toolbox expects topic or series names. CatalogModel owns that mapping, so
+  // resolve dropped keys to names before they reach onItemsDropped.
   PanelEngineConfig panel_config;
 #ifdef Q_OS_WASM
   const std::string plugin_id_std = plugin_id.toStdString();
@@ -10418,13 +10418,7 @@ void MainWindow::launchToolbox(
   panel_config.catalog = &session_->catalogModel();
   panel_config.embedded_views = makeEmbeddedViewHost();
   panel_config.catalog_key_resolver = [this](const std::string& key) -> std::string {
-    auto descriptor = session_->catalogModel().curveDescriptor(QString::fromStdString(key));
-    if (!descriptor) {
-      return {};
-    }
-    // Shared key builder so the producer and the plot overlay agree (and avoid a
-    // doubled "//" when the field path already starts with '/').
-    return sdk::markerSeriesKey(descriptor->topic_name.toStdString(), descriptor->field_name.toStdString());
+    return session_->catalogModel().pluginDropName(QString::fromStdString(key)).value_or(std::string{});
   };
   auto* engine = new PanelEngine(DialogHandle::fromBorrowed(borrowed), panel_config, this);
   QWidget* panel = engine->openPanel();
