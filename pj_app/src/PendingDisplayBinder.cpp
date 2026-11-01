@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_plotting/PlotXml.h"
 #include "pj_runtime/TopicDemandTracker.h"
 using namespace Qt::StringLiterals;
@@ -143,10 +144,7 @@ bool PendingDisplayBinder::hasEntryFor(
     PendingDisplayEntry::Kind kind, const QObject* target, const layout_xml::SeriesPath& path,
     std::optional<DatasetId> preferred_dataset) const {
   for (const PendingDisplayEntry& entry : entries_) {
-    const QObject* entry_target = entry.kind == PendingDisplayEntry::Kind::kCurve
-                                      ? static_cast<const QObject*>(entry.plot.data())
-                                      : static_cast<const QObject*>(entry.scene_dock.data());
-    if (entry.kind == kind && entry_target == target && entry.path == path &&
+    if (entry.kind == kind && entry.target == target && entry.path == path &&
         entry.preferred_dataset == preferred_dataset) {
       return true;
     }
@@ -210,29 +208,75 @@ void PendingDisplayBinder::addPendingSceneLayer(
   if (dock == nullptr || topic_name.isEmpty()) {
     return;
   }
-  const auto demands = dock->pendingRestoreDemands();
-  const bool dock_owns_intent = std::any_of(
-      demands.cbegin(), demands.cend(),
-      [&topic_name, &preferred_dataset](const SceneDockWidget::PendingRestoreDemand& demand) {
-        return demandMatches(demand, topic_name, preferred_dataset);
-      });
-  if (!dock_owns_intent) {
+  const auto owns_intent = [dock, topic_name, preferred_dataset]() {
+    const auto demands = dock->pendingRestoreDemands();
+    return std::any_of(
+        demands.cbegin(), demands.cend(),
+        [&topic_name, &preferred_dataset](const SceneDockWidget::PendingRestoreDemand& demand) {
+          return demandMatches(demand, topic_name, preferred_dataset);
+        });
+  };
+  if (!owns_intent()) {
     return;
   }
+  // The dock's queue reports its completions through flush() passes, so no change signal.
+  static_cast<void>(stageDockIntent(dock, topic_name, preferred_dataset, owns_intent));
+}
+
+void PendingDisplayBinder::addPendingCustomWidgetWire(
+    CustomWidgetDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset) {
+  if (dock == nullptr || topic_name.isEmpty()) {
+    return;
+  }
+  // Matched on the topic alone: the preferred dataset a pending wire reports moves as datasets come
+  // and go, and the reference must stay until no wire of the dock waits on the topic.
+  const auto waits_for_topic = [dock, topic_name]() { return dock->hasPendingTopic(topic_name); };
+  if (!waits_for_topic()) {
+    return;
+  }
+  // The dock's own retry resolves wires outside flush(), so its bindingsChanged re-checks them too.
+  // watched_targets_ holds every dock staged before: one connection per dock.
+  const bool connected = watched_targets_.contains(dock);
+  if (stageDockIntent(dock, topic_name, preferred_dataset, waits_for_topic) && !connected) {
+    connect(
+        dock, &CustomWidgetDockWidget::bindingsChanged, this, [this, dock]() { releaseCompletedDockIntents(dock); });
+  }
+}
+
+bool PendingDisplayBinder::stageDockIntent(
+    QObject* owner, const QString& topic_name, std::optional<DatasetId> preferred_dataset,
+    std::function<bool()> still_pending) {
+  if (owner == nullptr || topic_name.isEmpty() || !still_pending) {
+    return false;
+  }
   if (hasEntryFor(
-          PendingDisplayEntry::Kind::kSceneLayer, dock, layout_xml::SeriesPath{topic_name, QString()},
+          PendingDisplayEntry::Kind::kDockIntent, owner, layout_xml::SeriesPath{topic_name, QString()},
           preferred_dataset)) {
-    return;  // same dock, same topic — one pending layer is enough
+    return false;  // same dock, same topic — one pending intent is enough
   }
   PendingDisplayEntry entry;
-  entry.kind = PendingDisplayEntry::Kind::kSceneLayer;
-  entry.scene_dock = dock;
-  entry.target = dock;
+  entry.kind = PendingDisplayEntry::Kind::kDockIntent;
+  entry.intent_owner = owner;
+  entry.still_pending = std::move(still_pending);
+  entry.target = owner;
   entry.path = layout_xml::SeriesPath{topic_name, QString()};
   entry.preferred_dataset = preferred_dataset;
   refreshDemandRefs(entry);
-  watchTargetDestruction(dock);
+  watchTargetDestruction(owner);
   entries_.push_back(std::move(entry));
+  return true;
+}
+
+void PendingDisplayBinder::releaseCompletedDockIntents(const QObject* owner) {
+  auto it = entries_.begin();
+  while (it != entries_.end()) {
+    if (it->kind == PendingDisplayEntry::Kind::kDockIntent && it->target == owner && dockIntentCompleted(*it)) {
+      releaseDemandRefs(*it);
+      it = entries_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void PendingDisplayBinder::watchTargetDestruction(QObject* target) {
@@ -259,14 +303,8 @@ void PendingDisplayBinder::watchTargetDestruction(QObject* target) {
   });
 }
 
-bool PendingDisplayBinder::sceneEntryCompleted(const PendingDisplayEntry& entry) const {
-  if (entry.scene_dock.isNull()) {
-    return true;
-  }
-  const auto demands = entry.scene_dock->pendingRestoreDemands();
-  return std::none_of(demands.cbegin(), demands.cend(), [&entry](const SceneDockWidget::PendingRestoreDemand& demand) {
-    return demandMatches(demand, entry.path.topic, entry.preferred_dataset);
-  });
+bool PendingDisplayBinder::dockIntentCompleted(const PendingDisplayEntry& entry) {
+  return entry.intent_owner.isNull() || !entry.still_pending();
 }
 
 std::optional<QString> PendingDisplayBinder::resolveEntryPath(
@@ -369,8 +407,8 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
       continue;
     }
 
-    if (entry.kind == PendingDisplayEntry::Kind::kSceneLayer) {
-      if (sceneEntryCompleted(entry)) {
+    if (entry.kind == PendingDisplayEntry::Kind::kDockIntent) {
+      if (dockIntentCompleted(entry)) {
         ++completed_intents;
         releaseDemandRefs(entry);
         it = entries_.erase(it);

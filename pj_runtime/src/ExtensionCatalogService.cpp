@@ -707,6 +707,10 @@ const std::vector<LoadedToolbox>& ExtensionCatalogService::toolboxes() const {
   return plugin_catalog_->toolboxes();
 }
 
+const std::vector<LoadedWidget>& ExtensionCatalogService::widgets() const {
+  return plugin_catalog_->widgets();
+}
+
 std::vector<const LoadedDataSource*> ExtensionCatalogService::fileImportSources() const {
   const auto& catalog = *plugin_catalog_;
   return catalog.fileImportSources();
@@ -731,6 +735,14 @@ const LoadedToolbox* ExtensionCatalogService::findToolbox(QStringView id) const 
   const auto& all = toolboxes();
   const auto it = std::find_if(
       all.begin(), all.end(), [id](const LoadedToolbox& toolbox) { return QString::fromStdString(toolbox.id) == id; });
+  return it == all.end() ? nullptr : &*it;
+}
+
+const LoadedWidget* ExtensionCatalogService::findWidget(QStringView plugin_id) const {
+  const auto& all = widgets();
+  const auto it = std::find_if(all.begin(), all.end(), [plugin_id](const LoadedWidget& widget) {
+    return QString::fromStdString(widget.id) == plugin_id;
+  });
   return it == all.end() ? nullptr : &*it;
 }
 

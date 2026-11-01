@@ -22,6 +22,7 @@ pj_add_test_runner(pj_plotting_widget_tests
         state_transitions_dock_widget_test.cpp
         dock_widget_placeholder_test.cpp
         dock_widget_context_menu_test.cpp
+        dock_widget_discard_test.cpp
         dock_fullscreen_test.cpp
         tabbed_widget_tab_test.cpp
         plot_widget_replace_curve_test.cpp

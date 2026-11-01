@@ -29,7 +29,7 @@ Session, catalog and time:
 - `Time.h`: display-axis time vocabulary (`DisplayOffset`, `DisplaySeconds`, `DisplayRange`) over the SDK's absolute `pj_base/time.hpp`.
 - `PlaybackEngine.h`: time cursor and transport; `currentTimeChanged(double)` stays `double` (fleet-wide moc/vtable contract).
 - `HistoryScope.h`: `SnapshotScope` / `RestoreIntent`, what a capture includes and what a restore may touch.
-- `IDataWidget.h`, `IObjectViewer.h`: the contracts data widgets and object-store viewers implement for the shell.
+- `IDataWidget.h`, `IObjectViewer.h`: the contracts data widgets and object-store viewers implement for the shell. `IDataWidget::aboutToBeDiscarded()` runs once before the dock schedules a widget for deletion, so one that owns plugin-created objects destroys them synchronously.
 - `DiagnosticHistory.h`, `DiagnosticEmit.h`: diagnostics ring buffer and the fill-and-forward helper (no-op without a sink).
 - `HttpGet.h`, `UpdateChecker.h`, `UpdateVersion.h`, `TelemetryPing.h`: one-shot HTTP idiom (`fetchBytesWithLimit()` is the size-capped GET for untrusted bodies on desktop and in the browser, behind `pj_app`'s `PresetController` and Scene3D's `UrlFetcher`; `HttpUrl.h`'s `isHttpUrl()`, Qt6::Network-free, is the http(s) gate), the per-channel update check, version math, the anonymous launch ping.
 - `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend ([why](./docs/TECHNICAL_NOTES.md)); a pinned download is kept in Cache Storage across visits.
@@ -43,6 +43,7 @@ Plugin hosts and extensions:
 - `ExtensionCatalogService.h`, `PluginRuntimeCatalog.h`, `ParserRoutingService.h`: the loaded plugin set (scan hierarchy, bundled seeding, duplicate resolution, admission gate) and route-aware parser selection.
 - `PlaybackControlHost.h`, `ViewportRuntimeHost.h`, `PlotTabsRuntimeHost.h`: SDK `pj.playback.v1`, `pj.viewport.v1`, `pj.plot_tabs.v1`.
 - `ServiceRegistration.h`: host-to-plugin service registration with logged rejection.
+- `WidgetRuntimeHost.h`, `WireTarget.h`, `WidgetValue.h`, `ActiveWidgetsMarker.h`: the Widget family: the per-panel `pj.widget_host.v1` host, where a wire reads from, the common fields of a `PJ_widget_value_t`, and the per-process record of live Custom Widget plugins the startup crash review reads. `ExtensionCatalogService::widgets()` / `findWidget()` list them; a Widget plugin leaves the catalog only by a user disable ([docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Widget plugins").
 - `FeatureCatalogHost.h`, `ToolboxTags.h`: the optional `pj.feature_catalog.v1` service (desktop only; built from injected providers, never fetches) and the manifest tags (`cloud`, `hidden`) the Toolbox menu, the Sources panel and the catalog read.
 - `ObjectIngestTap.h`: session-scoped exclusive consumers of builtin object bytes; the payload view is call-lifetime only.
 - `parse_locked.h`: decode one object through a topic's parser under the binding's per-topic mutex (parsers are not thread-safe).

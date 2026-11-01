@@ -62,6 +62,7 @@ SectionHeaderBand::SectionHeaderBand(const QString& title, QWidget* parent) : QW
   applyBandLayoutMetrics();
 
   label_ = new QLabel(title, this);
+  label_->setTextFormat(Qt::PlainText);  // titles may quote plugin-provided names
   // Leading inset via the label's indent, not layout margins — hosts that
   // re-apply chrome metrics overwrite the layout margins at runtime.
   label_->setIndent(theme::space(theme::Space::Tight));

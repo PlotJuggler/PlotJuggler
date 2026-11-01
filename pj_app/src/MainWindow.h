@@ -89,6 +89,8 @@ class PanelEngine;
 class PlotDocker;
 class PlotWidget;
 class PreferencesDialog;
+class CustomWidgetController;
+class CustomWidgetDockWidget;
 class StateTransitionsDockWidget;
 class PendingDisplayBinder;
 class SourceCacheStore;
@@ -190,6 +192,16 @@ class MainWindow : public QMainWindow {
   // Loads `path` on startup and auto-reloads its data source(s) without prompting
   // (the --layout CLI option). Safe no-op if the layout binds to no source.
   void loadLayoutAtStartup(const QString& path);
+
+  // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
+  // non-interactive run never shows the question.
+  void reviewUncleanShutdown(bool interactive);
+
+  // Builds a Custom Widget dock for widget `type` of plugin `plugin_id` and adopts it into the
+  // empty `dock`. The dock is adopted even when the widget cannot be created (library missing,
+  // Qt build mismatch): it then shows the reason and keeps the choice for the layout. Returns
+  // whether the plugin widget was created. The widget picker calls this on a click.
+  bool createCustomWidgetDock(DockWidget* dock, const QString& plugin_id, const QString& type);
 
   // Opens the layout at `url` (http/https) as a preset, with no picker: its
   // <fileInfo> sources are downloaded from beside it one at a time, staged and
@@ -759,6 +771,8 @@ class MainWindow : public QMainWindow {
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
   // Every mounted State Transitions strip across all tabs.
   void forEachStateStrip(const std::function<void(StateTransitionsDockWidget*)>& operation);
+  // Every mounted Custom Widget panel across all tabs.
+  void forEachCustomWidgetDock(const std::function<void(CustomWidgetDockWidget*)>& operation);
 
   // Re-syncs every data widget to the catalog after a removal: each prunes its
   // own dead pieces (plots drop dead curves; object viewers drop dead layers,
@@ -1458,7 +1472,7 @@ class MainWindow : public QMainWindow {
   void commitRestoredLayout(const QDomDocument& doc, MissingCurvePolicy policy);
 
   // Constructs + wires (but does not populate) an object-widget dock of the
-  // given kind ("scene3d" / "scene2d"). Shared by both the drop and the
+  // given kind ("scene3d" / "scene2d" / "state_transitions" / "CustomWidget"). Shared by both the drop and the
   // layout-restore paths of the object-widget factory; returns nullptr for an
   // unknown kind.
   IDataWidget* makeSceneDock(const QString& kind, QWidget* parent);
@@ -1788,9 +1802,12 @@ class MainWindow : public QMainWindow {
 #ifdef PJ_WITH_SCENE2D
   class Scene2DConfigPanel* scene2d_config_panel_ = nullptr;
 #endif
-  // Shown when the focused dock holds the 3-icon
-  // VisualizationPlaceholderWidget — nothing to configure yet.
+  // Shown when the focused dock holds the VisualizationPlaceholderWidget —
+  // nothing to configure yet.
   QWidget* empty_dock_page_ = nullptr;
+  // Custom Widget picker and config pages plus the active-widgets record. Owned by
+  // right_panel_stack_ (QObject parent); the record is cleared in ~MainWindow once the docks are gone.
+  CustomWidgetController* custom_widgets_ = nullptr;
 
   // Active toolbox panel presented in place of the chart area by
   // presentPanel()/restoreCentralArea(). At most one at a time.

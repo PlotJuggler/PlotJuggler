@@ -105,6 +105,7 @@
 #ifdef PJ_TARGET_WASM
 #include "FileSelectionService.h"
 #endif
+#include "CustomWidgetController.h"
 #include "LayoutImportBatch.h"
 #include "LayoutReplayHints.h"
 #include "LayoutXml.h"
@@ -129,6 +130,7 @@
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/types.hpp"
+#include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
@@ -947,7 +949,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       });
 
   ui_->tabbedPlotWidget->setDataServices(&session_->sessionManager(), &session_->catalogModel());
-#if defined(PJ_WITH_SCENE2D) || defined(PJ_WITH_SCENE3D)
   ui_->tabbedPlotWidget->setObjectWidgetFactory(
       [this](const QString& kind, const ObjectDropSeed* seed, QWidget* dock_parent) -> IDataWidget* {
         // One factory for both paths. Layout restore passes the saved XML tag as
@@ -1001,7 +1002,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
                         .arg(QString::fromUtf8(sdk::name(seed->object_type))));
           return nullptr;
         }
-        QWidget* qwidget = widget->widget();
+        [[maybe_unused]] QWidget* qwidget = widget->widget();
 #ifdef PJ_WITH_SCENE3D
         if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(qwidget)) {
           if (!scene3d->addTopic(seed->topic_id, seed->object_type, seed->title)) {
@@ -1047,7 +1048,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         }
         return widget;
       });
-#endif
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
   wireExistingPlots();
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
@@ -2065,6 +2065,25 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   right_panel_stack_->addWidget(scene3d_config_page_);
 #endif
   right_panel_stack_->addWidget(empty_dock_page_);
+  custom_widgets_ = new CustomWidgetController(
+      *right_panel_stack_, *session_, diagnosticSink(),
+      CustomWidgetController::Hooks{
+          .reveal_side_panel =
+              [this]() {
+                if (ui_->localToolbarWidget->isHidden()) {
+                  ui_->tabbedPlotWidget->rightPanelButton()->click();  // the toggle keeps its icon in step
+                }
+              },
+          .create_dock = [this](
+                             DockWidget* dock, const QString& plugin_id,
+                             const QString& type) { createCustomWidgetDock(dock, plugin_id, type); },
+          .focus_dock = [this](DockWidget* dock) { onDockFocused(dock); },
+      },
+      this);
+  custom_widgets_->onStylesheetChanged(theme_->currentTheme());
+  connect(this, &MainWindow::stylesheetChanged, custom_widgets_, &CustomWidgetController::onStylesheetChanged);
+  connect(this, &MainWindow::chromeMetricsChanged, custom_widgets_, &CustomWidgetController::onChromeMetricsChanged);
+  connect(custom_widgets_, &CustomWidgetController::marketplaceRequested, this, &MainWindow::onOpenMarketplace);
   right_panel_stack_->setCurrentWidget(plot_config_page_);
 
   // Local panel to the right of the global column — Curve Width / Curve
@@ -2168,6 +2187,19 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     return widget;
   }
 #endif
+  if (kind == "CustomWidget"_L1) {
+    auto* widget = new CustomWidgetDockWidget(
+        &session_->sessionManager(), &session_->catalogModel(), &session_->extensionCatalog(),
+        &session_->playbackEngine(), parent);
+    widget->setDiagnosticSink(diagnosticSink());
+    if (custom_widgets_ != nullptr) {
+      custom_widgets_->attachDock(*widget);
+    }
+    connect(widget, &CustomWidgetDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
+    connect(widget, &CustomWidgetDockWidget::bindingsChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    topic_demand_controller_->registerCustomWidgetDock(widget);
+    return widget;
+  }
   if (kind == "state_transitions"_L1) {
     auto* widget = new StateTransitionsDockWidget(
         &session_->sessionManager(), &session_->catalogModel(), &session_->playbackEngine(), parent);
@@ -2284,6 +2316,13 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
     case VisualizationKind::kStateTransitions:
       kind = u"state_transitions"_s;
       break;
+    case VisualizationKind::kCustomWidget:
+      // The widget to build is chosen first, in the picker page: creating anything before that
+      // choice would leave an unbound panel behind.
+      if (custom_widgets_ != nullptr) {
+        custom_widgets_->showPicker(dock);
+      }
+      return;
     case VisualizationKind::kPlot:
       return;
   }
@@ -2294,6 +2333,23 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
     qCWarning(lcMain) << "onObjectFamilyRequested: could not build scene dock for kind" << kind;
   }
   dock->adoptObjectWidget(widget);  // null still reverts to a usable placeholder
+}
+
+bool MainWindow::createCustomWidgetDock(DockWidget* dock, const QString& plugin_id, const QString& type) {
+  if (dock == nullptr) {
+    return false;
+  }
+  IDataWidget* widget = makeSeededEmptyObjectDock(u"CustomWidget"_s, dock);
+  auto* custom = widget != nullptr ? qobject_cast<CustomWidgetDockWidget*>(widget->widget()) : nullptr;
+  if (custom == nullptr) {
+    qCWarning(lcMain) << "createCustomWidgetDock: could not build the Custom Widget dock";
+    dock->adoptObjectWidget(nullptr);
+    return false;
+  }
+  // Bound before the dock mounts it, so the mount sees the plugin's widget tree.
+  const bool bound = custom->bindToWidget(plugin_id, type);
+  dock->adoptObjectWidget(widget);
+  return bound;
 }
 
 void MainWindow::onPlaceholderTopicDropped(
@@ -2350,6 +2406,11 @@ MainWindow::~MainWindow() {
   // and a decode thread). ~ads::CDockManager deletes its docks in place.
   plugin_plot_tabs_.reset();  // its tab-strip reference must not outlive the strip
   delete ui_->tabbedPlotWidget;
+  // Every Custom Widget dock died above, each removing its entry; clearing here also covers one
+  // that never got the chance. Reaching this line is the clean exit the record is about.
+  if (custom_widgets_ != nullptr) {
+    custom_widgets_->clearActiveWidgets();
+  }
   // Break the widget-owned pointers to services before session_ destroys
   // the engine — guarantees no late signal dereferences a dead pointer.
   ui_->timelineWidget->setPlaybackEngine(nullptr);
@@ -4640,6 +4701,17 @@ void MainWindow::forEachStateStrip(const std::function<void(StateTransitionsDock
   });
 }
 
+void MainWindow::forEachCustomWidgetDock(const std::function<void(CustomWidgetDockWidget*)>& operation) {
+  forEachDock([&operation](DockWidget* dock) {
+    if (dock->objectWidget() == nullptr) {
+      return;
+    }
+    if (auto* custom = qobject_cast<CustomWidgetDockWidget*>(dock->objectWidget()->widget())) {
+      operation(custom);
+    }
+  });
+}
+
 void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) {
   ui_->tabbedPlotWidget->forEachDocker([&operation](PlotDocker* docker) {
     for (int index = 0; index < docker->plotCount(); ++index) {
@@ -6558,6 +6630,10 @@ void MainWindow::startBrowserPresets(const QUrl& page_url) {
 }
 #endif
 
+void MainWindow::reviewUncleanShutdown(bool interactive) {
+  custom_widgets_->reviewUncleanShutdown(interactive);
+}
+
 void MainWindow::loadLayoutAtStartup(const QString& path) {
   // --layout CLI entry: load the layout and auto-reload its data source(s)
   // with no prompt. Interactivity is threaded as an explicit parameter (and
@@ -6896,6 +6972,13 @@ void MainWindow::collectPendingDisplayBindings(const QDomDocument& doc) {
       pending_binder_->addPendingSceneLayer(scene_dock, demand.topic_name, demand.preferred_dataset);
     }
   });
+  // A wire restored before its stream sends the topic waits on it; the reference makes a
+  // demand-driven source subscribe it. The panel resolves the wire itself.
+  forEachCustomWidgetDock([this](CustomWidgetDockWidget* custom) {
+    for (const PendingWireDemand& demand : custom->pendingDemands()) {
+      pending_binder_->addPendingCustomWidgetWire(custom, demand.topic_name, demand.preferred_dataset);
+    }
+  });
 }
 
 void MainWindow::rebuildPendingDisplayBindings(const QDomDocument& doc) {
@@ -6928,6 +7011,10 @@ void MainWindow::schedulePendingDisplayBindingRebuild() {
       forEachSceneDock([&any_intents](SceneDockWidget* scene_dock) {
         any_intents = any_intents || scene_dock->hasPendingRestoreDemands();
       });
+    }
+    if (!any_intents) {
+      forEachCustomWidgetDock(
+          [&any_intents](CustomWidgetDockWidget* custom) { any_intents = any_intents || custom->hasPendingWires(); });
     }
     if (any_intents) {
       rebuildPendingDisplayBindings(xmlSaveState());
@@ -9187,6 +9274,11 @@ void MainWindow::onDockFocused(DockWidget* dock) {
     scene3d_config_panel_->bindDock(scene3d_dock);
   }
 #endif
+  if (custom_widgets_ != nullptr) {
+    if (QWidget* page = custom_widgets_->pageForFocusedDock(dock)) {
+      target = page;
+    }
+  }
   if (right_panel_stack_ != nullptr) {
     right_panel_stack_->setCurrentWidget(target);
   }

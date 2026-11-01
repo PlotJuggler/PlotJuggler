@@ -24,8 +24,10 @@
 #include <QStringList>
 #include <QToolButton>
 #include <functional>
+#include <memory>
 #include <utility>
 
+#include "CustomWidgetController.h"
 #include "LayoutImportBatch.h"
 #include "LayoutXml.h"
 #include "MainWindow.h"
@@ -82,6 +84,10 @@ class MainWindowLayoutImportTestPeer {
   }
   [[nodiscard]] static QtDiagnosticBridge* diagnosticBridge(MainWindow& window) {
     return window.diagnostic_bridge_;
+  }
+  // The window's active-widgets record; a test points it at its own file before any dock exists.
+  [[nodiscard]] static std::shared_ptr<ActiveWidgetsMarker>& activeWidgetsMarker(MainWindow& window) {
+    return window.custom_widgets_->activeWidgetsMarker();
   }
   [[nodiscard]] static int restoreWaiterCount(const MainWindow& window) {
     return static_cast<int>(window.restore_waiters_.size());

@@ -58,6 +58,8 @@ add_library(pj_runtime STATIC
     src/TransformService.cpp
     src/UpdateChecker.cpp
     src/ViewportRuntimeHost.cpp
+    src/WidgetRuntimeHost.cpp
+    src/ActiveWidgetsMarker.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
     include/pj_runtime/CurveColorRegistry.h
@@ -109,6 +111,11 @@ add_library(pj_runtime STATIC
     include/pj_runtime/ToolboxTags.h
     include/pj_runtime/UpdateVersion.h
     include/pj_runtime/ViewportRuntimeHost.h
+    include/pj_runtime/WidgetRuntimeHost.h
+    include/pj_runtime/WidgetValue.h
+    include/pj_runtime/WireTarget.h
+    include/pj_runtime/ActiveWidgetsMarker.h
+    include/pj_runtime/DiagnosticEmit.h
 )
 
 set_target_properties(pj_runtime PROPERTIES
@@ -277,6 +284,10 @@ if(PJ_BUILD_TESTS)
         # fallback for encodings outside the SDK claim registry.
         tests/extension_catalog_parser_routes_test.cpp
         tests/plugin_runtime_catalog_test.cpp
+        # Widget family admission: needs QLibraryInfo (Qt6::Core) and the Qt-free widget fixtures below.
+        tests/plugin_runtime_catalog_widget_test.cpp
+        tests/widget_runtime_host_test.cpp
+        tests/active_widgets_marker_test.cpp
         # Bundled-plugin seeding (share -> marketplace sync) + scan-tier precedence.
         tests/extension_catalog_seed_test.cpp
         # SDK 0.28: the runtime-side hosts a toolbox binding drives. Playback is
@@ -406,6 +417,38 @@ if(PJ_BUILD_TESTS)
     target_compile_options(mock_data_source_v2_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(mock_data_source_v2_plugin PRIVATE plotjuggler_sdk::base)
 
+    # Widget-family fixtures: one Qt-free source, three libraries that differ in the Qt build they claim
+    # in build_info(). The "host" one reports this build's Qt major.minor and compiler; the others fake
+    # a library built against another Qt minor and another compiler family.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        set(PJ_TEST_HOST_COMPILER_FAMILY "msvc")
+        set(PJ_TEST_OTHER_COMPILER_FAMILY "gcc")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(PJ_TEST_HOST_COMPILER_FAMILY "clang")
+        set(PJ_TEST_OTHER_COMPILER_FAMILY "msvc")
+    else()
+        set(PJ_TEST_HOST_COMPILER_FAMILY "gcc")
+        set(PJ_TEST_OTHER_COMPILER_FAMILY "msvc")
+    endif()
+    math(EXPR PJ_TEST_OTHER_QT_MINOR "${Qt6_VERSION_MINOR} + 1")
+    function(pj_add_runtime_widget_fixture target id qt_minor compiler)
+        add_library(${target} SHARED tests/runtime_widget_plugin.cpp)
+        target_compile_features(${target} PRIVATE cxx_std_20)
+        target_compile_options(${target} PRIVATE ${PJ_WARNING_FLAGS})
+        target_link_libraries(${target} PRIVATE plotjuggler_sdk::plugin_sdk)
+        target_compile_definitions(${target} PRIVATE
+            PJ_TEST_WIDGET_ID="${id}"
+            PJ_TEST_WIDGET_QT_MAJOR=${Qt6_VERSION_MAJOR}
+            PJ_TEST_WIDGET_QT_MINOR=${qt_minor}
+            PJ_TEST_WIDGET_COMPILER="${compiler}")
+    endfunction()
+    pj_add_runtime_widget_fixture(runtime_widget_plugin "test-widgets"
+        ${Qt6_VERSION_MINOR} ${PJ_TEST_HOST_COMPILER_FAMILY})
+    pj_add_runtime_widget_fixture(runtime_widget_other_qt_plugin "test-widgets-other-qt"
+        ${PJ_TEST_OTHER_QT_MINOR} ${PJ_TEST_HOST_COMPILER_FAMILY})
+    pj_add_runtime_widget_fixture(runtime_widget_other_compiler_plugin "test-widgets-other-compiler"
+        ${Qt6_VERSION_MINOR} ${PJ_TEST_OTHER_COMPILER_FAMILY})
+
     # v1/v2 builds of a mock whose image stays resident after dlclose. Two
     # mechanisms: -z nodelete (DF_1_NODELETE, compiler-independent) and a bound
     # STB_GNU_UNIQUE anchor (models real GCC plugin builds; needs default
@@ -484,6 +527,9 @@ if(PJ_BUILD_TESTS)
             PJ_MOCK_DATA_SOURCE_MALFORMED_VERSION_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_version_plugin>"
             PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_newer_sdk_plugin>"
             PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
+            PJ_RUNTIME_WIDGET_PLUGIN_PATH="$<TARGET_FILE:runtime_widget_plugin>"
+            PJ_RUNTIME_WIDGET_OTHER_QT_PLUGIN_PATH="$<TARGET_FILE:runtime_widget_other_qt_plugin>"
+            PJ_RUNTIME_WIDGET_OTHER_COMPILER_PLUGIN_PATH="$<TARGET_FILE:runtime_widget_other_compiler_plugin>"
     )
     # pj_bench_stats.h: the Qt-free thread clock and statistics of the engine
     # freeze bench (pj_bench_probes would pull Qt Widgets into this core runner).
@@ -499,5 +545,6 @@ if(PJ_BUILD_TESTS)
         mock_data_source_incompatible_plugin mock_data_source_incompatible_low_plugin
         mock_data_source_malformed_floor_plugin mock_data_source_malformed_version_plugin
         mock_data_source_newer_sdk_plugin mock_toolbox_plugin
+        runtime_widget_plugin runtime_widget_other_qt_plugin runtime_widget_other_compiler_plugin
     )
 endif()

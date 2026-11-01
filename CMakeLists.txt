@@ -391,6 +391,7 @@ endif()
 add_subdirectory(pj_widgets)
 add_subdirectory(pj_scene_common)
 add_subdirectory(pj_plotting)
+add_subdirectory(pj_custom_widgets)
 
 if(PJ4_BUILD_APP)
     add_subdirectory(pj_app)

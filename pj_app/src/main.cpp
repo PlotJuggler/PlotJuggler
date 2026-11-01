@@ -155,6 +155,7 @@ int validatePlugins(const QString& plugin_dir, const QStringList& expected_specs
   record_loaded(catalog.dataSources());
   record_loaded(catalog.messageParsers());
   record_loaded(catalog.toolboxes());
+  record_loaded(catalog.widgets());
 
   std::map<std::string, std::string> expected;
   for (const QString& spec : expected_specs) {
@@ -199,6 +200,18 @@ int validatePlugins(const QString& plugin_dir, const QStringList& expected_specs
   }
   std::printf("[plugin-validation] OK: loaded all %zu whitelisted plugin(s)\n", loaded.size());
   return EXIT_SUCCESS;
+}
+
+// True when nobody can answer a question at startup: the headless flags (--exit-after-layout,
+// --screenshot) or a platform without a screen (offscreen, minimal). Such a run reports instead of
+// asking. The other startup gates keep their own narrower checks (--screenshot alone skips the
+// network calls).
+bool isUnattendedRun(
+    const QCommandLineParser& parser, const QCommandLineOption& exit_after_layout_option,
+    const QCommandLineOption& screenshot_option) {
+  const QString platform = QGuiApplication::platformName();
+  return parser.isSet(exit_after_layout_option) || parser.isSet(screenshot_option) || platform == u"offscreen"_s ||
+         platform == u"minimal"_s;
 }
 #endif
 }  // namespace
@@ -511,6 +524,13 @@ int main(int argc, char* argv[]) {
     // Close the splash once the main window is up.
     splash->finish(&window);
   }
+
+#ifndef PJ_TARGET_WASM
+  // Before any layout restore: a previous run that died with Custom Widget plugins live is
+  // reported, and an attended run asks whether to disable them.
+  window.reviewUncleanShutdown(
+      /*interactive=*/!isUnattendedRun(parser, exit_after_layout_option, screenshot_option));
+#endif
 
   // Deferred so the load runs after the event loop starts (the file loads on a
   // worker; the progressive layout restore needs a running loop).

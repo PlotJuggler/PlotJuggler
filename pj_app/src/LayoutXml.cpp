@@ -581,7 +581,7 @@ struct DatasetIdentityAttributes {
 };
 
 // The five qualifier shapes, built once. kPlain: a time-series curve, a <transform> /
-// <on_demand> <input>, a dataset-bound <generator> (an all_datasets one carries no
+// <on_demand> / <CustomWidget> <input>, a dataset-bound <generator> (an all_datasets one carries no
 // dataset_id and is skipped), a marker scope, a scene <layer> / <config_topic>. kX / kY:
 // the XY curve axes. kInput: a <processor>'s input, which rebinds on reload exactly like a
 // plotted curve. kSource: a scene <robot_model> / <trail>.
@@ -645,6 +645,18 @@ void forEachTransformInput(QDomDocument& doc, Fn&& fn) {
       }
     }
   }
+}
+
+// Visits every wire (<input>) of a <CustomWidget>. Selected through the parent: a marker rule's
+// <input> elements are not wires and carry no dataset qualifiers.
+template <typename Fn>
+void forEachCustomWidgetInput(QDomDocument& doc, Fn&& fn) {
+  forEachTagged(doc, u"CustomWidget"_s, [&fn](QDomElement& widget) {
+    for (QDomElement input = widget.firstChildElement(u"input"_s); !input.isNull();
+         input = input.nextSiblingElement(u"input"_s)) {
+      fn(input);
+    }
+  });
 }
 
 // Applies `visit` to the document element and every descendant, iteratively so a
@@ -730,6 +742,8 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
   forEachGenerator(doc, [&lookup](QDomElement& gen) { stampIdentityPair(gen, qualifier(Qualifier::kPlain), lookup); });
   forEachMarkerScope(
       doc, [&lookup](QDomElement scope) { stampIdentityPair(scope, qualifier(Qualifier::kPlain), lookup); });
+  forEachCustomWidgetInput(
+      doc, [&lookup](QDomElement& input) { stampIdentityPair(input, qualifier(Qualifier::kPlain), lookup); });
 }
 
 void removeUnvalidatedDatasetIds(QDomDocument& doc) {
@@ -744,6 +758,8 @@ void removeUnvalidatedDatasetIds(QDomDocument& doc) {
       doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, qualifier(Qualifier::kPlain)); });
   forEachGenerator(doc, [](QDomElement& gen) { stripUnvalidatedIdentityPair(gen, qualifier(Qualifier::kPlain)); });
   forEachMarkerScope(doc, [](QDomElement scope) { stripUnvalidatedIdentityPair(scope, qualifier(Qualifier::kPlain)); });
+  forEachCustomWidgetInput(
+      doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, qualifier(Qualifier::kPlain)); });
 }
 
 void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {

@@ -201,6 +201,7 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
   labels["viz.2d"] = toolTipOf(placeholder, "buttonVizScene2D");
   labels["viz.3d"] = toolTipOf(placeholder, "buttonVizScene3D");
   labels["viz.state"] = toolTipOf(placeholder, "buttonVizStateTransitions");
+  labels["viz.custom"] = toolTipOf(placeholder, "buttonVizCustomWidget");
 
   // Preferences pages (one nav row each) and the startup update check.
   PJ::PreferencesDialog prefs(Peer::theme(window), &window);
@@ -230,6 +231,7 @@ const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
       {"playback", {"playback.play", "playback.loop", "playback.rate", "playback.step"}},
       {"source_timeline", {"tabs.toggle_bottom", "timeline.align", "timeline.merge", "datasets.title"}},
       {"state_transitions", {"viz.state", "datasets.title"}},
+      {"custom_widget", {"viz.custom", "datasets.title"}},
       {"plot_tabs", {"plot.split_h", "plot.split_v", "plot.fullscreen", "datasets.title"}},
       {"preferences", {"menu.file", "action.preferences"}},
       {"diagnostics", {"titlebar.diagnostics"}},

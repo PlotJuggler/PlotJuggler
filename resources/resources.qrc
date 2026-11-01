@@ -120,6 +120,7 @@
     <file alias="create_new_folder.svg">svg/create_new_folder.svg</file>
     <file alias="cube.svg">svg/cube.svg</file>
     <file alias="cube_axes.svg">svg/cube_axes.svg</file>
+    <file alias="custom_widget.svg">svg/custom_widget.svg</file>
     <file alias="dark_mode_light.svg">svg/dark_mode_light.svg</file>
     <file alias="dashboard_load.svg">svg/dashboard_load.svg</file>
     <file alias="database.svg">svg/database.svg</file>

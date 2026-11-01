@@ -874,6 +874,9 @@ void DockWidget::clearCurrentContent(bool delete_content) {
     removeObjectContextMenuFilter(content_widget_);
     takeWidget();
     if (delete_content) {
+      if (object_widget_ != nullptr) {
+        object_widget_->aboutToBeDiscarded();
+      }
       content_widget_->deleteLater();
     }
   }

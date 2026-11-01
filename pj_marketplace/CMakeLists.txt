@@ -210,6 +210,12 @@ target_compile_definitions(plugin_check_runner_test PRIVATE
   PJ_PLUGIN_CHECK_HELPER_PATH="$<TARGET_FILE:pj-plugin-check>"
 )
 add_dependencies(plugin_check_runner_test pj-plugin-check)
+# The Qt-free Widget fixture pj_runtime builds for its own tests (pj_runtime is configured first).
+if(TARGET runtime_widget_plugin)
+  target_compile_definitions(plugin_check_runner_test PRIVATE
+    PJ_TEST_WIDGET_PLUGIN_PATH="$<TARGET_FILE:runtime_widget_plugin>")
+  add_dependencies(plugin_check_runner_test runtime_widget_plugin)
+endif()
 set_target_properties(plugin_check_runner_test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
 )

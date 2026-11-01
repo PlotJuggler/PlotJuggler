@@ -46,6 +46,7 @@ pj_add_test_runner(pj_widgets_tests
         section_header_band_test.cpp
         header_divider_highlight_test.cpp
         header_resize_policy_test.cpp
+        visualization_placeholder_test.cpp
     # The layout margins/spacing + button wrap budget now resolve from the framework
     # palette (pj_widgets FrameworkTokens), so the stylesheet resource must be linked.
     LIBS pj_widgets pj_resources Qt6::Test Qt6::GuiPrivate

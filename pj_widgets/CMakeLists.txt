@@ -1,5 +1,11 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui GuiPrivate Network Svg Widgets)
 
+# Fnv1a.h alone: header-only and Qt-free, in an include root of its own, so a module that hashes
+# but shows no widget (pj_custom_widgets core) links it without pulling in the widget library.
+add_library(pj_fnv1a INTERFACE)
+target_include_directories(pj_fnv1a INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/fnv1a/include>)
+target_compile_features(pj_fnv1a INTERFACE cxx_std_20)
+
 add_library(pj_widgets STATIC
     src/CheckButton.cpp
     src/DualOptionsWidget.cpp
@@ -49,7 +55,6 @@ add_library(pj_widgets STATIC
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/CheckButton.h
     include/pj_widgets/ChromeMetrics.h
-    include/pj_widgets/Fnv1a.h
     include/pj_widgets/SideDrawer.h
     include/pj_widgets/DualOptionsWidget.h
     include/pj_widgets/ColorPickerPopup.h
@@ -121,6 +126,7 @@ target_include_directories(pj_widgets PUBLIC
 )
 
 target_link_libraries(pj_widgets PUBLIC
+    pj_fnv1a
     Qt6::Core
     Qt6::Gui
     Qt6::Network

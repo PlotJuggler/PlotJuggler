@@ -31,6 +31,7 @@ PJ4/
 ├── pj_runtime/        # services layer (no Qt6::Widgets)
 ├── pj_widgets/        # reusable Qt widgets and UI helpers
 ├── pj_plotting/       # Qwt plotting widget family
+├── pj_custom_widgets/ # Custom Widget panel: a dock hosting a Widget plugin's Qt widget
 ├── pj_app/            # main window shell
 ├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample presets
 ├── raster/            # helper/ executable + ipc/ wire contract
@@ -39,7 +40,7 @@ PJ4/
 └── docs/              # cross-cutting guides, research, archived plans
 ```
 
-The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
+The widget families (`pj_plotting`, `pj_custom_widgets`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
 
 ### Placement rules
 
@@ -53,6 +54,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_widgets/`: reusable Qt widgets usable by another Qt app, including `Timeline` (its `pj_runtime` binding `SourceTimelineController` lives in `pj_app`). Depends only on Qt and the standard library, never on other PJ modules.
 - `pj_scene_common/`: backend-agnostic scene dock framework shared by 2D/3D; rendering-specific view state stays in the families.
 - `pj_plotting/`, `pj_scene2D/`, `pj_scene3D/`: widget families with logic in `core/`, Qt widgets in `widget/` (`widgets/` for the scenes; for Scene3D the QRhi view, its passes and the layers), tests in `tests/`; `pj_scene2D/tools/` holds opt-in dev utilities (`PJ_BUILD_TOOLS`), `pj_scene3D/demos/` benchmarks (`PJ_BUILD_DEMOS`). No 3D rendering code outside `pj_scene3D`.
+- `pj_custom_widgets/`: the Custom Widget panel family (series wiring to a Widget plugin's inputs, value-at-time push, persistence, plugin-object lifetime): widget-free logic in `core/`, the dock in `widget/`, tests in `tests/`. Plugin-created objects are destroyed synchronously, never with `deleteLater`.
 - `pj_marketplace/`: extension registry, download, install/manage services and UI.
 - `pj_dialog_host/`: host for plugin-provided dialogs. App dialogs stay in `pj_app`; reusable dialog controls in `pj_widgets`.
 - `pj_scripting/`: Luau and embedded-Python engines behind a language-agnostic `ScriptEngine` seam. No scripting code in `pj_app` or widget modules unless strictly UI/editor code.
@@ -102,6 +104,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_tf` | [CLAUDE.md](./pj_tf/CLAUDE.md) | — |
 | `pj_widgets` | [CLAUDE.md](./pj_widgets/CLAUDE.md) | — |
 | `pj_plotting` | [CLAUDE.md](./pj_plotting/CLAUDE.md) | [docs/](./pj_plotting/docs): ARCHITECTURE |
+| `pj_custom_widgets` | [CLAUDE.md](./pj_custom_widgets/CLAUDE.md) | [docs/](./pj_custom_widgets/docs): REQUIREMENTS |
 | `pj_dialog_host` | [CLAUDE.md](./pj_dialog_host/CLAUDE.md) | — |
 | `pj_scene_common` | [CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
 | `pj_scene2D` | [CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs): REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES |

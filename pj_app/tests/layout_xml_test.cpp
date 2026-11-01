@@ -930,6 +930,52 @@ TEST(DatasetSourcePath, OnDemandInputsAreStampedAndStripped) {
   }
 }
 
+// A Custom Widget wire carries the same dataset triple and goes through the same three passes: the
+// absolute path the panel saves is replaced by the layout-relative one at file save, an unvalidated
+// volatile id is stripped, and a generic layout keeps no qualifier. A marker rule's <input> outside a
+// <CustomWidget> is not a wire: the stamp and the id pass leave it alone.
+TEST(DatasetSourcePath, CustomWidgetInputsAreStampedAndStripped) {
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"root"_s);
+  doc.appendChild(root);
+  QDomElement custom = doc.createElement(u"CustomWidget"_s);
+  root.appendChild(custom);
+  QDomElement known = doc.createElement(u"input"_s);
+  known.setAttribute(u"name"_s, u"value"_s);
+  known.setAttribute(u"dataset_id"_s, u"7"_s);
+  known.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  known.setAttribute(u"dataset_path"_s, u"/saved/elsewhere/run.mcap"_s);
+  custom.appendChild(known);
+  QDomElement unknown = doc.createElement(u"input"_s);
+  unknown.setAttribute(u"name"_s, u"state"_s);
+  unknown.setAttribute(u"dataset_id"_s, u"8"_s);
+  unknown.setAttribute(u"dataset_source"_s, u"stream"_s);
+  custom.appendChild(unknown);
+  QDomElement marker_input = doc.createElement(u"input"_s);
+  marker_input.setAttribute(u"dataset_id"_s, u"7"_s);
+  root.appendChild(marker_input);
+
+  PJ::layout_xml::stampDatasetSourcePaths(
+      doc, [](std::uint32_t id) { return id == 7 ? u"data/run.mcap"_s : QString{}; });
+  EXPECT_EQ(known.attribute(u"dataset_path"_s), u"data/run.mcap"_s) << "the absolute save-time path is replaced";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_path"_s)) << "id 8 unknown to the lookup";
+  EXPECT_FALSE(marker_input.hasAttribute(u"dataset_path"_s)) << "not a Custom Widget wire";
+
+  PJ::layout_xml::removeUnvalidatedDatasetIds(doc);
+  EXPECT_TRUE(known.hasAttribute(u"dataset_id"_s)) << "path-qualified: kept";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_id"_s)) << "an unvalidated volatile id must not survive a file save";
+  EXPECT_EQ(unknown.attribute(u"dataset_source"_s), u"stream"_s);
+  EXPECT_TRUE(marker_input.hasAttribute(u"dataset_id"_s));
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+  for (const QDomElement& input : {known, unknown}) {
+    EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_path"_s));
+    EXPECT_FALSE(input.attribute(u"name"_s).isEmpty()) << "the name stays";
+  }
+}
+
 // A hidden <marker_scope> carries the same dataset identity as the curves beside it
 // and must survive the same stamp / portable-id / generic-strip passes, or a reload
 // with exchanged dataset ids binds the hidden scope to the wrong dataset.
@@ -1169,7 +1215,26 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   scene.appendChild(trail);
   pd.doc.documentElement().appendChild(scene);
 
+  // A Custom Widget wire carries the same qualifiers as a curve and must shed them too.
+  QDomElement custom = pd.doc.createElement(u"CustomWidget"_s);
+  custom.setAttribute(u"plugin"_s, u"basic-widgets"_s);
+  QDomElement wire = pd.doc.createElement(u"input"_s);
+  wire.setAttribute(u"name"_s, u"value"_s);
+  wire.setAttribute(u"topic"_s, u"/battery"_s);
+  wire.setAttribute(u"field"_s, u"voltage"_s);
+  wire.setAttribute(u"dataset_id"_s, u"3"_s);
+  wire.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  wire.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  custom.appendChild(wire);
+  pd.doc.documentElement().appendChild(custom);
+
   PJ::layout_xml::removeDatasetQualifiersForGenericLayout(pd.doc);
+
+  EXPECT_EQ(wire.attribute(u"topic"_s), u"/battery"_s);
+  EXPECT_EQ(wire.attribute(u"field"_s), u"voltage"_s);
+  EXPECT_FALSE(wire.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(wire.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(wire.hasAttribute(u"dataset_path"_s));
 
   // Plot curves and <processor> inputs: structural identity (topic/field) survives;
   // the exact dataset qualifiers are gone so binding falls back to unique-only.

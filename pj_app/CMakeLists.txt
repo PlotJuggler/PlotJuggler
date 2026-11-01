@@ -98,6 +98,14 @@ add_library(pj_app_shell OBJECT
     src/ui/CurveListPanel.cpp
     src/ui/CurveListPanel.h
     src/ui/CurveListPanel.ui
+    src/CustomWidgetController.cpp
+    src/CustomWidgetController.h
+    src/ui/CustomWidgetConfigPanel.cpp
+    src/ui/CustomWidgetConfigPanel.h
+    src/ui/CustomWidgetConfigPanel.ui
+    src/ui/CustomWidgetPickerPanel.cpp
+    src/ui/CustomWidgetPickerPanel.h
+    src/ui/CustomWidgetPickerPanel.ui
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui
@@ -183,6 +191,7 @@ target_link_libraries(pj_app_shell PUBLIC
     pj_runtime
     pj_widgets
     pj_plotting
+    pj_custom_widgets
     pj_scripting
     pj_scene_common
     $<$<TARGET_EXISTS:pj_scene2d_widgets>:pj_scene2d_widgets>
@@ -736,6 +745,16 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/topic_demand_controller_test.cpp)
 
+    # Custom Widget panel through the shell: restore, save and the missing-plugin element, plus the
+    # destroy-before-session order at window teardown. Uses the in-process plugin of pj_custom_widgets.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_custom_widget_test.cpp
+        tests/custom_widget_panels_test.cpp)
+
+    # Headless runs of the real executable on a layout with a Custom Widget (with and without its
+    # plugin library); the fixtures are built by pj_custom_widgets/tests.
+    include(${CMAKE_SOURCE_DIR}/pj_custom_widgets/tests/E2E.cmake)
+
     # Test-only DataSource plugin that calls the runtime host's message box from
     # the import worker thread (guards the cross-thread-QMessageBox regression;
     # also records its askContinue outcome to PJ_MSGBOX_PROBE_FILE so a test can
@@ -935,7 +954,7 @@ if(PJ_BUILD_TESTS)
         SOURCES ${PJ_APP_GUI_TEST_SOURCES} tests/support/gui_test_env.cpp
         # Qt6::Test: QTest::qWaitForWindowExposed, for the drawer-splitter cases in
         # toolbox_panel_fold_test that need a real window-system resize event.
-        LIBS pj_app_shell pj_resources Qt6::Test
+        LIBS pj_app_shell pj_resources plotjuggler_sdk::plugin_sdk Qt6::Test
     )
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
     # $<TARGET_FILE:...> in a compile definition creates no build-order dependency.
@@ -944,6 +963,7 @@ if(PJ_BUILD_TESTS)
     # on_demand_test_utils.h: the fake script run and clouds shared with pj_runtime's tests.
     # preset_controller_test serves canned responses with pj_runtime's loopback test server.
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
+    target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_custom_widgets/tests)
 
     # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,
     # floating-window close and DPR changes, plus the mixed-API negative case.

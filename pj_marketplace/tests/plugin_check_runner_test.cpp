@@ -13,6 +13,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QProcessEnvironment>
 #include <QString>
 #include <QTemporaryDir>
 using namespace Qt::StringLiterals;
@@ -90,6 +92,51 @@ TEST(PluginCheckRunnerTest, RejectsDirectoryWithoutPluginDsos) {
   EXPECT_EQ(result.exit_status, QProcess::NormalExit);
   EXPECT_TRUE(result.plugins.isEmpty());
 }
+
+// The child gets the Qt library directory first on the loader search path, ahead of what the parent had.
+TEST(PluginCheckRunnerTest, ChildEnvironmentPutsTheQtLibrariesFirst) {
+#if defined(__linux__) || defined(_WIN32)
+#if defined(_WIN32)
+  const QString variable = u"PATH"_s;
+#else
+  const QString variable = u"LD_LIBRARY_PATH"_s;
+#endif
+  QProcessEnvironment base;
+  base.insert(u"UNRELATED"_s, u"kept"_s);
+  const QString sep = QDir::listSeparator();
+
+  const QProcessEnvironment empty = PJ::PluginCheckRunner::childEnvironment(base, u"/qt/lib"_s);
+  EXPECT_EQ(empty.value(variable), u"/qt/lib"_s);
+  EXPECT_EQ(empty.value(u"UNRELATED"_s), u"kept"_s);
+
+  base.insert(variable, u"/app/lib"_s);
+  const QProcessEnvironment prepended = PJ::PluginCheckRunner::childEnvironment(base, u"/qt/lib"_s);
+  EXPECT_EQ(prepended.value(variable), u"/qt/lib"_s + sep + u"/app/lib"_s);
+
+  EXPECT_EQ(PJ::PluginCheckRunner::childEnvironment(base, QString()).value(variable), u"/app/lib"_s);
+#else
+  GTEST_SKIP() << "no loader search-path variable is managed on this platform";
+#endif
+}
+
+#ifdef PJ_TEST_WIDGET_PLUGIN_PATH
+// A Widget library is admitted with family "widget": the helper must name the family, not "unknown".
+TEST(PluginCheckRunnerTest, ReportsWidgetFamily) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString target =
+      QDir(dir.path()).absoluteFilePath(QFileInfo(QString::fromLatin1(PJ_TEST_WIDGET_PLUGIN_PATH)).fileName());
+  ASSERT_TRUE(QFile::copy(QString::fromLatin1(PJ_TEST_WIDGET_PLUGIN_PATH), target));
+
+  const PJ::PluginCheckRunner runner(helperOptions());
+  const PJ::PluginCheckResult result = runner.run(dir.path());
+
+  ASSERT_TRUE(result.ok) << result.parent_error.toStdString();
+  ASSERT_EQ(result.plugins.size(), 1);
+  EXPECT_EQ(result.plugins[0].family, u"widget"_s);
+  EXPECT_EQ(result.plugins[0].id, u"test-widgets"_s);
+}
+#endif
 
 // A helper path that does not exist on disk is caught by the parent-side
 // supervisor, not by the child: the runner sets parent_error and never

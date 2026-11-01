@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The executable shell. Owns `MainWindow`, the application menus/toolbars/status bar, the `AppSession` (from `pj_runtime`), and the wiring between runtime services and concrete widgets (`pj_plotting`, `pj_scene2D/widgets`, ...). On WebAssembly it also owns the browser boundary: upload staging/identity, asynchronous file selection, the deliberately narrow durable-settings bridge, source-aware layout replay, and the browser sample presets.
+The executable shell. Owns `MainWindow`, the application menus/toolbars/status bar, the `AppSession` (from `pj_runtime`), and the wiring between runtime services and concrete widgets (`pj_plotting`, `pj_scene2D/widgets`, `pj_custom_widgets`, ...). On WebAssembly it also owns the browser boundary: upload staging/identity, asynchronous file selection, the deliberately narrow durable-settings bridge, source-aware layout replay, and the browser sample presets.
 
 Host code stays domain-neutral (root `CLAUDE.md`): no plugin-specific terms or per-plugin policy here; the plugin supplies the domain meaning.
 
@@ -50,10 +50,11 @@ Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction
 ## Layout
 
 - `src/MainWindow.{h,cpp,ui}`, `src/main.cpp`: the window and its wiring; startup, CLI flags, crash handler.
-- `src/*.ui`: `MainWindow`, `PreferencesDialog`, `TitleBar`, `ToolboxBanner`. `src/ui/`: embedded sub-widgets (`LeftPanel`, `CurveListPanel`, `TimelineWidget`, `DiagnosticsDialog`, `AboutDialog`, `DatasetInfoDialog`, `Scene2DConfigPanel`, `Scene3DConfigPanel`).
+- `src/*.ui`: `MainWindow`, `PreferencesDialog`, `TitleBar`, `ToolboxBanner`. `src/ui/`: embedded sub-widgets (`LeftPanel`, `CurveListPanel`, `TimelineWidget`, `DiagnosticsDialog`, `AboutDialog`, `DatasetInfoDialog`, `Scene2DConfigPanel`, `Scene3DConfigPanel`, and the Custom Widget pages `CustomWidgetPickerPanel`, `CustomWidgetConfigPanel`).
 - `FileLoader`, `LoadInput.h`, `FanoutConfig`, `DialogPresenter`: file loading. `IngestProgress*`, `SeriesProgressController`: progress rows.
 - `StreamingSourceManager`, `TopicDemandController`, `PendingDisplayBinder`: streaming sources and demand.
 - `LayoutXml`, `LayoutReplayHints.h`, `LayoutImportBatch`, `HeadlessDescriptorProviderSession`, `SourcePromotionHost`, `LayoutExitWatch`: layout files and the cloud import.
+- `CustomWidgetController`: the Custom Widget pages, the pending target panel, the `ActiveWidgetsMarker` and the startup crash review ([docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Custom Widget panels").
 - `ToolboxPresenter`, `ToolboxChrome`, `ToolboxHostWiring.h`, `PluginPlotTabsController`, `PluginSceneViewsController`: toolbox presentation and plugin-owned views.
 - `SourceTimelineController`, `DatasetMergeActions`: Source Timeline binding and dataset merge.
 - `BrowserFileStore`, `FileSelectionService`, `BrowserPersistence`: WebAssembly boundary. `PresetController`, `WelcomePresetsDialog{.h,.cpp,.ui}`: browser presets (tests: `PresetControllerTest`, `WelcomePresetsDialogTest`, `RemotePresetReplayTest`, `StreamingPresetTest` with `tests/mock_layout_stream_plugin.cpp`).

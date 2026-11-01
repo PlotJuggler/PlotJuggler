@@ -50,7 +50,7 @@ Inputs and small controls:
 |---|---|
 | `ComboBox.h`, `ComboBoxGradientDelegate.h` | App-styled combo and its gradient popup delegate (QSS cannot paint a gradient on combo popup items). See Rules. |
 | `Search.h` | The canonical search/filter input; two background tones via `setVariant()`. See Rules. |
-| `SectionHeaderBand.h` | Canonical section header strip, with optional inline filter, trailing combo/buttons/toggle driven by `.ui` properties (usable from plugin panels). |
+| `SectionHeaderBand.h` | Canonical section header strip, with optional inline filter, trailing combo/buttons/toggle driven by `.ui` properties (usable from plugin panels). A parent-only constructor lets uic build it from an app `.ui` file, with the title in the `text` property. |
 | `SvgButton.h` | `QToolButton` whose SVG icon re-tints on theme switch with no host wiring; `setIconPath()` swaps state glyphs. Icons use `loadSvg`'s 64-px cache; large ones need `renderSvgPixmap`. |
 | `ToggleSwitch.h` | Sliding switch replacing `QCheckBox`; optional inline label. |
 | `CheckButton.h` | Checkable pill toggle with an inline label; colours are QSS `qproperty-*`. |
@@ -75,7 +75,7 @@ Views and tables:
 | `Timeline.h` | Multi-track Source Timeline: `TimelineScene` (Qt-free math) + `Timeline` (view). Runtime-agnostic: the host (`SourceTimelineController` in `pj_app`) converts. |
 | `StateTransitionsView.h` | State Transitions strip: `StateTransitionsScene` (display-free math) + view; runtime-agnostic like `Timeline`. |
 | `TailFollowOverlay.h` | "Jump to the latest" HUD button for a tail-following scroll area. |
-| `VisualizationPlaceholderWidget.h`, `VisualizationKind.h` | Empty-dock placeholder with clickable family icons; `VisualizationKind` is the neutral vocabulary the app shell maps to concrete widget kinds. |
+| `VisualizationPlaceholderWidget.h`, `VisualizationKind.h` | Empty-dock placeholder with five clickable family icons (Plot, State Transitions, 2D, 3D, Custom Widget); `VisualizationKind` is the neutral vocabulary the app shell maps to concrete widget kinds. |
 | `RasterStreamView.h`, `RasterFrame.h` | External renderer hosted over shared memory (`raster/ipc/`), and its frame decoder. `RasterStreamView` is not built for WebAssembly. |
 
 Helpers:
@@ -87,7 +87,7 @@ Helpers:
 | `Hatch.h` | The one app-wide "no data" hatch, phased to a global grid so every caller is continuous. |
 | `Colormap.h` | Scientific colormaps shared by the 2D and 3D views (CPU LUT, GLSL, persisted tokens). |
 | `StateColors.h` | Stable categorical colour per state string. |
-| `Fnv1a.h` | 64-bit FNV-1a, header-only and Qt-free. |
+| `Fnv1a.h` | 64-bit FNV-1a, header-only and Qt-free; the INTERFACE target `pj_fnv1a` (`fnv1a/include/`, linked publicly by `pj_widgets`) so a module without widgets links the hash alone. |
 | `FrameworkTokens.h` | Typed reader over the semantic UI palette; holds no values. |
 | `Style.h`, `SvgUtil.h` | App `QProxyStyle`; SVG load/recolour helpers. |
 | `GraphicsApi.h` | QRhi API policy plus the plumbing every `QRhiWidget` shares. |

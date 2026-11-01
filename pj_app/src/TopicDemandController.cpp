@@ -11,6 +11,7 @@
 
 #include "LayoutXml.h"
 #include "PendingDisplayBinder.h"
+#include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotWidget.h"
@@ -233,6 +234,29 @@ void TopicDemandController::syncStateTransitionsDock(StateTransitionsDockWidget*
     current.emplace_back(dataset_id, topic_name);
   }
   applyTopicDelta(std::move(current), state_dock_topics_[dock]);
+}
+
+void TopicDemandController::registerCustomWidgetDock(CustomWidgetDockWidget* dock) {
+  if (dock == nullptr || custom_dock_topics_.count(dock) > 0) {
+    return;  // idempotent, mirroring registerPlot
+  }
+  custom_dock_topics_.emplace(dock, std::vector<std::pair<DatasetId, QString>>{});
+  connect(dock, &CustomWidgetDockWidget::bindingsChanged, this, [this, dock]() { syncCustomWidgetDock(dock); });
+  connect(dock, &QObject::destroyed, this, [this, dock]() {
+    auto it = custom_dock_topics_.find(dock);
+    if (it == custom_dock_topics_.end()) {
+      return;
+    }
+    for (const auto& [dataset_id, topic_name] : it->second) {
+      tracker_.removeReference(dataset_id, topic_name);
+    }
+    custom_dock_topics_.erase(it);
+  });
+  syncCustomWidgetDock(dock);  // covers wires restored before this call
+}
+
+void TopicDemandController::syncCustomWidgetDock(CustomWidgetDockWidget* dock) {
+  applyTopicDelta(dock->displayedTopics(), custom_dock_topics_[dock]);
 }
 
 void TopicDemandController::handlePlaceholderPlotDrop(

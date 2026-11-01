@@ -81,6 +81,10 @@ class IDataWidget {
   /// is already loaded. A widget that defers saved elements until their data arrives
   /// settles whatever is still undecided and makes its last attempt here. Default no-op.
   virtual void finishRestore() {}
+
+  /// Called once, right before the host schedules this widget for deferred deletion (never when it
+  /// moves to another dock): release here, synchronously, what must not wait for the event loop.
+  virtual void aboutToBeDiscarded() {}
 };
 
 }  // namespace PJ

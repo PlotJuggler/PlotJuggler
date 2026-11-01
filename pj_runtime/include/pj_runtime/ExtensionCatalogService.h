@@ -28,6 +28,7 @@ class ExtensionManager;
 using LoadedDataSource = RuntimeDataSourcePlugin;
 using LoadedMessageParser = RuntimeMessageParserPlugin;
 using LoadedToolbox = RuntimeToolboxPlugin;
+using LoadedWidget = RuntimeWidgetPlugin;
 
 // Bundles the marketplace (ExtensionManager) with the plugin catalog (per-family
 // loaders from pj_plugins) behind one Qt-friendly facade. `pj_app` never touches
@@ -125,6 +126,12 @@ class ExtensionCatalogService : public QObject {
   // Returns all loaded Toolbox plugins.
   const std::vector<LoadedToolbox>& toolboxes() const;
 
+  // Returns all loaded Widget plugins, including the ones whose Qt build does not match this host
+  // (qt_compatible == false; the dock explains why instead of dropping them). A Widget library is
+  // never unloaded, so an entry leaves this vector only when reload() withdraws a plugin the user
+  // disabled; its library stays mapped and panels already running it keep working.
+  const std::vector<LoadedWidget>& widgets() const;
+
   // Returns file-import capable DataSource plugins.
   std::vector<const LoadedDataSource*> fileImportSources() const;
 
@@ -145,6 +152,12 @@ class ExtensionCatalogService : public QObject {
   // The Toolbox plugin with manifest id `id`, or null when it is not loaded.
   // Same lifetime and threading rules as findParserByEncoding.
   const LoadedToolbox* findToolbox(QStringView id) const;
+
+  // The Widget plugin with manifest id `plugin_id`, or null when it is not loaded. Same lifetime and
+  // threading rules as findToolbox: the pointer indexes the catalog vector and is valid only until
+  // the next reload(), GUI thread only. A caller that keeps the library beyond that (a dock with a
+  // live widget) copies the WidgetLibrary's shared ownership through createHandle(), never the pointer.
+  const LoadedWidget* findWidget(QStringView plugin_id) const;
 
   // Short label naming the Toolbox `id` on a tab watermark or a Custom Topics row badge: its manifest `badge`, else
   // the toolbox name, else the id; empty when no such toolbox is loaded. Same lifetime and threading rules as

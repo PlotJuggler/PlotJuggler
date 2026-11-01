@@ -14,8 +14,8 @@
 #include "HeadlessDescriptorProviderSession.h"
 #include "LayoutReplayHints.h"
 #include "LoadInput.h"
-#include "ToolboxHostWiring.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/SessionManager.h"
 #ifndef __EMSCRIPTEN__
 #include "pj_runtime/SourceCaptureService.h"

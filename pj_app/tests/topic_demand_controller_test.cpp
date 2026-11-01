@@ -5,6 +5,7 @@
 #include <qwt_plot_curve.h>
 
 #include <QApplication>
+#include <QDomDocument>
 #include <QEventLoop>
 #include <QRectF>
 #include <QTimer>
@@ -17,13 +18,16 @@
 
 #include "PendingDisplayBinder.h"
 #include "TopicDemandController.h"
+#include "in_process_widget_plugin.h"
 #include "pj_base/type_tree.hpp"
+#include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/TopicDemandTracker.h"
@@ -536,6 +540,116 @@ TEST_F(TopicDemandControllerTest, StateStripDestructionReleasesReferences) {
 
   dock.reset();
   EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/robot/state"_s));
+}
+
+TEST_F(TopicDemandControllerTest, CustomWidgetWireAddRemoveTracksDemand) {
+  ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticWidget(pj_cw_test::goodVtable()));
+  const QString key = addScalarTopic(*app_session_, dataset_id_, "/speed");
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::CustomWidgetDockWidget dock(
+      &app_session_->sessionManager(), &app_session_->catalogModel(), &app_session_->extensionCatalog(),
+      &app_session_->playbackEngine());
+  ASSERT_TRUE(dock.bindToWidget(u"test_widgets"_s, u"gauge"_s));
+  controller_->registerCustomWidgetDock(&dock);
+  // Double registration is a no-op (mirrors registerPlot's guard).
+  controller_->registerCustomWidgetDock(&dock);
+
+  auto& tracker = app_session_->topicDemandTracker();
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+  ASSERT_TRUE(dock.setBinding(u"value"_s, 0, key));
+  EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+
+  dock.removeBinding(u"value"_s, 0);
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+}
+
+TEST_F(TopicDemandControllerTest, CustomWidgetDestructionReleasesReferences) {
+  ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticWidget(pj_cw_test::goodVtable()));
+  const QString key = addScalarTopic(*app_session_, dataset_id_, "/speed");
+  ASSERT_FALSE(key.isEmpty());
+
+  auto dock = std::make_unique<PJ::CustomWidgetDockWidget>(
+      &app_session_->sessionManager(), &app_session_->catalogModel(), &app_session_->extensionCatalog(),
+      &app_session_->playbackEngine());
+  ASSERT_TRUE(dock->bindToWidget(u"test_widgets"_s, u"gauge"_s));
+  controller_->registerCustomWidgetDock(dock.get());
+  ASSERT_TRUE(dock->setBinding(u"value"_s, 0, key));
+  auto& tracker = app_session_->topicDemandTracker();
+  EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+
+  dock.reset();
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+}
+
+// A restored wire whose topic a demand-driven stream only advertises: the panel cannot resolve it
+// until data flows, and data flows only once something references the topic.
+class CustomWidgetPendingWireTest : public TopicDemandControllerTest {
+ protected:
+  void SetUp() override {
+    TopicDemandControllerTest::SetUp();
+    ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticWidget(pj_cw_test::goodVtable()));
+    app_session_->catalogModel().setAdvertisedTopics(
+        dataset_id_, {PJ::AdvertisedTopic{u"/speed"_s, PJ::sdk::BuiltinObjectType::kNone}});
+  }
+
+  std::unique_ptr<PJ::CustomWidgetDockWidget> restoreDock() {
+    auto dock = std::make_unique<PJ::CustomWidgetDockWidget>(
+        &app_session_->sessionManager(), &app_session_->catalogModel(), &app_session_->extensionCatalog(),
+        &app_session_->playbackEngine());
+    controller_->registerCustomWidgetDock(dock.get());
+    QDomDocument doc;
+    EXPECT_TRUE(doc.setContent(
+        u"<CustomWidget plugin=\"test_widgets\" type=\"gauge\"><input name=\"value\" slot=\"0\" kind=\"number\" "
+        u"dataset_source=\"test\" topic=\"/speed\" field=\"value\"/></CustomWidget>"_s));
+    EXPECT_TRUE(dock->xmlLoadState(doc.documentElement()));
+    // What MainWindow::collectPendingDisplayBindings does for every Custom Widget panel.
+    for (const PJ::PendingWireDemand& demand : dock->pendingDemands()) {
+      binder_->addPendingCustomWidgetWire(dock.get(), demand.topic_name, demand.preferred_dataset);
+    }
+    return dock;
+  }
+};
+
+TEST_F(CustomWidgetPendingWireTest, ARestoredUnresolvedWireHoldsItsTopicUntilItResolves) {
+  auto dock = restoreDock();
+  auto& tracker = app_session_->topicDemandTracker();
+  ASSERT_EQ(dock->bindings().size(), 1U);
+  ASSERT_FALSE(dock->bindings()[0].resolved);
+  EXPECT_EQ(binder_->size(), 1);
+  EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s)) << "the pending wire subscribes its topic";
+  binder_->addPendingCustomWidgetWire(dock.get(), u"/speed"_s, dataset_id_);
+  binder_->addPendingCustomWidgetWire(dock.get(), u"/elsewhere"_s, dataset_id_);
+  EXPECT_EQ(binder_->size(), 1) << "one intent per topic, and none for a topic the panel does not wait on";
+
+  // The data arrives; the panel resolves the wire itself and its resolved-wire demand takes over.
+  ASSERT_FALSE(addScalarTopic(*app_session_, dataset_id_, "/speed").isEmpty());
+  ASSERT_TRUE(dock->bindings()[0].resolved);
+  EXPECT_TRUE(binder_->empty()) << "the binder let go once the wire resolved";
+  EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+
+  // Released exactly once: with the wire gone nothing references the topic any more.
+  dock->removeBinding(u"value"_s, 0);
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+}
+
+TEST_F(CustomWidgetPendingWireTest, TheReferenceGoesWithTheDock) {
+  auto dock = restoreDock();
+  auto& tracker = app_session_->topicDemandTracker();
+  ASSERT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+  dock.reset();
+  EXPECT_TRUE(binder_->empty());
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+}
+
+TEST_F(CustomWidgetPendingWireTest, ClearReleasesTheReference) {
+  auto dock = restoreDock();
+  auto& tracker = app_session_->topicDemandTracker();
+  ASSERT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+  binder_->clear();
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+  dock.reset();  // no second release
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
 }
 
 TEST_F(TopicDemandControllerTest, PlaceholderPlotDropBindsConventionalValueFieldTopic) {

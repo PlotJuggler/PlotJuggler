@@ -19,6 +19,7 @@
 #include "pj_plugins/host/toolbox_handle.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DerivedRuntimeHosts.h"
+#include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"

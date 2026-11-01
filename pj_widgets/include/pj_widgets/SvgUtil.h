@@ -148,18 +148,16 @@ inline const QPixmap& loadSvg(const QString& filename, const QString& style_name
 // pixmap blurs; this renders fresh at logical_size * dpr pixels and
 // stamps the DPR on the result so Qt halves it back to logical units.
 // Not cached — call sparingly (e.g. once per widget construction).
-inline QPixmap renderSvgPixmap(
-    const QString& filename, const QString& style_name, const QSize& logical_size, qreal dpr) {
-  QFile file(filename);
-  if (!file.open(QFile::ReadOnly | QFile::Text)) {
-    qWarning("PJ::RenderSvgPixmap: cannot open %s", qPrintable(filename));
+// renderSvgDataPixmap takes the SVG markup itself (e.g. an icon embedded in a
+// manifest) and returns a null pixmap when it does not parse. A distinct name,
+// not an overload: a string literal converts to QString and QByteArray alike.
+inline QPixmap renderSvgDataPixmap(
+    QByteArray svg_data, const QString& style_name, const QSize& logical_size, qreal dpr) {
+  recolorSvgInk(svg_data, isLightTheme(style_name));
+  QSvgRenderer renderer(svg_data);
+  if (!renderer.isValid()) {
     return {};
   }
-  QByteArray svg_data = file.readAll();
-  file.close();
-  const bool light_theme = style_name.contains("light");
-  recolorSvgInk(svg_data, light_theme);
-  QSvgRenderer renderer(svg_data);
   const QSize physical = logical_size * dpr;
   QImage image(physical, QImage::Format_ARGB32);
   image.fill(Qt::transparent);
@@ -169,6 +167,16 @@ inline QPixmap renderSvgPixmap(
   QPixmap pm = QPixmap::fromImage(image);
   pm.setDevicePixelRatio(dpr);
   return pm;
+}
+
+inline QPixmap renderSvgPixmap(
+    const QString& filename, const QString& style_name, const QSize& logical_size, qreal dpr) {
+  QFile file(filename);
+  if (!file.open(QFile::ReadOnly | QFile::Text)) {
+    qWarning("PJ::RenderSvgPixmap: cannot open %s", qPrintable(filename));
+    return {};
+  }
+  return renderSvgDataPixmap(file.readAll(), style_name, logical_size, dpr);
 }
 
 }  // namespace PJ

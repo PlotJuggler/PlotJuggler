@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root format="PlotJuggler" pj4_version="4">
+  <tabbed_widget parent="main_window"><Tab id="t1" containers="1"><Container>
+    <DockArea id="a1" name="Widget"><CustomWidget plugin="pj_test_widgets" type="label" plugin_version="1.0.0">
+      <input name="value" slot="0" kind="number" dataset_source="data.mock" dataset_path="__DATA_FILE__" topic="mock/file_data" field="value"/>
+      <input name="state" slot="0" kind="text" dataset_source="data.mock" topic="/not/there" field="name"/>
+      <config><![CDATA[{"prefix":"V: "}]]></config>
+    </CustomWidget></DockArea>
+  </Container></Tab></tabbed_widget>
+  <previouslyLoaded_Datafiles>
+    <fileInfo filename="__DATA_FILE__" prefix=""><plugin ID="Mock File Source" manifest_id="mock-file-source"><![CDATA[{}]]></plugin></fileInfo>
+  </previouslyLoaded_Datafiles>
+</root>

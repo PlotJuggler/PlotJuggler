@@ -1229,7 +1229,7 @@ TEST(VisualizationPlaceholderTest, ThreeDIconIsEnabledAndNamed) {
   // The 3D icon used to render disabled (greyed); it must now be enabled and
   // full-tinted like the others. All three carry stable objectNames.
   TestPlaceholderWidget placeholder;
-  for (const char* name : {"buttonVizPlot", "buttonVizScene2D", "buttonVizScene3D"}) {
+  for (const char* name : {"buttonVizPlot", "buttonVizScene2D", "buttonVizScene3D", "buttonVizCustomWidget"}) {
     auto* button = iconButton(&placeholder, name);
     ASSERT_NE(button, nullptr) << name;
     EXPECT_TRUE(button->isEnabled()) << name;

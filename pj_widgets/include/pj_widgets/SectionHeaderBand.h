@@ -62,6 +62,8 @@ class SectionHeaderBand : public QWidget {
   Q_PROPERTY(QString trailingToggleToolTip READ trailingToggleToolTip WRITE setTrailingToggleToolTip)
  public:
   explicit SectionHeaderBand(const QString& title, QWidget* parent = nullptr);
+  // For uic: a band placed in a .ui file gets its title through the `text` property.
+  explicit SectionHeaderBand(QWidget* parent = nullptr) : SectionHeaderBand(QString(), parent) {}
 
   void setText(const QString& title);
   [[nodiscard]] QString text() const;

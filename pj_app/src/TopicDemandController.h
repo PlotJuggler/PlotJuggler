@@ -24,6 +24,7 @@ class QTimer;
 namespace PJ {
 
 class DataEngine;
+class CustomWidgetDockWidget;
 class DataProcessorService;
 class PendingDisplayBinder;
 class PlotWidget;
@@ -85,6 +86,10 @@ class TopicDemandController : public QObject {
   // (the initial sync covers rows restored before this call). Idempotent.
   void registerStateTransitionsDock(StateTransitionsDockWidget* dock);
 
+  // Same for a Custom Widget panel: holds one reference per distinct (dataset, topic) its resolved
+  // wires read, diffed on every bindingsChanged() and released when the panel is destroyed.
+  void registerCustomWidgetDock(CustomWidgetDockWidget* dock);
+
   // M3-UI placeholder drop path: `plot` (a curve-less or already-populated
   // PlotWidget) had an advertised SCALAR placeholder dropped on it. Stages a
   // pending bind via PendingDisplayBinder, which holds the demand reference
@@ -122,6 +127,8 @@ class TopicDemandController : public QObject {
   void reportVisibleStart(PlotWidget* plot, const std::vector<std::pair<DatasetId, QString>>& topics);
   // Same delta sync for a state-transitions strip, against state_dock_topics_.
   void syncStateTransitionsDock(StateTransitionsDockWidget* dock);
+  // Same delta sync for a Custom Widget panel, against custom_dock_topics_.
+  void syncCustomWidgetDock(CustomWidgetDockWidget* dock);
   // The shared tail of both syncs: multiset-diff `current` against `previous`
   // (a reference into the per-widget map), add/removeReference the delta, and
   // store `current` as the new previous.
@@ -187,6 +194,8 @@ class TopicDemandController : public QObject {
   // Last-seen (dataset, topic) set per tracked state-transitions strip — see
   // syncStateTransitionsDock(). Erased when the strip is destroyed.
   std::unordered_map<StateTransitionsDockWidget*, std::vector<std::pair<DatasetId, QString>>> state_dock_topics_;
+  // Last-seen (dataset, topic) set per tracked Custom Widget panel — see syncCustomWidgetDock().
+  std::unordered_map<CustomWidgetDockWidget*, std::vector<std::pair<DatasetId, QString>>> custom_dock_topics_;
 
   // --- bounded field-preview subscriptions (census + double-click peek) ---
   // Preview identity is (DatasetId, topic_name), matching TopicDemandTracker.
