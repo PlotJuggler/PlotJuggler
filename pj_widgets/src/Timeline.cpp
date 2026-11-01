@@ -604,6 +604,7 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   connect(v_scrollbar_, &Scrollbar::scrollChangeCommitted, this, &Timeline::viewStateChangeCommitted);
 
   align_button_ = new QPushButton(tr("Align"), this);
+  align_button_->setObjectName(u"timelineAlignButton"_s);
   align_button_->setToolTip(tr("Shift every source so their starts line up at the earliest start"));
   connect(align_button_, &QPushButton::clicked, this, &Timeline::alignRequested);
 

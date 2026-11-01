@@ -573,6 +573,8 @@ int main(int argc, char* argv[]) {
     // and reveal the title-bar "Update" badge if any are available (silent on
     // failure). Deferred for the event loop just like the release check.
     QTimer::singleShot(0, &window, [&window]() { window.checkExtensionUpdates(); });
+  } else {
+    window.noteRegistryScanSkipped();
   }
 
   // Anonymous daily-user ping (see docs/TELEMETRY.md): opt-out via Preferences

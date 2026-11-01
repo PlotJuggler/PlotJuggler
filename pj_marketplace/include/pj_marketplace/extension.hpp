@@ -18,7 +18,7 @@ struct Platform {
 // Registry-declared plugin entry kept for backward-compatible metadata display.
 struct ExtensionPlugin {
   QString name;     ///< Plugin class name
-  QString type;     ///< "data_loader" | "data_streamer" | "parser" | "toolbox"
+  QString type;     ///< "data_loader" | "data_stream" | "message_parser" | "toolbox"
   QString library;  ///< Library filename without extension
 };
 
@@ -33,8 +33,11 @@ struct Extension {
   QString repository;
   QString license;   ///< SPDX identifier
   QString icon_url;  ///< Optional
+  /// Optional end-user text naming where the extension is found in the app
+  /// (e.g. "Toolbox menu → FFT"). Empty = undeclared; the host then derives it.
+  QString entry_point;
 
-  /// "data_loader" | "data_streamer" | "parser" | "toolbox" | "bundle"
+  /// "data_loader" | "data_stream" | "message_parser" | "toolbox" | "bundle"
   QString category;
   QStringList tags;
 

@@ -52,6 +52,13 @@ class MarketplaceWindow : public Dialog {
     return content_widget_;
   }
 
+  // The manager behind every fetch this window makes, owned by the window. The
+  // window's first fetch starts on the next event-loop turn, so a host that
+  // connects right after construction hears about it.
+  RegistryManager* registryManager() const {
+    return registry_mgr_;
+  }
+
   // Refreshes installed state and repaints — the embedded equivalent of what
   // showEvent() does for the modal path. Call after embedding contentWidget().
   void activateEmbedded();

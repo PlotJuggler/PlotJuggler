@@ -321,6 +321,46 @@ UI on `RecordingService::isSupported()` alone.
   generations and queued resolutions never block a GUI reload. In `DataSourceRuntimeHost`
   divergent winners leave the in-parse object sink unregistered, and an object topic keeps
   its first decoder provider (history is never re-decoded by a replacement).
+- **`FeatureCatalogHost`** (desktop only) backs the optional `pj.feature_catalog.v1`
+  service: it composes the schema-1 JSON document (built-ins and limitations from the
+  resource bytes its constructor takes, loaded plugins, installed-not-loaded extensions,
+  installable entries of a registry the app already fetched; it never fetches) from
+  injected providers, so `tests/feature_catalog_host_test.cpp` runs it over fakes. Each
+  extension id lands in exactly one list (loaded > installed_not_loaded > available); an id
+  past the bound is dropped, never truncated, other strings are bounded and lists sorted
+  and capped. The registry state is kept per URL from every fetch the app makes (the
+  startup scan and the Marketplace window, each through its own `RegistryManager`, wired
+  by `MainWindow::trackRegistryFetches`); the last fetch of a URL to finish decides its
+  state. `ToolboxTags.h` holds the manifest tags (`cloud`, `hidden`) the Toolbox menu, the
+  Sources panel and the catalog's default entry points all read (`manifestTags`,
+  `manifestHasTag`).
+
+  **Schema 1.** The SDK leaves the document to the host, so this is its definition. A
+  missing field means unknown.
+
+  | Key | Value |
+  |---|---|
+  | `schema` | `1` |
+  | `host_version`, `platform` | strings |
+  | `core` | built-in features: `id`, `name`, `summary`, `entry_point` |
+  | `limitations` | known limitations: `id`, `summary` |
+  | `loaded` | plugins in this process: `id`, `name`, `version`, `category`, `summary`, `entry_point`, `in_registry` (bool) |
+  | `installed_not_loaded` | `id`, `name`, `version`, `category`, `summary`, optional `reason` (`disabled`, `needs_restart`, `incompatible`); no `entry_point` |
+  | `available` | installable registry entries: `id`, `name`, `version`, `category`, `summary`, `entry_point` |
+  | `registry` | `state` and `reason`, both always present |
+
+  `entry_point` is end-user navigation text: the plugin's own declaration, else the host's
+  default, which is empty for a plugin with no place of its own (a `hidden` toolbox, an
+  unknown category). Lists are sorted by `id`.
+
+  | `registry.state` | `registry.reason` | Meaning |
+  |---|---|---|
+  | `fetched` | `""` | the last fetch of the current URL succeeded; `available` and `in_registry` are read from it |
+  | `pending` | `""` | a fetch of the current URL is running and no list is in hand |
+  | `unreachable` | `""` | the last fetch of the current URL failed, for a network or a parse error alike |
+  | `not_fetched` | `url_changed` | fetches happened, none of them of the current URL |
+  | `not_fetched` | `updates_disabled` | the startup scan was skipped and nothing else fetched |
+  | `not_fetched` | `""` | nothing fetched yet |
 
 ## Data processors
 

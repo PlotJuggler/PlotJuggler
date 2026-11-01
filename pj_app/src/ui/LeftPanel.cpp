@@ -30,6 +30,7 @@
 #ifdef PJ_TARGET_WASM
 #include "BrowserPersistence.h"
 #endif
+#include "pj_runtime/ToolboxTags.h"
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/ScrubberBase.h"
 #include "pj_widgets/SvgUtil.h"
@@ -541,16 +542,7 @@ void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& 
         qWarning("LeftPanel: toolbox '%s' has an invalid manifest_json; skipping", tb.id.c_str());
         continue;
       }
-      bool is_cloud = false;
-      if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
-        for (const auto& tag : *it) {
-          if (tag.is_string() && tag.get<std::string>() == "cloud") {
-            is_cloud = true;
-            break;
-          }
-        }
-      }
-      if (!is_cloud) {
+      if (!manifestHasTag(manifest, kToolboxTagCloud)) {
         continue;
       }
 

@@ -113,6 +113,7 @@ class ToastManager;
 class UpdateChecker;
 class WelcomePresetsDialog;
 class RegistryManager;
+class FeatureCatalogHost;
 class TelemetryPing;
 class CoalescingTrigger;
 
@@ -150,6 +151,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowEditorIntegrationTestPeer;
   friend class PresetTestPeer;
   friend class ToolboxPanelFoldTestPeer;
+  friend class FeatureCatalogTestPeer;
   friend class ToolboxPresenter;
 
  public:
@@ -260,6 +262,17 @@ class MainWindow : public QMainWindow {
   // opens the Marketplace. Fully silent on network/parse failure — no button,
   // no toast. Lazily creates its own RegistryManager on first call.
   void checkExtensionUpdates();
+
+#ifndef PJ_TARGET_WASM
+  // main.cpp's gate skipped checkExtensionUpdates() for this launch (the
+  // --screenshot flag, or "check for updates on startup" turned off). Only
+  // tells the feature catalog why no registry is known; fetches nothing.
+  void noteRegistryScanSkipped();
+
+  // Reports every fetch `manager` starts from now on to the feature catalog,
+  // which reuses them instead of fetching on its own.
+  void trackRegistryFetches(RegistryManager* manager);
+#endif
 
   // Sends the anonymous daily-user ping (lazily creating the TelemetryPing).
   // Fully silent — no user-facing notification. `installation` is the
@@ -1488,6 +1501,11 @@ class MainWindow : public QMainWindow {
   // Registry fetcher for the startup extension-update scan (separate instance
   // from the Marketplace window's own, so neither aborts the other's fetch).
   RegistryManager* update_scan_registry_ = nullptr;
+#ifndef PJ_TARGET_WASM
+  // Backs "pj.feature_catalog.v1" for every toolbox session. Declared before
+  // session_ and the toolbox registry, so it outlives every plugin bound to it.
+  std::unique_ptr<FeatureCatalogHost> feature_catalog_;
+#endif
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
   // App-wide QSettings instance injected into each Scene3DDockWidget

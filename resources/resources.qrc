@@ -15,6 +15,9 @@
          whole weight axis, so font-weight 400/600/700 resolve to real masters
          (not synthesized bold). -->
     <file alias="fonts/NotoSans/NotoSans-Variable.ttf">fonts/NotoSans/NotoSans-Variable.ttf</file>
+    <!-- Built-in features and known limitations served to plugins by the
+         "pj.feature_catalog.v1" service (pj_runtime/include/pj_runtime/FeatureCatalogHost.h). -->
+    <file alias="feature_catalog.json">feature_catalog.json</file>
   </qresource>
   <qresource prefix="/resources">
     <!-- Funny splashscreen pool. The startup splash enumerates this directory

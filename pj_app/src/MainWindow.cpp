@@ -135,7 +135,11 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #ifndef PJ_TARGET_WASM
+#include "pj_base/sdk/service_traits.hpp"
 #include "pj_marketplace/marketplace_window.hpp"
+#include "pj_marketplace/platform_utils.hpp"
+#include "pj_runtime/FeatureCatalogHost.h"
+#include "pj_runtime/ServiceRegistration.h"
 #endif
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_marketplace/registry_manager.hpp"
@@ -189,6 +193,7 @@
 #include "pj_runtime/TelemetryPing.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
+#include "pj_runtime/ToolboxTags.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/UpdateChecker.h"
 #include "pj_runtime/ViewportRuntimeHost.h"
@@ -250,6 +255,16 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 namespace {
+
+#ifndef PJ_TARGET_WASM
+// The embedded feature catalog document; the host takes the bytes so it links
+// no resources.
+QByteArray featureCatalogResource() {
+  QFile file(QStringLiteral(":/resources/feature_catalog.json"));
+  return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+#endif
+
 Q_LOGGING_CATEGORY(lcMain, "pj.app.main")
 
 // Arms the 3D view's first-content framing (Scene3DDockWidget::frameInitialContent) for a view a user drop or a
@@ -872,7 +887,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // A browser tab cannot install a release, and the check itself cannot
   // succeed there (the GitHub API refuses the cross-origin request), so the
   // action would only ever toast a failure.
-  help_menu->addAction(tr("Check for Updates..."), this, &MainWindow::onCheckForUpdates);
+  help_menu->addAction(tr("Check for Updates..."), this, &MainWindow::onCheckForUpdates)
+      ->setObjectName(u"actionCheckForUpdates"_s);
 #endif
   help_menu->addAction(
       tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(u"https://plotjuggler.io"_s)); });
@@ -1626,6 +1642,23 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       [this](const QString& kind, QWidget* dock_parent) { return makeSeededEmptyObjectDock(kind, dock_parent); });
   plugin_plot_tabs_->setOwnedTabCreatedHook(
       [this](const QString& plugin_id, PlotDocker* docker) { revealOwnedTabOverTakeover(plugin_id, docker); });
+
+#ifndef PJ_TARGET_WASM
+  // Every source is read when a plugin asks, so the catalog always describes
+  // the current plugin set, installed records and registry URL.
+  FeatureCatalogHost::Sources catalog_sources;
+  catalog_sources.loaded = [this]() { return FeatureCatalogHost::loadedPlugins(session_->extensionCatalog()); };
+  catalog_sources.installed = [this]() {
+    return FeatureCatalogHost::installedRecords(session_->extensionCatalog().extensionManager());
+  };
+  catalog_sources.installable = [this](const Extension& ext) {
+    return FeatureCatalogHost::installable(session_->extensionCatalog().extensionManager(), ext);
+  };
+  catalog_sources.registry_url = [this]() { return effectiveRegistryUrl(); };
+  feature_catalog_ = std::make_unique<FeatureCatalogHost>(
+      std::move(catalog_sources), featureCatalogResource(), QCoreApplication::applicationVersion().toStdString(),
+      PlatformUtils::currentPlatform().toStdString());
+#endif
 
   // Populate the Cloud page from the catalog now and on every catalog change.
   ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
@@ -2894,6 +2927,7 @@ void MainWindow::onOpenMarketplace() {
   // central tab.
   auto* mkt = new MarketplaceWindow(&catalog.extensionManager(), effectiveRegistryUrl(), this);
   mkt->setChromeMetrics(chrome_metrics_);
+  trackRegistryFetches(mkt->registryManager());
   QWidget* content = mkt->contentWidget();
 
   // Gear → Preferences ▸ Plugins (deferred so the click's own teardown doesn't
@@ -3731,10 +3765,26 @@ void MainWindow::checkExtensionUpdates() {
       }
       title_bar_->setExtensionUpdateCount(updatable);
     });
+    trackRegistryFetches(update_scan_registry_);
   }
   update_scan_registry_->fetchRegistry(effectiveRegistryUrl());
 #endif  // PJ_TARGET_WASM: browser builds install nothing dynamically — no updates to badge
 }
+
+#ifndef PJ_TARGET_WASM
+void MainWindow::noteRegistryScanSkipped() {
+  feature_catalog_->setStartupScanSkipped();
+}
+
+void MainWindow::trackRegistryFetches(RegistryManager* manager) {
+  connect(manager, &RegistryManager::fetchStarted, this, [this, manager]() {
+    feature_catalog_->registryFetchStarted(manager->url());
+  });
+  connect(manager, &RegistryManager::fetchFinished, this, [this, manager](bool ok) {
+    feature_catalog_->registryFetchFinished(manager->url(), ok, manager->extensions());
+  });
+}
+#endif
 
 void MainWindow::sendTelemetryPing(const QString& installation) {
   if (!telemetry_ping_) {
@@ -5136,18 +5186,7 @@ void MainWindow::onRebuildToolboxMenu() {
     // Skip toolboxes that opt out of this menu: "cloud" ones are reached from the
     // Sources panel; "hidden" ones are launched elsewhere (e.g. the Transform
     // Editor, opened from the "+" in Custom Topics).
-    bool skip = false;
-    if (manifest.is_object()) {
-      if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
-        for (const auto& tag : *it) {
-          if (tag.is_string() && (tag.get<std::string>() == "cloud" || tag.get<std::string>() == "hidden")) {
-            skip = true;
-            break;
-          }
-        }
-      }
-    }
-    if (skip) {
+    if (manifestHasTag(manifest, kToolboxTagCloud) || manifestHasTag(manifest, kToolboxTagHidden)) {
       continue;
     }
 
@@ -10282,6 +10321,12 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
         tr("Failed to publish the plot-tab service for '%1': %2").arg(source, QString::fromStdString(status.error())));
     return nullptr;
   }
+
+#ifndef PJ_TARGET_WASM
+  // What this PlotJuggler offers ("pj.feature_catalog.v1"): one window-wide,
+  // read-only host shared by every session; optional, so a failure only warns.
+  registerOptionalService<sdk::FeatureCatalogService>(*session->builder, feature_catalog_->view());
+#endif
   return session;
 }
 

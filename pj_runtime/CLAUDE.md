@@ -43,6 +43,7 @@ Plugin hosts and extensions:
 - `ExtensionCatalogService.h`, `PluginRuntimeCatalog.h`, `ParserRoutingService.h`: the loaded plugin set (scan hierarchy, bundled seeding, duplicate resolution, admission gate) and route-aware parser selection.
 - `PlaybackControlHost.h`, `ViewportRuntimeHost.h`, `PlotTabsRuntimeHost.h`: SDK `pj.playback.v1`, `pj.viewport.v1`, `pj.plot_tabs.v1`.
 - `ServiceRegistration.h`: host-to-plugin service registration with logged rejection.
+- `FeatureCatalogHost.h`, `ToolboxTags.h`: the optional `pj.feature_catalog.v1` service (desktop only; built from injected providers, never fetches) and the manifest tags (`cloud`, `hidden`) the Toolbox menu, the Sources panel and the catalog read.
 - `ObjectIngestTap.h`: session-scoped exclusive consumers of builtin object bytes; the payload view is call-lifetime only.
 - `parse_locked.h`: decode one object through a topic's parser under the binding's per-topic mutex (parsers are not thread-safe).
 - `TransformService.h`: per-dataset TF buffers and TF ingest; lock-free immutable snapshots for scripts.

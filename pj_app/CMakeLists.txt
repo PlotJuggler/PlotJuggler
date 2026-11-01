@@ -921,6 +921,14 @@ if(PJ_BUILD_TESTS)
     # A series replay as a progress entry of its topic: the linger, and the stop by topic.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/series_progress_controller_test.cpp)
+    # The feature catalog resource, whose entry points must name the live
+    # widget labels. Desktop only, like FeatureCatalogHost.
+    if(NOT EMSCRIPTEN)
+        list(APPEND PJ_APP_GUI_TEST_SOURCES
+            tests/feature_catalog_test.cpp)
+        set_source_files_properties(tests/feature_catalog_test.cpp PROPERTIES
+            COMPILE_DEFINITIONS PJ_FEATURE_CATALOG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    endif()
 
     pj_add_test_runner(pj_app_gui_tests
         MAIN gui WARNINGS

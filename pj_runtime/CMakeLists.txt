@@ -106,6 +106,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/TopicDemandTracker.h
     include/pj_runtime/TransformService.h
     include/pj_runtime/UpdateChecker.h
+    include/pj_runtime/ToolboxTags.h
     include/pj_runtime/UpdateVersion.h
     include/pj_runtime/ViewportRuntimeHost.h
 )
@@ -119,8 +120,13 @@ target_include_directories(pj_runtime PUBLIC
 )
 
 if(NOT EMSCRIPTEN)
-    # The source cache is desktop-only (no persistent disk in the browser).
-    target_sources(pj_runtime PRIVATE src/SourceCacheStore.cpp)
+    # The source cache is desktop-only (no persistent disk in the browser). The
+    # feature catalog describes Marketplace state, and the browser build has no
+    # Marketplace (nor the assistant agent that reads the catalog).
+    target_sources(pj_runtime PRIVATE
+        src/SourceCacheStore.cpp
+        src/FeatureCatalogHost.cpp
+        include/pj_runtime/FeatureCatalogHost.h)
 endif()
 
 if(EMSCRIPTEN)
@@ -301,6 +307,9 @@ if(PJ_BUILD_TESTS)
             # M3 owner wiring: ToolboxRuntimeHost's parser-ingest lifecycle
             # (create/release/discard/teardown) driving SourceCaptureService.
             tests/toolbox_capture_wiring_test.cpp
+            # The "pj.feature_catalog.v1" document composed from fakes. Desktop
+            # only, like FeatureCatalogHost.
+            tests/feature_catalog_host_test.cpp
         )
     endif()
 

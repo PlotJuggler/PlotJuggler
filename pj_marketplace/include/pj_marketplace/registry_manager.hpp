@@ -33,6 +33,13 @@ class RegistryManager : public QObject {
   // Emits fetchStarted() immediately, then fetchFinished() or fetchError() when done.
   void fetchRegistry(const QUrl& url);
 
+  // The URL of the last fetchRegistry() call, already set when fetchStarted()
+  // fires. A superseded fetch never reports, so at fetchFinished() this is the
+  // URL that fetch read.
+  QUrl url() const {
+    return url_;
+  }
+
   // Returns the parsed extensions after a successful fetch; empty list otherwise.
   QList<Extension> extensions() const;
 
@@ -64,6 +71,7 @@ class RegistryManager : public QObject {
 
   QNetworkAccessManager* network_;
   QNetworkReply* pending_reply_ = nullptr;  // Non-owning; owned by network_
+  QUrl url_;
   QList<Extension> extensions_;
   QString platform_;     // Artifact key this build can install; "" ranks every entry alike
   QString sdk_version_;  // SDK contract version used by the headless resolver

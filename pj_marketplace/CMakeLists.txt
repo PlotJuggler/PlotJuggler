@@ -196,7 +196,7 @@ if(PJ_BUILD_TESTS)
             tests/registry_manager_test.cpp
             tests/registry_resolver_test.cpp
             tests/version_compare_test.cpp
-        LIBS pj_marketplace Qt6::Network Qt6::Test LibArchive::LibArchive
+        LIBS pj_marketplace pj_marketplace_ui Qt6::Network Qt6::Test LibArchive::LibArchive
     )
 
     # Helper exit-status checks retain their independent process-lifecycle target.
