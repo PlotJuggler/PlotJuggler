@@ -107,9 +107,28 @@ bool samePersistedGenerator(const BatchEngine::GeneratorRecipe& lhs, const Batch
   return persisted(lhs) == persisted(rhs);
 }
 
-/// Producers before readers, document order otherwise: the graph binds a reader (an input naming
-/// `<key>/<output>`) only to an installed producer. The entries in a cycle, or reading one, are marked
-/// so; they and the entries that failed to parse follow the rest, in document order.
+/// The `<key>/<output>` that `input` of `recipe` reads: the upstream recorded for it, which a qualified input does not
+/// spell bare, else the input itself.
+std::string upstreamOutputOf(const RecipeGraph::Recipe& recipe, const std::string& input) {
+  const auto recorded = recipe.recorded_upstreams.find(input);
+  return recorded != recipe.recorded_upstreams.end() ? recorded->second.upstream + "/" + recorded->second.name : input;
+}
+
+/// The `<output>` of an input naming `<upstream>/<output>` behind any qualifier; empty when it names no such thing. The
+/// saved `upstream` decides, not the element's `dataset_source`: a generic layout drops that one, and after a merge it
+/// is the anchor's while the input keeps the consumed dataset's qualifier.
+std::string outputOfUpstream(const std::string& input, const std::string& upstream) {
+  const std::string prefix = upstream + "/";
+  if (input.starts_with(prefix)) {
+    return input.substr(prefix.size());
+  }
+  const std::size_t qualified = input.find(":" + prefix);
+  return qualified != std::string::npos ? input.substr(qualified + 1 + prefix.size()) : std::string{};
+}
+
+/// Producers before readers, document order otherwise: the graph binds a reader (an input naming `<key>/<output>`,
+/// maybe qualified) only to an installed producer. The entries in a cycle, or reading one, are marked so; they and the
+/// entries that failed to parse follow the rest, in document order.
 void orderOnDemandByDependency(std::vector<WantedOnDemand>& entries) {
   std::unordered_map<std::string, std::size_t> producer_of;
   for (std::size_t index = 0; index < entries.size(); ++index) {
@@ -127,8 +146,9 @@ void orderOnDemandByDependency(std::vector<WantedOnDemand>& entries) {
   std::vector<std::size_t> ready;
   for (std::size_t index = 0; index < entries.size(); ++index) {
     std::vector<std::size_t> upstreams;
-    for (const std::string& input : entries[index].recipe.inputs) {
-      const auto producer = producer_of.find(input);
+    const RecipeGraph::Recipe& recipe = entries[index].recipe;
+    for (const std::string& input : recipe.inputs) {
+      const auto producer = producer_of.find(upstreamOutputOf(recipe, input));
       if (producer != producer_of.end() && std::ranges::find(upstreams, producer->second) == upstreams.end()) {
         upstreams.push_back(producer->second);
         readers[producer->second].push_back(index);
@@ -320,9 +340,15 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
   const RecipeGraph& graph = session_.onDemandService().graph();
   std::vector<WantedOnDemand> on_demand;
   for (const std::string& key : graph.keys()) {
-    const RecipeGraph::Recipe& recipe = graph.find(key)->recipe;
-    if (!recipe.ephemeral && !(scope == SnapshotScope::kHistory && recipe.history_exempt)) {
-      on_demand.push_back({recipe, {}});
+    const RecipeGraph::Node& live = *graph.find(key);
+    if (!live.recipe.ephemeral && !(scope == SnapshotScope::kHistory && live.recipe.history_exempt)) {
+      WantedOnDemand entry{live.recipe, {}};
+      for (std::size_t index = 0; index < live.bindings.size(); ++index) {
+        if (!live.bindings[index].upstream.empty()) {
+          entry.recipe.recorded_upstreams[live.recipe.inputs[index]] = live.bindings[index];
+        }
+      }
+      on_demand.push_back(std::move(entry));
     }
   }
   orderOnDemandByDependency(on_demand);
@@ -679,9 +705,9 @@ std::vector<WantedOnDemand> DerivedObjects::parseWantedOnDemand(const QDomElemen
       if (in.hasAttribute(u"upstream"_s)) {
         const std::string upstream = in.attribute(u"upstream"_s).toStdString();
         const auto type = sdk::parseBuiltinObjectType(in.attribute(u"type"_s).toStdString());
-        if (type.has_value() && *type != sdk::BuiltinObjectType::kNone && input.size() > upstream.size() + 1 &&
-            input.starts_with(upstream + "/")) {
-          recipe.recorded_upstreams[input] = {*type, upstream, input.substr(upstream.size() + 1)};
+        std::string output = outputOfUpstream(input, upstream);
+        if (type.has_value() && *type != sdk::BuiltinObjectType::kNone && !output.empty()) {
+          recipe.recorded_upstreams[input] = {*type, upstream, std::move(output)};
         } else if (error.isEmpty()) {
           error = tr("invalid upstream of input '%1'").arg(QString::fromStdString(input));
         }

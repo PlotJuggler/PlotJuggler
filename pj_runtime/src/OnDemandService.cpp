@@ -75,7 +75,7 @@ void OnDemandService::setClockForTest(std::function<std::chrono::steady_clock::t
 OnDemandService::OnDemandService(
     ObjectStore& store, DataEngine& engine, EnginePool& pool, InFlightBudget& budget, Services services)
     : pool_(pool),
-      graph_(std::move(services.resolver)),
+      graph_(std::move(services.resolver), std::move(services.qualifier)),
       history_(store, services.limits),
       stager_(store, history_, std::move(services.scalars), std::move(services.parsers)),
       evaluations_(store, graph_, history_, stager_, pool, budget, evaluationHooks(services)),

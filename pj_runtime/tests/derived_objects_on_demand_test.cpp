@@ -166,6 +166,14 @@ QDomDocument parseXml(const QString& xml) {
   return doc;
 }
 
+/// `key` is installed with its first input bound to `upstream`'s output, and no input missing.
+void expectReadsFrom(const RecipeGraph& graph, const std::string& key, const std::string& upstream) {
+  const RecipeGraph::Node* reader = graph.find(key);
+  ASSERT_NE(reader, nullptr) << key;
+  EXPECT_EQ(reader->bindings.front().upstream, upstream);
+  EXPECT_FALSE(graph.missingInput(key).has_value());
+}
+
 /// The diagnostics of `report` with id "on-demand-restore-failed".
 std::vector<QString> onDemandFailures(const DerivedRestoreReport& report) {
   std::vector<QString> messages;
@@ -255,6 +263,106 @@ return {}
   ASSERT_NE(reader, nullptr);
   EXPECT_EQ(reader->bindings.front().upstream, "owner/crop");
   EXPECT_EQ(reader->dataset, fixture.dataset);
+}
+
+// A chain whose reader names its producer's output with the dataset qualifier (what the Transform Editor writes) binds
+// in the session on that dataset only, and survives save -> restore -> save: the producer is written first whatever
+// the keys sort as, and the restored reader is bound to it again.
+TEST(DerivedObjectsTest, AQualifiedUpstreamInputRoundTrips) {
+  QByteArray first_save;
+  {
+    Fixture source;
+    source.install(recipe("zz_crop"));
+    source.addOther();
+    const auto elsewhere = source.onDemand().install(recipe("elsewhere", {"other.mcap:owner/zz_crop/cropped"}));
+    ASSERT_FALSE(elsewhere.has_value()) << "the qualifier names a dataset the producer is not on";
+    EXPECT_NE(elsewhere.error().find("names another dataset"), std::string::npos) << elsewhere.error();
+    source.install(recipe("aa_reader", {"run.mcap:owner/zz_crop/cropped"}));
+    const RecipeGraph::Node* reader = source.onDemand().graph().find("owner/aa_reader");
+    ASSERT_NE(reader, nullptr);
+    EXPECT_EQ(reader->bindings.front().upstream, "owner/zz_crop");
+    EXPECT_EQ(reader->dataset, source.dataset);
+    first_save = source.savedBlock();
+  }
+  EXPECT_TRUE(first_save.contains(R"(name="run.mcap:owner/zz_crop/cropped")"));
+  EXPECT_TRUE(first_save.contains(R"(upstream="owner/zz_crop")"));
+  EXPECT_LT(first_save.indexOf(R"(id="zz_crop")"), first_save.indexOf(R"(id="aa_reader")"))
+      << "a producer is saved before its reader";
+
+  Fixture target;
+  QDomDocument doc;
+  ASSERT_TRUE(static_cast<bool>(doc.setContent(first_save)));
+  const DerivedSnapshot parsed = target.derived().parse(doc.documentElement(), RestoreIntent::kReplace);
+  ASSERT_EQ(parsed.on_demand.size(), 2U);
+  EXPECT_TRUE(parsed.on_demand[1].parse_error.isEmpty()) << parsed.on_demand[1].parse_error.toStdString();
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  expectReadsFrom(target.onDemand().graph(), "owner/aa_reader", "owner/zz_crop");
+  EXPECT_EQ(target.savedBlock(), first_save);
+}
+
+// A layout listing a qualified reader before its producer restores the producer first: the recorded upstream names
+// the edge the qualified input does not spell bare.
+TEST(DerivedObjectsTest, AQualifiedReaderIsRestoredAfterItsProducer) {
+  Fixture fixture;
+  const QDomDocument doc = parseXml(
+      uR"(<root><data_processors>
+  <on_demand owner_plugin="owner" id="reader" language="luau" query_time="1">
+    <input name="run.mcap:owner/crop/cropped" dataset_source="run.mcap" upstream="owner/crop" type="kPointCloud"/>
+    <output name="cropped" type="kPointCloud"/>
+    <script><![CDATA[local inputs = ...
+return {}
+]]></script>
+  </on_demand>
+  <on_demand owner_plugin="owner" id="crop" language="luau" query_time="1">
+    <input name="cloud" dataset_source="run.mcap"/>
+    <output name="cropped" type="kPointCloud"/>
+    <script><![CDATA[local inputs = ...
+return {}
+]]></script>
+  </on_demand>
+</data_processors></root>)"_s);
+
+  const DerivedSnapshot parsed = fixture.derived().parse(doc.documentElement(), RestoreIntent::kReplace);
+  ASSERT_EQ(parsed.on_demand.size(), 2U);
+  EXPECT_EQ(parsed.on_demand[0].recipe.key(), "owner/crop") << "producers first";
+  EXPECT_EQ(parsed.on_demand[1].recipe.key(), "owner/reader");
+  EXPECT_TRUE(parsed.on_demand[1].parse_error.isEmpty()) << parsed.on_demand[1].parse_error.toStdString();
+  fixture.restoreCleanly(doc, RestoreIntent::kReplace);
+  expectReadsFrom(fixture.onDemand().graph(), "owner/reader", "owner/crop");
+}
+
+// A generic layout drops the dataset each <input> records and keeps the qualifier in its name.
+TEST(DerivedObjectsTest, AQualifiedChainRestoresFromAGenericLayout) {
+  QDomDocument doc;
+  {
+    Fixture source;
+    source.install(recipe("crop", {"run.mcap:cloud"}));
+    source.install(recipe("reader", {"run.mcap:owner/crop/cropped"}));
+    doc = source.snapshot(RestoreIntent::kReplace);
+  }
+  const QDomNodeList inputs = doc.elementsByTagName(u"input"_s);
+  for (int index = 0; index < inputs.size(); ++index) {
+    QDomElement input = inputs.at(index).toElement();
+    input.removeAttribute(u"dataset_id"_s);
+    input.removeAttribute(u"dataset_source"_s);
+  }
+
+  Fixture target;
+  target.restoreCleanly(doc, RestoreIntent::kReplace);
+  expectReadsFrom(target.onDemand().graph(), "owner/reader", "owner/crop");
+}
+
+// After a merge an <input> records the anchor's source while its name keeps the consumed dataset's.
+TEST(DerivedObjectsTest, AHistorySnapshotAfterAMergeKeepsAQualifiedReader) {
+  Fixture fixture;
+  const DatasetId other = fixture.addOther();
+  fixture.install(recipe("crop", {"other.mcap:cloud"}));
+  fixture.install(recipe("reader", {"other.mcap:owner/crop/cropped"}));
+  ASSERT_TRUE(fixture.session.mergeDatasets(fixture.dataset, {{other, 0}}).has_value());
+  fixture.settle();
+
+  fixture.restoreCleanly(fixture.snapshot(RestoreIntent::kHistory), RestoreIntent::kHistory);
+  expectReadsFrom(fixture.onDemand().graph(), "owner/reader", "owner/crop");
 }
 
 // LAY-10: a cycle, and a reader of one, are reported "cyclic"; the independent recipe beside them restores.

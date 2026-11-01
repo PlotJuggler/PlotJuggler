@@ -207,7 +207,8 @@ The session owns it. `SessionManager` builds it over its pool and budget and wir
 (an object topic by name in each dataset, with the builtin type from its metadata; a scalar
 series, a number or a string, through `CatalogModel::findScalarForMarkerKey`, which `AppSession`
 injects and the catalog memoizes until its items change; a `source:` qualifier stripped; never an
-on-demand output, which the graph binds itself), the parser lookup, the dataset epochs and the TF
+on-demand output, which the graph binds itself), the qualifier splitter (how the graph reads a
+qualified upstream output: `RecipeGraph::QualifierSplitter`), the parser lookup, the dataset epochs and the TF
 providers (one snapshot per `kTfSnapshotPeriod` while a dataset ingests). It turns the callbacks
 into its signals (`derivedEntriesPublished`, `derivedStateChanged`, `onDemandRecipeInstalled`,
 `objectTopicsChanged`).

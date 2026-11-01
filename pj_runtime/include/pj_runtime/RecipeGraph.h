@@ -33,7 +33,7 @@ class RecipeGraph {
   /// One input of a node, parallel to `Recipe::inputs`.
   struct Binding {
     sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;  ///< kNone: a scalar series or field
-    /// Key of the node whose object output this input reads (the input is `<upstream>/<output>`);
+    /// Key of the node whose object output this input reads (`<upstream>/<output>`, maybe qualified);
     /// empty for a topic of the dataset.
     std::string upstream;
     /// What the input reads: the bare topic inside the node's dataset, or the upstream's output name.
@@ -48,8 +48,8 @@ class RecipeGraph {
     std::string language = "luau";
     std::string script;
     std::string params_json = "{}";
-    /// Topic names, or `<key>/<output>` of another node's object output; also the aliases the
-    /// script reads, a dataset qualifier included (`inputs['s:cloud']`).
+    /// Topic names, or `<key>/<output>` of another node's object output, either one maybe behind its
+    /// dataset's qualifier; also the aliases the script reads, the qualifier included (`inputs['s:cloud']`).
     std::vector<std::string> inputs;
     std::vector<scripting::OutputSpec> outputs;
     /// The inputs a layout recorded as other nodes' object outputs, by input name. One no installed node provides
@@ -81,9 +81,20 @@ class RecipeGraph {
     std::string topic;  ///< the name inside `dataset`, the qualifier stripped
   };
   /// Every dataset `input` resolves in, at most one candidate per dataset; empty when none. It never
-  /// resolves an on-demand output, qualified or not: the graph binds those itself by their bare
-  /// `<key>/<output>` name, so a qualified upstream name resolves nowhere and is refused as unknown.
+  /// resolves an on-demand output, qualified or not: the graph binds those itself (`QualifierSplitter`).
   using InputResolver = std::function<std::vector<InputCandidate>(std::string_view input)>;
+
+  /// The dataset qualifier an input starts with.
+  struct Qualifier {
+    std::string bare;                 ///< the input without its qualifier
+    std::vector<DatasetId> datasets;  ///< every dataset carrying the qualifier's source
+  };
+  /// The loaded source name `input` starts with followed by ':' (longest match wins, never a blind split at ':');
+  /// nullopt when none does. How the graph reads `<source>:<key>/<output>`, the form a dataset-qualified editor
+  /// writes, as another node's output: it binds when the qualifier names the producer's dataset, and is refused
+  /// otherwise; naming the recipe's own output so is refused as the bare form is. Empty: only the bare form names an
+  /// output.
+  using QualifierSplitter = std::function<std::optional<Qualifier>(std::string_view input)>;
 
   struct Node {
     Recipe recipe;
@@ -102,7 +113,7 @@ class RecipeGraph {
   /// key a layout can name (a restore never clears a preview, and refuses one holding a wanted key).
   static constexpr std::string_view kPreviewIdPrefix = "~preview/";
 
-  explicit RecipeGraph(InputResolver resolver);
+  explicit RecipeGraph(InputResolver resolver, QualifierSplitter qualifier = {});
 
   /// Installs `recipe`, replacing the node of the same key; empty params are stored as "{}", what a
   /// layout parse reads back. Rejected, with nothing changed: an empty owner or id; a key another owner's
@@ -112,12 +123,13 @@ class RecipeGraph {
   /// compiles at its first run, which reports its error, so an upsert never waits for the GIL); no input
   /// or no output; an output `scripting::parseOutputSpec` refuses (only types a script can produce); a
   /// name used twice among the inputs and outputs; a persistent id starting with `~` (`kPreviewIdPrefix`);
-  /// an input that resolves nowhere (unless recorded as an absent node's output), that its
-  /// `Recipe::dataset` does not carry, or whose datasets have no single one in common (D7); an object input whose type
-  /// has no field table; its own output; an edge that closes a cycle; a persistent recipe reading a preview's output,
-  /// or a preview that a persistent node reads (a preview ends with its panel, the persisted reader would not);
-  /// `history_exempt` changing on an installed key (history would hold its snapshots under the other authority: remove
-  /// it and create it again); a new pin past the owner's cap.
+  /// an input that resolves nowhere (unless recorded as an absent node's output), another node's output qualified
+  /// with a dataset that node is not on, an input that its `Recipe::dataset` does not carry, or whose datasets have
+  /// no single one in common (D7); an object input whose type has no field table; its own output, bare or qualified; an
+  /// edge that closes a cycle; a persistent recipe reading a preview's output, or a preview that a persistent node
+  /// reads (a preview ends with its panel, the persisted reader would not); `history_exempt` changing on an installed
+  /// key (history would hold its snapshots under the other authority: remove it and create it again); a new pin past
+  /// the owner's cap.
   [[nodiscard]] Status upsert(Recipe recipe);
   /// Validates and binds `recipe` as `upsert` does, installing nothing: the node of a transient evaluation, at
   /// revision 0 (`GridRunner`). It may declare no output (the evaluation infers them); a pin, a preview and
@@ -177,10 +189,18 @@ class RecipeGraph {
   [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<std::string>& removed) const;
 
  private:
+  /// How an input names another node's output, bare or behind a qualifier (`QualifierSplitter`).
+  struct UpstreamOutput {
+    const std::string* producer = nullptr;                     ///< the live node owning the output, or null
+    std::string output_name;                                   ///< `<key>/<output>`: the input, a qualifier stripped
+    std::optional<std::vector<DatasetId>> qualifier_datasets;  ///< the datasets a qualifier names; nullopt: none
+  };
+  [[nodiscard]] UpstreamOutput upstreamOutput(std::string_view input) const;
   /// The key of the live node with an object output named `input` (`<key>/<output>`), or null.
   [[nodiscard]] const std::string* producerOf(std::string_view input) const;
 
   InputResolver resolver_;
+  QualifierSplitter qualifier_;
   std::map<std::string, Node, std::less<>> nodes_;
   uint64_t next_revision_ = 1;
 };

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,13 +33,23 @@ constexpr Timestamp kSec = 1'000'000'000;
 
 /// A graph over a fake catalog: each input name maps to the datasets it resolves in. The fake
 /// does what the session's resolver does with a dataset qualifier: "s:cloud" resolves in "s" only,
-/// as the bare topic "cloud".
+/// as the bare topic "cloud". Its qualifier splitter knows the sources "s" and "other".
 struct Fixture {
   Fixture()
-      : graph([this](std::string_view input) {
-          const auto found = catalog.find(std::string(input));
-          return found == catalog.end() ? std::vector<Candidate>{} : found->second;
-        }) {}
+      : graph(
+            [this](std::string_view input) {
+              const auto found = catalog.find(std::string(input));
+              return found == catalog.end() ? std::vector<Candidate>{} : found->second;
+            },
+            [](std::string_view input) -> std::optional<RecipeGraph::Qualifier> {
+              for (const auto& [source, dataset] : {std::pair{"s", kDataset}, std::pair{"other", kOther}}) {
+                const std::string prefix = std::string(source) + ":";
+                if (input.size() > prefix.size() && input.starts_with(prefix)) {
+                  return RecipeGraph::Qualifier{std::string(input.substr(prefix.size())), {dataset}};
+                }
+              }
+              return std::nullopt;
+            }) {}
 
   std::map<std::string, std::vector<Candidate>> catalog{
       {"cloud", {{kDataset, sdk::BuiltinObjectType::kPointCloud, "cloud"}}},
@@ -288,6 +299,60 @@ TEST(RecipeGraphTest, CycleAndOwnOutputRejectionLeaveTheGraphUntouched) {
   ASSERT_TRUE(fx.graph.upsert(cropRecipe("child")).has_value());
   EXPECT_GT(fx.graph.find("owner/child")->revision, child_revision) << "an edit takes a new revision";
   EXPECT_TRUE(fx.graph.upsert(cyclic).has_value());
+}
+
+// The dataset-qualified form of another node's output (`<source>:<key>/<output>`, what the Transform Editor writes)
+// binds to that node like the bare form, and the script keeps reading it under the qualified alias.
+TEST(RecipeGraphTest, AQualifiedUpstreamOutputBindsToItsProducer) {
+  Fixture fx;
+  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
+  const Status chained = fx.graph.upsert(chainedRecipe("child", "s:owner/crop/cropped"));
+  ASSERT_TRUE(chained.has_value()) << chained.error();
+  const RecipeGraph::Node* child = fx.graph.find("owner/child");
+  ASSERT_NE(child, nullptr);
+  EXPECT_EQ(child->dataset, kDataset);
+  EXPECT_EQ(child->recipe.inputs, std::vector<std::string>{"s:owner/crop/cropped"}) << "the alias keeps its qualifier";
+  ASSERT_EQ(child->bindings.size(), 1u);
+  EXPECT_EQ(child->bindings.front().upstream, "owner/crop");
+  EXPECT_EQ(child->bindings.front().name, "cropped");
+  EXPECT_EQ(child->bindings.front().object_type, sdk::BuiltinObjectType::kPointCloud);
+  EXPECT_EQ(fx.graph.dependentsOf({"owner/crop"}), std::vector<std::string>{"owner/child"});
+  EXPECT_FALSE(fx.graph.missingInput("owner/child").has_value());
+
+  const Status cyclic = fx.graph.upsert(chainedRecipe("crop", "s:owner/child/cropped"));
+  ASSERT_FALSE(cyclic.has_value()) << "a qualified edge closes a cycle as a bare one does";
+  EXPECT_TRUE(contains(cyclic.error(), "cycle")) << cyclic.error();
+}
+
+// A qualifier must name the dataset its producer runs on: one naming another loaded source is refused, not bound
+// across datasets (D7).
+TEST(RecipeGraphTest, AQualifiedUpstreamOutputOnAnotherDatasetIsRefused) {
+  Fixture fx;
+  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
+  const Status refused = fx.graph.upsert(chainedRecipe("child", "other:owner/crop/cropped"));
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_TRUE(contains(refused.error(), "names another dataset than the one 'owner/crop' runs on")) << refused.error();
+  EXPECT_EQ(fx.graph.find("owner/child"), nullptr);
+}
+
+// The qualified form of a recipe's own output is refused as its own output, as the bare form is: the qualifier does
+// not hide a self-reference, whether the recipe is new or installed, and whichever dataset the qualifier names.
+TEST(RecipeGraphTest, AQualifiedOwnOutputIsRefused) {
+  Fixture fx;
+  for (const char* input : {"s:owner/self/cropped", "other:owner/self/cropped"}) {
+    const Status self = fx.graph.upsert(chainedRecipe("self", input));
+    ASSERT_FALSE(self.has_value()) << input;
+    EXPECT_TRUE(contains(self.error(), "own output")) << self.error();
+  }
+  EXPECT_EQ(fx.graph.find("owner/self"), nullptr);
+
+  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
+  auto reads_itself = cropRecipe();
+  reads_itself.inputs = {"cloud", "s:owner/crop/cropped"};
+  const Status installed_self = fx.graph.upsert(reads_itself);
+  ASSERT_FALSE(installed_self.has_value());
+  EXPECT_TRUE(contains(installed_self.error(), "own output")) << installed_self.error();
+  EXPECT_EQ(fx.graph.find("owner/crop")->recipe.inputs, cropRecipe().inputs) << "the installed node is untouched";
 }
 
 // A revision is graph-wide and monotonic, and changes only when the node's meaning does.

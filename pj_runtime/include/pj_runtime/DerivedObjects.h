@@ -69,8 +69,8 @@ struct DerivedSnapshot {
   /// Producers before dependents (`orderTransformsByDependency`).
   std::vector<DataProcessorService::TransformRecipe> transforms;
   std::vector<WantedGenerator> generators;
-  /// Producers before readers (a reader names its upstream `<key>/<output>`); the entries that failed to
-  /// parse at the end.
+  /// Producers before readers (a reader names its upstream `<key>/<output>`, maybe qualified); the entries that failed
+  /// to parse at the end.
   std::vector<WantedOnDemand> on_demand;
   /// Transform entries that failed to parse and were dropped: the restore reports
   /// them first and does not count as complete.

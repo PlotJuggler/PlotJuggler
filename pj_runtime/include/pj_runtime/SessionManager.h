@@ -956,7 +956,8 @@ class SessionManager : public QObject {
   // Each dataset's epoch, moved by suspendOnDemand; a result staged under another is never current.
   std::unordered_map<DatasetId, uint64_t> epochs_;
   ScalarSeriesLookup scalar_lookup_;
-  // Consumed dataset -> anchor, only while rebindOnDemandAfterMerge re-installs: the resolver's remap.
+  // Consumed dataset -> anchor. A consumed dataset stays registered, so its source keeps qualifying on-demand inputs,
+  // which bind on the anchor.
   std::unordered_map<DatasetId, DatasetId> merged_into_;
   QPointer<TransformService> transform_service_;
   std::shared_ptr<const scripting::IImageDecoder> image_decoder_;

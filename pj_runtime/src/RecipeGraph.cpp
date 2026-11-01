@@ -151,7 +151,8 @@ Expected<std::shared_ptr<const scripting::CompiledOnDemandScript>> validate(
 
 }  // namespace
 
-RecipeGraph::RecipeGraph(InputResolver resolver) : resolver_(std::move(resolver)) {}
+RecipeGraph::RecipeGraph(InputResolver resolver, QualifierSplitter qualifier)
+    : resolver_(std::move(resolver)), qualifier_(std::move(qualifier)) {}
 
 Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
   const auto reject = [](const std::string& why) { return unexpected("on-demand: " + why); };
@@ -171,9 +172,10 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
   std::vector<std::vector<InputCandidate>> candidates(recipe.inputs.size());
   for (std::size_t i = 0; i < recipe.inputs.size(); ++i) {
     const std::string& input = recipe.inputs[i];
-    const bool names_new_output =
-        std::ranges::any_of(recipe.outputs, [&](const OutputSpec& output) { return input == key + "/" + output.name; });
-    const std::string* producer = producerOf(input);
+    const UpstreamOutput named = upstreamOutput(input);
+    const std::string* producer = named.producer;
+    const bool names_new_output = std::ranges::any_of(
+        recipe.outputs, [&](const OutputSpec& output) { return named.output_name == key + "/" + output.name; });
     if (names_new_output || (producer != nullptr && *producer == key)) {
       return reject("input '" + input + "' is this recipe's own output");
     }
@@ -197,7 +199,11 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
           "input '" + input + "' is an output of preview '" + *producer +
           "', which ends with its panel. Create that recipe as a persistent one first.");
     }
-    const std::string output = input.substr(producer->size() + 1);
+    if (named.qualifier_datasets.has_value() &&
+        std::ranges::find(*named.qualifier_datasets, upstream.dataset) == named.qualifier_datasets->end()) {
+      return reject("input '" + input + "' names another dataset than the one '" + *producer + "' runs on");
+    }
+    const std::string output = named.output_name.substr(producer->size() + 1);
     bindings[i].upstream = *producer;
     candidates[i] = {{upstream.dataset, objectOutput(upstream.recipe, output)->object_type, output}};
   }
@@ -490,6 +496,18 @@ std::vector<std::string> RecipeGraph::exemptDependentsOf(const std::vector<std::
   }
   std::ranges::sort(outputs);
   return outputs;
+}
+
+RecipeGraph::UpstreamOutput RecipeGraph::upstreamOutput(std::string_view input) const {
+  if (const std::string* producer = producerOf(input); producer != nullptr || !qualifier_) {
+    return {producer, std::string(input), std::nullopt};
+  }
+  std::optional<Qualifier> qualifier = qualifier_(input);
+  if (!qualifier.has_value()) {
+    return {nullptr, std::string(input), std::nullopt};
+  }
+  const std::string* producer = producerOf(qualifier->bare);
+  return {producer, std::move(qualifier->bare), std::move(qualifier->datasets)};
 }
 
 const std::string* RecipeGraph::producerOf(std::string_view input) const {

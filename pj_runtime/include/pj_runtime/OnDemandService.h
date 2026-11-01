@@ -39,6 +39,7 @@ class OnDemandService {
   /// What the session wires in.
   struct Services {
     RecipeGraph::InputResolver resolver;
+    RecipeGraph::QualifierSplitter qualifier;  ///< empty: only the bare `<key>/<output>` names a node's output
     InputStager::ScalarSampler scalars;
     InputStager::ParserLookup parsers;
     NodeScheduler::Hooks scheduling;  ///< an empty `run`: the one `setRunForTest` set, else `scripting::runOnDemand`

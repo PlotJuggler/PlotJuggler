@@ -2245,14 +2245,15 @@ TEST(SessionManagerTest, MergeShiftsPinnedTimeAndReevaluatesTheFinding) {
   EXPECT_EQ(fx.ring("owner/pin/cropped"), (std::vector<Timestamp>{kFindingTimestamp}));
 }
 
-// An input qualified with the consumed dataset's source (`other:cloud_b`) keeps working after the merge: it binds on
-// the anchor, and the script still reads it under the name it declared.
+// An input qualified with the consumed dataset's source (`other:cloud_b`, `other:owner/crop/cropped`) keeps working
+// after the merge: it binds on the anchor, and the script still reads it under the name it declared.
 TEST(SessionManagerTest, MergeRebindsAQualifiedInputOnTheAnchor) {
   OnDemandSession fx;
   const DatasetId source = fx.addDataset("other");
   const ObjectTopicId cloud_b = fx.addCloud(source, "cloud_b");
   fx.push(cloud_b, 20 * kOnDemandSec);
   fx.install(cropRecipe("crop", "other:cloud_b"));
+  fx.install(cropRecipe("reader", "other:owner/crop/cropped"));
   fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
   fx.settle();
   ASSERT_EQ(fx.state()->status, OnDemandStatus::kReady);
@@ -2265,6 +2266,52 @@ TEST(SessionManagerTest, MergeRebindsAQualifiedInputOnTheAnchor) {
   EXPECT_EQ(node->recipe.inputs, std::vector<std::string>{"other:cloud_b"}) << "the script's name is kept";
   EXPECT_EQ(node->bindings[0].name, "cloud_b");
   EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady) << fx.state()->detail;
+  const RecipeGraph::Node* reader = fx.service().graph().find("owner/reader");
+  ASSERT_NE(reader, nullptr) << "the chained reader still resolves";
+  EXPECT_EQ(reader->dataset, fx.ds);
+  EXPECT_EQ(reader->bindings[0].upstream, "owner/crop");
+  EXPECT_EQ(reader->bindings[0].name, "cropped");
+  EXPECT_EQ(reader->recipe.inputs, std::vector<std::string>{"other:owner/crop/cropped"}) << "the script's name is kept";
+  EXPECT_FALSE(fx.service().graph().missingInput("owner/reader").has_value());
+}
+
+// A consumed dataset stays registered, so its source keeps qualifying inputs: they bind on the anchor from then on.
+TEST(SessionManagerTest, AQualifiedInputKeepsBindingOnTheAnchorAfterItsMerge) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  fx.push(fx.addCloud(source, "cloud_b"), 20 * kOnDemandSec);
+  fx.install(cropRecipe("crop", "other:cloud_b"));
+  fx.install(cropRecipe("reader", "other:owner/crop/cropped"));
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 0}}).has_value());
+  fx.settle();
+
+  const auto reinstalled = fx.service().install(cropRecipe("reader", "other:owner/crop/cropped"));
+  EXPECT_TRUE(reinstalled.has_value()) << (reinstalled ? "" : reinstalled.error());
+
+  const DatasetId third = fx.addDataset("third");
+  fx.push(fx.addCloud(third, "cloud_c"), 20 * kOnDemandSec);
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{third, 0}}).has_value());
+  fx.settle();
+  EXPECT_NE(fx.service().graph().find("owner/crop"), nullptr) << "a second merge keeps the qualified input";
+  EXPECT_NE(fx.service().graph().find("owner/reader"), nullptr) << "and its chained reader";
+}
+
+// An anchor merged away in turn takes the datasets it consumed with it.
+TEST(SessionManagerTest, AQualifiedInputFollowsItsAnchorIntoALaterMerge) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  fx.push(fx.addCloud(source, "cloud_b"), 20 * kOnDemandSec);
+  fx.install(cropRecipe("crop", "other:cloud_b"));
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 0}}).has_value());
+  fx.settle();
+
+  const DatasetId final_anchor = fx.addDataset("final");
+  fx.push(fx.addCloud(final_anchor, "cloud_c"), 20 * kOnDemandSec);
+  ASSERT_TRUE(fx.session->mergeDatasets(final_anchor, {{fx.ds, 0}}).has_value());
+  fx.settle();
+  const RecipeGraph::Node* node = fx.service().graph().find("owner/crop");
+  ASSERT_NE(node, nullptr) << "the recipe still resolves";
+  EXPECT_EQ(node->dataset, final_anchor);
 }
 
 // A dataset's suspension cancels its nodes' runs: their epoch moved, so their results could never be published.
@@ -2381,7 +2428,7 @@ TEST(SessionManagerTest, RemovalRetiresTopicsAndAnnouncesOnce) {
 
 // The session's resolver: a dataset-qualified input resolves only in that dataset, the qualifier stripped; an object
 // topic with no builtin type is no object input; an on-demand output, qualified or not, never resolves as a topic (the
-// graph binds those itself).
+// graph binds those itself, a qualified one only on its node's dataset).
 TEST(SessionManagerTest, TheResolverBindsQualifiedTopicsAndNeverAnOnDemandOutput) {
   OnDemandSession fx;
   const DatasetId other = fx.addDataset("other");
@@ -2397,9 +2444,12 @@ TEST(SessionManagerTest, TheResolverBindsQualifiedTopicsAndNeverAnOnDemandOutput
   const auto untyped = fx.service().install(cropRecipe("raw", "untyped"));
   ASSERT_FALSE(untyped.has_value());
   EXPECT_NE(untyped.error().find("unknown input 'untyped'"), std::string::npos) << untyped.error();
-  const auto qualified_output = fx.service().install(cropRecipe("reader", "other:owner/crop/cropped"));
-  ASSERT_FALSE(qualified_output.has_value());
-  EXPECT_NE(qualified_output.error().find("unknown input"), std::string::npos) << qualified_output.error();
+  const auto elsewhere = fx.service().install(cropRecipe("reader", "log:owner/crop/cropped"));
+  ASSERT_FALSE(elsewhere.has_value());
+  EXPECT_NE(elsewhere.error().find("names another dataset"), std::string::npos) << elsewhere.error();
+  fx.install(cropRecipe("reader", "other:owner/crop/cropped"));
+  EXPECT_EQ(fx.service().graph().find("owner/reader")->dataset, other);
+  EXPECT_EQ(fx.service().graph().find("owner/reader")->bindings[0].upstream, "owner/crop");
 }
 
 // CON-11/14: destroying the session cancels the on-demand run before the pool joins it; nothing is published.
