@@ -658,6 +658,7 @@ DockWidget* PlotDocker::addDockWithPlot(
   connect(widget, &DockWidget::objectFamilyRequested, this, &PlotDocker::objectFamilyRequested);
   connect(widget, &DockWidget::firstObjectTopicAdded, this, [this, widget] { emit firstObjectTopicAdded(widget); });
   connect(widget, &DockWidget::placeholderTopicDropped, this, &PlotDocker::placeholderTopicDropped);
+  connect(widget, &DockWidget::topicRefused, this, &PlotDocker::topicRefused);
   emit dockAdded(widget);
   if (widget->plotWidget() != nullptr) {
     emit plotWidgetAdded(widget->plotWidget());

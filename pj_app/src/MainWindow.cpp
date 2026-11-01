@@ -991,7 +991,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // Drop path: build, then populate the first topic and apply view
         // side-effects. Failures here surface as transient toasts (non-blocking,
         // WASM-safe): the empty-kind branch is defensive-only (the curve list
-        // refuses drags of undisplayable types), but the per-dock refusals below
+        // refuses drags of undisplayable types, the dock leaves out panel-only
+        // ones), but the per-dock refusals below
         // are reachable — the drag veto is type-level and cannot see runtime
         // parser availability.
         IDataWidget* widget = makeSceneDock(resolved_kind, dock_parent);
@@ -4011,6 +4012,7 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::onFirstObjectTopicAdded, Qt::UniqueConnection);
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
+  connect(docker, &PlotDocker::topicRefused, this, [this](const QString& reason) { showToast(reason); });
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       onPlotAdded(dock->plotWidget());

@@ -198,6 +198,11 @@ struct CatalogItem {
 [[nodiscard]] inline const AdvertisedTopicPayload* asAdvertisedTopic(const CatalogItem& item) noexcept {
   return std::get_if<AdvertisedTopicPayload>(&item.payload);
 }
+// An object type no dock shows but a plugin panel reads as a recipe input (a depth image's calibration): its catalog
+// row starts a drag, and a dock leaves it out of a drop.
+[[nodiscard]] constexpr bool isPanelOnlyObjectType(sdk::BuiltinObjectType type) noexcept {
+  return type == sdk::BuiltinObjectType::kCameraInfo;
+}
 
 // One available-but-unsubscribed topic advertised by a streaming source. Carries
 // only what the catalog needs to show a paused placeholder: the topic name and

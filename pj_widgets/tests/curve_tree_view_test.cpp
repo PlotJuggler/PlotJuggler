@@ -608,8 +608,8 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
   EXPECT_TRUE(catalog_keys.contains("object:b"_L1));
 }
 
-// An object topic whose type no view can display (draggable=false, e.g. a
-// CameraInfo topic) stays selectable but never starts a drag, shows the
+// An object topic whose type no view can display (draggable=false, e.g. an
+// occupancy-grid update) stays selectable but never starts a drag, shows the
 // caller-supplied "why" tooltip, and is skipped by the drag payload even when
 // it sits inside a dragged multi-selection.
 TEST(CurveTreeViewTest, UndisplayableObjectTopicIsNotDraggableAndExcludedFromDragPayload) {

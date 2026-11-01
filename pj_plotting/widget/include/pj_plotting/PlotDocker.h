@@ -124,6 +124,8 @@ class PlotDocker : public ads::CDockManager {
   // Re-emit of DockWidget::placeholderTopicDropped — see that signal's doc.
   void placeholderTopicDropped(
       DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
+  // Re-emit of DockWidget::topicRefused — see that signal's doc.
+  void topicRefused(const QString& reason);
 
  private:
   void ensureAtLeastOneWidget();

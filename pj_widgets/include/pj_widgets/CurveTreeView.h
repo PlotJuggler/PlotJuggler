@@ -41,8 +41,8 @@ class CurveTreeView : public QTreeWidget {
     bool selectable = true;
     // false = the row never starts a drag and is excluded from any drag payload.
     // Curve leaves: a value-only leaf (string fields today — they can't be
-    // plotted) keeps its Value cell but is drag-inert. Object topics: a type no
-    // view can display (the caller's policy) — pair with `tooltip` to say why.
+    // plotted) keeps its Value cell but is drag-inert. Object topics: a type
+    // nothing can take (the caller's policy) — pair with `tooltip` to say why.
     bool draggable = true;
     // Optional name-cell tooltip. Empty = none.
     QString tooltip = {};

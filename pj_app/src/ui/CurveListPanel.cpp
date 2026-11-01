@@ -120,14 +120,14 @@ bool isTopicUnsubscribed(
   return it != active_sets.constEnd() && !it->contains(topic_name);
 }
 
-// Why an object topic of `type` cannot be dragged into a view — shown as the
-// row's tooltip so a drag that never starts doesn't read as a bug.
+// Why no view takes an object topic of `type` — shown as the row's tooltip so a
+// drag that never starts, or a drop that is refused, doesn't read as a bug.
 QString undisplayableObjectTooltip(sdk::BuiltinObjectType type) {
   switch (type) {
     case sdk::BuiltinObjectType::kCameraInfo:
       return QObject::tr(
           "Camera calibration topic, used automatically by 2D and 3D views. "
-          "It cannot be displayed on its own.");
+          "It cannot be displayed on its own, but a plugin panel can read it.");
     case sdk::BuiltinObjectType::kOccupancyGridUpdate:
       return QObject::tr(
           "Incremental map update, applied automatically to its occupancy grid. "
@@ -191,8 +191,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
   const auto object_type = object_topic != nullptr ? object_topic->object_type
                            : placeholder_is_object ? advertised->classification
                                                    : sdk::BuiltinObjectType::kNone;
-  // An object topic no dock family claims (kCameraInfo, ...) must not start a
-  // drag — the drop could only end in a "cannot display" dead end.
+  // An object topic no dock family claims says so in its tooltip.
   const bool object_undisplayable =
       (object_topic != nullptr || placeholder_is_object) && !isDroppableObjectType(object_type);
   return CurveTreeView::CurvePath{
@@ -203,7 +202,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
       .selectable = scalar != nullptr || (advertised != nullptr && !placeholder_is_object),
       // String fields drag onto the State Transitions strip (plots keep
       // refusing them via the curveDescriptor gate, so a plot drop is a no-op).
-      .draggable = !object_undisplayable,
+      .draggable = !object_undisplayable || isPanelOnlyObjectType(object_type),
       .tooltip = object_undisplayable ? undisplayableObjectTooltip(object_type) : QString{},
       .is_image_topic = isImageFamilyObjectType(object_type),
       .is_3d_object_topic = is3dSceneObjectType(object_type),

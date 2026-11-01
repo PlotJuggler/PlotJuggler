@@ -73,6 +73,13 @@ bool objectElementSeedsWidget(const QDomElement& element) {
   return !element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull();
 }
 
+bool isPanelOnlyItem(const CatalogItem& item) {
+  const auto* object = asObjectTopic(item);
+  const auto* advertised = asAdvertisedTopic(item);
+  return (object != nullptr && isPanelOnlyObjectType(object->object_type)) ||
+         (advertised != nullptr && isPanelOnlyObjectType(advertised->classification));
+}
+
 }  // namespace
 
 DockWidget::DockWidget(SessionManager* session, CatalogModel* catalog, ads::CDockManager* manager, QWidget* parent)
@@ -396,6 +403,7 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
     emit parent_docker->firstObjectTopicAdded(new_widget);
   });
   connect(new_widget, &DockWidget::placeholderTopicDropped, parent_docker, &PlotDocker::placeholderTopicDropped);
+  connect(new_widget, &DockWidget::topicRefused, parent_docker, &PlotDocker::topicRefused);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
   if (new_widget->plotWidget() != nullptr) {
@@ -412,8 +420,30 @@ PlotWidget* DockWidget::ensurePlotWidget() {
   return plot_widget_;
 }
 
-void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
-  if (catalog_ == nullptr || keys.empty()) {
+void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
+  if (catalog_ == nullptr) {
+    return;
+  }
+
+  // Before anything else: the first key picks the branch below, and an object row sorts ahead of scalars.
+  QStringList keys;
+  QStringList left_out;
+  for (const QString& key : dropped_keys) {
+    const auto item = catalog_->itemDescriptor(key);
+    if (item.has_value() && isPanelOnlyItem(*item)) {
+      left_out.append(item->topic_name);
+    } else {
+      keys.append(key);
+    }
+  }
+  if (left_out.size() == 1) {
+    emit topicRefused(tr("\"%1\" cannot be displayed on its own, but a plugin panel can read it.")
+                          .arg(left_out.front().toHtmlEscaped()));
+  } else if (!left_out.isEmpty()) {
+    emit topicRefused(
+        tr("%1 topics cannot be displayed on their own, but a plugin panel can read them.").arg(left_out.size()));
+  }
+  if (keys.empty()) {
     return;
   }
 

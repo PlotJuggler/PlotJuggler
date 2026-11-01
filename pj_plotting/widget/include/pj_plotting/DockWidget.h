@@ -116,9 +116,11 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   // objectFamilyRequested first, then drop.
   void placeholderTopicDropped(
       DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
+  // A drop carried topics no dock can show (isPanelOnlyObjectType), which were left out; `reason` is ready for a toast.
+  void topicRefused(const QString& reason);
 
  private slots:
-  void onCatalogItemsDropped(const QStringList& keys);
+  void onCatalogItemsDropped(const QStringList& dropped_keys);
   // Builds a plot and creates an XY (scatter) curve from a right-dragged pair.
   void onCatalogItemsXyRequested(const QStringList& keys);
   // Copies the current object widget XML state to the widget clipboard.
