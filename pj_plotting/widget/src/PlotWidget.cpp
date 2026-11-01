@@ -225,6 +225,9 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     }
   });
   connect(this, &PlotWidgetBase::curveListChanged, this, [this]() {
+    if (curveList().empty()) {
+      pending_fit_ = PendingFit::kNone;
+    }
     updateMaximumZoomArea();
     autoZoomPlotVertically();
     pruneHiddenMarkerScopes();
@@ -362,8 +365,11 @@ void PlotWidget::replaceCurve(const QString& source_key, const QString& output_k
       break;
     }
   }
+  // Removing a plot's only curve reads as emptying it, which would drop a fit the output still needs.
+  const PendingFit pending_fit = pending_fit_;
   removeCurve(source_key);      // no-op if the source is not currently plotted
   addCurve(output_key, color);  // explicit colour honoured as-is; transparent => palette
+  pending_fit_ = pending_fit;
   replot();
 }
 
@@ -500,6 +506,10 @@ void PlotWidget::createCurveXYInteractiveAsync(
 #endif
 
 void PlotWidget::setVisibleXRange(double x0, double x1) {
+  // An empty window (a linked peer still waiting for rows) imposes nothing to keep.
+  if (pending_fit_ == PendingFit::kFull && x0 < x1) {
+    pending_fit_ = PendingFit::kVertical;
+  }
   QRectF rect = currentBoundingRect();
   rect.setLeft(x0);
   rect.setRight(x1);
@@ -1083,6 +1093,7 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
   if (rect.left() == rect.right() || rect.top() == rect.bottom()) {
     zoomOut(/*emit_signal=*/false);
   } else {
+    pending_fit_ = PendingFit::kNone;
     setZoomRectangle(rect, /*emit_signal=*/false);
   }
   if (clear_after) {
@@ -1145,6 +1156,7 @@ void PlotWidget::zoomOut(bool emit_signal) {
     return;
   }
 
+  pending_fit_ = hasUsableCurveData() ? PendingFit::kNone : PendingFit::kFull;
   updateMaximumZoomArea();
   setZoomRectangle(maxZoomRect(), emit_signal);
   replot();
@@ -1623,6 +1635,10 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
 }
 
 void PlotWidget::onExternallyResized(const QRectF& rect) {
+  // The user framed the view, unless the gesture had no X extent to scale (it reports an empty or NaN window).
+  if (rect.left() < rect.right()) {
+    pending_fit_ = PendingFit::kNone;
+  }
   if (curveList().empty()) {
     return;
   }
@@ -2248,7 +2264,19 @@ void PlotWidget::reconnectDataSignals() {
           // Follow-live: re-fit axes so streaming samples beyond the initial
           // drop-time range become visible. resetZoom subsumes
           // updateMaximumZoomArea + replot.
+          pending_fit_ = PendingFit::kNone;
           resetZoom();
+        } else if (pending_fit_ != PendingFit::kNone && hasUsableCurveData()) {
+          // Rows of a plot fitted before it had any; the fit stays armed so the
+          // next chunk widens the frame too.
+          if (pending_fit_ == PendingFit::kFull) {
+            updateMaximumZoomArea();
+            // Linked peers took this plot's empty or partial window; an XY plot's axes are its own.
+            setZoomRectangle(maxZoomRect(), /*emit_signal=*/!isXYPlot());
+            replot();
+          } else {
+            onZoomOutVerticalTriggered(/*emit_signal=*/false);
+          }
         } else {
           // One-shot writers (file load) stay zoomed where the user left them.
           updateMaximumZoomArea();

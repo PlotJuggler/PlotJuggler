@@ -181,6 +181,9 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] PlotPanner* panner2();
 
   void updateMaximumZoomArea();
+  // Whether any visible curve has samples to frame: the same test the X-range fit
+  // applies per curve, which frames nothing when it fails for all of them.
+  [[nodiscard]] bool hasUsableCurveData() const;
   bool eventFilter(QObject* obj, QEvent* event) override;
 
   // Re-reads the Data Backdrop surface for the active theme and re-applies it to

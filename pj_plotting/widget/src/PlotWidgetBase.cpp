@@ -52,6 +52,12 @@ namespace {
          std::isfinite(rect.top()) && std::isfinite(rect.bottom());
 }
 
+// A shown curve with samples whose bounds the axis-range fit can use.
+[[nodiscard]] bool hasUsableBounds(const PlotWidgetBase::CurveInfo& info) {
+  return info.curve != nullptr && info.curve->isVisible() && info.curve->data() != nullptr &&
+         isUsableRect(info.curve->data()->boundingRect());
+}
+
 // The Data Backdrop fill for the active theme. Theme detection uses the synced
 // application palette's Window lightness (Theme::syncApplicationPalette keeps it
 // in lockstep with the theme tokens), so this must be read AFTER a theme applies.
@@ -467,13 +473,10 @@ Range<double> PlotWidgetBase::getVisualizationRangeX() const {
   double right = std::numeric_limits<double>::lowest();
 
   for (const auto& info : curveList()) {
-    if (info.curve == nullptr || !info.curve->isVisible() || info.curve->data() == nullptr) {
+    if (!hasUsableBounds(info)) {
       continue;
     }
     const QRectF rect = info.curve->data()->boundingRect();
-    if (!isUsableRect(rect)) {
-      continue;
-    }
     left = std::min(left, rect.left());
     right = std::max(right, rect.right());
   }
@@ -833,6 +836,10 @@ PlotPanner* PlotWidgetBase::panner1() {
 
 PlotPanner* PlotWidgetBase::panner2() {
   return plot_->panner2;
+}
+
+bool PlotWidgetBase::hasUsableCurveData() const {
+  return std::any_of(curveList().begin(), curveList().end(), hasUsableBounds);
 }
 
 void PlotWidgetBase::updateMaximumZoomArea() {

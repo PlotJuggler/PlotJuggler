@@ -12,6 +12,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <cstddef>
+#include <cstdint>
 #ifdef PJ_TARGET_WASM
 #include <functional>
 #endif
@@ -114,10 +115,11 @@ class PlotWidget : public PlotWidgetBase {
   bool revalidate();
 
   void setZoomRectangle(QRectF rect, bool emit_signal);
-  // Applies [x0, x1] as the visible X window, leaving Y exactly as it was, and
-  // replots. Never emits the zoom-changed signal: the linked-X paths that use
+  // Applies [x0, x1] as the visible X window, leaving Y as it was until a fit
+  // still waiting for first rows runs, and replots. Never emits the zoom-changed signal: the linked-X paths that use
   // it are already propagating a peer's change or an explicit command.
   void setVisibleXRange(double x0, double x1);
+  using PlotWidgetBase::hasUsableCurveData;
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
@@ -406,6 +408,12 @@ class PlotWidget : public PlotWidgetBase {
   double last_tracker_time_sec_ = 0.0;
   bool show_points_ = true;
   bool loading_state_ = false;
+  // A zoomOut that found no curve data (an on-demand series computes only once
+  // shown) stays armed and re-runs on every non-live ingest, so a series computed
+  // in chunks stays framed whole until the user frames the view. An external X
+  // window (zoom link) narrows it to Y. Never armed when data existed at fit time.
+  enum class PendingFit : std::uint8_t { kNone, kFull, kVertical };
+  PendingFit pending_fit_ = PendingFit::kNone;
   // Trailing-edge coalescer for gesture-driven history snapshots: wheel-zoom and
   // pan emit per input event, but serializing the whole workspace per event is
   // wasteful — one undoableChange fires when the gesture goes quiet.

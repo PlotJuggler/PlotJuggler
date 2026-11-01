@@ -4345,7 +4345,10 @@ void MainWindow::onPlotCurvesDropped(bool was_empty) {
   std::optional<QRectF> linked_range;
   forEachPlot([&](PlotWidget* peer) {
     if (!linked_range && peer != plot && !peer->isEmpty() && !peer->isXYPlot() && peer->isZoomLinkEnabled()) {
-      linked_range = peer->currentBoundingRect();
+      // A peer still waiting for its first rows has no window to share.
+      if (const QRectF rect = peer->currentBoundingRect(); rect.left() < rect.right()) {
+        linked_range = rect;
+      }
     }
   });
   if (linked_range) {
@@ -4358,6 +4361,10 @@ void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
     return;
   }
   if (modified == nullptr || modified->isEmpty() || modified->isXYPlot() || !modified->isZoomLinkEnabled()) {
+    return;
+  }
+  // A plot without rows has no X window to share; this also refuses a gesture's NaN one.
+  if (!(rect.left() < rect.right())) {
     return;
   }
 
@@ -4779,7 +4786,8 @@ void MainWindow::linkedZoomOut() {
       }
     };
     for (int index = 0; index < docker->plotCount(); ++index) {
-      if (PlotWidget* plot = plot_at(index); plot != nullptr && !plot->isXYPlot()) {
+      // A plot still waiting for rows would fold its [0, 0] into the union.
+      if (PlotWidget* plot = plot_at(index); plot != nullptr && !plot->isXYPlot() && plot->hasUsableCurveData()) {
         const QRectF rect = plot->maxZoomRect();
         fold(rect.left(), rect.right());
       }
@@ -4795,11 +4803,8 @@ void MainWindow::linkedZoomOut() {
         if (plot->isXYPlot() || !x_union) {
           plot->zoomOut(false);
         } else {
-          QRectF rect = plot->maxZoomRect();
-          rect.setLeft(x_union->min);
-          rect.setRight(x_union->max);
-          plot->setZoomRectangle(rect, false);
-          plot->replot();
+          plot->zoomOut(false);  // keeps a plot waiting for rows armed
+          plot->setVisibleXRange(x_union->min, x_union->max);
         }
       }
       StateTransitionsDockWidget* strip = strip_at(index);

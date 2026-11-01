@@ -35,6 +35,7 @@ pj_add_test_runner(pj_plotting_widget_tests
         plot_widget_range_offset_test.cpp
         plot_widget_max_zoom_offset_test.cpp
         plot_widget_flat_curve_range_test.cpp
+        plot_widget_first_rows_fit_test.cpp
         plot_magnifier_clamp_test.cpp
         plot_state_transaction_test.cpp
         # Links pj_resources so :/filters/builtin_filters.luau is embedded and
