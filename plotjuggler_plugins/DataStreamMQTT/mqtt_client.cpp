@@ -109,6 +109,7 @@ bool MQTTClient::connect(const MosquittoConfig& config)
   Q_ASSERT(_mosq == nullptr);
   _mosq = mosquitto_new(nullptr, true, this);
 
+  _config = config;
   bool success = configureMosquitto(config);
   if (!success)
   {
@@ -118,7 +119,6 @@ bool MQTTClient::connect(const MosquittoConfig& config)
   }
 
   _connected = true;
-  _config = config;
   return true;
 }
 

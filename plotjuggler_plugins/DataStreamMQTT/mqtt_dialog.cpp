@@ -26,7 +26,7 @@ MQTT_Dialog::MQTT_Dialog(MQTTClient::Ptr mosq_client)
   restoreGeometry(settings.value("MosquittoMQTT::geometry").toByteArray());
 
   QString host = settings.value("MosquittoMQTT::host").toString();
-  ui->lineEditHost->setText(host);
+  ui->lineEditHost->setText(host.isEmpty() ? ui->lineEditHost->placeholderText() : host);
 
   int port = settings.value("MosquittoMQTT::port", 1883).toInt();
   ui->lineEditPort->setText(QString::number(port));
@@ -38,7 +38,8 @@ MQTT_Dialog::MQTT_Dialog(MQTTClient::Ptr mosq_client)
   ui->comboBoxVersion->setCurrentIndex(protocol_mqtt);
 
   QString topic_filter = settings.value("MosquittoMQTT::filter").toString();
-  ui->lineEditTopicFilter->setText(topic_filter);
+  ui->lineEditTopicFilter->setText(
+      topic_filter.isEmpty() ? ui->lineEditTopicFilter->placeholderText() : topic_filter);
 
   QString username = settings.value("MosquittoMQTT::username", "").toString();
   ui->lineEditUsername->setText(username);
