@@ -100,6 +100,9 @@ class ROS_Deserializer : public Deserializer {
 // wrapping FastCDR
 class NanoCDR_Deserializer : public Deserializer {
  public:
+  // Set to true for RTI DDS Micro compatibility (align from byte 0 instead of byte 4)
+  void setAlignFromMessageStart(bool enable) { _align_from_start = enable; }
+
   Variant deserialize(BuiltinType type) override;
 
   void deserializeString(std::string& dst) override;
@@ -124,6 +127,7 @@ class NanoCDR_Deserializer : public Deserializer {
 
  protected:
   std::optional<nanocdr::Decoder> _cdr_decoder;
+  bool _align_from_start = false;
 };
 
 using ROS2_Deserializer = NanoCDR_Deserializer;

@@ -1,5 +1,6 @@
 #include "dataload_parquet.h"
 #include <arrow/type_fwd.h>
+#include <arrow/util/config.h>
 #include <QTextStream>
 #include <QFile>
 #include <QMessageBox>
@@ -358,7 +359,17 @@ bool DataLoadParquet::readDataFromFile(FileLoadInfo* info, PlotDataMapRef& plot_
 
   // Create RecordBatchReader for efficient batch processing
   std::shared_ptr<arrow::RecordBatchReader> batch_reader;
+#if ARROW_VERSION_MAJOR >= 19
+  // The out-parameter overloads were deprecated in Arrow 21 and later removed.
+  auto batch_reader_result = arrow_file_reader->GetRecordBatchReader();
+  status = batch_reader_result.status();
+  if (status.ok())
+  {
+    batch_reader = std::move(*batch_reader_result);
+  }
+#else
   status = arrow_file_reader->GetRecordBatchReader(&batch_reader);
+#endif
   if (!status.ok())
   {
     throw std::runtime_error("Failed to create RecordBatchReader");

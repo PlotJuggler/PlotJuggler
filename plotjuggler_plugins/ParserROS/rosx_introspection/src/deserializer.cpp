@@ -189,7 +189,7 @@ void NanoCDR_Deserializer::jump(size_t bytes) {
 
 void NanoCDR_Deserializer::reset() {
   nanocdr::ConstBuffer nano_buffer(_buffer.data(), _buffer.size());
-  _cdr_decoder.emplace(nano_buffer);
+  _cdr_decoder.emplace(nano_buffer, nanocdr::CdrVersion::DDS_CDR, _align_from_start);
 }
 
 }  // namespace RosMsgParser

@@ -73,6 +73,21 @@
     </widget>
    </item>
    <item>
+    <widget class="QCheckBox" name="checkBoxUseLegacyCdr">
+     <property name="toolTip">
+      <string>Enable for RTI DDS Micro and older CDR implementations that align from byte 0.
+Modern XCDR2 standard aligns from byte 4 (after CDR header).
+Only affects OMGIDL-encoded channels in this file.</string>
+     </property>
+     <property name="text">
+      <string>Use legacy CDR alignment (byte 0) for OMGIDL messages</string>
+     </property>
+     <property name="checked">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
     <layout class="QHBoxLayout" name="horizontalLayout_1">
      <item>
       <widget class="QLabel" name="label_3">
