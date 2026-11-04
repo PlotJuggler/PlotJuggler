@@ -100,6 +100,11 @@ void CurveListPanel::clear()
 
 bool CurveListPanel::addCurve(const std::string& plot_name)
 {
+  if (_transforms_map.count(plot_name) > 0)
+  {
+    return false;
+  }
+
   QString plot_id = QString::fromStdString(plot_name);
   if (_tree_view_items.count(plot_name) > 0)
   {
@@ -140,6 +145,13 @@ bool CurveListPanel::addCurve(const std::string& plot_name)
 
 void CurveListPanel::addCustom(const QString& item_name)
 {
+  // Remove a same-name placeholder from the main list if one exists.
+  std::string name_str = item_name.toStdString();
+  if (_tree_view_items.count(name_str) > 0)
+  {
+    _tree_view->removeCurve(item_name);
+    _tree_view_items.erase(name_str);
+  }
   _custom_view->addItem({}, item_name, item_name);
   _column_width_dirty = true;
 }
