@@ -441,6 +441,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
       // after it, the entry was evicted under the cursor and stays.
       last_entry_stamp_.reset();
       last_entry_uid_ = {};
+      rectification_status_.store(RectificationStatus::kWaitingForImage, std::memory_order_relaxed);
       return DecodedFrame{};
     }
     return std::nullopt;  // scrub-before-data (silent)
@@ -486,6 +487,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     }
     if (resolved->image.data.empty()) {
       // An empty image (a derived topic's tombstone) clears what was shown.
+      rectification_status_.store(RectificationStatus::kWaitingForImage, std::memory_order_relaxed);
       DecodedFrame clear;
       clear.pts = resolved->pts;
       return clear;
@@ -544,15 +546,22 @@ const sdk::CameraInfo* ImagePipelineSource::cameraInfoFor(const std::string& fra
 }
 
 void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
-  if (!rectify_enabled_.load(std::memory_order_relaxed)) {
-    return;  // operator override: show the raw image even when calibration exists.
-  }
   if (df.frame_id.empty() || df.width <= 0 || df.height <= 0) {
+    rectification_status_.store(RectificationStatus::kMissingFrameId, std::memory_order_relaxed);
     return;
   }
   const sdk::CameraInfo* ci = cameraInfoFor(df.frame_id);
-  if (ci == nullptr || !isRectifiable(*ci)) {
+  if (ci == nullptr) {
+    rectification_status_.store(RectificationStatus::kMissingCalibration, std::memory_order_relaxed);
     return;  // no calibration for this frame -> leave the raw image as decoded.
+  }
+  if (!isRectifiable(*ci)) {
+    rectification_status_.store(RectificationStatus::kInvalidCalibration, std::memory_order_relaxed);
+    return;
+  }
+  rectification_status_.store(RectificationStatus::kReady, std::memory_order_relaxed);
+  if (!rectify_enabled_.load(std::memory_order_relaxed)) {
+    return;
   }
   // Build (cached per camera) a reverse map that outputs at the native calibration
   // resolution, so the rectified image, the annotation pixel coords, and the

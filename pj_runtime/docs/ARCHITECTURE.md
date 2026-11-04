@@ -46,6 +46,11 @@ UI on `RecordingService::isSupported()` alone.
   on a full wipe: this is what stops playback when the last dataset is removed. Both scans
   share the private `forEachVisibleRawRange`, so the visibility and dedup rules live in one
   place. The playback range skips host-published topics (`isOffClockTopic`).
+  Zero-time reference geometry is also outside the clock: a dataset containing a point
+  cloud or mesh whose entire scalar/object range is `[0,0]` remains drawable as a static
+  reference, but contributes neither playback bounds nor the global relative-time origin
+  (`SessionManager::isStaticReferenceDataset`). Loading it beside a recording does not
+  create a gap back to epoch zero. Its stored samples are unchanged.
 - **Merge.** `mergeDatasets(selected)` destructively folds the selected datasets into one:
   the anchor (leftmost on the display axis) keeps its clock and ids, the others are
   shifted into it by their relative display offset and removed from the catalog, scalar

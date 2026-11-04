@@ -553,6 +553,8 @@ class MainWindow : public QMainWindow {
 
   // Wires callbacks for a newly created plot tab.
   void onPlotTabAdded(PlotDocker* docker);
+  /// Focus the requesting dock and toggle the shared settings sidebar.
+  void onSettingsPanelToggleRequested(DockWidget* dock);
 
   // A placeholder 2D/3D icon was clicked: builds an empty scene dock of the
   // matching kind (the shell owns the family→kind mapping) and adopts it into

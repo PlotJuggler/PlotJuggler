@@ -209,6 +209,14 @@ class FakeAcceptingObjectWidget : public QWidget, public PJ::IDataWidget {
   int accepted_count_ = 0;
 };
 
+class HoverProbeWidget : public FakeAcceptingObjectWidget {
+ public:
+  bool canAcceptObjectTopic(PJ::ObjectTopicId, PJ::sdk::BuiltinObjectType) const override {
+    return accepts_hover;
+  }
+  bool accepts_hover = false;
+};
+
 void registerImageObjectTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name) {
   auto topic_or = session.objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{
@@ -1223,6 +1231,31 @@ TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {
   EXPECT_TRUE(icon_drop.isAccepted());
   EXPECT_EQ(drop_count, 1);
   EXPECT_EQ(dropped_keys, QStringList{u"dataset:/camera/image"_s});
+}
+
+TEST(DockWidgetPlaceholderTest, ObjectDockRejectsAnIncompatibleHoverWithoutAddingTopics) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "images"});
+  ASSERT_TRUE(dataset);
+  registerImageObjectTopic(session, *dataset, "/image");
+  catalog.rebuildFromDatastore();
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  auto* probe = new HoverProbeWidget();
+  dock->adoptObjectWidget(probe);
+  QMimeData mime;
+  mime.setData(PJ::CurveTreeView::catalogItemsMimeType(), PJ::CurveTreeView::encodeCatalogKeys({items.front().key}));
+  QDragEnterEvent refused(QPoint(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(probe, &refused);
+  EXPECT_FALSE(refused.isAccepted());
+  probe->accepts_hover = true;
+  QDragEnterEvent accepted(QPoint(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(probe, &accepted);
+  EXPECT_TRUE(accepted.isAccepted());
+  EXPECT_EQ(probe->acceptedCount(), 0);
 }
 
 TEST(VisualizationPlaceholderTest, ThreeDIconIsEnabledAndNamed) {

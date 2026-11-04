@@ -103,6 +103,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   void setSourcePath(const QString& path);
 
   bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
+  [[nodiscard]] bool canAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type) const override;
   /// The FrameTransforms topics the view takes as its TF tree, by topic id.
   [[nodiscard]] std::vector<SceneLayerInfo> configTopics() const override;
   void onTrackerTime(double time) override;

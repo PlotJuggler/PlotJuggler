@@ -22,6 +22,7 @@
 #include <QMimeData>
 #include <QPushButton>
 #include <QScopedValueRollback>
+#include <algorithm>
 #ifdef PJ_TARGET_WASM
 #include <QPointer>
 #include <QTimer>
@@ -348,6 +349,27 @@ bool DockWidget::eventFilter(QObject* watched, QEvent* event) {
       case QEvent::DragMove: {
         auto* drag = static_cast<QDropEvent*>(event);
         if (drag->mimeData() != nullptr && drag->mimeData()->hasFormat(CurveTreeView::catalogItemsMimeType())) {
+          if (object_widget_ != nullptr && catalog_ != nullptr) {
+            const QStringList keys = CurveTreeView::decodeCatalogKeys(drag->mimeData());
+            const bool compatible = std::any_of(keys.begin(), keys.end(), [this](const QString& key) {
+              const auto item = catalog_->itemDescriptor(key);
+              if (!item) {
+                return false;
+              }
+              if (const auto* object = asObjectTopic(*item)) {
+                return object_widget_->canAcceptObjectTopic(object->object_topic_id, object->object_type);
+              }
+              if (const auto* advertised = asAdvertisedTopic(*item);
+                  advertised != nullptr && advertised->classification != sdk::BuiltinObjectType::kNone) {
+                return object_widget_->canAcceptObjectTopic({}, advertised->classification);
+              }
+              return true;
+            });
+            if (!compatible) {
+              drag->ignore();
+              return true;
+            }
+          }
           drag->acceptProposedAction();
           return true;
         }
@@ -393,10 +415,13 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   }
   auto* new_widget = new DockWidget(plot, session_, catalog_, parent_docker, nullptr, false);
   new_widget->setObjectWidgetFactory(object_widget_factory_);
+  new_widget->setConfigurationPanelVisibilityQuery(configuration_panel_visible_);
   auto* area = parent_docker->addDockWidget(dock_area, new_widget, dockAreaWidget());
   area->setAllowedAreas(ads::OuterDockAreas);
 
   connect(new_widget, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
+  connect(
+      new_widget, &DockWidget::settingsPanelToggleRequested, parent_docker, &PlotDocker::settingsPanelToggleRequested);
   connect(new_widget, &DockWidget::plotWidgetCreated, parent_docker, &PlotDocker::plotWidgetAdded);
   connect(new_widget, &DockWidget::objectFamilyRequested, parent_docker, &PlotDocker::objectFamilyRequested);
   connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, [parent_docker, new_widget] {
@@ -915,6 +940,10 @@ void DockWidget::removeObjectContextMenuFilter(QWidget* root) {
   }
 }
 
+void DockWidget::setConfigurationPanelVisibilityQuery(std::function<bool()> query) {
+  configuration_panel_visible_ = std::move(query);
+}
+
 void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
   const QString theme = currentTheme();
 #ifdef PJ_TARGET_WASM
@@ -929,6 +958,12 @@ void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
 #endif
   menu.setObjectName(u"PJMenu"_s);
   menu.setProperty("categorySeparators", true);
+  const bool settings_open = configuration_panel_visible_ && configuration_panel_visible_();
+  menu.addAction(settings_open ? tr("Close Settings") : tr("Open Settings"), this, [this]() {
+    focusSelf();
+    emit settingsPanelToggleRequested(this);
+  });
+  addActionCategorySeparator(menu);
   QAction* copy_action = menu.addAction(
       QIcon(loadSvg(":/resources/svg/copy.svg", theme)), tr("Copy"), this, [this]() { copyObjectWidgetToClipboard(); });
   copy_action->setEnabled(!objectWidgetClipboardTag().isEmpty());

@@ -13,6 +13,8 @@
 
 #include "MainWindow.h"
 #include "ToolboxPresenter.h"
+#include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "support/gui_test_env.h"
@@ -27,6 +29,9 @@ namespace PJ {
 // ui_MainWindow.h is internal to the shell library.
 class MainWindowPanelGeometryTestPeer {
  public:
+  static void reconnectDock(MainWindow& window, PlotDocker* docker) {
+    window.onPlotTabAdded(docker);
+  }
   [[nodiscard]] static bool presentPanel(MainWindow& window, QWidget* panel) {
     window.presentPanel(panel);
     return window.current_panel_ == panel;
@@ -154,6 +159,24 @@ TEST(MainWindowPanelGeometryTest, PresentingAndDismissingAPanelLeavesTheLeftPane
   PJ::MainWindowPanelGeometryTestPeer::restoreCentralArea(window);
   settle();
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth) << "dismissing a toolbox panel resized the left panel";
+}
+
+TEST(MainWindowPanelGeometryTest, SettingsActionOpensAndClosesTheSidebar) {
+  PJ::MainWindow window;
+  openAtUserChosenWidth(window);
+  auto* tabs = window.findChild<PJ::TabbedPlotWidget*>();
+  ASSERT_NE(tabs, nullptr);
+  auto* dock = tabs->dockerAt(0)->plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  PJ::MainWindowPanelGeometryTestPeer::reconnectDock(window, tabs->dockerAt(0));
+  PJ::MainWindowPanelGeometryTestPeer::reconnectDock(window, tabs->dockerAt(0));
+  rightPanel(window).hide();
+  dock->settingsPanelToggleRequested(dock);
+  settle();
+  EXPECT_FALSE(rightPanel(window).isHidden());
+  dock->settingsPanelToggleRequested(dock);
+  settle();
+  EXPECT_TRUE(rightPanel(window).isHidden());
 }
 
 // Launching a toolbox while another one is open dismisses the first and

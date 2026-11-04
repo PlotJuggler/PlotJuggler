@@ -1248,6 +1248,11 @@ coloured by depth. Sibling of the 2D depth view: same data, different geometry.
   `kImage`, an empty-placeholder image drop opens the **2D** viewer (host policy in
   `pj_app`); a depth image reaches a 3D dock by being dropped onto an existing one
   or via the 3D family switch.
+- **Advertised images.** An advertised `kImage` has no storage ID or encoding yet,
+  so hover accepts it provisionally. Dropping it creates a pending intent and topic
+  demand. The intent waits for the first stored sample, then accepts depth or
+  discards colour and releases the provisional demand. Saved depth layers retain
+  their previously validated type and can restore before their samples arrive.
 - **Decode (`toDepthView`).** `16UC1`/`32FC1` alias the image bytes (zero-copy).
   `compressedDepth` is PNG-decoded via `QImage` to a `16UC1` (millimetre) view,
   including a **bare-PNG signature repair**: RealSense bags carry a headerless PNG

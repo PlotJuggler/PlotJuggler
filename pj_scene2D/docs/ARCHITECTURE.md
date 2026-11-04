@@ -631,6 +631,15 @@ mailbox into a `MediaFrame` (nullopt on second call); after each deposit the
 worker fires the optional `setFrameReadyCallback` (from the worker thread) so
 consumers re-poll.
 
+The worker publishes `rectificationStatus()` independently of whether rectification
+is enabled. Explicit clear frames publish `kWaitingForImage`; no-update results
+preserve eligibility for the retained image. `ImageLayer` uses that status on frame-ready repaint notifications to
+enable its Rectify toggle only for a matching, usable calibration and to explain
+unavailability in the tooltip. The attach-time calibration map contains only the
+image's dataset: CameraInfo-classified topics (any name) and legacy `/camera_info`
+topics are decoded through their parser, or through the canonical codec when no
+parser is bound. Calibration is injected before the first decode request.
+
 `rectifyIfCalibrated` chooses between two paths based on the
 `setGpuRectificationAvailable` flag the widget pushed down (atomic; a change
 calls `invalidate()` to re-decode in the new mode):

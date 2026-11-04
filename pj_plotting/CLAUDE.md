@@ -65,6 +65,12 @@ Derived series (script outputs) reach this module as ordinary datastore topics, 
 - **`TabbedPlotWidget::forEachDocker` / `findDocker`** enumerate the docker tabs in one pass; use them instead of
   index loops over `dockerCount()`/`dockerAt()` (each a linear scan).
 - **`visibleXRangeChanged`** reports every move of the time axis; `rectChanged` drives the zoom link only.
+- **Object-dock drop hover** consults `IDataWidget::canAcceptObjectTopic` before
+  accepting catalog drags. A view's payload-dependent refusal must be visible in the cursor.
+- **Open Settings / Close Settings** in an object dock's context menu emits
+  `settingsPanelToggleRequested` through `PlotDocker`; the shell focuses that dock
+  and toggles its settings sidebar. The host-supplied visibility query chooses the
+  label when the menu opens.
 
 ## Port strategy (root CLAUDE.md "Porting policy")
 

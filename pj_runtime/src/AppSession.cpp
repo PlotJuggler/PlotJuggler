@@ -263,7 +263,15 @@ void AppSession::forEachVisibleRawRange(
   // underlying topic once.
   std::unordered_set<TopicId> seen_topics;
   std::unordered_set<uint32_t> seen_object_topics;
+  std::unordered_map<DatasetId, bool> static_references;
   for (const CatalogItem& item : catalog_model_->items()) {
+    auto [reference, inserted] = static_references.try_emplace(item.dataset_id, false);
+    if (inserted) {
+      reference->second = session_manager_->isStaticReferenceDataset(item.dataset_id);
+    }
+    if (reference->second) {
+      continue;
+    }
     Timestamp raw_min = 0;
     Timestamp raw_max = 0;
     if (const ScalarFieldPayload* scalar = asScalarField(item)) {
@@ -344,13 +352,15 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
     new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
   });
   if (!new_min) {
-    // No time-bearing rows. Distinguish a GENUINE empty (the catalog has no
-    // items — last dataset removed / full clear) from a TRANSIENT one (a
-    // replacing reload detaches a dataset's chunks, so its still-visible topics
-    // momentarily hold 0 rows): only collapse the transport when the catalog is
-    // truly empty, so a reload doesn't flicker the range to [0,0] and pause
-    // mid-load.
-    if (catalog_model_->isEmpty()) {
+    // Static references alone have no transport. Otherwise preserve the range
+    // across a transient empty while a replacing reload detaches its chunks,
+    // so playback does not pause or flicker mid-load.
+    const auto items = catalog_model_->items();
+    const bool only_references =
+        !items.empty() && std::all_of(items.begin(), items.end(), [&](const CatalogItem& item) {
+          return session_manager_->isStaticReferenceDataset(item.dataset_id);
+        });
+    if (catalog_model_->isEmpty() || only_references) {
       resetPlaybackToEmpty();
     }
     return std::nullopt;
@@ -569,6 +579,9 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
   std::optional<DisplaySeconds> object_max;
 
   for (const DatasetId dataset_id : datasets) {
+    if (session_manager_->isStaticReferenceDataset(dataset_id)) {
+      continue;
+    }
     const DisplayOffset offset = session_manager_->displayOffset(dataset_id);
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
       const auto metadata = reader.getMetadata(topic_id);

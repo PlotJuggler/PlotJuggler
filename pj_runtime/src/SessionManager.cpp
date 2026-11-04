@@ -744,6 +744,9 @@ Timestamp SessionManager::globalTimeReference() const {
     Timestamp global_min = std::numeric_limits<Timestamp>::max();
     bool found = false;
     for (const DatasetId dataset_id : data_engine_.listDatasets()) {
+      if (isStaticReferenceDataset(dataset_id)) {
+        continue;
+      }
       // Trust the warm per-dataset pin: consult dataset_min_cache_ first so a
       // dataset just refreshed by refreshDatasetMinTimestampsForTopics resolves to
       // a hash-map hit, and an untouched dataset is never rescanned. This whole
@@ -797,6 +800,31 @@ std::optional<std::pair<Timestamp, Timestamp>> SessionManager::datasetRawBounds(
     return std::nullopt;
   }
   return std::pair{t_min, t_max};
+}
+
+bool SessionManager::isStaticReferenceDataset(DatasetId dataset_id) const {
+  for (const auto topic : object_store_.listTopics(dataset_id)) {
+    if (object_store_.entryCount(topic) == 0) {
+      continue;
+    }
+    const auto& descriptor = object_store_.descriptor(topic);
+    if ((descriptor.metadata_json.find("kPointCloud") == std::string::npos &&
+         descriptor.metadata_json.find("kMesh3D") == std::string::npos) ||
+        isOffClockTopic(descriptor)) {
+      continue;
+    }
+    const auto metadata = QJsonDocument::fromJson(QByteArray::fromStdString(descriptor.metadata_json)).object();
+    const auto type = metadata.value(u"builtin_object_type"_s).toString();
+    if (type == u"kPointCloud"_s || type == u"kMesh3D"_s) {
+      const auto [first, last] = object_store_.timeRange(topic);
+      if (first != 0 || last != 0) {
+        return false;
+      }
+      const auto bounds = datasetRawBounds(dataset_id);
+      return bounds && bounds->first == 0 && bounds->second == 0;
+    }
+  }
+  return false;
 }
 
 Timestamp SessionManager::datasetMinTimestamp(DatasetId dataset_id) const {

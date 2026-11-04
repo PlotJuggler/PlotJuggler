@@ -68,7 +68,7 @@
     {
       "id": "viewer_2d",
       "name": "2D viewer for images, video and depth",
-      "summary": "Show camera images, video and depth images from the data in step with the time cursor, with annotations drawn on top. Depth images are shown with a colour map.",
+      "summary": "Show camera images, video and depth images from the data in step with the time cursor, with annotations drawn on top. Depth images are shown with a colour map. The Rectify control is available when matching camera calibration is usable; otherwise its tooltip explains why it is disabled.",
       "entry_point": "Empty plot area: click the 2D button (image icon), then drag an image topic from the Datasets panel onto it",
       "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizScene2D; pj_scene2D/CLAUDE.md#depth maps",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: the button and its tooltip; the drag onto it not automated"
@@ -77,15 +77,15 @@
       "id": "scene_3d",
       "name": "3D scene",
       "summary": "Show 3D data in step with the time cursor: coordinate frames (TF), point clouds, occupancy grids, robot models (URDF and meshes) and markers.",
-      "entry_point": "Empty plot area: click the 3D button (cube icon), then drag 3D topics from the Datasets panel onto it",
-      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizScene3D; pj_scene3D/CLAUDE.md#occupancy grids",
+      "entry_point": "Empty plot area: click the 3D button (cube icon), then drag 3D topics from the Datasets panel onto it; right-click the scene and choose Open Settings for its settings",
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizScene3D; pj_scene3D/CLAUDE.md#occupancy grids; pj_plotting/widget/src/DockWidget.cpp#Open Settings",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: the button and its tooltip; the drag onto it not automated"
     },
     {
       "id": "playback",
       "name": "Playback",
       "summary": "Replay loaded data over time: play and pause, loop, change the speed and step the time cursor. Plots, images and 3D views follow the cursor.",
-      "entry_point": "Bottom bar: Start/Stop player (Space), Loop, Rate (speed multiplier), Step size",
+      "entry_point": "Bottom bar: Start/Stop player (Space), click or drag the time slider to seek, Loop, Rate (speed multiplier), Step size",
       "evidence": "pj_app/src/ui/TimelineWidget.ui#Start/Stop player (Space)",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: Start/Stop player, Loop, Rate and Step size in the bottom bar"
     },

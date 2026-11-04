@@ -54,6 +54,13 @@ class IDataWidget {
     return false;
   }
 
+  /// Non-mutating hover preflight. Widgets with payload-dependent restrictions override
+  /// this to reject incompatible catalog drops before the user releases the mouse.
+  /// The default leaves acceptance to tryAcceptObjectTopic().
+  [[nodiscard]] virtual bool canAcceptObjectTopic(ObjectTopicId, sdk::BuiltinObjectType) const {
+    return true;
+  }
+
   // Optional hook, sibling of tryAcceptObjectTopic for SCALAR catalog keys: a
   // host (DockWidget) offers the keys of a curve-list drop to a mounted widget
   // that consumes scalar series itself (the state-transitions strip takes

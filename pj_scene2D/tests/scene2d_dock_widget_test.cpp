@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/builtin/camera_info_codec.hpp"
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_annotations_codec.hpp"
 #include "pj_base/builtin/image_codec.hpp"
@@ -563,6 +564,60 @@ TEST(ImageLayer, XmlRoundTripPreservesRectifyEnabled) {
 
   const QDomElement out = layer.xmlSaveState(doc);
   EXPECT_EQ(out.attribute(u"rectify_enabled"_s), u"false"_s);
+}
+
+TEST(ImageLayer, RectifyControlIsDisabledWithAnExplanationWithoutCalibration) {
+  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"image"_s);
+  std::unique_ptr<QWidget> config(layer.createConfigWidget(nullptr));
+  auto* rectify = config->findChild<PJ::ToggleSwitch*>();
+  ASSERT_NE(rectify, nullptr);
+  EXPECT_FALSE(rectify->isEnabled());
+  EXPECT_FALSE(rectify->toolTip().isEmpty());
+}
+
+TEST(ImageLayer, RectifyControlRequiresUsableCalibrationInTheImagesDatasetAndFrame) {
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    PJ::SessionManager session;
+    const auto image =
+        registerTopic(session, 1, "/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})");
+    const auto calibration = registerTopic(
+        session, scenario == 2 ? 2 : 1, "/unconventional/calibration", R"({"builtin_object_type":"kCameraInfo"})");
+    PJ::sdk::CameraInfo camera;
+    camera.frame_id = scenario == 1 ? "another_camera" : "cam";
+    camera.width = 2;
+    camera.height = 2;
+    camera.K = {2.0, 0.0, 1.0, 0.0, scenario == 3 ? 0.0 : 2.0, 1.0, 0.0, 0.0, 1.0};
+    ASSERT_TRUE(session.objectStore().pushOwned(calibration, 100, PJ::serializeCameraInfo(camera)));
+    std::vector<uint8_t> pixels(12, 128);
+    PJ::sdk::Image frame;
+    frame.width = 2;
+    frame.height = 2;
+    frame.row_step = 6;
+    frame.encoding = "rgb8";
+    frame.frame_id = "cam";
+    frame.data = PJ::Span<const uint8_t>(pixels.data(), pixels.size());
+    ASSERT_TRUE(session.objectStore().pushOwned(image, 100, PJ::serializeImage(frame)));
+    PJ::ImageLayer layer(image, PJ::sdk::BuiltinObjectType::kImage, u"image"_s);
+    PJ::SceneLayerContext context;
+    context.session = &session;
+    ASSERT_TRUE(layer.attach(context));
+    std::unique_ptr<QWidget> config(layer.createConfigWidget(nullptr));
+    auto* toggle = config->findChild<PJ::ToggleSwitch*>();
+    ASSERT_NE(toggle, nullptr);
+    int repaints = 0;
+    QObject::connect(&layer, &PJ::ImageLayer::repaintRequested, [&]() { ++repaints; });
+    layer.setTrackerTime(PJ::fromRaw(100));
+    QElapsedTimer wait;
+    wait.start();
+    while (repaints == 0 && wait.elapsed() < 3000) {
+      QApplication::processEvents();
+      QThread::msleep(1);
+    }
+    ASSERT_GT(repaints, 0);
+    EXPECT_EQ(toggle->isEnabled(), scenario == 0) << scenario;
+    EXPECT_FALSE(toggle->toolTip().isEmpty());
+    layer.detach();
+  }
 }
 
 TEST(ImageLayer, XmlLoadDefaultsRectifyOnWhenAttributeAbsent) {

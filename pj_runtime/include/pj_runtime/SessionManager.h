@@ -391,13 +391,17 @@ class SessionManager : public QObject {
   [[nodiscard]] DisplayOffset sourceDisplayOffset(DatasetId dataset_id) const;
 
   /// The single global origin (raw ns) subtracted from ALL displayed times when
-  /// "Use time offset" is on: the earliest raw sample across every loaded
-  /// dataset, applied UNIFORMLY so cross-dataset time gaps are preserved (unlike
+  /// "Use time offset" is on: the earliest raw sample across loaded time-bearing
+  /// datasets (excluding static reference geometry), applied UNIFORMLY so cross-dataset time gaps are preserved (unlike
   /// a per-source rebase, which collapses every dataset to zero). Zero when the
   /// toggle is off. Memoized; invalidated on every commit/ingest. The host (the
   /// Source Timeline controller) reads it to bridge the playback frame
   /// (raw - source - global) and the Timeline frame (raw - source).
   [[nodiscard]] Timestamp globalTimeReference() const;
+
+  /// A zero-time geometry dataset is a static reference, not part of the playback clock.
+  /// Its point cloud/mesh and optional scalar summaries all have timestamp zero.
+  [[nodiscard]] bool isStaticReferenceDataset(DatasetId dataset_id) const;
 
   /// Write a source's display shift (display_time = raw_time - offset) and
   /// notify consumers via displayOffsetChanged(DatasetId). Resolves dataset ->

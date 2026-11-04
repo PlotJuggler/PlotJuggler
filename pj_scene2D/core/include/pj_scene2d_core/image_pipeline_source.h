@@ -118,6 +118,19 @@ class ImagePipelineSource : public MediaSource {
   /// Thread-safe; a change re-decodes the current frame so even a paused view updates.
   void setRectifyEnabled(bool enabled);
 
+  /// Calibration eligibility for the latest decoded image, independent of the user's toggle.
+  /// Published by the decode worker; safe to read from the UI thread after frame-ready notification.
+  enum class RectificationStatus {
+    kWaitingForImage,
+    kMissingFrameId,
+    kMissingCalibration,
+    kInvalidCalibration,
+    kReady
+  };
+  [[nodiscard]] RectificationStatus rectificationStatus() const {
+    return rectification_status_.load(std::memory_order_relaxed);
+  }
+
  private:
   /// The frame of the entry at or before `ts_ns`: nullopt for no update (nothing there, already delivered, a
   /// decode failure), a null frame to clear what is shown (an empty image, or a seek before the shown entry with
@@ -189,6 +202,7 @@ class ImagePipelineSource : public MediaSource {
   // the widget/UI thread, read on the worker thread in rectifyIfCalibrated();
   // cross-thread publication mirrors gpu_rectify_available_.
   std::atomic<bool> rectify_enabled_{true};
+  std::atomic<RectificationStatus> rectification_status_{RectificationStatus::kWaitingForImage};
   // Set true by the first setTimestamp() (main thread). Guards setCameraInfoMap:
   // once a decode has been requested the worker may read camera_info_by_frame_
   // unlocked, so a later injection would be a data race — it is refused instead.

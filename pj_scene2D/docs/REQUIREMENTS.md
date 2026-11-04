@@ -563,6 +563,10 @@ decoder seek and entry eviction.
   Turning it off forces raw passthrough, the operator's override when a stream is
   already rectified (avoids double-undistortion) or its detections live in raw
   space. Persisted in the layout XML; see TECHNICAL_NOTES §12.
+  Disabled when the decoded image lacks a matching, usable CameraInfo; its tooltip
+  explains missing frame IDs, missing calibration, or invalid intrinsics. Calibration
+  is scoped to the image's dataset, and turning rectification off keeps the control
+  enabled when valid calibration exists.
 - **Zoom and pan**: the viewer supports zoom (mouse wheel, cursor-anchored)
   and pan (mouse drag) via a view transform matrix in the vertex shader.
   No pixel reprocessing; transformation is free on the GPU. This

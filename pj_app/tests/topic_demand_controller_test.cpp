@@ -6,7 +6,10 @@
 
 #include <QApplication>
 #include <QDomDocument>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QEventLoop>
+#include <QMimeData>
 #include <QRectF>
 #include <QTimer>
 #include <QtGlobal>
@@ -19,11 +22,16 @@
 #include "PendingDisplayBinder.h"
 #include "TopicDemandController.h"
 #include "in_process_widget_plugin.h"
+#include "pj_base/builtin/image_codec.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_datastore/writer.hpp"
+#include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
+#include "pj_plugins/host/message_parser_handle.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
@@ -31,10 +39,13 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/TopicDemandTracker.h"
+#include "pj_runtime/TransformService.h"
+#include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
+#include "pj_widgets/CurveTreeView.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -505,6 +516,103 @@ TEST_F(TopicDemandControllerTest, SceneDockPlaceholderDropCompletesOnRealTopicWi
 
   dock.reset();
   EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/points"_s));
+}
+
+/// Supplies the parser-bound Image contract used by live image streams.
+class StreamImageParser final : public PJ::MessageParserPluginBase {
+ public:
+  StreamImageParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
+    handler.parse_object = [](PJ::Timestamp, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto image = PJ::deserializeImage(payload.bytes.data(), payload.bytes.size());
+      if (!image) {
+        return PJ::unexpected(image.error());
+      }
+      return PJ::sdk::ObjectRecord{.ts = std::nullopt, .object = PJ::sdk::BuiltinObject{std::move(*image)}};
+    };
+    registerSchemaHandler("test/image", std::move(handler));
+  }
+};
+
+TEST_F(TopicDemandControllerTest, AdvertisedImagesDemandDataBeforeTheDepthGateDecides) {
+  auto& session = app_session_->sessionManager();
+  auto& catalog = app_session_->catalogModel();
+  auto& tracker = app_session_->topicDemandTracker();
+  catalog.setPerTopicPauseCapable(dataset_id_, true);
+  PJ::TransformService transforms(session);
+
+  for (const bool depth : {true, false}) {
+    const QString name = depth ? u"/camera/depth"_s : u"/camera/color"_s;
+    catalog.setAdvertisedTopics(dataset_id_, {{name, PJ::sdk::BuiltinObjectType::kImage}});
+    QString key;
+    for (const auto& item : catalog.items()) {
+      if (item.topic_name == name && PJ::asAdvertisedTopic(item) != nullptr) {
+        key = item.key;
+      }
+    }
+    ASSERT_FALSE(key.isEmpty());
+    ASSERT_FALSE(referencesTopic(tracker, dataset_id_, name));
+
+    PJ::PlotDocker docker(u"images"_s, &session, &catalog);
+    auto* host = docker.plotAt(0);
+    ASSERT_NE(host, nullptr);
+    auto* scene = new PJ::Scene3DDockWidget();
+    scene->setSessionManager(&session);
+    scene->setTransformService(&transforms);
+    controller_->registerSceneDock(scene);
+    int refusals = 0;
+    QObject::connect(scene, &PJ::SceneDockWidget::topicRefused, scene, [&](const QString&) { ++refusals; });
+    QObject::connect(
+        host, &PJ::DockWidget::placeholderTopicDropped, host,
+        [this, scene](PJ::DockWidget*, DatasetId dataset, const QString& topic, PJ::sdk::BuiltinObjectType type) {
+          controller_->handleSceneDockPlaceholderDrop(scene, dataset, topic, type);
+        });
+    host->adoptObjectWidget(scene);
+
+    QMimeData mime;
+    mime.setData(PJ::CurveTreeView::catalogItemsMimeType(), PJ::CurveTreeView::encodeCatalogKeys({key}));
+    QDragEnterEvent enter(QPointF(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(scene->widget(), &enter);
+    ASSERT_TRUE(enter.isAccepted()) << "an advertised image has no encoding yet";
+    QDropEvent drop(QPointF(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(scene->widget(), &drop);
+    ASSERT_TRUE(drop.isAccepted());
+    ASSERT_TRUE(referencesTopic(tracker, dataset_id_, name));
+    EXPECT_TRUE(scene->layers().empty());
+
+    const auto topic = session.objectStore().registerTopic(
+        {dataset_id_, name.toStdString(), R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+    ASSERT_TRUE(topic);
+    auto parser = std::make_unique<PJ::MessageParserHandle>(PJ::MessageParserPluginBase::vtableWithCreate(
+        []() noexcept -> void* { return new StreamImageParser(); },
+        R"({"id":"test-image","name":"Test Image","version":"1.0.0","encoding":["test"]})"));
+    ASSERT_TRUE(parser->valid());
+    ASSERT_TRUE(parser->bindSchema("test/image", {}));
+    session.registerObjectTopicParser(*topic, std::move(parser));
+    catalog.rebuildFromDatastore();
+    EXPECT_EQ(scene->retryPendingRestores({name}), 0) << "wait for the payload, not just topic registration";
+    EXPECT_FALSE(scene->pendingRestoreDemands().empty());
+
+    const std::vector<uint8_t> pixels(depth ? 16 : 12, 0);
+    PJ::sdk::Image image;
+    image.width = 2;
+    image.height = 2;
+    image.encoding = depth ? "32FC1" : "rgb8";
+    image.row_step = depth ? 8 : 6;
+    image.frame_id = "camera";
+    image.data = PJ::Span<const uint8_t>(pixels.data(), pixels.size());
+    ASSERT_TRUE(session.objectStore().pushOwned(*topic, 100, PJ::serializeImage(image)));
+    catalog.rebuildFromDatastore();
+    EXPECT_EQ(scene->retryPendingRestores({name}), depth ? 1 : 0);
+    EXPECT_EQ(binder_->flush({name}), 1);
+    EXPECT_TRUE(scene->pendingRestoreDemands().empty());
+    EXPECT_EQ(scene->layerFor(*topic) != nullptr, depth);
+    EXPECT_EQ(refusals, depth ? 0 : 1);
+    EXPECT_EQ(scene->canAcceptObjectTopic(*topic, PJ::sdk::BuiltinObjectType::kImage), depth);
+    EXPECT_EQ(referencesTopic(tracker, dataset_id_, name), depth)
+        << "a rejected colour image must release its provisional demand";
+  }
 }
 
 TEST_F(TopicDemandControllerTest, StateStripSeriesAddRemoveTracksDemand) {

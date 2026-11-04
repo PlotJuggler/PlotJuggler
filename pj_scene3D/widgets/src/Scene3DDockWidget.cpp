@@ -770,6 +770,16 @@ bool Scene3DDockWidget::tryAcceptObjectTopic(
   return addTopic(topic_id, object_type, title);
 }
 
+bool Scene3DDockWidget::canAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type) const {
+  if (!handlesObjectType(object_type)) {
+    return false;
+  }
+  // Advertised images have no payload: the drop must start demand before depth
+  // encoding can be checked. Their pending intent validates the first sample.
+  return object_type != sdk::BuiltinObjectType::kImage || topic_id.id == 0 ||
+         (sessionManager() != nullptr && firstSampleIsDepthEncoded(*sessionManager(), topic_id));
+}
+
 void Scene3DDockWidget::onTrackerTime(double time) {
   // Remember the instant we are showing so a mid-load TF update (datasetTransformsReady)
   // can re-render here without a new playback push. Guard finiteness so a NaN tick
@@ -1616,6 +1626,21 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   // element is dropped with a visible reason (not a failed restore).
   if (refuseForeignTopic(topic_id)) {
     return ElementRestoreResult::kConsumed;
+  }
+  // A newly dropped advertised image has not passed the depth gate. Saved
+  // layers already have, so only pending intents wait for and validate a sample.
+  if (layer_el.attribute(u"pending_intent"_s) == "true"_L1 && *object_type_opt == sdk::BuiltinObjectType::kImage) {
+    if (!sessionManager()->objectStore().at(topic_id, static_cast<std::size_t>(0)).has_value()) {
+      if (deferred_topic_name != nullptr) {
+        *deferred_topic_name = layer_el.attribute(u"topic_name"_s);
+      }
+      return ElementRestoreResult::kDeferred;
+    }
+    if (!firstSampleIsDepthEncoded(*sessionManager(), topic_id)) {
+      emit topicRefused(
+          tr("Only depth-encoded images can be displayed in a 3D view. Use a 2D view for colour images."));
+      return ElementRestoreResult::kInvalid;
+    }
   }
   const QString previous_title = windowTitle();
   if (!addTopicImpl(topic_id, *object_type_opt, display_name, /*enforce_image_gate=*/false)) {

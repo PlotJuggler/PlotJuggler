@@ -1,5 +1,18 @@
 # pj_app Architecture
 
+## Playback and panel access
+
+The bottom `TimelineWidget` seeks directly on a slider-track click and keeps the
+normal handle-drag interaction. Space toggles Play/Pause for its window, without
+auto-repeat; text editors retain Space for typing through Qt's shortcut-override
+handling. Disabled transport controls remain inactive.
+
+An object dock's context menu offers **Open Settings** when the right sidebar
+is hidden and **Close Settings** when it is visible. The host-supplied visibility
+query runs when the menu opens. `settingsPanelToggleRequested` passes through
+`PlotDocker` to `MainWindow`, which binds the settings page to that dock and toggles
+the right panel through its existing visibility button.
+
 How the executable shell is put together. `../CLAUDE.md` holds the rules and
 pitfalls; this document is the subsystem reference. The wiring itself is best
 read from `src/MainWindow.cpp` and `src/main.cpp`; the headers own per-class

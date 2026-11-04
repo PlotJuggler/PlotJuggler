@@ -731,6 +731,29 @@ TEST(ImagePipelineSourceTest, CpuFallbackRectifiesToNativeResolutionWithNoMap) {
   EXPECT_EQ(frame->base->rectify_map, nullptr);
 }
 
+TEST(ImagePipelineSourceTest, CalibrationEligibilityRemainsAvailableWithRectifyTurnedOff) {
+  using Status = PJ::ImagePipelineSource::RectificationStatus;
+  for (const auto& [frame_id, expected] : std::vector<std::pair<std::string, Status>>{
+           {"", Status::kMissingFrameId}, {"other", Status::kMissingCalibration}, {"cam", Status::kReady}}) {
+    PJ::ObjectStore store;
+    const auto topic = store.registerTopic({PJ::DatasetId{1}, "/image", "{}"});
+    ASSERT_TRUE(topic);
+    ASSERT_TRUE(store.pushOwned(*topic, 1000, makeRawRgbBlob(4, 3, frame_id, std::vector<uint8_t>(36, 128))));
+    FrameSync sync;
+    PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+    EXPECT_EQ(source.rectificationStatus(), Status::kWaitingForImage);
+    source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
+    source.setRectifyEnabled(false);
+    sync.install(source);
+    source.setTimestamp(1000);
+    ASSERT_TRUE(sync.waitReady());
+    EXPECT_EQ(source.rectificationStatus(), expected) << frame_id;
+    const auto frame = source.takeFrame();
+    ASSERT_TRUE(frame && frame->base);
+    EXPECT_EQ(frame->base->width, 4);
+  }
+}
+
 TEST(ImagePipelineSourceTest, GpuModeKeepsRawFrameAndAttachesRectifyMap) {
   // GPU mode: the worker leaves the frame raw and attaches the (cached) map so
   // the widget rectifies at draw time. The logical (rectified) size lives on the
@@ -914,15 +937,17 @@ TEST(ImagePipelineSourceTest, AnEntryAtTheEarliestStampDecodes) {
 // An empty image (a derived tombstone) clears what was shown: an explicit clear sample with no pixels, which the
 // compositor turns into a layer with no pixel contribution. Nothing new at a later cursor stays "no update".
 TEST(ImagePipelineSourceTest, AnEmptyImageClearsThePixels) {
+  using Status = PJ::ImagePipelineSource::RectificationStatus;
   PJ::ObjectStore store;
   auto topic = store.registerTopic(
       {PJ::DatasetId{1}, "/derived", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
   ASSERT_TRUE(topic.has_value());
-  ASSERT_TRUE(store.pushOwned(*topic, 1'000, canonicalImage(false)));
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, makeRawRgbBlob(2, 1, "cam", std::vector<uint8_t>(6, 128))));
   ASSERT_TRUE(store.pushOwned(*topic, 2'000, canonicalImage(true)));
 
   FrameSync sync;
   PJ::ImagePipelineSource image(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  image.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 2, 1)}});
   sync.install(image);
   PJ::CompositeMediaSource composite;
   composite.addLayer(std::make_unique<PJ::BorrowedMediaSource>(&image), 1.0f, &image);
@@ -932,6 +957,7 @@ TEST(ImagePipelineSourceTest, AnEmptyImageClearsThePixels) {
   auto shown = composite.takeFrame();
   ASSERT_TRUE(shown.has_value());
   ASSERT_EQ(shown->pixel_layers.size(), 1u);
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
 
   composite.setTimestamp(2'000);
   ASSERT_TRUE(sync.waitReady());
@@ -939,6 +965,7 @@ TEST(ImagePipelineSourceTest, AnEmptyImageClearsThePixels) {
   ASSERT_TRUE(cleared.has_value()) << "a clear is an update";
   EXPECT_TRUE(cleared->pixel_layers.empty());
   EXPECT_FALSE(cleared->base.has_value());
+  EXPECT_EQ(image.rectificationStatus(), Status::kWaitingForImage);
 
   composite.setTimestamp(2'500);
   std::this_thread::sleep_for(kIdleSettleTime);
@@ -948,26 +975,35 @@ TEST(ImagePipelineSourceTest, AnEmptyImageClearsThePixels) {
 // A seek before the delivered entry's stamp with nothing at the new time clears the pixels (a derived image computed
 // only later must not stay on screen); a later time with no new entry stays "no update".
 TEST(ImagePipelineSourceTest, ASeekBeforeTheShownEntryClearsThePixels) {
+  using Status = PJ::ImagePipelineSource::RectificationStatus;
   PJ::ObjectStore store;
   auto topic = store.registerTopic(
       {PJ::DatasetId{1}, "/derived", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
   ASSERT_TRUE(topic.has_value());
-  ASSERT_TRUE(store.pushOwned(*topic, 2'000, canonicalImage(false)));
+  ASSERT_TRUE(store.pushOwned(*topic, 2'000, makeRawRgbBlob(2, 1, "cam", std::vector<uint8_t>(6, 128))));
 
   FrameSync sync;
   PJ::ImagePipelineSource image(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  image.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 2, 1)}});
   sync.install(image);
   image.setTimestamp(2'000);
   ASSERT_TRUE(sync.waitReady());
   auto shown = image.takeFrame();
   ASSERT_TRUE(shown.has_value());
   ASSERT_TRUE(shown->base.has_value());
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
+
+  image.setTimestamp(3'000);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(image.takeFrame().has_value()) << "the same entry is no update";
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
 
   image.setTimestamp(1'000);
   ASSERT_TRUE(sync.waitReady()) << "a clear is an update";
   auto cleared = image.takeFrame();
   ASSERT_TRUE(cleared.has_value());
   EXPECT_FALSE(cleared->base.has_value());
+  EXPECT_EQ(image.rectificationStatus(), Status::kWaitingForImage);
 
   image.setTimestamp(500);
   std::this_thread::sleep_for(kIdleSettleTime);
@@ -977,4 +1013,5 @@ TEST(ImagePipelineSourceTest, ASeekBeforeTheShownEntryClearsThePixels) {
   shown = image.takeFrame();
   ASSERT_TRUE(shown.has_value());
   EXPECT_TRUE(shown->base.has_value()) << "the entry decodes again";
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
 }

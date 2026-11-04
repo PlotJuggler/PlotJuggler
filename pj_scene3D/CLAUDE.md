@@ -87,6 +87,11 @@ catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline)
   on `kImage` and the dock gates topics by the first sample's `encoding` (`isDepthEncoding`). Intrinsics join a
   `CameraInfo` by **`frame_id`**, never by topic name; with no exact match, fall back only when unambiguous, else
   refuse.
+- **Drop hover** uses `canAcceptObjectTopic`: colour images are rejected before
+  release when their payload is known. Advertised images have no payload yet and
+  remain provisionally eligible so the drop can request a subscription. A new
+  deferred image intent waits for its first sample and validates the depth encoding
+  before creating a layer. Hover checks never create layers.
 - **The voxel draw predicate is viewer-side** (the `VoxelGrid` schema does not encode it); the dense→cubes
   expansion stays on the GPU (`VoxelRhiPass`).
 - **The fixed-frame memory is a view preference** (`FixedFrameMemory`, owned by `pj_app`, handed to every dock), not

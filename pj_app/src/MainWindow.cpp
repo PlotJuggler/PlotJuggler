@@ -4056,16 +4056,25 @@ void MainWindow::applyIcons(QString theme) {
 #endif
 }
 
+void MainWindow::onSettingsPanelToggleRequested(DockWidget* dock) {
+  onDockFocused(dock);
+  ui_->tabbedPlotWidget->rightPanelButton()->click();
+}
+
 void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   if (docker == nullptr) {
     return;
   }
+  docker->setConfigurationPanelVisibilityQuery([this]() { return !ui_->localToolbarWidget->isHidden(); });
   connect(docker, &PlotDocker::plotWidgetAdded, this, &MainWindow::onPlotAdded, Qt::UniqueConnection);
   // ADS focus is the single source of truth for "which widget is active":
   // it fires on canvas click and on tab-titlebar click. PlotDocker re-emits
   // it as dockFocused(DockWidget*) so MainWindow can route to the right
   // sidepanel page (plot config / 2D / 3D) without pulling in ADS types.
   connect(docker, &PlotDocker::dockFocused, this, &MainWindow::onDockFocused, Qt::UniqueConnection);
+  connect(
+      docker, &PlotDocker::settingsPanelToggleRequested, this, &MainWindow::onSettingsPanelToggleRequested,
+      Qt::UniqueConnection);
   // Placeholder 2D/3D icon click → build + adopt the empty scene dock here (the
   // shell owns the family→kind mapping). The first topic dropped into such an
   // empty dock seeds streaming playback, matching the placeholder→drop path.

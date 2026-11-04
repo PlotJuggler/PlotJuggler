@@ -30,6 +30,12 @@ frame's depth percentiles) and everything else to the plain `ImageLayer` (which
 renders images with **nearest** (pixelated) magnification and exposes a **rectify**
 toggle that undistorts the image with its `CameraInfo` — on by default, turn off to
 override the always-on auto-decision for an already-rectified stream).
+The toggle is disabled with an explanation until the decoded image has a usable
+`CameraInfo` with the same `frame_id` in its dataset. Calibration topics are
+recognized by their object classification (or the legacy `/camera_info` suffix),
+and can contain parser-bound messages or canonical CameraInfo bytes.
+An explicit clear (an empty-image tombstone or a seek before the shown image)
+resets rectification eligibility; a no-update result preserves the displayed image's status.
 Both
 `ImagePipelineSource` and `DepthPipelineSource` obtain the `sdk::Image` from a store
 entry through one shared seam — `image_resolve.h::resolveImage` (the topic's

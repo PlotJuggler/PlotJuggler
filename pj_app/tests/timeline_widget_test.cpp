@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QLineEdit>
 #include <QTest>
 #include <cmath>
 
@@ -13,6 +14,50 @@
 
 namespace PJ {
 namespace {
+
+TEST(TimelineWidgetTest, SpaceTogglesPlaybackButRemainsTextInAnEditor) {
+  PlaybackEngine engine;
+  TimelineWidget widget;
+  widget.setPlaybackEngine(&engine);
+  engine.setRange({displaySeconds(0), displaySeconds(100)});
+  widget.show();
+  widget.activateWindow();
+  QApplication::processEvents();
+  QTest::keyClick(&widget, Qt::Key_Space);
+  EXPECT_TRUE(engine.isPlaying());
+  QTest::keyClick(&widget, Qt::Key_Space);
+  EXPECT_FALSE(engine.isPlaying());
+
+  QLineEdit editor(&widget);
+  editor.show();
+  editor.setFocus();
+  QTest::keyClick(&editor, Qt::Key_Space);
+  EXPECT_EQ(editor.text(), QStringLiteral(" "));
+  EXPECT_FALSE(engine.isPlaying());
+}
+
+TEST(TimelineWidgetTest, ClickingTrackSeeksToClickAndCanContinueDragging) {
+  PlaybackEngine engine;
+  TimelineWidget widget;
+  widget.resize(800, widget.sizeHint().height());
+  widget.setPlaybackEngine(&engine);
+  engine.setRange({displaySeconds(0), displaySeconds(100)});
+  widget.show();
+  QApplication::processEvents();
+  auto* slider = widget.findChild<RealSlider*>("timeSlider");
+  ASSERT_NE(slider, nullptr);
+  const QPoint target(slider->width() * 3 / 4, slider->height() / 2);
+  QTest::mousePress(slider, Qt::LeftButton, Qt::NoModifier, target);
+  EXPECT_NEAR(toAxisDouble(engine.currentTime()), 75.0, 3.0);
+  EXPECT_TRUE(slider->isSliderDown());
+  QTest::mouseMove(slider, QPoint(slider->width() / 2, slider->height() / 2));
+  QTest::mouseRelease(slider, Qt::LeftButton, Qt::NoModifier, QPoint(slider->width() / 2, slider->height() / 2));
+  EXPECT_NEAR(toAxisDouble(engine.currentTime()), 50.0, 3.0);
+
+  widget.setSeekLocked(true);
+  QTest::mouseClick(slider, Qt::LeftButton, Qt::NoModifier, target);
+  EXPECT_NEAR(toAxisDouble(engine.currentTime()), 50.0, 3.0);
+}
 
 TEST(TimelineWidgetTest, StepControlsArrowKeysBeforeDataAndAfterRangeChanges) {
   PlaybackEngine engine;

@@ -18,6 +18,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/camera_info.hpp"
+#include "pj_base/builtin/camera_info_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
@@ -43,33 +44,41 @@ bool topicUsesCanonicalImageCodec(const std::string& metadata_json) {
   return doc.object().value(u"image_codec"_s).toString() == "pj_image_v1"_L1;
 }
 
-// Build a frame_id -> CameraInfo map by running each "<ns>/camera_info" topic's
-// MessageParser on its latest sample. The ObjectStore keeps raw message bytes
-// (e.g. foxglove.CameraCalibration) and decodes lazily through the topic's
-// parser — so calibration must be obtained the same way an image is, not by
-// deserializing the raw bytes as a canonical CameraInfo. The decode worker then
-// uses this map (matched by sdk::Image.frame_id) to rectify the camera frames.
+// Calibration is dataset-local and joined by frame_id. Classified topics need
+// no naming convention; the suffix also covers legacy topics without type metadata.
 std::unordered_map<std::string, sdk::CameraInfo> collectCameraInfoByFrameId(
-    SessionManager* session, ObjectStore* store) {
+    SessionManager* session, ObjectStore* store, DatasetId dataset_id) {
   std::unordered_map<std::string, sdk::CameraInfo> by_frame;
   constexpr std::string_view kSuffix = "/camera_info";
   for (const ObjectTopicId id : store->listTopics()) {
-    const std::string& name = store->descriptor(id).topic_name;
-    if (name.size() < kSuffix.size() || name.compare(name.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0) {
+    const auto& descriptor = store->descriptor(id);
+    if (descriptor.dataset_id != dataset_id) {
+      continue;
+    }
+    const auto metadata = QJsonDocument::fromJson(QByteArray::fromStdString(descriptor.metadata_json)).object();
+    const bool classified = metadata.value(u"builtin_object_type"_s).toString() == u"kCameraInfo"_s;
+    const std::string& name = descriptor.topic_name;
+    if (!classified && !name.ends_with(kSuffix)) {
       continue;
     }
     if (store->entryCount(id) == 0) {
       continue;
     }
     auto* ci_parser = session->parserForObjectTopic(id);
-    if (ci_parser == nullptr) {
-      continue;
-    }
     const auto entry = store->latestAt(id, store->timeRange(id).second);
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       continue;
     }
     const sdk::PayloadView payload = entry->payload;
+    if (ci_parser == nullptr) {
+      if (classified) {
+        const auto camera = deserializeCameraInfo(payload.bytes.data(), payload.bytes.size());
+        if (camera && !camera->frame_id.empty()) {
+          by_frame.insert_or_assign(camera->frame_id, *camera);
+        }
+      }
+      continue;
+    }
     // MessageParser plugins aren't thread-safe; serialize via the shared mutex,
     // exactly as ImagePipelineSource does for the image parser.
     const auto mutex = session->parserMutexForObjectTopic(id);
@@ -127,12 +136,12 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
     image_src = std::make_unique<ImagePipelineSource>(store, topicId(), std::move(pipeline));
   }
 
-  // Supply camera calibration (parsed via each camera_info topic's parser) so the
+  // Supply dataset-local camera calibration so the
   // decode worker can rectify frames to native resolution and 2D annotation
   // overlays line up. Built once here, before the first setTimestamp() request:
   // sufficient for file load (all camera_info is ingested before the layer
   // attaches); a camera_info published after attach is not retro-applied.
-  image_src->setCameraInfoMap(collectCameraInfoByFrameId(session, store));
+  image_src->setCameraInfoMap(collectCameraInfoByFrameId(session, store, store->descriptor(topicId()).dataset_id));
 
   image_source_ = image_src.get();
   image_src->setRectifyEnabled(rectify_enabled_);
@@ -149,14 +158,38 @@ QWidget* ImageLayer::createConfigWidget(QWidget* parent) {
 
   auto* rectify = new ToggleSwitch(widget);
   rectify->setChecked(rectify_enabled_, /*animate=*/false);  // snap to state without emitting toggled
-  rectify->setToolTip(
-      tr("Rectify (lens-undistort) the image using its camera calibration when a matching\n"
-         "CameraInfo is available. Turn off to show the raw image — e.g. when the stream is\n"
-         "already rectified and would otherwise be undistorted twice."));
+  updateRectifyControl(rectify);
+  connect(this, &ImageLayer::repaintRequested, rectify, [this, rectify]() { updateRectifyControl(rectify); });
   layout->addRow(tr("Rectify"), rectify);
   connect(rectify, &ToggleSwitch::toggled, this, [this](bool on) { setRectifyEnabled(on); });
 
   return widget;
+}
+
+void ImageLayer::updateRectifyControl(ToggleSwitch* toggle) const {
+  using RectifyStatus = ImagePipelineSource::RectificationStatus;
+  const auto status = image_source_ != nullptr ? image_source_->rectificationStatus() : RectifyStatus::kWaitingForImage;
+  toggle->setEnabled(status == RectifyStatus::kReady);
+  switch (status) {
+    case RectifyStatus::kWaitingForImage:
+      toggle->setToolTip(tr("Rectification is unavailable until an image with matching CameraInfo is decoded."));
+      break;
+    case RectifyStatus::kMissingFrameId:
+      toggle->setToolTip(tr("Rectification is unavailable: the image has no camera frame_id."));
+      break;
+    case RectifyStatus::kMissingCalibration:
+      toggle->setToolTip(tr("Rectification is unavailable: no CameraInfo matches this image's frame_id."));
+      break;
+    case RectifyStatus::kInvalidCalibration:
+      toggle->setToolTip(
+          tr("Rectification is unavailable: the matching CameraInfo has invalid intrinsics or image size."));
+      break;
+    case RectifyStatus::kReady:
+      toggle->setToolTip(
+          tr("Undistort the image using its matching CameraInfo. Turn off to show the raw image,\n"
+             "for example when the stream is already rectified."));
+      break;
+  }
 }
 
 void ImageLayer::onBeforeDetach() {

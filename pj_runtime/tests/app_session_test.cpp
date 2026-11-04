@@ -128,6 +128,44 @@ TEST(AppSessionTest, SeedPlaybackUsesScalarAndObjectTimeBounds) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 100.0e-9);
 }
 
+TEST(AppSessionTest, ZeroTimeReferenceCloudDoesNotStretchRecordingPlaybackOrOrigin) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  auto& manager = session.sessionManager();
+  const auto cloud_dataset = manager.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "map.ply"});
+  ASSERT_TRUE(cloud_dataset);
+  const auto cloud =
+      manager.objectStore().registerTopic({*cloud_dataset, "/map", R"({"builtin_object_type":"kPointCloud"})"});
+  ASSERT_TRUE(cloud);
+  ASSERT_TRUE(manager.objectStore().pushOwned(*cloud, 0, std::vector<uint8_t>{1}));
+  addScalarSamples(session, *cloud_dataset, "/point_count", {0});
+  session.catalogModel().rebuildFromDatastore();
+  EXPECT_FALSE(session.seedPlaybackFromSession());
+
+  const auto recording = manager.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(recording);
+  addScalarSamples(session, *recording, "/signal", {100'000'000'000LL, 110'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 110.0);
+  EXPECT_FALSE(session.datasetRawTimeRange(*cloud_dataset).has_value());
+  EXPECT_EQ(manager.objectStore().entryCount(*cloud), 1U);
+
+  manager.setUseTimeOffset(true);
+  session.recomputeRange();
+  EXPECT_EQ(manager.globalTimeReference(), 100'000'000'000LL);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 10.0);
+
+  manager.removeDataset(*recording);
+  session.catalogModel().rebuildFromDatastore();
+  session.recomputeRange();
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 0.0);
+}
+
 TEST(AppSessionTest, SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());

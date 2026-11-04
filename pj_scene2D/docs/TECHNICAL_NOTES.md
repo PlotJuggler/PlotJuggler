@@ -871,7 +871,8 @@ edges). A scale-only fix handles the first but not the second; full rectificatio
 boxes land without touching a single detection coordinate.
 
 `frame_id` on `sdk::Image` is what pairs an image with its `CameraInfo` (each
-`<ns>/camera_info` topic is parsed and injected via `setCameraInfoMap`). The
+CameraInfo-classified topic, or legacy `<ns>/camera_info` topic, in the image's
+dataset is decoded and injected via `setCameraInfoMap`). The
 producer side (parser_protobuf / parser_ros) populates it.
 
 ### Design choice: rectify the image, not warp the annotations
