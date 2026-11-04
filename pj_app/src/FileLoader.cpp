@@ -2532,6 +2532,11 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   // file whose data is EARLIER than any prior dataset must reframe every plot to the
   // new origin. No-op when "Use time offset" is off.
   session_.refreshDatasetTimeReference(dataset_id);
+  // The same bypass means no samplesIngested covered those rows. Publish them, or a
+  // curve already bound to the dataset (a reload/replace refills its topics in place)
+  // keeps the empty window it re-indexed when the refill began.
+  const auto topic_ids = session_.dataEngine().listTopics(dataset_id);
+  session_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/false);
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   logSuccessfulLoad(session_.dataEngine(), catalog_, path, source_name, {dataset_id});
 #endif

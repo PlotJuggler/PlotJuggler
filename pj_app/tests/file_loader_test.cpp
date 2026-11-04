@@ -835,6 +835,22 @@ class FileLoaderTest : public ::testing::Test {
     return metadata.has_value() ? static_cast<int64_t>(metadata->total_row_count) : -1;
   }
 
+  /// Row counts of the dataset's single topic, sampled each time samplesIngested
+  /// names that topic — what a curve bound to it re-reads on the signal. The
+  /// connection lives as long as `context`.
+  void recordRowsOnIngest(PJ::DatasetId dataset_id, QObject* context, std::vector<int64_t>& rows_seen) {
+    const auto topics = session().createReader().listTopics(dataset_id);
+    ASSERT_EQ(topics.size(), 1u);
+    const PJ::TopicId topic_id = topics.front();
+    QObject::connect(
+        &session(), &PJ::SessionManager::samplesIngested, context,
+        [this, dataset_id, topic_id, &rows_seen](const QVector<PJ::TopicId>& ids, bool /*live*/) {
+          if (ids.contains(topic_id)) {
+            rows_seen.push_back(singleTopicRowCount(dataset_id));
+          }
+        });
+  }
+
   [[nodiscard]] bool engineHasDataset(PJ::DatasetId dataset_id) {
     const auto ids = session().createReader().listDatasets();
     return std::find(ids.begin(), ids.end(), dataset_id) != ids.end();
@@ -903,6 +919,41 @@ TEST_F(FileLoaderTest, ReplaceHintRefillsTargetedDatasetFromDifferentFile) {
   EXPECT_EQ(datasetDisplayName(dataset_id), u"other.mock"_s) << "commit must rename the dataset to the new file";
   EXPECT_EQ(loader_->sourcePathForDataset(dataset_id), other_path) << "source path must repoint to the new file";
   EXPECT_EQ(catalog().items().size(), 1u);
+}
+
+// A curve plotted before a reload keeps its binding (same TopicId) and re-reads
+// only when samplesIngested names its topic. The refill announces the topic
+// while it is still empty, so the load must announce it again once the rows are
+// in, or the curve stays empty (PlotJuggler#1456).
+TEST_F(FileLoaderTest, ReloadAnnouncesRefilledRowsToBoundCurves) {
+  ASSERT_TRUE(load());
+  const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
+  ASSERT_NE(dataset_id, 0u);
+
+  QObject context;
+  std::vector<int64_t> rows_seen;
+  recordRowsOnIngest(dataset_id, &context, rows_seen);
+  ASSERT_TRUE(load());
+
+  ASSERT_FALSE(rows_seen.empty()) << "the reload never announced the refilled topic";
+  EXPECT_EQ(rows_seen.back(), 3) << "the last announcement must come after the rows are in";
+}
+
+// Same contract through "Replace dataset" (a different file into the same ids).
+TEST_F(FileLoaderTest, ReplaceAnnouncesRefilledRowsToBoundCurves) {
+  ASSERT_TRUE(load());
+  const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
+  ASSERT_NE(dataset_id, 0u);
+
+  QObject context;
+  std::vector<int64_t> rows_seen;
+  recordRowsOnIngest(dataset_id, &context, rows_seen);
+  PJ::LoadHints hints = loadHints();
+  hints.replace_dataset_id = dataset_id;
+  ASSERT_TRUE(loadAndWait(makeMockFile(u"other.mock"_s), hints));
+
+  ASSERT_FALSE(rows_seen.empty()) << "the replace never announced the refilled topic";
+  EXPECT_EQ(rows_seen.back(), 3) << "the last announcement must come after the rows are in";
 }
 
 // A failed replace must be invisible: prior data, name, and source path all
