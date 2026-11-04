@@ -338,6 +338,7 @@
         <file>resources/memes/meme_103.jpg</file>
         <file>resources/memes/meme_104.jpg</file>
         <file>resources/memes/meme_105.jpg</file>
+        <file>resources/memes/meme_106.jpg</file>
         <file>resources/svg/apps_box.svg</file>
     </qresource>
 </RCC>
