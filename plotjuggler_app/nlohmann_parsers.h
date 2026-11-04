@@ -181,6 +181,25 @@ public:
     return _encoding;
   }
 
+  bool xmlSaveState(QDomDocument& /*doc*/, QDomElement& parent_element) const override
+  {
+    parent_element.setAttribute("timestampEnabled", _checkbox_use_timestamp->isChecked());
+    parent_element.setAttribute("timestampFieldName", _checkbox_use_timestamp->lineedit->text());
+    return true;
+  }
+
+  bool xmlLoadState(const QDomElement& parent_element) override
+  {
+    if (!parent_element.hasAttribute("timestampEnabled"))
+    {
+      return false;
+    }
+    _checkbox_use_timestamp->setChecked(parent_element.attribute("timestampEnabled").toInt() != 0);
+    _checkbox_use_timestamp->lineedit->setText(parent_element.attribute("timestampFieldName"));
+    saveSettings();
+    return true;
+  }
+
   virtual void loadSettings()
   {
     QSettings settings;
