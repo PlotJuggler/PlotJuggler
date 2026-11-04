@@ -42,8 +42,14 @@ public:
       msg_type.replace(pos, 2, "/");
     }
 
+    auto deserializer = new RosMsgParser::ROS2_Deserializer();
+    // CDR alignment is configurable per-file via MCAP load dialog
+    // - Default (false): XCDR2 standard, align from byte 4 (after CDR header)
+    // - Legacy mode (true): RTI DDS Micro, align from byte 0 (message start)
+    // Configured via setUseLegacyCdrAlignment() after parser creation
+
     auto parser = std::make_shared<ParserROS>(topic_name, msg_type, schema,
-                                              new RosMsgParser::ROS2_Deserializer(), data,
+                                              deserializer, data,
                                               RosMsgParser::DDS_IDL);
     QSettings settings;
     parser->enableTruncationCheck(settings.value("Preferences::truncation_check", true).toBool());
