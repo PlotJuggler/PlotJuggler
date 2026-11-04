@@ -1,8 +1,7 @@
-name: Release Windows Installer
+name: Release Windows Packages
 
-# Builds the PlotJuggler 4 Windows installer (.exe) on a clean windows-2022 runner
-# and, on a version tag, attaches it to the GitHub Release. The Windows sibling of
-# release.yml (which does the Linux AppImage).
+# Builds the PlotJuggler 4 Windows installer (.exe) and portable ZIP from one
+# staged payload and, on a version tag, attaches both to the GitHub Release.
 #
 # Official plugins are built and published independently. This workflow resolves
 # the curated Windows set from pj-plugin-registry, verifies every artifact, and
@@ -14,10 +13,10 @@ name: Release Windows Installer
 #   - Conan packages via the shared Depot-backed Actions cache, then ConanCenter
 #
 # Triggers:
-#   - workflow_dispatch     -> build the installer from any branch (artifact only);
+#   - workflow_dispatch     -> build both packages from any branch (artifacts only);
 #     with `update_url`, also build + publish an update repository there, to
 #     rehearse the maintenance-tool update path against a staging prefix
-#   - push of a version tag -> build + attach the installer to that tag's Release
+#   - push of a version tag -> build + attach both packages to that tag's Release
 #     (e.g. `3.9.1` — no leading 'v')
 
 on:
@@ -395,11 +394,41 @@ jobs:
             -PluginRegistryUrl "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json" `
             -Version $env:PJ_VERSION `
             -OutDir dist `
+            -StageDir "$env:RUNNER_TEMP\pj4-package-stage" `
             -CleanReleaseName:($env:GITHUB_REF_TYPE -eq "tag") `
             @updateArgs
 
+      - name: Build and extract the portable ZIP
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath dist -Filter *.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows installer in dist." }
+          $zip = Join-Path $installers[0].DirectoryName "$($installers[0].BaseName)-portable.zip"
+          .\packaging\installer\build_windows_portable.ps1 `
+            -StageDir "$env:RUNNER_TEMP\pj4-package-stage" -OutFile $zip
+
+          $portable = Join-Path $env:RUNNER_TEMP "PlotJuggler Portable"
+          if (Test-Path -LiteralPath $portable) { Remove-Item -LiteralPath $portable -Recurse -Force }
+          Expand-Archive -LiteralPath $zip -DestinationPath $portable
+          "PJ_WINDOWS_PORTABLE_SMOKE=$portable" >> $env:GITHUB_ENV
+
+      - name: Render-check the portable ZIP and test Python
+        # Run before any installation, from an extracted path containing spaces.
+        # Only System32 is on the app's PATH: runtime DLLs must come from the ZIP.
+        shell: bash
+        env:
+          QT_FORCE_STDERR_LOGGING: "1"
+          QSG_RHI_PREFER_SOFTWARE_RENDERER: "1"
+          PJ_RENDER_BACKEND: D3D11
+        run: |
+          set -euo pipefail
+          exe="$(cygpath -u "${PJ_WINDOWS_PORTABLE_SMOKE}")/bin/PlotJuggler4.exe"
+          test -f "${exe}" || { echo "::error::the ZIP has no bin/PlotJuggler4.exe"; exit 1; }
+          sh packaging/smoke/render_check.sh env "PATH=$(cygpath -S)" "${exe}"
+          env "PATH=$(cygpath -S)" "${exe}" --selftest-python
+
       - name: Install, render-check and uninstall the installer
-        # The shipped payload's only run before upload: a silent IFW install, the
+        # Exercise the installation path too: a silent IFW install, the
         # render check (packaging/smoke/render_check.sh: the fixture's plots, Scene3D
         # view and media viewer must all render on D3D11) on the installed exe with
         # PATH cut down to System32, so every DLL must come from the install, then
@@ -435,6 +464,14 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
+      - name: Upload portable ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlotJuggler-${{ env.PJ_VERSION }}-Windows-x64-portable
+          path: dist/*-portable.zip
+          if-no-files-found: error
+          compression-level: 0
+
       - name: Upload the update repository (rehearsal)
         # A later rehearsal's update-check installs this run's installer
         # against THIS repository, so the install resolves this version rather
@@ -447,12 +484,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Attach installer to the GitHub Release
+      - name: Attach Windows packages to the GitHub Release
         # Never a rehearsal build: it points at a staging repository.
         if: startsWith(github.ref, 'refs/tags/') && inputs.update_url == ''
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/*.exe
+          files: |
+            dist/*.exe
+            dist/*-portable.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
 
