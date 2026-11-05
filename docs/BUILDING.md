@@ -2,7 +2,7 @@
 
 [← Back to the README](../README.md)
 
-PJ4 uses **C++20, CMake 3.22+ and Conan 2**, with Qt pinned in
+PJ4 uses **C++20, CMake 3.25+ and Conan 2**, with Qt pinned in
 [`versions.env`](../versions.env). The commands below follow the repository's
 Linux build scripts; the Windows entry points follow them, and packaging
 references are at the end.
@@ -42,7 +42,7 @@ Install the Python build tools in a virtual environment:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install 'conan>=2,<3' 'aqtinstall>=3.3'
+python -m pip install 'cmake>=3.25,<4' 'conan>=2,<3' 'aqtinstall>=3.3'
 ```
 
 If you do not already have a Conan default profile, create one:

@@ -62,6 +62,9 @@ jobs:
           docker run --rm "${IMAGE}:${GITHUB_SHA}" bash -c "
             set -e
             command -v conan aqt cmake ninja ccache git wget patchelf
+            cmake --version
+            printf '%s\n' 'cmake_minimum_required(VERSION 3.25)' > /tmp/pj4-cmake-smoke.cmake
+            cmake -P /tmp/pj4-cmake-smoke.cmake
             test -x /opt/linuxdeploy/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage
             test -x /opt/linuxdeploy/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage
             test -x /opt/linuxdeploy/appimagetool-${PJ_APPIMAGE_ARCH}.AppImage
