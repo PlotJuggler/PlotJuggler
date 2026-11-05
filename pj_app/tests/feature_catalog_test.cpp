@@ -233,6 +233,8 @@ const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
       {"state_transitions", {"viz.state", "datasets.title"}},
       {"custom_widget", {"viz.custom", "datasets.title"}},
       {"plot_tabs", {"plot.split_h", "plot.split_v", "plot.fullscreen", "datasets.title"}},
+      // This entry uses command-line flags or held keys, without widget labels.
+      {"axis_wheel_zoom", {}},
       {"preferences", {"menu.file", "action.preferences"}},
       {"diagnostics", {"titlebar.diagnostics"}},
       {"check_updates",

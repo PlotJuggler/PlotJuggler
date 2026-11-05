@@ -4,6 +4,18 @@ The HOW document for `pj_plotting`. [`../CLAUDE.md`](../CLAUDE.md) holds the mod
 rules; read it first. Each header's doc-comment owns its API contract; this document explains the designs that span
 several classes.
 
+## Wheel zoom keys
+
+Holding X or Y constrains mouse-wheel zoom to that axis on the hovered plot,
+including a canvas with keyboard focus. `PlotMagnifier` observes held keys at
+application scope because keyboard focus may belong to another widget. The
+observer leaves text entry and shortcuts untouched, ignores auto-repeat
+releases, and clears held state on application deactivation. Neither key (or
+both keys) preserves the canvas/axis-margin default. The per-wheel override is
+restored after the gesture; the canvas event filter can still set its usual
+default. `PlotMagnifierKeys` covers the actual canvas filter chain, separate
+keyboard focus, release, auto-repeat, and deactivation.
+
 ## 1. Core adapters (`core/`)
 
 - **`DatastoreCurveAdapter`** bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`.

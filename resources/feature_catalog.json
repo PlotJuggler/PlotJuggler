@@ -144,6 +144,14 @@
       "entry_point": "Help → Check for Updates...; startup check: File → Preferences... → Appearance → Check for updates on startup:",
       "evidence": "pj_app/src/MainWindow.cpp#tr(\"Check for Updates...\"); pj_app/src/PreferencesDialog.ui#Check for updates on startup:; pj_app/src/TitleBar.ui#UPDATE; pj_app/src/main.cpp#Preferences::check_updates_on_startup",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: Help → Check for Updates... and the startup check on the Appearance page"
+    },
+    {
+      "id": "axis_wheel_zoom",
+      "name": "Axis wheel zoom",
+      "summary": "Hold X or Y while scrolling over a plot to zoom only that axis, even when keyboard focus is in another widget. Release the key to restore ordinary wheel zoom.",
+      "entry_point": "Plot canvas → hold X or Y + mouse wheel",
+      "evidence": "pj_plotting/widget/src/PlotMagnifier.cpp#class AxisZoomKeys; pj_plotting/tests/plot_magnifier_clamp_test.cpp#HeldAxisKeySurvivesTheCanvasWheelFilter",
+      "verified": "PlotMagnifierKeys: focused canvas, separate keyboard focus, release, auto-repeat and application deactivation"
     }
   ],
   "limitations": [

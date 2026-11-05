@@ -5,7 +5,11 @@
 
 #include <qwt_scale_map.h>
 
+#include <QCoreApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPointer>
+#include <QScopedValueRollback>
 #include <QWheelEvent>
 #include <algorithm>
 #include <limits>
@@ -13,8 +17,58 @@
 #include "TimeAxisWidth.h"
 
 namespace PJ {
+namespace {
+
+/// Keyboard focus and the hovered plot can differ, so held zoom keys belong to the application.
+class AxisZoomKeys final : public QObject {
+ public:
+  explicit AxisZoomKeys(QObject* parent) : QObject(parent) {}
+
+  [[nodiscard]] PlotMagnifier::AxisMode mode(PlotMagnifier::AxisMode fallback) const {
+    if (x_down_ == y_down_) {
+      return fallback;
+    }
+    return x_down_ ? PlotMagnifier::kXAxis : PlotMagnifier::kYAxis;
+  }
+
+ protected:
+  bool eventFilter(QObject*, QEvent* event) override {
+    if (event->type() == QEvent::ApplicationDeactivate) {
+      x_down_ = y_down_ = false;
+    } else if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
+      const auto* key = static_cast<QKeyEvent*>(event);
+      if (!key->isAutoRepeat()) {
+        const bool down = event->type() == QEvent::KeyPress && key->modifiers() == Qt::NoModifier;
+        if (key->key() == Qt::Key_X) {
+          x_down_ = down;
+        } else if (key->key() == Qt::Key_Y) {
+          y_down_ = down;
+        }
+      }
+    }
+    return false;  // Text entry and shortcuts retain their normal key events.
+  }
+
+ private:
+  bool x_down_ = false;
+  bool y_down_ = false;
+};
+
+/// One observer per application, automatically discarded with its event loop.
+AxisZoomKeys& axisZoomKeys() {
+  static QPointer<AxisZoomKeys> keys;
+  if (keys.isNull()) {
+    auto* app = QCoreApplication::instance();
+    keys = new AxisZoomKeys(app);
+    app->installEventFilter(keys);
+  }
+  return *keys;
+}
+
+}  // namespace
 
 PlotMagnifier::PlotMagnifier(QWidget* canvas) : QwtPlotMagnifier(canvas) {
+  static_cast<void>(axisZoomKeys());
   for (int axis_id = 0; axis_id < QwtPlot::axisCnt; ++axis_id) {
     lower_bounds_[axis_id] = std::numeric_limits<double>::lowest();
     upper_bounds_[axis_id] = std::numeric_limits<double>::max();
@@ -136,6 +190,7 @@ QPointF PlotMagnifier::invTransform(QPoint pos) {
 
 void PlotMagnifier::widgetWheelEvent(QWheelEvent* event) {
   mouse_position_ = invTransform(event->position().toPoint());
+  const QScopedValueRollback<AxisMode> mode(default_mode_, axisZoomKeys().mode(default_mode_));
   QwtPlotMagnifier::widgetWheelEvent(event);
 }
 

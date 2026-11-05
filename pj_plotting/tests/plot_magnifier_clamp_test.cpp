@@ -12,14 +12,101 @@
 #include <qwt_scale_div.h>
 
 #include <QApplication>
+#include <QKeyEvent>
+#include <QLineEdit>
 #include <QRectF>
 #include <QWheelEvent>
 #include <QtGlobal>
 #include <cmath>
 
 #include "pj_plotting/PlotMagnifier.h"
+#include "pj_plotting/PlotWidget.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/SessionManager.h"
 
 namespace {
+
+// Exercise the canvas event-filter chain, which also supplies its default zoom mode.
+class AxisKeyPlot final : public PJ::PlotWidget {
+ public:
+  using PJ::PlotWidget::PlotWidget;
+  using PJ::PlotWidgetBase::qwtPlot;
+};
+
+TEST(PlotMagnifierKeys, HeldAxisKeySurvivesTheCanvasWheelFilter) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  AxisKeyPlot widget(&session, &catalog);
+  QwtPlot* plot = widget.qwtPlot();
+  widget.resize(800, 400);
+  for (const auto key : {Qt::Key_X, Qt::Key_Y}) {
+    plot->setAxisScale(QwtPlot::xBottom, 0.0, 10.0);
+    plot->setAxisScale(QwtPlot::yLeft, 0.0, 10.0);
+    plot->updateAxes();
+    plot->replot();
+    QWidget* canvas = plot->canvas();
+    QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &press);
+    const QPointF pos(canvas->width() / 2.0, canvas->height() / 2.0);
+    QWheelEvent wheel(
+        pos, canvas->mapToGlobal(pos.toPoint()), {}, QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase,
+        false);
+    QApplication::sendEvent(canvas, &wheel);
+    plot->updateAxes();
+    const double x_span = plot->axisScaleDiv(QwtPlot::xBottom).range();
+    const double y_span = plot->axisScaleDiv(QwtPlot::yLeft).range();
+    if (key == Qt::Key_X) {
+      EXPECT_NE(x_span, 10.0);
+      EXPECT_DOUBLE_EQ(y_span, 10.0);
+    } else {
+      EXPECT_DOUBLE_EQ(x_span, 10.0);
+      EXPECT_NE(y_span, 10.0);
+    }
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &release);
+  }
+}
+
+TEST(PlotMagnifierKeys, HoveredPlotUsesHeldKeyRegardlessOfFocusAndResetsAfterReleaseOrDeactivation) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  AxisKeyPlot widget(&session, &catalog);
+  widget.resize(800, 400);
+  QLineEdit focused;
+  QwtPlot* plot = widget.qwtPlot();
+  QWidget* canvas = plot->canvas();
+  const auto wheel_and_expect = [&](bool zoom_x, bool zoom_y) {
+    plot->setAxisScale(QwtPlot::xBottom, 0.0, 10.0);
+    plot->setAxisScale(QwtPlot::yLeft, 0.0, 10.0);
+    plot->updateAxes();
+    plot->replot();
+    const QPointF pos(canvas->width() / 2.0, canvas->height() / 2.0);
+    QWheelEvent wheel(
+        pos, canvas->mapToGlobal(pos.toPoint()), {}, QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase,
+        false);
+    QApplication::sendEvent(canvas, &wheel);
+    plot->updateAxes();
+    EXPECT_EQ(plot->axisScaleDiv(QwtPlot::xBottom).range() != 10.0, zoom_x);
+    EXPECT_EQ(plot->axisScaleDiv(QwtPlot::yLeft).range() != 10.0, zoom_y);
+  };
+  QKeyEvent press(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier, QStringLiteral("x"));
+  QApplication::sendEvent(&focused, &press);
+  EXPECT_EQ(focused.text(), QStringLiteral("x"));
+  wheel_and_expect(true, false);
+  QKeyEvent repeat_release(QEvent::KeyRelease, Qt::Key_X, Qt::NoModifier, {}, true);
+  QApplication::sendEvent(&focused, &repeat_release);
+  wheel_and_expect(true, false);
+  QKeyEvent release(QEvent::KeyRelease, Qt::Key_X, Qt::NoModifier);
+  QApplication::sendEvent(&focused, &release);
+  wheel_and_expect(true, true);
+  QApplication::sendEvent(&focused, &press);
+  QEvent deactivate(QEvent::ApplicationDeactivate);
+  QApplication::sendEvent(qApp, &deactivate);
+  wheel_and_expect(true, true);
+  QKeyEvent cut(QEvent::KeyPress, Qt::Key_X, Qt::ControlModifier);
+  QApplication::sendEvent(&focused, &cut);
+  wheel_and_expect(true, true);
+}
 
 // A QwtPlot whose canvas carries a PlotMagnifier, framed on a realistic ~1 s
 // window at epoch scale (so the clamp's ns-domain floor is the interesting bound,
