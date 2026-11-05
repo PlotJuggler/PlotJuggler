@@ -475,6 +475,10 @@ if(PJ_BUILD_TESTS)
     set_source_files_properties(tests/remote_preset_replay_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
 
+    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_startup_test.cpp)
+    set_source_files_properties(tests/main_window_startup_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
+
     # Browser presets: a layout's streaming sources start from their saved
     # configuration inside the same all-or-nothing replay, and their views bind
     # as topics arrive (test stream plugin staged per case).

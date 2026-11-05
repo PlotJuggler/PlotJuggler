@@ -193,6 +193,11 @@ class MainWindow : public QMainWindow {
   // (the --layout CLI option). Safe no-op if the layout binds to no source.
   void loadLayoutAtStartup(const QString& path);
 
+  // Loads explicit files before applying the optional layout against their data.
+  // A failed/cancelled file aborts the layout and settles it false. Dialogs are
+  // allowed only for attended file loads; layout replay never prompts here.
+  void loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive);
+
   // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
   // non-interactive run never shows the question.
   void reviewUncleanShutdown(bool interactive);
@@ -874,7 +879,7 @@ class MainWindow : public QMainWindow {
     kInteractive,  ///< user-driven (menu / recent list): prompts allowed
     kAutomated,    ///< --layout CLI: auto-reload, never any dialog
   };
-  void loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity);
+  void loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity, bool use_current_data = false);
   // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl
   // (which is why they also build on the desktop). Every terminal outcome goes
   // through finishBrowserLayoutLoad, which logs PJ_WASM_LAYOUT_LOAD_OK/FAILED.

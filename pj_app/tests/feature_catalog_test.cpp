@@ -219,6 +219,8 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
 const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
   static const std::map<std::string, std::vector<std::string>> table = {
       {"open_data_file", {"menu.file", "action.open_data", "sources.title", "sources.tab_file", "sources.load_file"}},
+      // This entry uses command-line flags or held keys, without widget labels.
+      {"command_line_data", {}},
       {"live_streaming", {"sources.title", "sources.tab_stream", "sources.start_streaming"}},
       {"record_streams", {"sources.title", "sources.tab_stream", "sources.record"}},
       {"cloud_sources", {"sources.title", "sources.tab_cloud", "sources.cloud_open"}},

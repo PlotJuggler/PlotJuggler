@@ -10,6 +10,14 @@
       "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Open Data File... and the Sources panel File page with its load button"
     },
     {
+      "id": "command_line_data",
+      "name": "Command-line data loading",
+      "summary": "Open data with repeatable -d / --datafile options or positional file paths. Files finish loading before an optional layout; explicit files replace the sources saved in that layout.",
+      "entry_point": "Desktop command line: plotjuggler4 -d first.csv -d second.csv -l shared.pj4.xml; plotjuggler4 recording.csv",
+      "evidence": "pj_app/src/main.cpp#datafile_option; pj_app/src/MainWindow.cpp#void MainWindow::loadAtStartup",
+      "verified": "MainWindowStartupTest: multi-file ordering, source replacement, failure settlement and data-only startup"
+    },
+    {
       "id": "live_streaming",
       "name": "Live streaming",
       "summary": "Plot data while it arrives from a live source. The sources come from streaming extensions (for example MQTT, ZeroMQ, UDP or ROS 2). A stream can be paused, and the buffer length sets how many seconds of data are kept. With some sources a topic only starts receiving data once it is dropped into a view. Right-click a single topic or series to force streaming of its whole topic before displaying it. With multiple rows selected, the streaming menu stays hidden so right-dragging two scalar series can create an XY plot.",

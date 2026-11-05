@@ -41,6 +41,25 @@ their own chrome either way.
 title bar follows the app's light/dark on Windows and macOS; a Linux window manager
 keeps its own.
 
+## Command-line startup
+
+Desktop startup accepts repeatable `-d` / `--datafile <path>` and positional
+files, plus `-l` / `--layout <path>`. For example:
+`plotjuggler4 -d first.csv -d second.csv -l shared.pj4.xml`.
+`MainWindow::loadAtStartup` waits for the terminal ticket of every explicit
+file before applying the layout. Explicit files override a source-bound
+layout's saved files: the existing generic-layout rewrite removes dataset
+qualifiers so curves bind to the new data. Without explicit files, `--layout`
+replays its saved sources as usual. Data-only launches keep the normal GUI open.
+
+Attended loads may show loader configuration dialogs; unattended startup
+(`--exit-after-layout`, `--screenshot`, offscreen/minimal) uses `DialogPolicy::kNever`.
+A failed or cancelled explicit file skips the layout and settles it false, so
+`--exit-after-layout` exits unsuccessfully. That flag still requires a layout.
+The batch observes its own tickets, including early failures, and defers the
+final restore through a window-owned timer to avoid restoring during teardown.
+Tests: `MainWindowStartupTest` (real mock file-source DSO).
+
 ## File loading
 
 `FileLoader` runs file loads (one queue, sequential, progressive on a worker

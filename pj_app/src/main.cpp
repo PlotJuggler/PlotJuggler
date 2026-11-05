@@ -329,8 +329,16 @@ int main(int argc, char* argv[]) {
       QCommandLineOption(u"selftest-python"_s, u"Compile and run a Python Data Processor headlessly, then exit."_s));
 #endif
   const QCommandLineOption layout_option(
-      u"layout"_s, u"Load a layout file on startup, reloading its data source(s)."_s, u"path"_s);
+      QStringList{u"l"_s, u"layout"_s}, u"Load a layout on startup. Explicit data files replace its saved sources."_s,
+      u"path"_s);
   parser.addOption(layout_option);
+#ifndef PJ_TARGET_WASM
+  const QCommandLineOption datafile_option(
+      QStringList{u"d"_s, u"datafile"_s}, u"Load a data file before the layout; repeat for multiple files."_s,
+      u"path"_s);
+  parser.addOption(datafile_option);
+  parser.addPositionalArgument(u"files"_s, u"Data files to load before the layout."_s, u"[files...]"_s);
+#endif
   const QCommandLineOption autoplay_option(
       u"autoplay"_s, QStringLiteral(
                          "Start looping playback automatically once a data source provides a time range "
@@ -534,9 +542,20 @@ int main(int argc, char* argv[]) {
 
   // Deferred so the load runs after the event loop starts (the file loads on a
   // worker; the progressive layout restore needs a running loop).
-  if (parser.isSet(layout_option)) {
+  QStringList startup_files;
+#ifndef PJ_TARGET_WASM
+  startup_files = parser.values(datafile_option) + parser.positionalArguments();
+#endif
+  if (parser.isSet(layout_option) || !startup_files.isEmpty()) {
     const QString layout_path = parser.value(layout_option);
-    QTimer::singleShot(0, &window, [&window, layout_path]() { window.loadLayoutAtStartup(layout_path); });
+#ifdef PJ_TARGET_WASM
+    constexpr bool interactive = false;
+#else
+    const bool interactive = !isUnattendedRun(parser, exit_after_layout_option, screenshot_option);
+#endif
+    QTimer::singleShot(0, &window, [&window, startup_files, layout_path, interactive]() {
+      window.loadAtStartup(startup_files, layout_path, interactive);
+    });
   }
 
 #ifdef PJ_TARGET_WASM

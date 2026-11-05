@@ -5300,7 +5300,7 @@ void MainWindow::onRebuildToolboxMenu() {
 // browser source-bound replay, and the batch's stock loads — lives in
 // LayoutReplayHints.h.
 
-void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity) {
+void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity, bool use_current_data) {
   const bool interactive = interactivity == LayoutLoadInteractivity::kInteractive;
   // The interactivity-derived policy governs EVERY failure surface of this
   // load, including the pre-classification entry failures below — a
@@ -5373,6 +5373,10 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
   // (and source-bound ones whose file is missing or where the user opts out)
   // bind straight to the currently-loaded data. The binding attribute records
   // the save-time intent; this is the load-time override.
+  if (use_current_data) {
+    doc.documentElement().setAttribute(u"binding"_s, u"generic"_s);
+    layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+  }
   const QString binding = root.attribute(u"binding"_s, u"source"_s);
   const QDir layout_dir(QFileInfo(path).absoluteDir());
   // Dataset-path qualifiers are stored relative whenever the data sits beside or
@@ -6650,6 +6654,65 @@ void MainWindow::loadLayoutAtStartup(const QString& path) {
   // flag, because a flag reset on return cannot govern late async
   // continuations (D5).
   loadLayoutFromPath(path, LayoutLoadInteractivity::kAutomated);
+}
+
+void MainWindow::loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive) {
+  if (data_files.isEmpty()) {
+    if (!layout_path.isEmpty()) {
+      loadLayoutAtStartup(layout_path);
+    }
+    return;
+  }
+
+  // Tickets distinguish this startup batch from unrelated loads, even when
+  // configuration dialogs deliver earlier completions through nested loops.
+  struct StartupBatch {
+    QSet<LoadRequestId> pending;
+    bool enqueuing = true;
+    bool failed = false;
+    bool completed = false;
+  };
+  const auto batch = std::make_shared<StartupBatch>();
+  auto* receiver = new QObject(this);
+  const auto finish = [this, batch, receiver, layout_path]() {
+    if (batch->enqueuing || !batch->pending.isEmpty() || batch->completed) {
+      return;
+    }
+    batch->completed = true;
+    receiver->deleteLater();
+    // Shutdown flushes file terminals synchronously. A window-owned timer
+    // prevents that flush from restoring a layout into a dying window.
+    QTimer::singleShot(0, this, [this, batch, layout_path]() {
+      if (!layout_path.isEmpty()) {
+        if (batch->failed) {
+          emit layoutRestoreSettled(false);
+        } else {
+          loadLayoutFromPath(layout_path, LayoutLoadInteractivity::kAutomated, /*use_current_data=*/true);
+        }
+      }
+    });
+  };
+  connect(
+      file_loader_.get(), &FileLoader::loadFinished, receiver,
+      [batch, finish](quint64 ticket, LoadOutcome outcome, const QString&, DatasetId, const QVector<DatasetId>&) {
+        if (batch->pending.remove(ticket)) {
+          batch->failed |= outcome != LoadOutcome::kLoaded;
+          finish();
+        }
+      });
+  for (const QString& path : data_files) {
+    LoadHints hints;
+    hints.dialog_policy = interactive ? DialogPolicy::kInteractive : DialogPolicy::kNever;
+    const auto ticket = file_loader_->loadFileTicketed(
+        LoadInput::fromNativePath(QFileInfo(path).absoluteFilePath()), interactive ? this : nullptr, hints);
+    if (ticket == 0) {
+      batch->failed = true;
+    } else {
+      batch->pending.insert(ticket);
+    }
+  }
+  batch->enqueuing = false;
+  finish();
 }
 
 void MainWindow::enableAutoplay() {
