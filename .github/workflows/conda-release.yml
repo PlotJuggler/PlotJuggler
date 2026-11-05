@@ -5,7 +5,7 @@
 # "plotjuggler" channel, where RoboStack users install it from.
 #
 #   - push of a version tag -> build + upload
-#   - workflow_dispatch      -> build only, packages kept as a run artifact
+#   - workflow_dispatch      -> build only, or publish a saved tag run's artifacts
 #   - pull_request           -> build only, when the recipes change
 #
 # Upload needs the repo secret PREFIX_API_KEY: a prefix.dev token with write
@@ -15,6 +15,11 @@ name: Conda release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_run_id:
+        description: "Publish saved artifacts from a tag run without rebuilding (empty = build only)"
+        type: string
+        default: ""
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
@@ -33,6 +38,7 @@ concurrency:
 
 jobs:
   build:
+    if: inputs.publish_run_id == ''
     name: conda (${{ matrix.subdir }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -43,6 +49,16 @@ jobs:
           - { subdir: osx-arm64, os: macos-15 }
     timeout-minutes: 120
     steps:
+      - name: Check publication credential
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
+        run: |
+          if [[ -z "${PREFIX_API_KEY}" ]]; then
+            echo "::error::Configure the PREFIX_API_KEY Actions secret with write access to the plotjuggler channel before releasing."
+            exit 1
+          fi
+
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -87,5 +103,78 @@ jobs:
           PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
         run: |
           find local-channel/${{ matrix.subdir }} conda-output/${{ matrix.subdir }} -name '*.conda' -print0 \
+            | xargs -0 pixi exec --spec "rattler-build>=0.66,<0.67" \
+                rattler-build upload prefix --channel plotjuggler --skip-existing
+
+  publish-existing:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_run_id != ''
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check publication credential
+        env:
+          PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
+        run: |
+          if [[ -z "${PREFIX_API_KEY}" ]]; then
+            echo "::error::Configure the PREFIX_API_KEY Actions secret with write access to the plotjuggler channel before publishing."
+            exit 1
+          fi
+
+      - name: Validate the saved release run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_RUN_ID: ${{ inputs.publish_run_id }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          def api(path):
+              return json.loads(subprocess.check_output(["gh", "api", path], text=True))
+
+          run_id = os.environ["PUBLISH_RUN_ID"]
+          assert re.fullmatch(r"[0-9]+", run_id), "Expected a numeric workflow run ID"
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run = api(f"repos/{repo}/actions/runs/{run_id}")
+          assert run["path"] == ".github/workflows/conda-release.yml", "Expected a Conda release run"
+          assert run["event"] == "push" and run["status"] == "completed", "Expected a completed tag run"
+          version = run["head_branch"]
+          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version), "Expected a release version tag"
+          target = api(f"repos/{repo}/git/ref/tags/{version}")["object"]
+          if target["type"] == "tag":
+              target = api(f"repos/{repo}/git/tags/{target['sha']}")["object"]
+          assert target["type"] == "commit" and target["sha"] == run["head_sha"], "Release tag no longer matches the saved run"
+          with Path(os.environ["GITHUB_ENV"]).open("a") as output:
+              output.write(f"PJ_PUBLISH_VERSION={version}\n")
+          print(f"Publishing saved packages for {version} from {run['head_sha']}")
+          PY
+
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.publish_run_id }}
+          pattern: conda-packages-*
+          path: packages
+
+      - uses: prefix-dev/setup-pixi@v0.8.14
+        with:
+          run-install: false
+          cache: false
+
+      - name: Publish saved packages
+        env:
+          PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
+        run: |
+          set -euo pipefail
+          for subdir in linux-64 osx-arm64; do
+            test -n "$(find "packages/conda-packages-${subdir}" -type f -name "plotjuggler4-${PJ_PUBLISH_VERSION}-*.conda" -print -quit)"
+          done
+          find packages -type f -name '*.conda' -print0 \
             | xargs -0 pixi exec --spec "rattler-build>=0.66,<0.67" \
                 rattler-build upload prefix --channel plotjuggler --skip-existing

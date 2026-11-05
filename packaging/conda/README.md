@@ -25,6 +25,19 @@ packaging/conda/build_conda.sh --channel ./local-channel   # -> conda-output/
 Release tags publish both through `.github/workflows/conda-release.yml`, for
 linux-64 and osx-arm64 (macOS 13+).
 
+Publishing requires the repository Actions secret `PREFIX_API_KEY`, with write
+access to the `plotjuggler` channel. Tag builds check this before compiling.
+If a completed tag run built its packages but publication failed, configure the
+credential and publish its saved artifacts without rebuilding:
+
+```bash
+gh workflow run conda-release.yml --repo PlotJuggler/PlotJuggler \
+  --ref main-4.x -f publish_run_id=<tag-run-id>
+```
+
+The retry checks that the saved run belongs to this workflow and still matches
+its release tag, and requires packages for both supported platforms.
+
 ## Compatibility with RoboStack
 
 A conda environment holds one version of each library, so the package has to
