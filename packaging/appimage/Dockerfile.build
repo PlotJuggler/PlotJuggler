@@ -9,7 +9,7 @@
 #     linuxdeploy/appimagetool. NO Qt and NO Conan closure baked in: the CI
 #     container job provisions those per-run from actions/cache + the JFrog
 #     Conan remote (see .github/workflows/linux-appimage-release.yml).
-#     Published to ghcr.io/plotjuggler/pj4-appimage-builder by
+#     Published to ghcr.io/<owner>/<repository>-appimage-builder by
 #     .github/workflows/appimage-builder-image.yml.
 #
 #   * default final stage: FULLY-BAKED local builder for
