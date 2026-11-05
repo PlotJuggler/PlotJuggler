@@ -12,10 +12,16 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QHelpEvent>
+#include <QMenu>
+#include <QMimeData>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QString>
+#include <QTest>
+#include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
 #include <QTreeWidgetItem>
@@ -76,6 +82,143 @@ QString keyOfTopic(const CatalogModel& catalog, const QString& topic_name) {
     }
   }
   return {};
+}
+
+// Drive the right-button press plus the context event Linux delivers before a
+// drag can start. Close a real menu through its nested loop, recording its UI.
+QStringList rightClickMenuButtons(CurveTreeView& tree, QTreeWidgetItem* row) {
+  const QPoint pos = tree.visualItemRect(row).center();
+  const QPoint global = tree.viewport()->mapToGlobal(pos);
+  QMouseEvent press(QEvent::MouseButtonPress, pos, global, Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+  QApplication::sendEvent(tree.viewport(), &press);
+  QStringList labels;
+  QObject scope;
+  QTimer::singleShot(0, &scope, [&labels]() {
+    if (auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget())) {
+      for (const auto* button : menu->findChildren<QPushButton*>()) {
+        labels.push_back(button->text());
+      }
+      menu->close();
+    }
+  });
+  QContextMenuEvent context(QContextMenuEvent::Mouse, pos, global);
+  QApplication::sendEvent(tree.viewport(), &context);
+  QApplication::processEvents();
+  QMouseEvent release(QEvent::MouseButtonRelease, pos, global, Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(tree.viewport(), &release);
+  return labels;
+}
+
+TEST(CurveListPanelTest, MultiSelectionLeavesRightDragAvailableForXYAndCtrlForSelection) {
+  AppSession app_session;
+  const DatasetId stream = pj_test::createDataset(app_session, "stream");
+  auto writer = app_session.sessionManager().dataEngine().createWriter();
+  const auto topic = writer.registerTopic(stream, TopicDescriptor{.name = "/xy"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(writer.ensureColumn(*topic, "x", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.ensureColumn(*topic, "y", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.beginRow(*topic, 100).has_value());
+  writer.set(*topic, 0, 1.0);
+  writer.set(*topic, 1, 2.0);
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  EXPECT_FALSE(app_session.sessionManager().commitChunks(writer.flushAll()).empty());
+  auto& catalog = app_session.catalogModel();
+  catalog.setPerTopicPauseCapable(stream, true);
+  catalog.rebuildFromDatastore();
+  CurveListPanel panel;
+  panel.setCatalog(&catalog);
+  panel.setTopicDemandTracker(&app_session.topicDemandTracker());
+  panel.resize(500, 500);
+  panel.show();
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  tree->expandAll();
+  QApplication::processEvents();
+  std::vector<QTreeWidgetItem*> rows;
+  for (const auto& item : catalog.items()) {
+    if (isScalarField(item)) {
+      rows.push_back(findRowByCatalogKey(tree->invisibleRootItem(), item.key));
+    }
+  }
+  ASSERT_EQ(rows.size(), 2u);
+  ASSERT_NE(rows[0], nullptr);
+  ASSERT_NE(rows[1], nullptr);
+  QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, tree->visualItemRect(rows[0]).center());
+  QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::ControlModifier, tree->visualItemRect(rows[1]).center());
+  ASSERT_EQ(tree->selectedItems().size(), 2);
+  EXPECT_TRUE(rightClickMenuButtons(*tree, rows.front()).isEmpty());
+  ASSERT_EQ(tree->selectedItems().size(), 2);
+  const std::unique_ptr<QMimeData> xy(tree->createDragMimeData(Qt::RightButton));
+  ASSERT_NE(xy, nullptr);
+  EXPECT_TRUE(xy->hasFormat(CurveTreeView::newXyAxisMimeType()));
+  const std::unique_ptr<QMimeData> plain(tree->createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(plain, nullptr);
+  EXPECT_TRUE(plain->hasFormat(u"curveslist/add_curve"_s));
+  EXPECT_FALSE(plain->hasFormat(CurveTreeView::newXyAxisMimeType()));
+
+  rows.back()->setSelected(false);
+  EXPECT_EQ(rightClickMenuButtons(*tree, rows.front()), QStringList{u"Force topic streaming"_s});
+  app_session.topicDemandTracker().setTopicForced(stream, catalog.items().front().topic_name, true);
+  EXPECT_EQ(rightClickMenuButtons(*tree, rows.front()), QStringList{u"Stop forced streaming"_s});
+  catalog.setPerTopicPauseCapable(stream, false);
+  EXPECT_TRUE(rightClickMenuButtons(*tree, rows.front()).isEmpty());
+}
+
+TEST(CurveListPanelTest, MultiSelectedDatasetsKeepTheirMenu) {
+  AppSession app_session;
+  for (const char* name : {"first.mcap", "second.mcap"}) {
+    const DatasetId file = pj_test::createDataset(app_session, name);
+    ASSERT_NE(pj_test::addScalarTopic(app_session, file, "/value"), 0U);
+  }
+  CurveListPanel panel;
+  panel.setCatalog(&app_session.catalogModel());
+  panel.setTopicDemandTracker(&app_session.topicDemandTracker());
+  panel.resize(500, 500);
+  panel.show();
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  tree->expandAll();
+  QApplication::processEvents();
+  ASSERT_EQ(tree->topLevelItemCount(), 2);
+  tree->topLevelItem(0)->setSelected(true);
+  tree->topLevelItem(1)->setSelected(true);
+  EXPECT_TRUE(rightClickMenuButtons(*tree, tree->topLevelItem(0)).contains(u"Merge"_s));
+  EXPECT_EQ(tree->selectedItems().size(), 2);
+}
+
+TEST(CurveListPanelTest, SelectionAcrossDatasetsAndCustomTopicsAlsoKeepsTheStreamingMenuHidden) {
+  AppSession app_session;
+  const DatasetId stream = pj_test::createDataset(app_session, "stream");
+  ASSERT_NE(pj_test::addScalarTopic(app_session, stream, "/source"), 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app_session, stream, "/derived"), 0U);
+  auto& catalog = app_session.catalogModel();
+  catalog.setPerTopicPauseCapable(stream, true);
+  catalog.rebuildFromDatastore();
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 2u);
+  CurveListPanel panel;
+  panel.setCatalog(&catalog);
+  panel.setTopicDemandTracker(&app_session.topicDemandTracker());
+  panel.setCustomTopics({{.key = items.back().key, .owner = u"test"_s, .name = u"derived"_s}});
+  panel.resize(500, 600);
+  panel.show();
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  auto* custom = panel.findChild<CurveTreeView*>(u"customView"_s);
+  ASSERT_NE(tree, nullptr);
+  ASSERT_NE(custom, nullptr);
+  tree->expandAll();
+  custom->expandAll();
+  QApplication::processEvents();
+  auto* source_row = findRowByCatalogKey(tree->invisibleRootItem(), items.front().key);
+  auto* custom_row = findRowByCatalogKey(custom->invisibleRootItem(), items.back().key);
+  ASSERT_NE(source_row, nullptr);
+  ASSERT_NE(custom_row, nullptr);
+  source_row->setSelected(true);
+  custom_row->setSelected(true);
+  EXPECT_TRUE(rightClickMenuButtons(*tree, source_row).isEmpty());
+  const std::unique_ptr<QMimeData> xy(tree->createDragMimeData(Qt::RightButton));
+  ASSERT_NE(xy, nullptr);
+  EXPECT_TRUE(xy->hasFormat(CurveTreeView::newXyAxisMimeType()));
 }
 
 TEST(CurveListPanelTest, HoverTooltipReportsTypeAndCounts) {

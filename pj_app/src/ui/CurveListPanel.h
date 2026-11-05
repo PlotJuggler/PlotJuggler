@@ -241,8 +241,9 @@ class CurveListPanel : public QWidget {
   void onTreeContextMenu(const QPoint& pos);
 
  private:
-  // Right-click on a topic/field/placeholder row of a per-topic-pause-capable
-  // dataset: one toggle — "Force topic streaming" / "Stop forced streaming" —
+  // Right-click on a topic/field/placeholder row with at most one selected row
+  // across both trees, in a per-topic-pause-capable dataset: one toggle —
+  // "Force topic streaming" / "Stop forced streaming" —
   // driving TopicDemandTracker::setTopicForced. The only way to accumulate a
   // topic's history BEFORE it is first displayed.
   void showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint& pos);

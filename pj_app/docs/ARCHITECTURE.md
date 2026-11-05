@@ -137,6 +137,16 @@ time-series caches of registered plots synchronously before evicting the preview
 history: bounds calculation inside `curveListChanged` may already have filled
 them, and no paint or event-loop turn may run between invalidation and eviction.
 
+The topic streaming context menu is available for a single selected row of a
+per-topic-pause-capable source. A field row resolves to its owning topic, so
+"Force topic streaming" always affects the whole topic. Multiple selected rows
+(across Datasets and Custom Topics) suppress this menu: Linux can request it on
+right-button press, before a right-drag has started. The selected pair remains
+available for the existing XY right-drag; Ctrl+click keeps its normal selection
+meaning. Dataset-level menus still support multiple selected datasets.
+`CurveListPanelTest` covers the real press/context path, XY payload, single-topic
+toggle and dataset menu.
+
 `StreamingSourceManager::onIngestTick` is the GUI half of one 50 ms poll cycle
 (`ingestTickForTests` drives it): eager processors advance over every topic of the
 dataset (skipped while paused), then retention trims the engine being written,

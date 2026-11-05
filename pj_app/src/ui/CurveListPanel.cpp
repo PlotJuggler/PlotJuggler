@@ -921,6 +921,11 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
   if (tracker_ == nullptr || catalog_ == nullptr) {
     return;
   }
+  // On Linux the menu arrives on press, before a right-drag can start. Leave
+  // multi-selection gestures available, including a pair spanning both trees.
+  if (tree_view_->selectedItems().size() + custom_view_->selectedItems().size() > 1) {
+    return;
+  }
   // A promoted scalar topic renders as a GROUP row whose keys live on its field
   // leaves — resolve through the whole subtree and act only when every keyed
   // row below the click belongs to ONE topic (a folder spanning several topics

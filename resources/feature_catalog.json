@@ -12,9 +12,9 @@
     {
       "id": "live_streaming",
       "name": "Live streaming",
-      "summary": "Plot data while it arrives from a live source. The sources come from streaming extensions (for example MQTT, ZeroMQ, UDP or ROS 2). A stream can be paused, and the buffer length sets how many seconds of data are kept. With some sources a topic only starts receiving data once it is dropped into a view.",
+      "summary": "Plot data while it arrives from a live source. The sources come from streaming extensions (for example MQTT, ZeroMQ, UDP or ROS 2). A stream can be paused, and the buffer length sets how many seconds of data are kept. With some sources a topic only starts receiving data once it is dropped into a view. Right-click a single topic or series to force streaming of its whole topic before displaying it. With multiple rows selected, the streaming menu stays hidden so right-dragging two scalar series can create an XY plot.",
       "entry_point": "Sources panel → Stream → choose the source in the list → + (Start streaming)",
-      "evidence": "pj_app/src/ui/LeftPanel.ui#tabStream; pj_app/src/ui/LeftPanel.ui#Start streaming; pj_app/src/ui/CurveListPanel.cpp#Drop it into a view to start streaming",
+      "evidence": "pj_app/src/ui/LeftPanel.ui#tabStream; pj_app/src/ui/LeftPanel.ui#Start streaming; pj_app/src/ui/CurveListPanel.cpp#Drop it into a view to start streaming; pj_app/src/ui/CurveListPanel.cpp#void CurveListPanel::showTopicContextMenu",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: the Stream page, the source list and the + (Start streaming) button"
     },
     {
