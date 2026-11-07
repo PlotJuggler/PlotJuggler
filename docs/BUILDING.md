@@ -232,11 +232,14 @@ pipeline compiles (app closure only, no tests, demos or debug info); `--no-tests
 pieces individually. For Linux RelWithDebInfo builds, `PJ_DEBUG_INFO=none|lines|full|split`
 selects no debug info, line/backtrace info, full DWARF, or DWARF in `.dwo` sidecars, and
 `PJ_COMPRESS_DEBUG=ON|OFF` controls zlib compression
-([`cmake/PjDebugInfo.cmake`](../cmake/PjDebugInfo.cmake)). `build.sh` defaults to `split`
-and `ON` on Linux; its options, or the same names as environment variables (how CI and
-the container wrapper drive it), override either knob.
+([`cmake/PjDebugInfo.cmake`](../cmake/PjDebugInfo.cmake)). `build.sh` defaults to `lines`
+(`-g1`: function names, file:line and inlined frames, enough for `perf` and backtraces;
+use `split` or `full` when gdb must show variables) and `ON` on Linux; its options, or
+the same names as environment variables (how CI and the container wrapper drive it),
+override either knob.
 [`packaging/appimage/build_in_docker.sh`](../packaging/appimage/build_in_docker.sh)
-defaults to `PJ_DEBUG_INFO=none`, so the AppImage ships without DWARF, and the Conan
+defaults to `PJ_DEBUG_INFO=none`, so the AppImage ships without DWARF (the `plotjuggler4`
+executable keeps its symbol table, so crash backtraces name its frames), and the Conan
 static archives in the builder image are stripped of DWARF; pass `--with-tests` to it to
 build the full suite and demos, then filter a module inside the builder image with
 `ctest -R '^pj_runtime_tests\.' --test-dir build`. Linux GNU/Clang builds use thin

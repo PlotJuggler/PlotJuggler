@@ -18,7 +18,7 @@ usage() {
     "  --no-widget-demos    Skip the pj_widgets demo apps" \
     "  --no-marketplace-app Skip the standalone marketplace executable" \
     "  --target NAME        CMake target to build (default: all; pj_app = app + plugin checker)" \
-    "  --debug-info LEVEL   none|lines|full|split (Linux default: split, asan: lines)" \
+    "  --debug-info LEVEL   none|lines|full|split (Linux default: lines)" \
     "  --no-compress-debug  Keep DWARF uncompressed (default on Linux: zlib-compressed)" \
     "  --sanitize LANE      none|asan|tsan|msan (default: none; trees: build/, build/asan, build/tsan, build/msan)" \
     "  --tsan               Deprecated alias for --sanitize tsan: build and run concurrency tests" \
@@ -292,12 +292,10 @@ PJ_FLAG_ARGS+=("-DPJ_SANITIZE_CONTAINERS=${PJ_SANITIZE_CONTAINERS:-OFF}")
 
 # PJ_DEBUG_INFO/PJ_COMPRESS_DEBUG keep Linux dev trees debuggable without
 # duplicating DWARF; see cmake/PjDebugInfo.cmake for the policy.
+# Line tables (-g1) carry what profiling and backtraces need (function names,
+# file:line, inlined frames); gdb needs --debug-info split|full to show variables.
 if [[ "$(uname -s)" == Linux ]]; then
-  if [[ "${PJ_SANITIZE}" == asan ]]; then
-    : "${PJ_DEBUG_INFO:=lines}"
-  else
-    : "${PJ_DEBUG_INFO:=split}"
-  fi
+  : "${PJ_DEBUG_INFO:=lines}"
   : "${PJ_COMPRESS_DEBUG:=ON}"
 fi
 [[ -n "${PJ_DEBUG_INFO:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_DEBUG_INFO=${PJ_DEBUG_INFO}")
