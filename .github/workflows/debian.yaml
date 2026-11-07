@@ -4,7 +4,7 @@ on:
   workflow_dispatch:        # lets us trigger a .deb build from any branch via the Actions UI
   push:
     branches:
-      - main
+      - main-3.x
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
   pull_request:

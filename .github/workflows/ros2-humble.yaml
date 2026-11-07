@@ -3,7 +3,7 @@ name: ros2-humble
 on:
   push:
     branches:
-      - main
+      - main-3.x
   pull_request:
     types: [opened, synchronize, closed]
 
