@@ -108,6 +108,7 @@ declare -A SONAME_PKG=(
   [libGLX.so.0]=libglx0             [libOpenGL.so.0]=libopengl0
   [libX11.so.6]=libx11-6            [libX11-xcb.so.1]=libx11-xcb1
   [libxcb.so.1]=libxcb1             [libdrm.so.2]=libdrm2
+  [libwayland-client.so.0]=libwayland-client0
   [libfontconfig.so.1]=libfontconfig1
   [libfreetype.so.6]=libfreetype6
   # Pulled in by the embedded CPython's _curses / _curses_panel extensions.

@@ -34,8 +34,8 @@ elsewhere. It needs a display and runs under POSIX `sh`, Git Bash included.
 | Where | What it runs on | Gate |
 | --- | --- | --- |
 | `scene3d_rhi_app_smoke` ctest (`pj_app`, QRhi build, Linux, label `qrhi-opengl`) | the build tree's `plotjuggler4` | every QRhi display lane |
-| `deb/smoke_test.sh` | the installed `.deb`, Xvfb + llvmpipe | the `.deb` Release attach |
-| `appimage/smoke_test.sh` | the AppImage, same container | none: the AppImage is attached before the smoke job runs |
+| `deb/smoke_test.sh` | the installed `.deb`, Xvfb and native Wayland/Weston + llvmpipe | the `.deb` Release attach |
+| `appimage/smoke_test.sh` | the AppImage, Xvfb and native Wayland/Weston in the same container | none: the AppImage is attached before the smoke job runs |
 | `windows-release.yml` | the silently installed IFW package, `PATH` = System32, D3D11 on WARP | both Windows package uploads |
 | `windows-release.yml` | the extracted portable ZIP before installation, `PATH` = System32, D3D11 on WARP; also `--selftest-python` | both Windows package uploads |
 

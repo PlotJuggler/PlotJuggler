@@ -122,11 +122,11 @@ every shipped ELF *before* Xvfb is installed, so the linkable closure is proven
 against the declared `Depends` alone (Xvfb pulls X11 libraries that would
 otherwise mask a missing GUI dependency); runs `--selftest-python`
 (display-free, and proves the wrapper's `PYTHONHOME` reaches the bundled
-stdlib); and finally a real GUI startup under Xvfb — the bundled Qt ships only
-the `xcb` platform plugin, so an X server is required, and this phase is what
-covers `dlopen`'d libraries that `ldd` cannot see. Last, the render check
-(`packaging/smoke/render_check.sh`, see [`packaging/README.md`](../README.md#render-check))
-proves the plots, the Scene3D view and the media viewer draw through QRhi.
+stdlib); then a real GUI startup under Xvfb covers `dlopen`'d libraries that
+`ldd` cannot see. Render checks prove the plots, Scene3D and media viewer draw
+through QRhi on X11 and native Wayland (headless Weston with `DISPLAY` unset).
+Both Qt platform plugins ship in the package; `libwayland-client0` is a declared
+runtime dependency. See [`packaging/README.md`](../README.md#render-check).
 
 Release CI runs it on `ubuntu:22.04` and `ubuntu:24.04`, and the `.deb` is
 attached to a GitHub Release only after it passes. The same container then
