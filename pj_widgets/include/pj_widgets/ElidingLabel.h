@@ -20,7 +20,11 @@ namespace PJ {
 // can also be driven from the outside. Below a configurable minimum the
 // label hides itself so its space is reclaimed by sibling layout items;
 // when its parent re-expands, applyAvailableWidth() (called from
-// whoever drives the row) brings it back.
+// whoever drives the row) brings it back. It only ever re-shows what it
+// hid itself: a label that is merely not shown yet (still parentless,
+// or hidden by its owner) is left alone, since showing a parentless
+// widget makes it a top-level window (on Wayland, one whose activation
+// leaves GNOME's launch-busy cursor spinning).
 //
 // The dual interface (own resizeEvent + applyAvailableWidth) is needed
 // because hidden widgets don't receive resize events: once we go to
@@ -68,18 +72,20 @@ class ElidingLabel : public QLabel {
   }
 
   // Externally-driven update: parent passes the budget it has carved
-  // out for the label. This is the path that can RE-SHOW a previously
-  // hidden label (which wouldn't otherwise see resize events).
+  // out for the label. This is the path that can RE-SHOW a label the
+  // width threshold hid (which wouldn't otherwise see resize events).
   void applyAvailableWidth(int width_px) {
     last_width_px_ = width_px;
     if (width_px < hide_below_) {
-      if (isVisible()) {
-        setVisible(false);
+      if (!isHidden()) {
+        hide();
+        hidden_for_width_ = true;
       }
       return;
     }
-    if (!isVisible()) {
-      setVisible(true);
+    if (hidden_for_width_) {
+      hidden_for_width_ = false;
+      show();
     }
     const QFontMetrics metrics(font());
     if (max_line_count_ <= 1) {
@@ -143,6 +149,8 @@ class ElidingLabel : public QLabel {
   int hide_below_ = 16;
   int max_line_count_ = 1;
   int last_width_px_ = -1;
+  // Set only when the width threshold hid the label: the one hide it may undo.
+  bool hidden_for_width_ = false;
 };
 
 }  // namespace PJ
