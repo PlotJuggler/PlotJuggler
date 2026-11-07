@@ -337,6 +337,12 @@ Ninja Multi-Config, RelWithDebInfo with `/Z7` embedded debug info. A local
 -G "Ninja Multi-Config" ...`, `cmake --build build --config RelWithDebInfo`,
 `ctest --test-dir build --build-config RelWithDebInfo`) and vice versa.
 
+`plotjuggler4.exe` is a GUI-subsystem program, so it opens no console window.
+Started from a terminal it attaches to that terminal for its output (`--help`,
+the self-tests, Qt's log), but an interactive cmd or PowerShell prompt does not
+wait for it, so the prompt comes back at once and `%ERRORLEVEL%` / `$LASTEXITCODE`
+is not its exit code. `run.bat`, Git Bash, a batch file and `start /wait` do wait.
+
 Install:
 
 - **Visual Studio 2022** with the *Desktop development with C++* workload
