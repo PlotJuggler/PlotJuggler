@@ -33,6 +33,7 @@ pj_add_test_runner(pj_plotting_widget_tests
         plot_widget_marker_status_test.cpp
         curve_editor_global_markers_test.cpp
         legend_text_diagnostics_test.cpp
+        plot_widget_legend_toggle_test.cpp
         plot_widget_range_offset_test.cpp
         plot_widget_max_zoom_offset_test.cpp
         plot_widget_flat_curve_range_test.cpp
