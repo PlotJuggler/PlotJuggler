@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: MPL-2.0
+// Windows resources of plotjuggler4.exe, configured by pj_app/CMakeLists.txt.
+// The configured icon path is UTF-8.
+#pragma code_page(65001)
+#include <winver.h>
+
+IDI_ICON1 ICON "@PJ_APP_ICON@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION @PJ_RC_VERSION@
+PRODUCTVERSION @PJ_RC_VERSION@
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "PlotJuggler"
+      VALUE "FileDescription", "PlotJuggler 4"
+      VALUE "FileVersion", "@PJ_VERSION@"
+      VALUE "InternalName", "plotjuggler4"
+      VALUE "LegalCopyright", "Copyright (C) Davide Faconti and contributors. MPL-2.0"
+      VALUE "OriginalFilename", "plotjuggler4.exe"
+      VALUE "ProductName", "PlotJuggler 4"
+      VALUE "ProductVersion", "@PJ_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

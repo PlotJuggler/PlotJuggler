@@ -282,6 +282,17 @@ if(WIN32)
     if(MSVC)
         target_link_options(pj_app PRIVATE /ENTRY:mainCRTStartup)
     endif()
+    # Explorer, the installer's shortcuts and the taskbar read the icon and the
+    # version details from the exe's own resources: the Qt window icon
+    # (resources.qrc) never reaches them.
+    set(PJ_APP_ICON "${CMAKE_SOURCE_DIR}/resources/plotjuggler.ico")
+    string(REPLACE "." ";" _pj_rc_parts "${PJ_PROJECT_VERSION}.0.0.0")
+    list(SUBLIST _pj_rc_parts 0 4 _pj_rc_parts)
+    list(JOIN _pj_rc_parts "," PJ_RC_VERSION)
+    configure_file(plotjuggler.rc.in ${CMAKE_CURRENT_BINARY_DIR}/plotjuggler.rc @ONLY)
+    target_sources(pj_app PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/plotjuggler.rc)
+    # The build tracks the .rc's #includes, not the icon file it embeds.
+    set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/plotjuggler.rc PROPERTIES OBJECT_DEPENDS "${PJ_APP_ICON}")
 endif()
 target_include_directories(pj_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(pj_app PRIVATE
@@ -317,7 +328,9 @@ endif()
 # build failure instead of a silent regression.
 if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(pj_app_shell PRIVATE ${PJ_WARNING_FLAGS})
-    target_compile_options(pj_app PRIVATE ${PJ_WARNING_FLAGS})
+    # CXX only: pj_app also compiles plotjuggler.rc on Windows, and rc.exe rejects
+    # MSVC warning options such as /W4.
+    target_compile_options(pj_app PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${PJ_WARNING_FLAGS}>")
 endif()
 
 # Don't re-export symbols pulled in from static archive members. Without
