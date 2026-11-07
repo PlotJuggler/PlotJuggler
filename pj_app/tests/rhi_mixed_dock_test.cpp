@@ -310,7 +310,7 @@ TEST_F(RhiMixedDockFixture, FloatAndRedockEachKeepsEveryWidgetRendering) {
 
 // GPU docks created after the window's first show had no QRhiWidget (the app
 // without a GPU plot canvas, then a Scene3D or media dock): Qt switches the
-// window to QRhi composition, and no zero-size bootstrap widget is needed.
+// window to QRhi composition without a zero-size bootstrap widget.
 class RhiMixedLateDockFixture : public RhiMixedDockFixture {
  protected:
   void SetUp() override {

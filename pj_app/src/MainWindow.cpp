@@ -39,6 +39,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QRhiWidget>
 #include <QSaveFile>
 #include <QScopedValueRollback>
 #include <QScreen>
@@ -155,6 +156,7 @@
 #endif
 #include "pj_plotting/PlotMarkersItem.h"
 #include "pj_plotting/PlotWidget.h"
+#include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
 #include "pj_plotting/XYCurveDialog.h"
@@ -217,6 +219,7 @@
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/GraphicsApi.h"
 #include "pj_widgets/IngestProgressWidget.h"
 #include "pj_widgets/MessageBox.h"
 #ifndef PJ_TARGET_WASM
@@ -686,6 +689,19 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
             }));
   }
 #endif
+#endif
+  // Composite through QRhi from the first show. Otherwise the first plot's
+  // QRhiWidget switches the window from raster, and Qt destroys and recreates
+  // its native window (on Wayland the window flashes). Hidden, it never
+  // renders. Not in the browser: a WebGL context created before the first file
+  // pick can be lost across the picker round trip
+  // (pj_scene2D/docs/TECHNICAL_NOTES.md).
+#ifndef PJ_TARGET_WASM
+  if (PlotWidgetBase::gpuCanvasEnabled()) {
+    auto* rhi_compositing_anchor = new QRhiWidget(this);
+    rhi_compositing_anchor->setApi(preferredGraphicsApi());
+    rhi_compositing_anchor->hide();
+  }
 #endif
   // Pull saved icon metrics before setupUi so the literals we feed into
   // build*Toolbar() pick up the correct values on first paint. Widgets

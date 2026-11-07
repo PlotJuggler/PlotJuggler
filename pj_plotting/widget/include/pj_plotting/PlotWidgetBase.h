@@ -83,6 +83,10 @@ class PlotWidgetBase : public QWidget {
   // startup, before any plot is constructed.
   static void setGpuCanvasDisabledOverride(bool disabled);
 
+  /// Whether a plot constructed now gets the QRhi canvas: always in the browser;
+  /// on desktop the Preferences::use_opengl setting unless the override above is set.
+  [[nodiscard]] static bool gpuCanvasEnabled();
+
   virtual void resetZoom();
   [[nodiscard]] virtual Range<double> getVisualizationRangeX() const;
   [[nodiscard]] virtual Range<double> getVisualizationRangeY(Range<double> range_x) const;
