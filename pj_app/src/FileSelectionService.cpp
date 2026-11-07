@@ -4,14 +4,95 @@
 #include "FileSelectionService.h"
 
 #include <QFileDialog>
+#include <QRegularExpression>
 #include <string>
 #include <utility>
 
 #include "BrowserFileStore.h"
 #ifdef Q_OS_WASM
+#include <emscripten/emscripten.h>
 #include <emscripten/val.h>
+
+#include <QUrl>
+#include <chrono>
+#include <cstdlib>
+#include <limits>
+#include <unordered_map>
+
+#include "pj_runtime/BrowserFetch.h"
 #endif
 using namespace Qt::StringLiterals;
+
+#ifdef Q_OS_WASM
+namespace PJ {
+namespace {
+
+// Reports a pick: the browser's file name and a blob: URL for the File, both empty on cancel.
+using PickCompletion = std::function<void(QString name, QString blob_url)>;
+
+// The picks whose <input> has not settled yet, by id. Browser main thread only.
+std::unordered_map<quint32, PickCompletion>& pendingPicks() {
+  static std::unordered_map<quint32, PickCompletion> instance;
+  return instance;
+}
+
+// Shows the browser's file picker through a detached <input type=file> and hands the chosen File back as an object
+// URL, so its bytes can be streamed instead of read whole (Qt's getOpenFileContent holds the file in a QByteArray).
+// The input settles once, on `change` or on `cancel`; a browser that never fires `cancel` leaves the pick pending,
+// as Qt's own picker does. The macro joins the body into one line: every statement ends in a semicolon.
+// clang-format off
+EM_JS_DEPS(pj_browser_pick, "$stringToNewUTF8");
+EM_JS(void, pj_browser_pick_file, (unsigned id, const char* accept_utf8), {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = UTF8ToString(accept_utf8);
+  input.style.display = 'none';
+  let settled = false;
+  const settle = (file) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    input.remove();
+    const name = stringToNewUTF8(file ? file.name : '');
+    const url = stringToNewUTF8(file ? URL.createObjectURL(file) : '');
+    Module._pj_browser_pick_done(id, name, url);
+  };
+  input.addEventListener('change', () => settle(input.files && input.files.length > 0 ? input.files[0] : null));
+  input.addEventListener('cancel', () => settle(null));
+  document.body.appendChild(input);
+  input.click();
+});
+// clang-format on
+
+void pickBrowserFile(const QString& accept, PickCompletion completion) {
+  static quint32 last_id = 0;
+  const quint32 id = ++last_id;
+  pendingPicks()[id] = std::move(completion);
+  pj_browser_pick_file(id, accept.toUtf8().constData());
+}
+
+void revokeObjectUrl(const QString& blob_url) {
+  if (!blob_url.isEmpty()) {
+    emscripten::val::global("URL").call<void>("revokeObjectURL", blob_url.toStdString());
+  }
+}
+
+}  // namespace
+}  // namespace PJ
+
+/// The <input> of pick `id` settled; `name` and `url` are malloc'ed by the page and freed here.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_pick_done(quint32 id, char* name, char* url) {
+  const QString browser_name = QString::fromUtf8(name);
+  const QString blob_url = QString::fromUtf8(url);
+  free(name);
+  free(url);
+  auto node = PJ::pendingPicks().extract(id);
+  if (!node.empty()) {
+    node.mapped()(browser_name, blob_url);
+  }
+}
+#endif
 
 namespace PJ {
 
@@ -53,6 +134,19 @@ QString FileSelectionService::browserContentFilter(const QString& name_filter) {
   return name_filter.section(u";;"_s, 0, 0);
 }
 
+QString FileSelectionService::browserAcceptList(const QString& name_filter) {
+  static const QRegularExpression pattern(u"(?<![^\\s(])\\*(\\.[^\\s()*]+)?(?=[\\s)]|$)"_s);
+  QStringList extensions;
+  for (const QRegularExpressionMatch& match : pattern.globalMatch(browserContentFilter(name_filter))) {
+    if (!match.hasCaptured(1)) {
+      return {};
+    }
+    extensions.append(match.captured(1));
+  }
+  extensions.removeDuplicates();
+  return extensions.join(u',');
+}
+
 void FileSelectionService::selectFileContent(QWidget* parent, const QString& name_filter, Callback callback) {
   // The aggregate first filter already contains every supported extension.
   const QString browser_filter = browserContentFilter(name_filter);
@@ -87,6 +181,44 @@ void FileSelectionService::saveFileContent(QWidget* parent, const QByteArray& by
 
 void FileSelectionService::selectAndStageFile(
     QWidget* parent, const QString& name_filter, std::shared_ptr<BrowserFileStore> store, StagedCallback callback) {
+#ifdef Q_OS_WASM
+  Q_UNUSED(parent);
+  pickBrowserFile(
+      browserAcceptList(name_filter),
+      [store = std::move(store), callback = std::move(callback)](QString browser_name, QString blob_url) {
+        if (browser_name.isEmpty()) {
+          revokeObjectUrl(blob_url);
+          callback({});
+          return;
+        }
+        BrowserFileStore::StageResult staged =
+            store ? store->reserve(browser_name)
+                  : BrowserFileStore::StageResult{.error = QStringLiteral("Browser file staging is unavailable.")};
+        if (!staged.input.has_value()) {
+          revokeObjectUrl(blob_url);
+          callback({.browser_name = browser_name, .error = std::move(staged.error)});
+          return;
+        }
+        const QString path = staged.input->backing_path;
+        // A local read never stalls like a network one, so the idle timeout only catches a File that went away.
+        browserFetchToFile(
+            QUrl(blob_url), path, std::numeric_limits<qint64>::max(), std::chrono::seconds(60),
+            [callback, browser_name, blob_url, input = std::move(*staged.input)](BrowserFetchResult result) mutable {
+              revokeObjectUrl(blob_url);
+              if (!result.error.isEmpty()) {
+                // Dropping `input` releases its lease, which removes the partial file.
+                callback({
+                    .browser_name = browser_name,
+                    .error =
+                        u"The browser could not read %1 (moved or changed since it was picked?)."_s.arg(browser_name),
+                });
+                return;
+              }
+              input.content_sha256 = result.sha256;
+              callback({.browser_name = browser_name, .input = std::move(input)});
+            });
+      });
+#else
   selectFileContent(
       parent, name_filter, [store = std::move(store), callback = std::move(callback)](Selection selection) mutable {
         if (selection.browser_name.isEmpty()) {
@@ -111,6 +243,7 @@ void FileSelectionService::selectAndStageFile(
               });
             });
       });
+#endif
 }
 
 }  // namespace PJ

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { test, expect } = require('@playwright/test');
-const { waitForQtApp } = require('./support/app');
+const { waitForQtApp, wasmHeap } = require('./support/app');
 const { nativePickerType } = require('./support/browser');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
@@ -110,6 +113,43 @@ test('browser picker falls back under cross-origin isolation without removing th
 
   expect(await page.evaluate(() => typeof window.showOpenFilePicker)).toBe(nativePicker);
   expect(errors).toEqual([]);
+});
+
+// The picked File streams into its staged MEMFS file, outside the wasm heap. The linear memory never shrinks, so
+// its growth is the peak: a whole-file copy in the heap would grow it by at least the file size.
+test('a picked file is staged without passing through the wasm heap', async ({ page }) => {
+  test.setTimeout(180000);
+  const errors = [];
+  const consoleMessages = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('console', message => consoleMessages.push(message.text()));
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  const screen = await page.locator('#screen').boundingBox();
+  expect(screen).not.toBeNull();
+
+  // From disk: Playwright refuses in-memory buffers over 50 MB.
+  const fileBytes = 256 * 1024 * 1024;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pj-pick-'));
+  const file = path.join(directory, 'large.pjprobe');
+  fs.writeFileSync(file, Buffer.alloc(fileBytes, 1));
+  try {
+    const before = await wasmHeap(page, consoleMessages);
+    const chooser = await openFileChooser(page, screen, true);
+    await chooser.setFiles(file);
+    await page.waitForTimeout(1000);
+    await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+    await expect.poll(
+      () => consoleMessages.find(message => message.includes('PJ_WASM_INGRESS_PROBE_OK')) || '',
+      { timeout: 120000 },
+    ).toContain(`bytes=${fileBytes} sum=${fileBytes}`);
+    const after = await wasmHeap(page, consoleMessages);
+    console.log(`heap in use ${before.inUse} -> ${after.inUse}, memory ${before.memory} -> ${after.memory}`);
+    expect(after.memory - before.memory).toBeLessThan(fileBytes / 4);
+    expect(errors).toEqual([]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('browser file dialog can reject then accept without a nested event loop', async ({ page }) => {

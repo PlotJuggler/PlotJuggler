@@ -28,11 +28,10 @@ class BrowserFileStore {
 
   // Synchronous staging: writes the whole buffer in one QFile::write. Retained
   // for native code paths and tests. On the browser main thread this blocks the
-  // event loop for the full memcpy of a multi-hundred-MB pick, so the wasm
-  // picker path uses stageAsync() instead. `bytes` is consumed (moved-from) so
-  // the caller's wasm-heap copy can be released as early as this call — combine
-  // with std::move at the call site to shed one of the 2-3x peak copies a
-  // browser pick otherwise holds (picked buffer + MEMFS + transient ArrayBuffer).
+  // event loop for the full memcpy of a large buffer; browser data-file picks
+  // never come here (FileSelectionService::selectAndStageFile streams the File
+  // into a reserve()d file instead). `bytes` is consumed (moved-from) so the
+  // caller's copy can be released as early as this call.
   [[nodiscard]] StageResult stage(const QString& browser_name, QByteArray bytes);
 
   // Browser-main-thread-friendly staging: writes the buffer in fixed-size
