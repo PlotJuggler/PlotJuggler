@@ -23,6 +23,7 @@
 
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/Hatch.h"
+#include "pj_widgets/TimeFormat.h"
 #include "pj_widgets/Timeline.h"
 
 namespace PJ::timeline_detail {
@@ -49,8 +50,8 @@ inline QColor timelineBackdrop() {
 }
 
 // Absolute Unix-timestamp label (seconds) for a display-ns value read as epoch
-// ns — the SAME value the plot axis shows in absolute mode (not a wall-clock
-// HH:mm:ss, which would be timezone-dependent and hide the absolute value). The
+// ns — the SAME value the plot axis shows in absolute mode while the app's
+// date-time toggle is off (formatAbsoluteLabel picks the wall clock when on). The
 // value is ROUNDED to the nearest millisecond — matching the playback readout's
 // QString::number('f', 3) rounding, NOT truncated (truncation read a ms low and
 // made the timeline disagree with playback by 0.001 s). Integer math (with carry
@@ -66,6 +67,18 @@ inline QString formatAbsoluteSeconds(qint64 epoch_ns, bool fixed_ms = false) {
     return QString::number(sec);
   }
   return u"%1.%2"_s.arg(sec).arg(ms, 3, 10, QChar('0'));
+}
+
+// Absolute label for a display-ns value read as epoch ns: the wall-clock time of
+// day when `format` is a clock format (milliseconds when `fixed_ms`, else as many
+// digits as the tick spacing `step_ns` needs), else the Unix timestamp above.
+inline QString formatAbsoluteLabel(qint64 epoch_ns, TimeLabelFormat format, bool fixed_ms, qint64 step_ns = 0) {
+  if (!isWallClock(format)) {
+    return formatAbsoluteSeconds(epoch_ns, fixed_ms);
+  }
+  const int decimals =
+      fixed_ms ? 3 : clockDecimalsForStep(static_cast<double>(step_ns) / static_cast<double>(kSecondNs));
+  return formatTimeLabel(static_cast<double>(epoch_ns) / static_cast<double>(kSecondNs), format, decimals);
 }
 
 // Theme-derived timeline colours. A self-painting data view reads the same
@@ -161,6 +174,15 @@ class TimelineRulerItem : public QGraphicsItem {
     }
   }
 
+  /// Absolute-mode rendering: wall-clock time of day or the Unix timestamp
+  /// (see formatAbsoluteLabel). Pure relabel, like setAbsoluteFormat.
+  void setClockFormat(TimeLabelFormat format) {
+    if (clock_format_ != format) {
+      clock_format_ = format;
+      update();
+    }
+  }
+
   /// Tick-label pixel size. The Source Timeline keeps the compact default; the
   /// State Transitions strip raises it to match the plot axis labels.
   void setLabelPixelSize(int pixel_size) {
@@ -219,8 +241,9 @@ class TimelineRulerItem : public QGraphicsItem {
       // The full-height gridline (drawn by the background item, starting flush
       // under this separator) is the tick — the ruler shows only the number,
       // horizontally centered on the gridline (no nub poking up through the
-      // separator line). Absolute mode shows the tick's epoch-ns as a unix timestamp.
-      const QString label = absolute_ ? formatAbsoluteSeconds(tick) : formatLabel(tick - epoch_ns_);
+      // separator line). Absolute mode reads the tick as epoch ns (clock_format_).
+      const QString label = absolute_ ? formatAbsoluteLabel(tick, clock_format_, /*fixed_ms=*/false, ruler_.interval_ns)
+                                      : formatLabel(tick - epoch_ns_);
       const double tw = fm.horizontalAdvance(label);
       painter->setPen(col.text);
       painter->drawText(QPointF(x - (tw / 2.0), baseline), label);
@@ -256,7 +279,8 @@ class TimelineRulerItem : public QGraphicsItem {
   qint64 epoch_ns_ = 0;
   qint64 data_min_ns_ = 0;  // data-covered span (display-ns); data_max_<=data_min_ means "no data"
   qint64 data_max_ns_ = 0;
-  bool absolute_ = false;        // tick labels: false = elapsed (epoch_ns_-relative), true = wall-clock
+  bool absolute_ = false;  // tick labels: false = elapsed (epoch_ns_-relative), true = wall-clock
+  TimeLabelFormat clock_format_ = TimeLabelFormat::kSeconds;  // absolute labels: wall clock vs unix seconds
   bool bottom_aligned_ = false;  // separator on the top edge (ruler pinned at the strip bottom)
   int label_pixel_size_ = 11;    // tick-label font (see setLabelPixelSize)
 };

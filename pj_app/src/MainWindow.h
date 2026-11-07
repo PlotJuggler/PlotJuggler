@@ -43,6 +43,7 @@
 #include "pj_runtime/RecordingService.h"  // CaptureResult / SourceRecordingStart — recording slot parameters
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/ChromeMetrics.h"
+#include "pj_widgets/TimeFormat.h"
 #include "pj_widgets/VisualizationKind.h"
 
 class QAction;
@@ -359,6 +360,14 @@ class MainWindow : public QMainWindow {
   // Preferences OK.
   static constexpr QLatin1StringView kSystemFileDialogKey{"Preferences::system_file_dialog"};
 
+  // Preferences key (bool): wall-clock time labels show UTC instead of the
+  // system time zone. Applied at construction and on Preferences OK.
+  static constexpr QLatin1StringView kClockUtcKey{"Preferences::clock_utc"};
+
+  // Key (bool) of the date-time toggle (buttonUseDateTime): time labels read as
+  // a clock instead of seconds. The name is PJ3's.
+  static constexpr QLatin1StringView kDateTimeDisplayKey{"MainWindow.dateTimeDisplay"};
+
   // Whether the user gets a choice of frame on this platform. False on macOS
   // (the platform's window controls are not ours to imitate) and in the
   // browser (see usesCustomFrame); the Preferences toggle is hidden there.
@@ -639,6 +648,11 @@ class MainWindow : public QMainWindow {
   // once) to every plot and the Source Timeline.
   void broadcastReferenceLine();
 
+  // Recomputes time_label_format_ from the date-time toggle and the UTC
+  // preference, and pushes it to every plot, the playback readout and the Source
+  // Timeline. Cheap to repeat: each receiver no-ops on an unchanged format.
+  void applyTimeLabelFormat();
+
   // Drop-time fast path for the live-ingest seed below: if data is already present
   // when the user drops a scalar curve or object topic, set the playback range and
   // playhead immediately. Live ingest can also seed without any drop.
@@ -698,6 +712,8 @@ class MainWindow : public QMainWindow {
   // persists to the batch engine: at startup, and on OK of every Preferences dialog
   // this window opens (bindDerivedBatchPreferences).
   void applyDerivedBatchPreferences();
+  // Connects the Plotting page's OK signals: the derived-markers settings above and
+  // the clock time zone (applyTimeLabelFormat).
   void bindDerivedBatchPreferences(PreferencesDialog& dialog);
 
   // Tells every plot which of the marker rules it displays are computing or failed
@@ -1889,7 +1905,6 @@ class MainWindow : public QMainWindow {
   // Re-bases the time axis to start near zero (each dataset relative to its own
   // earliest sample) instead of absolute Unix-epoch time. The frame state lives
   // in SessionManager; this button mirrors it.
-  QToolButton* button_t0_ = nullptr;
   // Global-column "Legend" button — single icon that combines a corner
   // picker (left-click) with a show/hide toggle (right-click). Checked
   // while the legend is shown at one of the four corners; unchecked
@@ -1907,6 +1922,10 @@ class MainWindow : public QMainWindow {
   LegendStatus legend_status_ = LegendStatus::kTopRight;
   bool show_points_ = false;
   bool activate_grid_ = false;
+  // Date-time toggle (kDateTimeDisplayKey) and the label format derived from it
+  // by applyTimeLabelFormat(); new plots pick the format up in applyGlobalToggles.
+  bool use_date_time_ = false;
+  TimeLabelFormat time_label_format_ = TimeLabelFormat::kSeconds;
   bool dots_ = false;
 
   // A refreshCustomTopicsPanel is queued by scheduleCustomTopicsSync and has not run yet.

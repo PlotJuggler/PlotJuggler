@@ -86,6 +86,8 @@ TEST(BrowserPersistencePolicy, DurablePreferenceAllowlistIsAnExactClosedSet) {
       u"MainWindow.buttonRatio"_s,
       u"MainWindow.buttonLink"_s,
       u"MainWindow.useTimeOffset"_s,
+      u"MainWindow.dateTimeDisplay"_s,
+      u"Preferences::clock_utc"_s,
       u"MainWindow.timeTrackerSetting"_s,
       u"MainWindow.legendStatus"_s,
       u"MainWindow.panelBottomExpandedHeight"_s,

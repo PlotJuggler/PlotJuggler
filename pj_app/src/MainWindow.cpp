@@ -2019,12 +2019,31 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // function-pointer connect rejects a slot whose arity exceeds the signal's.
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, [this] { onUndoableChange(); });
 
-  // Apply the persisted "align starts" frame before the toolbar is built so its
-  // button seeds from the live SessionManager state. Default OFF: datasets show at
-  // their natural relative times so the Source Timeline reveals their offsets and
-  // the user aligns them (manually, or via this toggle). No data yet, so this is a
-  // no-op at startup; toggling it later bulk-writes each dataset's offset.
+  // Apply the persisted "align starts" frame, then seed its toggle (bottom-left of
+  // the playback strip, buttonTimeOffset) from the live SessionManager state.
+  // Default OFF: datasets show at their natural relative times so the Source
+  // Timeline reveals their offsets and the user aligns them (manually, or via this
+  // toggle). No data yet, so this is a no-op at startup; toggling it later
+  // bulk-writes each dataset's offset.
   session_->sessionManager().setUseTimeOffset(QSettings().value(u"MainWindow.useTimeOffset"_s, false).toBool());
+  ui_->timelineWidget->setUseTimeOffset(session_->sessionManager().useTimeOffset());
+  connect(ui_->timelineWidget, &TimelineWidget::useTimeOffsetToggled, this, [this](bool checked) {
+    if (applying_state_) {
+      return;
+    }
+    QSettings().setValue(u"MainWindow.useTimeOffset"_s, checked);
+    onUseTimeOffsetToggled(checked);
+  });
+
+  // Date-time toggle (bottom-left of the playback strip).
+  use_date_time_ = QSettings().value(kDateTimeDisplayKey, false).toBool();
+  ui_->timelineWidget->setUseDateTime(use_date_time_);
+  connect(ui_->timelineWidget, &TimelineWidget::useDateTimeToggled, this, [this](bool checked) {
+    use_date_time_ = checked;
+    QSettings().setValue(kDateTimeDisplayKey, checked);
+    applyTimeLabelFormat();
+  });
+  applyTimeLabelFormat();
 
   // Global column on the right of the plot area — Chart + Legend icons,
   // pinned at 24 px wide, never collapses. Always visible regardless of
@@ -3732,6 +3751,7 @@ void MainWindow::pushSeriesStatus(PlotWidget* only) {
 
 void MainWindow::bindDerivedBatchPreferences(PreferencesDialog& dialog) {
   connect(&dialog, &PreferencesDialog::derivedBatchSettingsChanged, this, &MainWindow::applyDerivedBatchPreferences);
+  connect(&dialog, &PreferencesDialog::timeLabelSettingsChanged, this, &MainWindow::applyTimeLabelFormat);
 }
 
 void MainWindow::onShowAboutDialog() {
@@ -4384,6 +4404,7 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   plot->setKeepRatioXY(keep_ratio_);
   applyLegendStatus(plot);
   plot->setTrackerParameter(tracker_info_);
+  plot->setTimeLabelFormat(time_label_format_);
 }
 
 void MainWindow::applyShowPointsToDock(DockWidget* dock) {
@@ -4551,6 +4572,15 @@ void MainWindow::broadcastReferenceLine() {
   forEachPlot([ref_sec](PlotWidget* plot) { plot->setReferenceLine(ref_sec); });
   if (source_timeline_controller_ != nullptr) {
     source_timeline_controller_->setReferenceLine(ref_sec);
+  }
+}
+
+void MainWindow::applyTimeLabelFormat() {
+  time_label_format_ = clockFormatFor(use_date_time_, QSettings().value(kClockUtcKey, false).toBool());
+  forEachPlot([this](PlotWidget* plot) { plot->setTimeLabelFormat(time_label_format_); });
+  ui_->timelineWidget->setTimeLabelFormat(time_label_format_);
+  if (source_timeline_ != nullptr) {
+    source_timeline_->setAbsoluteClockFormat(time_label_format_);
   }
 }
 
@@ -9483,10 +9513,6 @@ void MainWindow::buildGlobalToolbar() {
   button_reference_point_ = add_button(
       "buttonReferencePoint", ":/resources/svg/reference_line.svg",
       "Drop a blue reference line at the playback position; values render as delta from there");
-  button_t0_ = add_button(
-      "buttonTimeOffset", ":/resources/svg/t0.svg",
-      "Use time offset: show time relative to each dataset's start (axis begins at 0) instead of "
-      "absolute time");
   auto make_checkable = [](QToolButton* btn, bool initial_checked) {
     btn->setCheckable(true);
     btn->setChecked(initial_checked);
@@ -9497,9 +9523,6 @@ void MainWindow::buildGlobalToolbar() {
   make_checkable(button_ratio_, keep_ratio_);
   make_checkable(button_dots_, dots_);
   make_checkable(button_reference_point_, false);
-  // Mirrors the frame the SessionManager already holds (applied from QSettings
-  // at startup, before this runs).
-  make_checkable(button_t0_, session_->sessionManager().useTimeOffset());
   // buttonZoomOut is a one-shot action, not a toggle — no make_checkable.
   connect(button_zoom_out_, &QToolButton::clicked, this, [this]() {
     linkedZoomOut();
@@ -9562,13 +9585,6 @@ void MainWindow::buildGlobalToolbar() {
     // Push to the plots and mirror it onto the Source Timeline's blue reference
     // needle (the controller bridges the playback frame into the Timeline frame).
     broadcastReferenceLine();
-  });
-  connect(button_t0_, &QToolButton::toggled, this, [this](bool checked) {
-    if (applying_state_) {
-      return;
-    }
-    QSettings().setValue(u"MainWindow.useTimeOffset"_s, checked);
-    onUseTimeOffsetToggled(checked);
   });
 
   // Trailing stretch pins the icon stack at the top of the column.

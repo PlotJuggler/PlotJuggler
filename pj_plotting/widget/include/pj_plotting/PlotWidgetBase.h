@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "pj_base/types.hpp"
+#include "pj_widgets/TimeFormat.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
@@ -93,6 +94,11 @@ class PlotWidgetBase : public QWidget {
 
   virtual void setModeXY(bool enable);
   [[nodiscard]] bool isXYPlot() const noexcept;
+
+  /// Labeling of the time (X) axis: kSeconds keeps PlotScaleDraw; a clock format
+  /// installs PlotTimeScaleEngine + PlotTimeScaleDraw (clock-aligned ticks). An
+  /// XY plot's X is a data value, so it keeps plain numbers until it leaves XY mode.
+  void setTimeLabelFormat(TimeLabelFormat format);
 
   void setLegendSize(int size);
   void setLegendAlignment(Qt::Alignment alignment);
@@ -214,9 +220,14 @@ class PlotWidgetBase : public QWidget {
   // original order. No-op once the canvas is the raster one. Retries later
   // while a popup or modal widget is open, since the swap deletes the canvas.
   void fallBackToRasterCanvas();
+  // Swaps the X axis engine + draw to match time_label_format_ and the XY mode;
+  // no-op when the installed pair already matches.
+  void applyTimeAxisFormat();
 
   QwtPlotPimpl* plot_ = nullptr;
   bool xy_mode_ = false;
+  TimeLabelFormat time_label_format_ = TimeLabelFormat::kSeconds;    // requested by the host
+  TimeLabelFormat applied_time_format_ = TimeLabelFormat::kSeconds;  // installed on the X axis
   QRectF max_zoom_rect_;
   bool keep_aspect_ratio_ = false;
   LineWidth line_width_ = LineWidth::kPoints10;

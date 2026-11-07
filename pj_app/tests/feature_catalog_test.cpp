@@ -185,6 +185,7 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
   labels["playback.loop"] = toolTipOf(window, "playbackLoop");
   labels["playback.rate"] = toolTipOf(window, "playbackRate");
   labels["playback.step"] = toolTipOf(window, "labelStep");
+  labels["playback.date_time"] = toolTipOf(window, "buttonUseDateTime");
   if (auto* tabs = window.findChild<PJ::TabbedPlotWidget*>()) {
     labels["tabs.toggle_bottom"] = tabs->bottomPanelButton()->toolTip().toStdString();
   }
@@ -211,6 +212,7 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
     }
   }
   labels["prefs.check_updates"] = textOf(prefs, "labelCheckUpdates");
+  labels["prefs.clock_time_zone"] = textOf(prefs, "labelClockTimeZone");
   return live;
 }
 
@@ -231,6 +233,7 @@ const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
       {"viewer_2d", {"viz.2d", "datasets.title"}},
       {"scene_3d", {"viz.3d", "datasets.title"}},
       {"playback", {"playback.play", "playback.loop", "playback.rate", "playback.step"}},
+      {"clock_time", {"playback.date_time", "menu.file", "action.preferences", "prefs.clock_time_zone"}},
       {"source_timeline", {"tabs.toggle_bottom", "timeline.align", "timeline.merge", "datasets.title"}},
       {"state_transitions", {"viz.state", "datasets.title"}},
       {"custom_widget", {"viz.custom", "datasets.title"}},
