@@ -154,14 +154,16 @@ is_macho() { file -b "$1" | grep -q 'Mach-O'; }
 missing=0
 while IFS= read -r -d '' bin; do
   is_macho "${bin}" || continue
-  own_id="$(otool -D "${bin}" | tail -n +2)"
+  # Universal (fat) Mach-O files print one "<file> (architecture X):" header per
+  # slice; dependencies and the install name are the indented / non-header lines.
+  own_id="$(otool -D "${bin}" | grep -v ':$' | head -n1 || true)"
   while IFS= read -r dep; do
     [[ "${dep}" == "${own_id}" ]] && continue
     case "${dep}" in
       /System/* | /usr/lib/* | @executable_path/* | @loader_path/* | @rpath/*) ;;
       *) echo "  ${bin#"${APP}/"} -> ${dep}" >&2; missing=1 ;;
     esac
-  done < <(otool -L "${bin}" | tail -n +2 | awk '{print $1}')
+  done < <(otool -L "${bin}" | awk '/^\t/{print $1}')
 done < <(find "${APP}" -type f -print0)
 [[ "${missing}" == 0 ]] || die "the bundle links libraries outside itself (listed above)"
 
