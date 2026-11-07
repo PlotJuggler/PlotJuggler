@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QFontMetrics>
+#include <QWidget>
 
 #include "pj_widgets/ElidingLabel.h"
 using namespace Qt::StringLiterals;
@@ -95,6 +96,42 @@ TEST(ElidingLabelTest, FontChangeReElidesAtLastBudget) {
   const QStringList lines = label.text().split(u'\n');
   ASSERT_EQ(lines.size(), 2);
   EXPECT_LE(QFontMetrics(bigger).horizontalAdvance(lines[1]), 200);
+}
+
+// Setters re-elide immediately, but must never show a label that is not
+// shown yet: a parentless one would become a top-level window.
+TEST(ElidingLabelTest, SettersNeverShowAParentlessLabel) {
+  PJ::ElidingLabel label;
+  label.setElideMode(Qt::ElideLeft);
+  label.setFullText(kLongText);
+  label.applyAvailableWidth(200);
+  EXPECT_FALSE(label.isVisible());
+  EXPECT_EQ(label.windowHandle(), nullptr);
+}
+
+// The width threshold undoes only its own hide, never the owner's.
+TEST(ElidingLabelTest, ReShowsOnlyWhatTheThresholdHid) {
+  QWidget parent;
+  auto* label = new PJ::ElidingLabel(&parent);
+  label->setFullText(kLongText);
+  parent.show();
+  ASSERT_TRUE(label->isVisible());
+
+  label->applyAvailableWidth(4);  // below the default threshold
+  EXPECT_FALSE(label->isVisible());
+  label->applyAvailableWidth(200);
+  EXPECT_TRUE(label->isVisible());
+
+  label->hide();  // owner decision
+  label->applyAvailableWidth(200);
+  EXPECT_FALSE(label->isVisible());
+
+  label->show();
+  label->applyAvailableWidth(4);
+  label->show();  // owner shows and hides while the threshold hid it
+  label->hide();
+  label->applyAvailableWidth(200);
+  EXPECT_FALSE(label->isVisible());
 }
 
 }  // namespace
