@@ -33,10 +33,11 @@ struct BrowserFetchResult {
 };
 
 /**
- * Fetches `url` (http/https only; anything else fails) into the MEMFS file `path`, created or truncated (its
- * directory must exist). The file is sized from Content-Length up front so MEMFS allocates it once, and the
- * SHA-256 is computed once the body is complete, by WebCrypto over the MEMFS buffer; a browser without it fails the
- * transfer. The transfer fails once the declared length or the bytes received
+ * Fetches `url` (http/https, or a `blob:` object URL the page made for a picked `File`, which streams a local file
+ * the same way; anything else fails) into the MEMFS file `path`, created or truncated (its directory must exist).
+ * The file is sized from Content-Length up front so MEMFS allocates it once, and the SHA-256 is computed once the
+ * body is complete, by WebCrypto over the MEMFS buffer; a browser without it fails the transfer.
+ * The transfer fails once the declared length or the bytes received
  * exceed `max_bytes`, when no chunk arrives for `idle_timeout`, on an HTTP error status, and when an https URL
  * is redirected to http. Other redirects follow the browser's own policy and limit (not the desktop's
  * `NoLessSafeRedirectPolicy` with 4 hops), out of the caller's sight: there is no final URL to report.

@@ -332,8 +332,8 @@ quint32 startFetch(
   const quint32 id = addTransfer(std::move(done), max_bytes, idle_timeout);
   const bool report_progress = static_cast<bool>(progress);
   transfers()[id].progress = std::move(progress);
-  if (!isHttpUrl(url)) {
-    complete(id, {.error = u"only http(s) URLs can be fetched: %1"_s.arg(url.toString())});
+  if (!isHttpUrl(url) && url.scheme() != "blob"_L1) {
+    complete(id, {.error = u"only http(s) and blob: URLs can be fetched: %1"_s.arg(url.toString())});
     return id;
   }
   Transfer& transfer = transfers()[id];
