@@ -5,6 +5,9 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
@@ -298,6 +301,17 @@ int main(int argc, char* argv[]) {
   QSurfaceFormat::setDefaultFormat(core_format);
 #endif
   QApplication app(argc, argv);
+#if defined(Q_OS_MACOS)
+  // An app bundle carries the embedded CPython's stdlib at Contents/Resources/python
+  // (packaging/macos); the prefix baked at build time is absent on the user's Mac.
+  // Python starts lazily, so setting it here precedes it; a user PYTHONHOME wins.
+  if (qEnvironmentVariableIsEmpty("PYTHONHOME")) {
+    const QString bundled_python = QDir::cleanPath(QCoreApplication::applicationDirPath() + u"/../Resources/python"_s);
+    if (QFileInfo(bundled_python).isDir()) {
+      qputenv("PYTHONHOME", QFile::encodeName(bundled_python));
+    }
+  }
+#endif
   // Fixes (and logs) the graphics API, with its Metal-to-OpenGL fallback, before
   // any QRhiWidget exists: each top-level can pick its API only once.
   (void)PJ::preferredGraphicsApi();

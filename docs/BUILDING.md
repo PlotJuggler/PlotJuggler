@@ -277,7 +277,8 @@ installs the `gcc_64` build.
 
 ## Portability
 
-Linux and Windows are shipped targets. macOS is not yet, but
+Linux, Windows and macOS arm64 are shipped targets; the macOS `.dmg` comes from
+[`macos-release.yml`](../.github/workflows/macos-release.yml) ([guide](../packaging/macos/README.md)).
 [`macos-ci.yml`](../.github/workflows/macos-ci.yml) builds and tests on macOS arm64
 (AppleClang, Scene3D on Metal) nightly when the default branch moved, and on demand
 (`gh workflow run "macOS CI" --ref <branch>`). AppleClang's `-Wunused-const-variable` and
