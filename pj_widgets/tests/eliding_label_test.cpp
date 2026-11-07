@@ -125,6 +125,13 @@ TEST(ElidingLabelTest, ReShowsOnlyWhatTheThresholdHid) {
   label->hide();  // owner decision
   label->applyAvailableWidth(200);
   EXPECT_FALSE(label->isVisible());
+
+  label->show();
+  label->applyAvailableWidth(4);
+  label->show();  // owner shows and hides while the threshold hid it
+  label->hide();
+  label->applyAvailableWidth(200);
+  EXPECT_FALSE(label->isVisible());
 }
 
 }  // namespace

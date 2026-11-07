@@ -6,6 +6,7 @@
 #include <QFontMetrics>
 #include <QLabel>
 #include <QResizeEvent>
+#include <QShowEvent>
 #include <QString>
 #include <QStringList>
 #include <QTextLayout>
@@ -83,8 +84,7 @@ class ElidingLabel : public QLabel {
       }
       return;
     }
-    if (hidden_for_width_) {
-      hidden_for_width_ = false;
+    if (hidden_for_width_ && parentWidget() != nullptr) {
       show();
     }
     const QFontMetrics metrics(font());
@@ -102,6 +102,13 @@ class ElidingLabel : public QLabel {
   void resizeEvent(QResizeEvent* event) override {
     QLabel::resizeEvent(event);
     applyAvailableWidth(width());
+  }
+
+  // Any show, ours or the owner's, ends a threshold hide: a later owner
+  // hide() is the owner's decision and must stick.
+  void showEvent(QShowEvent* event) override {
+    QLabel::showEvent(event);
+    hidden_for_width_ = false;
   }
 
   // A QSS font lands after construction (widget polish), which would

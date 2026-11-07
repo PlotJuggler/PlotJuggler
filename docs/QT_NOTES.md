@@ -127,9 +127,9 @@ Prefer these over hand-rolled equivalents. Names are exact.
 - **Never show a parentless widget, even briefly.** It becomes a top-level window,
   and Qt requests an `xdg_activation` token (tagged with the app id) for every
   top-level it shows. A window destroyed before the token is used orphans it, and
-  GNOME keeps its launch-busy cursor spinning until a timeout: the "stuck on
-  loading" cursor after a drop came from `ElidingLabel` showing itself before its
-  row reparented it. Diagnose with `WAYLAND_DEBUG=client`: look for `get_toplevel`
+  GNOME keeps its launch-busy cursor spinning until a timeout. A widget that
+  shows itself from a setter (`ElidingLabel`) must check that it has a parent
+  first. Diagnose with `WAYLAND_DEBUG=client`: look for `get_toplevel`
   or `get_activation_token` with no matching `activate`.
 - The first `QRhiWidget`/`QOpenGLWidget` added to an already-shown window switches
   it from raster to GPU composition, and Qt (6.4+) destroys and recreates its
