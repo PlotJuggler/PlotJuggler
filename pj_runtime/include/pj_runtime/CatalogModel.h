@@ -7,6 +7,7 @@
 #include <QStringList>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,6 +20,7 @@
 #include "pj_base/type_tree.hpp"  // PrimitiveType
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/SavedSeriesPath.h"
 #include "pj_runtime/SessionManager.h"  // DatasetIdentityResolution (returned by value below)
 
 namespace PJ {
@@ -196,6 +198,11 @@ struct CatalogItem {
 [[nodiscard]] inline const AdvertisedTopicPayload* asAdvertisedTopic(const CatalogItem& item) noexcept {
   return std::get_if<AdvertisedTopicPayload>(&item.payload);
 }
+// An object type no dock shows but a plugin panel reads as a recipe input (a depth image's calibration): its catalog
+// row starts a drag, and a dock leaves it out of a drop.
+[[nodiscard]] constexpr bool isPanelOnlyObjectType(sdk::BuiltinObjectType type) noexcept {
+  return type == sdk::BuiltinObjectType::kCameraInfo;
+}
 
 // One available-but-unsubscribed topic advertised by a streaming source. Carries
 // only what the catalog needs to show a paused placeholder: the topic name and
@@ -235,6 +242,36 @@ class CatalogModel : public QObject {
   CatalogModel& operator=(const CatalogModel&) = delete;
 
   std::vector<CatalogItem> items() const;
+  /// Calls `visit` on every item in no particular order, without the copy and sort of `items()`. `visit` must not
+  /// change the catalog.
+  void forEachItem(const std::function<void(const CatalogItem&)>& visit) const;
+  /// How many times `items()` and `forEachItem()` have walked the whole catalog: a test reads the difference around a
+  /// call to pin that it did not walk it.
+  [[nodiscard]] std::size_t wholeCatalogWalks() const noexcept;
+  /// The object-topic items named `topic_name`, in `items()` order: one per dataset that
+  /// has it. A non-empty `dataset_source` keeps only the dataset with that source NAME.
+  /// Walks the catalog in place, without the copy and sort of `items()`.
+  [[nodiscard]] std::vector<CatalogItem> objectTopicsNamed(
+      const QString& topic_name, const QString& dataset_source) const;
+
+  /// The object-topic item of `topic_id`, or nullopt when the catalog has none.
+  /// Walks the catalog in place, without the copy and sort of `items()`.
+  [[nodiscard]] std::optional<CatalogItem> objectTopicItem(ObjectTopicId topic_id) const;
+
+  /// Catalog keys of the object topics a preview (an ephemeral on-demand recipe) materializes. items() keeps
+  /// them, since the panel that made a preview resolves and attaches its topic through the catalog; only the
+  /// user-facing trees leave them out, by asking here.
+  [[nodiscard]] QSet<QString> ephemeralPreviewKeys() const;
+
+  /// The scalar field `key` names in `dataset` (`markerSeriesField`'s naming), or
+  /// nullopt: a plottable one, or with `strings_too` a string one as well (an
+  /// on-demand input reads strings, a marker rule never). Walks the catalog in place,
+  /// without the copy and sort `items()` makes, and remembers what it found, per
+  /// `strings_too`, until the catalog's items next change (an on-demand recipe asks
+  /// at every request). Several matches resolve to the first in `items()` order. GUI
+  /// thread only.
+  [[nodiscard]] std::optional<ScalarFieldPayload> findScalarForMarkerKey(
+      DatasetId dataset, const std::string& key, bool strings_too = false) const;
 
   /// Dataset owning `topic_name`, or 0 when unknown or present in several datasets.
   /// Multiple fields of one topic still identify the same dataset.
@@ -242,6 +279,16 @@ class CatalogModel : public QObject {
   // Fast alternative to items().empty(), which copies and sorts entries.
   [[nodiscard]] bool isEmpty() const noexcept;
   [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
+  /// The name a plugin addresses the item `key` by (a curve-tree drop onto a plugin panel): a scalar field's
+  /// `sdk::markerSeriesKey` (strings included; the plugin decides what it can read), a paused topic's name, or an
+  /// object topic's name, source-qualified when another dataset has that topic too. nullopt for an unknown key. GUI
+  /// thread only.
+  [[nodiscard]] std::optional<std::string> pluginDropName(const QString& key) const;
+  /// The key under which `dataset` lists the object topic `topic`, or nullopt when the catalog does not list it. A
+  /// hash lookup: how a caller holding topic ids finds their rows without walking `items()`.
+  [[nodiscard]] std::optional<QString> objectTopicKey(DatasetId dataset, ObjectTopicId topic) const;
+  /// The same lookup for column `column` of the DataEngine topic `topic`.
+  [[nodiscard]] std::optional<QString> scalarColumnKey(DatasetId dataset, TopicId topic, std::size_t column) const;
 
   // Latest scalar value at or before display-axis time `display_seconds` for the
   // curve identified by catalog `key` (zero-order hold). Returns nullopt when the
@@ -322,6 +369,9 @@ class CatalogModel : public QObject {
   [[nodiscard]] std::optional<QString> resolveCurveKey(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic,
       const QString& field, SeriesCapability capability = SeriesCapability::kPlottable) const;
+  // The same resolution for an identity held as one value (a parsed layout entry).
+  [[nodiscard]] std::optional<QString> resolveCurveKey(
+      const SavedSeriesPath& path, SeriesCapability capability = SeriesCapability::kPlottable) const;
 
   // Resolves the same persisted (id, raw-source, full-path) identity used by
   // scene widgets (delegates to SessionManager::resolveDatasetIdentity — see
@@ -403,6 +453,15 @@ class CatalogModel : public QObject {
   void setPerTopicPauseCapable(DatasetId dataset_id, bool capable);
   [[nodiscard]] bool isPerTopicPauseCapable(DatasetId dataset_id) const;
 
+  // The samplesIngested gate (connected to SessionManager::samplesIngested in place
+  // of a direct rebuildFromDatastore): runs a full rebuild ONLY when the catalog's
+  // content fingerprint changed since the last rebuild. During a load most ingest
+  // batches add rows, not new datasets/topics/columns, so this skips the
+  // (allocation-heavy) full rebuild on the common path while staying fully
+  // synchronous. A created or retired topic always moves the fingerprint, so it
+  // also serves a caller that may have changed no topics (an unchanged restore).
+  void rebuildIfChanged();
+
  public slots:
   void rebuildFromDatastore();
 
@@ -422,14 +481,6 @@ class CatalogModel : public QObject {
   void itemsChanged(const QStringList& keys);
 
  private:
-  // Connected to SessionManager::samplesIngested in place of a direct
-  // rebuildFromDatastore: runs a full rebuild ONLY when the catalog's content
-  // fingerprint changed since the last rebuild. During a load most ingest
-  // batches add rows, not new datasets/topics/columns, so this skips the
-  // (allocation-heavy) full rebuild on the common path while staying fully
-  // synchronous — explicit rebuildFromDatastore() callers are unaffected.
-  void rebuildIfChanged();
-
   // The actual full rebuild body. rebuildFromDatastore() wraps this and refreshes
   // the cached fingerprint, so every rebuild (gated or explicit) leaves the gate
   // in sync.

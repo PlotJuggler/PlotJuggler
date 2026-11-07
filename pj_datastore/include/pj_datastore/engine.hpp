@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -12,6 +13,7 @@
 
 #include "pj_base/dataset.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/replace_result.hpp"
@@ -72,6 +74,19 @@ class DataEngine {
   [[nodiscard]] PJ::Expected<PJ::TopicId> createTopic(
       PJ::DatasetId dataset_id, TopicDescriptor descriptor, PJ::TopicId requested_id = 0);
 
+  /// One column of `createColumnGroupTopic`.
+  struct GroupColumn {
+    std::string name;
+    PJ::PrimitiveType type = PJ::PrimitiveType::kFloat64;
+  };
+
+  /// Creates ONE topic `topic_name` whose schema `schema_name` is a struct with one primitive field per entry of
+  /// `columns` (field k is column k): an on-demand series' topic. Registers the schema, or reuses the one registered
+  /// under that name. [thread-safe]
+  [[nodiscard]] PJ::Expected<PJ::TopicId> createColumnGroupTopic(
+      PJ::DatasetId dataset_id, const std::string& topic_name, const std::string& schema_name,
+      const std::vector<GroupColumn>& columns);
+
   /// Symmetric counterpart to `createTopic(requested_id)` at the field/column
   /// level. Adds a column to an existing topic; pass `requested_id` non-empty
   /// to force a specific `FieldId` (used by the streaming pause/resume
@@ -126,7 +141,7 @@ class DataEngine {
   // Commit cycle: commit sealed chunks, enforce retention
   /// Commit flushed chunks into topic storage.
   /// Returns the deduplicated set of topic IDs that received at least one new chunk.
-  /// Pass the return value directly to DerivedEngine::onSourceCommitted():
+  /// Pass the return value directly to IncrementalEngine::onSourceCommitted():
   ///   derived.onSourceCommitted(engine.commitChunks(writer.flushAll()));
   std::vector<PJ::TopicId> commitChunks(std::vector<std::pair<PJ::TopicId, TopicChunk>> chunks);
 
@@ -149,6 +164,12 @@ class DataEngine {
   /// wall time, so a wall-clock floor could hide future real samples).
   /// No-op for an unknown or empty topic. [thread-safe]
   void evictTopicHistory(PJ::TopicId topic_id);
+
+  /// Empties one topic's history for a REPLAY that rewrites the same timestamps: its chunks are freed and its
+  /// retention floor reset (unlike `evictTopicHistory`, whose floor hides every write at or below the old `timeMax()`),
+  /// while the topic stays registered, listed and un-retired, with its column layout. Same reader precondition as
+  /// `retireTopic`. No-op for an unknown id. [thread-safe]
+  void clearTopicHistory(PJ::TopicId topic_id);
 
   /// Retire a single topic: clear its chunks (reclaiming the materialized series) and
   /// exclude its id from `listTopics` (so the catalog drops it on the next rebuild),
@@ -187,6 +208,7 @@ class DataEngine {
       std::deque<TopicChunk> chunks;
       std::vector<ColumnDescriptor> column_descriptors;
       PJ::Timestamp retention_floor = kNoRetentionFloor;  // NOT 0 — see chunk.hpp
+      PJ::ChunkId evicted_through_chunk_id = 0;
       uint32_t max_observed_array_length = 0;
       uint32_t truncated_sample_count = 0;
       std::unordered_map<std::string, uint32_t> array_expansion_counts;
@@ -224,6 +246,12 @@ class DataEngine {
   /// `std::move` (column buffers/value arrays are pointer moves). Schema
   /// compatibility is the caller's responsibility — typically dst is kept in
   /// lockstep with the source via parallel registration at startup.
+  ///
+  /// A source that was retention-trimmed hands its trim over: each dst topic's
+  /// retention floor rises to the source's, and its evicted-through chunk id
+  /// (TopicStorage::evictedThroughChunkId) covers the source's, so rows trimmed
+  /// before the flush stay hidden and an incremental consumer that never saw them
+  /// records the gap. The source topics are left with no floor.
   PJ::Status flushTo(DataEngine& dst);
 
   /// In-place REPLACE of dataset `primary_id`'s data with the data ingested into
@@ -251,8 +279,8 @@ class DataEngine {
   /// older rows read null for a newly-introduced column) and the anchor's column
   /// order/indices are preserved (so its curve keys stay valid); a name only the
   /// sources have becomes a NEW topic under the anchor. The anchor keeps its
-  /// `DatasetId`/`TopicId`s. Each source dataset is emptied (its topics' chunks
-  /// cleared); the datasets stay registered. A shared topic whose contributors
+  /// `DatasetId`/`TopicId`s. Each source dataset is emptied (its topics retired);
+  /// the datasets stay registered. A shared topic whose contributors
   /// disagree on a field's storage type leaves the anchor's version intact and
   /// skips the conflicting source's contribution (reported in `skipped_topics`).
   /// Scalar (DataEngine) topics only — ObjectStore is untouched.
@@ -306,11 +334,29 @@ class DataEngine {
   /// commitChunks() while holding lockEngine() would self-deadlock.
   std::vector<PJ::TopicId> commitChunksLocked(std::vector<std::pair<PJ::TopicId, TopicChunk>> chunks);
 
+  /// Runs before a whole-series snapshot read of a topic (the toolbox
+  /// `read_series_arrow` bridge that exporters and analysis toolboxes use). The
+  /// derived-series owner installs it to finish a time-sliced replay still growing
+  /// that topic, so a snapshot is never a silent truncation; live views (plots)
+  /// read without it and watch the series grow. An empty barrier (the default)
+  /// does nothing. Set on the GUI thread. awaitCompleteSeries() may be called from
+  /// any thread, but the installed owner only completes the series for a caller on
+  /// its own (GUI) thread: another thread gets the current, possibly partial, rows.
+  using CompleteReadBarrier = std::function<void(PJ::TopicId)>;
+  void setCompleteReadBarrier(CompleteReadBarrier barrier) {
+    complete_read_barrier_ = std::move(barrier);
+  }
+  void awaitCompleteSeries(PJ::TopicId topic_id) const {
+    if (complete_read_barrier_) {
+      complete_read_barrier_(topic_id);
+    }
+  }
+
  private:
-  // Move src's sealed chunks into dst, re-stamping each chunk's topic_id to
-  // dst's id. Shared by flushTo (append between mirrored topics) and
-  // replaceDatasetFrom (after dst is cleared). Needs friend access to
-  // TopicStorage::sealed_chunks_.
+  // Move src's sealed chunks, retention floor and evicted-through id into dst,
+  // re-stamping each chunk's topic_id to dst's id. Shared by flushTo (append
+  // between mirrored topics) and replaceDatasetFrom (after dst is cleared). Needs
+  // friend access to TopicStorage's private state.
   static void adoptChunksFrom(TopicStorage& dst, TopicStorage& src);
 
   // Lock-assuming variants: the caller already holds impl_->mutex_ (unique for
@@ -324,6 +370,7 @@ class DataEngine {
 
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  CompleteReadBarrier complete_read_barrier_;
 };
 
 /// Guard pair returned by lockEnginePair(). `primary` is always engaged;

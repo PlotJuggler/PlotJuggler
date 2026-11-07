@@ -551,6 +551,15 @@ void PlotDocker::setObjectWidgetFactory(ObjectWidgetFactory factory) {
   }
 }
 
+void PlotDocker::setConfigurationPanelVisibilityQuery(std::function<bool()> query) {
+  configuration_panel_visible_ = std::move(query);
+  for (auto* widget : dockWidgetsMap()) {
+    if (auto* dock = qobject_cast<DockWidget*>(widget)) {
+      dock->setConfigurationPanelVisibilityQuery(configuration_panel_visible_);
+    }
+  }
+}
+
 QString PlotDocker::stateId() const {
   return state_id_;
 }
@@ -650,14 +659,17 @@ DockWidget* PlotDocker::addDockWithPlot(
     PlotWidget* plot, ads::DockWidgetArea dock_area, ads::CDockAreaWidget* relative_to) {
   auto* widget = new DockWidget(plot, session_, catalog_, this, nullptr, plot != nullptr);
   widget->setObjectWidgetFactory(object_widget_factory_);
+  widget->setConfigurationPanelVisibilityQuery(configuration_panel_visible_);
   auto* area_widget = addDockWidget(dock_area, widget, relative_to);
   area_widget->setAllowedAreas(ads::OuterDockAreas);
 
   connect(widget, &DockWidget::undoableChange, this, &PlotDocker::undoableChange);
+  connect(widget, &DockWidget::settingsPanelToggleRequested, this, &PlotDocker::settingsPanelToggleRequested);
   connect(widget, &DockWidget::plotWidgetCreated, this, &PlotDocker::plotWidgetAdded);
   connect(widget, &DockWidget::objectFamilyRequested, this, &PlotDocker::objectFamilyRequested);
-  connect(widget, &DockWidget::firstObjectTopicAdded, this, &PlotDocker::firstObjectTopicAdded);
+  connect(widget, &DockWidget::firstObjectTopicAdded, this, [this, widget] { emit firstObjectTopicAdded(widget); });
   connect(widget, &DockWidget::placeholderTopicDropped, this, &PlotDocker::placeholderTopicDropped);
+  connect(widget, &DockWidget::topicRefused, this, &PlotDocker::topicRefused);
   emit dockAdded(widget);
   if (widget->plotWidget() != nullptr) {
     emit plotWidgetAdded(widget->plotWidget());

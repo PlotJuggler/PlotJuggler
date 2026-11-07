@@ -4,7 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <new>
 
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
@@ -525,6 +528,31 @@ TEST_F(DatastoreCurveAdapterTest, MissingTopicReturnsNanWithoutCrashing) {
   EXPECT_FALSE(dangling.boundingRect().isValid());
   EXPECT_FALSE(dangling.visibleYRange(Range<double>{.min = 0.0, .max = 10.0}).has_value());
   EXPECT_FALSE(dangling.sampleFromTime(0.0).has_value());
+}
+
+// A series built where a freed one lived (a transform applied in place) must not
+// repeat that one's revision: canvases key retained geometry on (address,
+// revision). Every construction and every bump takes a process-unique revision.
+TEST_F(DatastoreCurveAdapterTest, RevisionsAreUniqueAcrossSeriesAtOneAddress) {
+  alignas(DatastoreCurveAdapter) std::byte storage[sizeof(DatastoreCurveAdapter)];
+  auto* first = new (storage) DatastoreCurveAdapter(&session_, descriptor_);
+  const std::uint64_t first_revision = first->contentRevision();
+  first->onTopicCommitted();
+  EXPECT_NE(first->contentRevision(), first_revision);
+  const std::uint64_t last_revision = first->contentRevision();
+  first->~DatastoreCurveAdapter();
+  auto* second = new (storage) DatastoreCurveAdapter(&session_, descriptor_);
+  EXPECT_NE(second->contentRevision(), first_revision);
+  EXPECT_NE(second->contentRevision(), last_revision);
+  second->~DatastoreCurveAdapter();
+
+  alignas(PointSeriesXY) std::byte xy_storage[sizeof(PointSeriesXY)];
+  auto* xy = new (xy_storage) PointSeriesXY(&session_, descriptor_, descriptor_);
+  const std::uint64_t xy_revision = xy->contentRevision();
+  xy->~PointSeriesXY();
+  xy = new (xy_storage) PointSeriesXY(&session_, descriptor_, descriptor_);
+  EXPECT_NE(xy->contentRevision(), xy_revision);
+  xy->~PointSeriesXY();
 }
 
 }  // namespace

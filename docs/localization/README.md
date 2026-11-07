@@ -20,8 +20,8 @@ and embeds the result as a resource. Qt LinguistTools is required at build time;
 no translation download or loose runtime catalog is needed. The matching Qt
 translations component must provide `qtbase_zh_CN.qm`; configuration fails
 explicitly if it is missing. Standard widget/button translations come from Qt,
-while the application catalog supplies nine Qt 6.11.1 file-dialog/icon-provider
-keys absent from that catalog. Disambiguation comments are part of their keys.
+while the application catalog supplies supplementary file-dialog/icon-provider
+keys verified against the pinned Qt catalog. Disambiguation comments are part of their keys.
 Both relative and absolute Qt translation directories are supported, including
 split-prefix installations. The path regression test configures and builds the
 catalog under both layouts and checks the explicit missing-catalog failure.
@@ -57,6 +57,12 @@ cmake --build build-i18n
 ctest --test-dir build-i18n --output-on-failure
 ```
 
+Both the full application build and the focused project register the ten Python
+validator regressions as `TranslationValidator4x`. `TranslationCatalog4x` runs
+real source extraction with the pinned Qt tool and fails on any extraction
+warning, missing key, or stale entry. No production source file is omitted to
+work around parser failures.
+
 The focused suite exercises the production catalog, English default and
 fallback, saved settings, session overrides, translator lifetime, repeated
 startup, restart-only behavior, Qt standard buttons, and numeric-locale
@@ -75,7 +81,7 @@ validation, or visual QA. After configuring the full application, build
 integration checks:
 
 ```sh
-ctest --test-dir /path/to/full-build --output-on-failure -R 'PreferencesLanguageTest|BrowserPersistencePolicy|AppLanguageTest|QtFileDialogLanguageTest|TranslationCatalog4x|QtTranslationPaths'
+ctest --test-dir /path/to/full-build --output-on-failure -R 'PreferencesLanguageTest|BrowserPersistencePolicy|AppLanguageTest|QtFileDialogLanguageTest|TranslationCatalog4x|TranslationValidator4x|QtTranslationPaths'
 ```
 
 Check Preferences in both languages at 560×400 and 420×300 as well. At the
@@ -83,14 +89,20 @@ smaller size, all Appearance controls must remain reachable by scrolling.
 
 ## Contribution boundary and provenance
 
-This contribution is based on official `main-4.x` commit
-`0345ec513bde7f05ad3148548ac30401f2b6f7a7`. Its initial language infrastructure,
+The original contribution was based on official `main-4.x` commit
+`0345ec513bde7f05ad3148548ac30401f2b6f7a7`. It now integrates official
+`08aa99c272bbeca4024cbbd45d78320c7fca335f`, preserving the current asynchronous
+dataset merge, load diagnostics, browser replay, file-picker hints, and
+derived-marker preferences. Its initial language infrastructure,
 translation strings, and focused tests were extracted from
 [`reliable-ly0411/PlotJuggler-zh-CN` commit `0c73d762`](https://github.com/reliable-ly0411/PlotJuggler-zh-CN/commit/0c73d7620ea60f2fec171f55314c46c72820723d);
 the stricter catalog validator comes from that fork's `203d29a8` snapshot.
 The nine Qt file-dialog/icon-provider corrections and direct-lookup regression
 cases are adapted from downstream commit `ba8155fae58f0e029468347e534336c6fe017f98`.
-English remains the upstream default.
+New catalog entries reuse matching context/source/comment/plural keys from
+downstream commit `88a6025ec330c743f6ce78e1f5a46a3cb55adbc6`, then retain only
+the messages extracted from this upstream candidate. English remains the
+upstream default.
 
 No fork branding, release/installer workflow, update routing, BIN loader,
 bundled-plugin translation overrides, marketplace metadata translation policy,
@@ -98,3 +110,12 @@ new splash artwork, or Windows executable/console packaging changes are part
 of this contribution. Those concerns must be reviewed separately. The scope is
 application language selection, Qt-extractable UI strings, the Chinese catalog,
 and their regression checks.
+
+## Qt extraction compatibility
+
+Qt 6.12's C++ extractor crashes on the function-local `using PJ::CurveTreeView`
+in `derivedGlyphColor`. Fully qualified enum names preserve the compiled C++
+behavior and let the complete source file remain in extraction. Explicit
+`QCoreApplication::translate` calls in the preset catalog and Scene3D passes
+keep the runtime lookup contexts visible to the extractor. Deferred model
+error literals use `QT_TRANSLATE_NOOP` with that same runtime context.

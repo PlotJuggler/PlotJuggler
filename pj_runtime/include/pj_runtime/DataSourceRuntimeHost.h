@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -16,6 +17,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
+#include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/expected.hpp"
 #include "pj_base/sdk/ingest_completion.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -101,6 +103,22 @@ class DataSourceRuntimeHost {
   using MessageBoxHandler = std::function<int(int type, std::string_view title, std::string_view message, int buttons)>;
   void setMessageBoxHandler(MessageBoxHandler handler) {
     message_box_handler_ = std::move(handler);
+  }
+
+  static constexpr std::size_t kMaxForwardedMessages = 20;
+
+  // Forwards the plugin's report_message WARNING/ERROR (never INFO) to `sink` as
+  // Diagnostic{source, id "data-source-message", message "<subject>: <text>"};
+  // the console log stays for every level. At most kMaxForwardedMessages are
+  // forwarded per host; the next one yields a single warning "data-source-message-limit"
+  // ("<subject>: further plugin messages are in the log only"), then nothing.
+  // THREADING: the sink runs on the plugin's reporting thread (a finite import's
+  // worker, a stream thread), so it must be thread-safe (QtDiagnosticBridge::sink
+  // is). Set before registerServices(); not synchronised, like the message-box handler.
+  void setDiagnosticSink(DiagnosticSink sink, std::string source, std::string subject) {
+    diagnostic_sink_ = std::move(sink);
+    diagnostic_source_ = std::move(source);
+    diagnostic_subject_ = std::move(subject);
   }
 
   // Session recorder hook. The tap is invoked INLINE on the push thread for
@@ -508,6 +526,10 @@ class DataSourceRuntimeHost {
       const uint8_t* data, uint64_t size);
 
   MessageBoxHandler message_box_handler_;
+  DiagnosticSink diagnostic_sink_;
+  std::atomic<std::size_t> forwarded_messages_{0};
+  std::string diagnostic_source_;
+  std::string diagnostic_subject_;
   // Rolling diagnostic from fail(): stream thread only, unsynchronised, so the
   // GUI reads it only after joining the worker. Never a verdict on ingest.
   std::string last_error_;

@@ -19,10 +19,6 @@ set(_pj_common_dir "${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/common")
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedUi.cmake")
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedManifest.cmake")
 
-add_library(pj_wasm_data_tamer_parser INTERFACE)
-target_include_directories(pj_wasm_data_tamer_parser SYSTEM INTERFACE
-    "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
-
 add_library(pj_wasm_ros_parser STATIC
     "${_pj_ros_dir}/ros_parser.cpp"
     "${_pj_ros_dir}/ros_specializations.cpp"
@@ -37,8 +33,8 @@ target_link_libraries(pj_wasm_ros_parser PRIVATE
     nlohmann_json::nlohmann_json
     rosx_introspection
     pj_wasm_data_tamer_parser
-    pj_wasm_array_policy
     pj_wasm_laser_scan
+    pj_wasm_grid_map
     pj_wasm_pointcloud_color)
 if(PJ_WASM_ENABLE_INGRESS_PROBE)
     target_compile_definitions(pj_wasm_ros_parser PRIVATE PJ_WASM_ENABLE_INGRESS_PROBE)

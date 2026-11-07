@@ -28,6 +28,7 @@ class ExtensionManager;
 using LoadedDataSource = RuntimeDataSourcePlugin;
 using LoadedMessageParser = RuntimeMessageParserPlugin;
 using LoadedToolbox = RuntimeToolboxPlugin;
+using LoadedWidget = RuntimeWidgetPlugin;
 
 // Bundles the marketplace (ExtensionManager) with the plugin catalog (per-family
 // loaders from pj_plugins) behind one Qt-friendly facade. `pj_app` never touches
@@ -56,7 +57,8 @@ class ExtensionCatalogService : public QObject {
     // PlatformUtils::extensionsDir().
     QString marketplace_dir;
     // Seed source (share). Empty = <prefix>/lib/plotjuggler/plugins resolved
-    // relative to the executable.
+    // relative to the executable (Contents/Resources/plugins in a macOS app
+    // bundle).
     QString bundled_dir;
   };
 
@@ -125,6 +127,12 @@ class ExtensionCatalogService : public QObject {
   // Returns all loaded Toolbox plugins.
   const std::vector<LoadedToolbox>& toolboxes() const;
 
+  // Returns all loaded Widget plugins, including the ones whose Qt build does not match this host
+  // (qt_compatible == false; the dock explains why instead of dropping them). A Widget library is
+  // never unloaded, so an entry leaves this vector only when reload() withdraws a plugin the user
+  // disabled; its library stays mapped and panels already running it keep working.
+  const std::vector<LoadedWidget>& widgets() const;
+
   // Returns file-import capable DataSource plugins.
   std::vector<const LoadedDataSource*> fileImportSources() const;
 
@@ -145,6 +153,44 @@ class ExtensionCatalogService : public QObject {
   // The Toolbox plugin with manifest id `id`, or null when it is not loaded.
   // Same lifetime and threading rules as findParserByEncoding.
   const LoadedToolbox* findToolbox(QStringView id) const;
+
+  // The Widget plugin with manifest id `plugin_id`, or null when it is not loaded. Same lifetime and
+  // threading rules as findToolbox: the pointer indexes the catalog vector and is valid only until
+  // the next reload(), GUI thread only. A caller that keeps the library beyond that (a dock with a
+  // live widget) copies the WidgetLibrary's shared ownership through createHandle(), never the pointer.
+  const LoadedWidget* findWidget(QStringView plugin_id) const;
+
+  // Short label naming the Toolbox `id` on a tab watermark or a Custom Topics row badge: its manifest `badge`, else
+  // the toolbox name, else the id; empty when no such toolbox is loaded. Same lifetime and threading rules as
+  // findToolbox.
+  [[nodiscard]] QString toolboxBadge(QStringView id) const;
+  // The toolbox's display name, or `id` itself when it is not loaded. Same rules as findToolbox.
+  [[nodiscard]] QString toolboxDisplayName(QStringView id) const;
+
+  // The id of the loaded toolbox whose manifest lists `custom_topics_editor` in its `capabilities`: the editor of
+  // the host's Custom Topics (the "+" opens it, and its recipes are the only ones the panel lets the user edit or
+  // delete). When several declare it, one wins (see pickCustomTopicsEditor) and one warning names the rest. Empty
+  // when none does. Resolved by the constructor and by every reload() that changed the catalog, so this is a plain
+  // read. Same lifetime and threading rules as findToolbox.
+  [[nodiscard]] const QString& customTopicsEditorId() const noexcept {
+    return custom_topics_editor_id_;
+  }
+  // Test seam: names the editor of a catalog that loaded no plugin declaring it.
+  void setCustomTopicsEditorIdForTest(const QString& plugin_id) {
+    custom_topics_editor_id_ = plugin_id;
+  }
+  // The one ownership predicate: `owner` is the Custom Topics editor. False for everyone when none is declared.
+  // The static form serves a holder of the id that has no catalog at hand (the Custom Topics panel).
+  [[nodiscard]] static bool isEditorOwner(const QString& editor_id, const QString& owner) noexcept {
+    return !editor_id.isEmpty() && owner == editor_id;
+  }
+  [[nodiscard]] bool isCustomTopicsEditor(const QString& owner) const noexcept {
+    return isEditorOwner(custom_topics_editor_id_, owner);
+  }
+  // The editor among `declarers` (the toolboxes declaring `custom_topics_editor`, in scan order): `current` while it
+  // is still one of them, else the first. A reload appends an updated plugin after the others, so first-scanned
+  // alone would hand the editor to another plugin on every update. Empty when there is no declarer.
+  [[nodiscard]] static QString pickCustomTopicsEditor(const QString& current, const QStringList& declarers);
 
   // [thread-safe] The set of encodings the loaded parsers accept, returned by
   // value (a snapshot copy) so a caller never holds a reference into the
@@ -255,6 +301,11 @@ class ExtensionCatalogService : public QObject {
   // Caller holds routing_mutex_ and catalog_mutex_ (exclusive).
   void rebuildParserClaims();
 
+  // Picks the `custom_topics_editor` toolbox into custom_topics_editor_id_ (see customTopicsEditorId). Run
+  // wherever the toolbox list changes.
+  void resolveCustomTopicsEditor();
+  QString custom_topics_editor_id_;
+
   // Host-derived trust tier for one loaded parser (spec §4): statically linked
   // or seeded-bundled → kBundled; loaded from a user-explicit (authoritative)
   // folder → kFolderDrop; otherwise the managed marketplace dir → kMarketplace.
@@ -335,5 +386,12 @@ class ExtensionCatalogService : public QObject {
   mutable std::mutex routing_mutex_;
   ParserRoutingService routing_;
 };
+
+// The DataSource a saved layout names among `candidates`: the one whose manifest id is
+// `manifest_id`, else the one whose display name is `name` (the legacy identity); an empty
+// hint skips its tier. Each tier sweeps every candidate, so an id match on a later candidate
+// beats a name match on an earlier one. Null when neither matches; null candidates are skipped.
+[[nodiscard]] const LoadedDataSource* findDataSourceByIdentity(
+    const std::vector<const LoadedDataSource*>& candidates, const QString& manifest_id, const QString& name);
 
 }  // namespace PJ

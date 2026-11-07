@@ -23,7 +23,7 @@ pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      │                  ├──►  turbojpeg
      │                  └──►  libpng
      │
-     ├──►  Qt 6.11.1 (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
+     ├──►  Qt (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
      ├──►  pj_runtime           (IDataWidget contract, PlaybackEngine driver)
      ├──►  pj_scene_common      (SceneDockWidget/ISceneLayer base; backend-agnostic layered scene dock framework)
      ├──►  pj_widgets           (shared Colormap.h LUT/enum for the GPU depth colormap)
@@ -91,7 +91,7 @@ handles per-frame `kVideoFrame` streaming topics (parser-mode
 |-----------|-----------|------|
 | `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via colorspace-aware YUV->RGB fragment shader (3 R8 textures for YUV420P, R8+RG8 for NV12; matrix from `buildYuvMatrix`), per-layer magnification filter, zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
 | YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | colorspace-aware YUV420P/NV12->RGB conversion (BT.601/709 + limited/full range via the per-frame `colorMatrix`); RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; depth colormap (`pixelFormat == 5`: R32F depth in `y_tex`, normalized by near/far and looked up in the colormap LUT in `u_tex`); optional remap-LUT rectification (binding 4) — see §7.2 |
-| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): triangle strokes (scale-with-1px-floor), solid fills, textured text quads |
+| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): `scene_lines` draws both the triangle strokes (scale-with-1px-floor) and the solid fills, each in its own pipeline; `scene_text` draws the textured text quads |
 
 The Qt layer is thin — it owns the GPU surface and polls the
 `MediaSource`'s `takeFrame()` at render rate. All decode logic,
@@ -295,7 +295,7 @@ design rationale only.
 ## 4. Codec Pipeline
 
 > For the wire-format type catalog that the codec pipeline decodes, see
-> [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — the canonical SDK builtin-type catalog.
+> [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — the canonical SDK builtin-type catalog.
 
 Each ObjectStore topic produces raw bytes in a wire format. To reach
 display-ready pixels, those bytes pass through a **codec pipeline** —
@@ -509,10 +509,25 @@ immediately — no re-decode, no seek.
 codec-dispatched `isVideoKeyframe(codec_id, data, size)` (`video_codec_utils.h`):
 H.264 IDR (NAL type 5), HEVC IRAP (NAL types 16–21), AV1 (carries a
 Sequence-Header OBU). `resolveCodec()` latches the topic's codec from the first
-extracted frame's `VideoFrame.format` before the oracle runs. Tracked by
-`last_scanned_ts_` to handle the steady-state case where retention keeps
-`entryCount()` constant while entries are replaced. Evicted keyframe timestamps
-are pruned against `timeRange().first` on each update.
+extracted frame's `VideoFrame.format` before the oracle runs. Each packet is
+addressed by its UID (`ObjectStore::indexOf`), so packets at an equal DTS never
+alias. The index follows the store's revisions (`ObjectStore::contentIdentity`):
+an unchanged poll scans nothing, an append scans only the arrivals since the
+last scan (a UID cursor over `drainNewSince`), and a rewrite (an earlier DTS, a
+removal anywhere, a clear) rebuilds it. A new packet at a PTS already indexed
+replaces that frame and drops the codec state; the older packets of that PTS stay
+listed, so evicting the newest presents the retained one again, and a walk feeds
+them with a PTS below every target so their frames never overwrite the newest's. Each
+packet is indexed at its PTS plus its entry's `payload_stamp_shift`, so the
+decoder presents and is queried on the dataset clock and a merge's same-name
+topics never collide. Evicted packets are pruned against the store front
+(`timeRange().first`, `firstSequentialUID`) when it moves. A GOP walk follows
+its packets through a front eviction (`packetAt`, anchored on the target's UID)
+instead of their old indices. A decode polls its `CancelToken` between packets;
+a token can also read a caller's own check (`CancelToken(poll)`), which is how an
+on-demand script's cancel reaches it. A decode during which the topic was rewritten fails ("video content
+changed during decode") and rebuilds; an append or a front eviction meanwhile
+moves no fed packet, so a live decode is not failed by them.
 
 **Decoder initialization:** Deferred until the first keyframe arrives
 (join-mid-stream support). The decoder opens via `makeVideoCodecParams(codec_id)`
@@ -615,6 +630,15 @@ worker's mailbox. `takeFrame` drains the
 mailbox into a `MediaFrame` (nullopt on second call); after each deposit the
 worker fires the optional `setFrameReadyCallback` (from the worker thread) so
 consumers re-poll.
+
+The worker publishes `rectificationStatus()` independently of whether rectification
+is enabled. Explicit clear frames publish `kWaitingForImage`; no-update results
+preserve eligibility for the retained image. `ImageLayer` uses that status on frame-ready repaint notifications to
+enable its Rectify toggle only for a matching, usable calibration and to explain
+unavailability in the tooltip. The attach-time calibration map contains only the
+image's dataset: CameraInfo-classified topics (any name) and legacy `/camera_info`
+topics are decoded through their parser, or through the canonical codec when no
+parser is bound. Calibration is injected before the first decode request.
 
 `rectifyIfCalibrated` chooses between two paths based on the
 `setGpuRectificationAvailable` flag the widget pushed down (atomic; a change
@@ -808,7 +832,7 @@ and 4.
 
 ### 7.1 QRhiWidget — five pipelines
 
-`MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.11.1), which abstracts
+`MediaViewerWidget` subclasses `QRhiWidget`, which abstracts
 over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
 QRhi graphics pipelines that share the same `viewTransform` UBO so
 zoom/pan/rotation apply uniformly:
@@ -881,17 +905,19 @@ the output UV through a per-camera lookup texture before sampling:
 
 ```glsl
 if (rectify == 1) {
-    vec2 s = texture(remap_tex, v_uv).rg;   // RGBA32F LUT, NEAREST
+    vec2 s = uintBitsToFloat(texelFetch(remap_tex, texel, 0).rg);  // RG32UI LUT, texel-exact
     if (s.x < 0.0) { fragColor = vec4(0,0,0,1); return; }  // OOB sentinel
     uv = s;                                  // sample the image at the source coord
 }
 ```
 
-- The LUT (`remap_tex`, SRB binding 4) is `out_w × out_h` RGBA32F, built once per
-  camera by `undistortMapToNormalizedRG` and cached on the layer (keyed by map
-  identity). `.rg` is the normalized source coordinate with a +0.5 half-texel
-  offset so the LINEAR image fetch reproduces the CPU bilinear; the LUT itself is
-  sampled NEAREST so each output pixel gets its exact precomputed source coord.
+- The LUT (`remap_tex`, SRB binding 4, a `usampler2D`) is `out_w × out_h` RG32UI
+  holding the bits of two floats (QRhi has no RG32F), built once per camera by
+  `undistortMapToNormalizedRG` and cached on the layer (keyed by map identity).
+  `.rg` is the normalized source coordinate with a +0.5 half-texel offset so the
+  LINEAR image fetch reproduces the CPU bilinear; the LUT itself is fetched
+  texel-exact (`texel` = the output UV times the LUT size, clamped) so each output
+  pixel gets its exact precomputed source coord.
 - **Logical-size decouple:** on the GPU path the *uploaded* texture is the small
   RAW frame, but the widget reports the *logical* size as the map's
   `out_width/out_height`. `tex_width_`/`tex_height_`/`frame_aspect_` and the
@@ -899,9 +925,12 @@ if (rectify == 1) {
   letterboxing, and the pixel inspector stay in the camera's native-resolution
   space regardless of CPU-vs-GPU path. The point inspector maps the cursor in
   logical space and reads the source pixel through the map.
-- **Capability handshake:** `MediaViewerWidget::initialize()` probes
-  `isTextureFormatSupported(RGBA32F)` (plus successful base-pipeline creation) and
-  calls `MediaSource::setGpuRectificationAvailable(...)`, fanned out through
+- **Capability handshake:** `MediaViewerWidget::initialize()` reports GPU
+  rectification available once the base pipeline exists (its RG32UI placeholder
+  is the LUT's format; `isTextureFormatSupported(RG32UI)` would wrongly exclude
+  WebGL2, since Qt's GLES backend lists 32-bit integer formats from ES 3.1 on
+  though RG32UI is core ES 3.0) and calls
+  `MediaSource::setGpuRectificationAvailable(...)`, fanned out through
   `Composite`/`BorrowedMediaSource` to the `ImagePipelineSource` layers. The
   default is the CPU-correct path until the widget confirms GPU support; a flip
   re-decodes the current frame. Non-rectifying layers bind a 1×1 placeholder LUT
@@ -923,18 +952,17 @@ gl_Position = vec4(view_matrix * vec3(in_position, 1.0), 1.0);
 The transform is updated on mouse events and stored as widget state.
 No pixel reprocessing — transformation is free on the GPU.
 
-### 7.4 Software fallback
+### 7.4 No GPU, no hardware decode
 
-When `QRhi` reports no suitable GPU backend, or when the platform
-lacks GPU support:
+Decoding and rendering degrade separately:
 
-1. Decoder falls back to software decode (guaranteed by
-   `FfmpegDecoder`'s fallback logic).
-2. CPU-side YUV→RGB conversion via sws_scale or manual matrix
-   multiply.
-3. Upload RGB pixels to a `QImage` and render via `QPainter`.
-
-Acceptable degradation; the UX remains functional.
+1. **Decode.** Without a usable hardware decoder, `FfmpegDecoder` falls back to
+   software decode (guaranteed by its fallback logic).
+2. **Render.** There is no CPU renderer. A GPU-less machine still gets a QRhi
+   (WARP on Windows, Mesa's software rasterizer on Linux). When the viewer's QRhi
+   or its base pipelines cannot be created, it enters its failure state: it clears
+   to the background and `Scene2DDockWidget` shows the reason in a label below it
+   (TECHNICAL_NOTES.md → "GPU failure state").
 
 ---
 
@@ -977,8 +1005,30 @@ future entry (§R4.8). A 10 Hz detection overlay composited on a
 60 Hz video is correct: the same bounding box persists across
 multiple video frames until replaced by a newer annotation.
 
-No automatic skew rejection. Multi-rate is the norm — the compositor
-trusts that an entry exists in the store until explicitly evicted.
+No automatic skew rejection for an overlay that is not paired (§8.3a). Multi-rate is the norm — the
+compositor trusts that an entry exists in the store until explicitly evicted.
+
+### 8.3a Annotation pairing
+
+`CompositeMediaSource::setLayerPairing` gives a layer its store topic, its image cadence and
+a warning sink; `Scene2DDockWidget::syncViewLayers` sets it for every layer. At each
+composite, an annotation naming its image (`image_topic` not empty) of a layer set to pair its
+annotations (`Scene2DDockWidget` sets it for an on-demand derived topic, from its `pj_derived`
+metadata) is kept only when the base layer (the first with pixels) has that topic and the
+annotation's timestamp lies within one cadence of the delivered frame's own stamp
+(`DecodedFrame::stamp`: the image payload's `timestamp_ns` plus the entry's
+`payload_stamp_shift`, which `resolveImage` computes; the pts when a frame has none); the
+cadence is looked up around the frame's store entry (`DecodedFrame::entry_ts`, which survives
+rectification; `pts` can be a parser's record stamp or the image's own). An image still
+decoding never pairs with the tracker's instant. Rejected annotations stay in the layer's retained contribution and are
+checked again when pixels arrive; they never reach the renderer. The warning sink is called
+at every composite (empty once nothing is hidden); the dock delivers a change to the layer
+row (`SceneWarningParts::Part::kAnnotation`) from the event loop, because the composite is
+polled inside the viewer's render; a layer left out of the composite (hidden) has its reason
+cleared the same way, so the clear queues behind a reason posted earlier. A parser's
+annotations are never checked and keep the multi-rate behaviour above: their `image_topic` is
+informational (the yolo handler sets the header's frame id). Derived annotations carry their image's topic and stamp
+(docs/derived_objects/ARCHITECTURE.md §6, §17), so the check applies to them unchanged.
 
 ### 8.4 frame_id correlation (optional)
 

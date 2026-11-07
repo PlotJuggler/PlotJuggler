@@ -218,7 +218,7 @@ PJ::Expected<std::optional<double>> DataReader::latestNumericAt(
   return std::optional<double>{row->chunk->readNumericAsDouble(column_index, row->row_index)};
 }
 
-PJ::Expected<std::optional<std::string>> DataReader::latestStringAt(
+PJ::Expected<std::optional<StringSample>> DataReader::latestStringAt(
     const QueryPoint& point, std::size_t column_index) const {
   auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(point.topic_id);
@@ -227,21 +227,39 @@ PJ::Expected<std::optional<std::string>> DataReader::latestStringAt(
   }
   const std::optional<SampleRow> row = PJ::latestAt(storage->sealedChunks(), point.t, storage->retentionFloor());
   if (!row.has_value()) {
-    return std::optional<std::string>{};
+    return std::optional<StringSample>{};
   }
   // Guard the column index (chunks before a mid-stream column add have fewer
-  // columns), the string-ness of the column (readString is UB on a numeric
-  // column), and nulls — then copy the value out WHILE the lock is held, since
-  // readString views chunk-internal dictionary memory that must not escape.
+  // columns) and the string-ness of the column (readString is UB on a numeric
+  // column); a null cell is a sample with no value. Copy the value out WHILE the
+  // lock is held, since readString views chunk-internal dictionary memory that
+  // must not escape.
   if (column_index >= row->chunk->columns.size()) {
-    return std::optional<std::string>{};
+    return std::optional<StringSample>{};
   }
   const auto& descriptor = row->chunk->columns[column_index].descriptor;
-  if (descriptor == nullptr || descriptor->logical_type != PrimitiveType::kString ||
-      row->chunk->isNull(column_index, row->row_index)) {
-    return std::optional<std::string>{};
+  if (descriptor == nullptr || descriptor->logical_type != PrimitiveType::kString) {
+    return std::optional<StringSample>{};
   }
-  return std::optional<std::string>{std::string(row->chunk->readString(column_index, row->row_index))};
+  StringSample sample{
+      .timestamp = row->timestamp, .value = std::nullopt, .chunk_id = row->chunk->id, .row_index = row->row_index};
+  if (!row->chunk->isNull(column_index, row->row_index)) {
+    sample.value = std::string(row->chunk->readString(column_index, row->row_index));
+  }
+  return std::optional<StringSample>{std::move(sample)};
+}
+
+std::optional<PrimitiveType> DataReader::columnType(TopicId topic_id, std::size_t column_index) const {
+  const auto lock = engine_.lockEngine();
+  const TopicStorage* storage = engine_.getTopicStorage(topic_id);
+  if (storage == nullptr) {
+    return std::nullopt;
+  }
+  const std::vector<ColumnDescriptor> columns = columnsForTopic(engine_, *storage);
+  if (column_index >= columns.size()) {
+    return std::nullopt;
+  }
+  return columns[column_index].logical_type;
 }
 
 Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_index) const {

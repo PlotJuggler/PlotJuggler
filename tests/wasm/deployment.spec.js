@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 const { createHash } = require('node:crypto');
 const { readFile } = require('node:fs/promises');
-const http = require('node:http');
 const path = require('node:path');
-const { test, expect } = require('@playwright/test');
+const { test, expect, devices } = require('@playwright/test');
+const {
+  expectEntrypoint,
+  expectIsolationHeaders,
+  expectServedAsDeclared,
+  expectUndeclaredHidden,
+  rawRequest,
+} = require('./support/deployment_contract');
 
 const packageRoot = path.resolve(
   process.env.PJ_WASM_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm', 'deploy'),
@@ -12,41 +18,13 @@ let server;
 let baseUrl;
 let manifest;
 
-function rawRequest(url, { method = 'GET', headers = {}, collectBody = false } = {}) {
-  return new Promise((resolve, reject) => {
-    const request = http.request(url, { method, headers }, response => {
-      const hash = createHash('sha256');
-      const chunks = [];
-      let bytes = 0;
-      response.on('data', chunk => {
-        hash.update(chunk);
-        bytes += chunk.length;
-        if (collectBody) {
-          chunks.push(chunk);
-        }
-      });
-      response.on('end', () => resolve({
-        status: response.statusCode,
-        headers: response.headers,
-        bytes,
-        sha256: hash.digest('hex'),
-        body: collectBody ? Buffer.concat(chunks).toString('utf8') : undefined,
-      }));
-    });
-    request.on('error', reject);
-    request.end();
-  });
-}
-
-function expectIsolationHeaders(headers) {
-  expect(headers['cross-origin-opener-policy']).toBe('same-origin');
-  expect(headers['cross-origin-embedder-policy']).toBe('require-corp');
-  expect(headers['cross-origin-resource-policy']).toBe('same-origin');
-  expect(headers['x-content-type-options']).toBe('nosniff');
-}
-
 test.beforeAll(async () => {
   manifest = JSON.parse(await readFile(path.join(packageRoot, 'manifest.json'), 'utf8'));
+  // A published copy of the same package (packaging/web) instead of the reference server.
+  if (process.env.PJ_WASM_DEPLOYMENT_URL) {
+    baseUrl = process.env.PJ_WASM_DEPLOYMENT_URL.replace(/\/+$/, '');
+    return;
+  }
   const { listenWasmServer } = await import('../../scripts/serve_wasm.mjs');
   server = await listenWasmServer(packageRoot);
   const address = server.address();
@@ -78,42 +56,18 @@ test('deployment server negotiates exact compressed bytes, MIME, isolation, and 
     `/assets/${manifest.bundleId}/*\n  Cache-Control: public, max-age=31536000, immutable`,
   );
 
-  const entrypoint = await rawRequest(`${baseUrl}/`, {
-    headers: { 'Accept-Encoding': 'identity' },
-    collectBody: true,
-  });
-  expect(entrypoint.status).toBe(200);
-  expect(entrypoint.headers['content-type']).toBe('text/html; charset=utf-8');
-  expect(entrypoint.headers['cache-control']).toBe('no-cache');
-  expect(entrypoint.headers['content-encoding']).toBeUndefined();
-  expectIsolationHeaders(entrypoint.headers);
-  expect(entrypoint.body).toContain(`src="assets/${manifest.bundleId}/plotjuggler4.js"`);
-  expect(entrypoint.body).toContain(`src="assets/${manifest.bundleId}/qtloader.js"`);
-  expect(entrypoint.body).toContain(
-    `? 'assets/${manifest.bundleId}/plotjuggler4.wasm' : filename`,
-  );
+  await expectEntrypoint(baseUrl, manifest);
 
   const wasm = manifest.files.find(file => file.path.endsWith('/plotjuggler4.wasm'));
   expect(wasm).toBeDefined();
-  const requests = [
-    ['br', 'br', 'br, identity;q=0'],
-    ['gzip', 'gzip', 'gzip, identity;q=0'],
-    ['identity', undefined, 'identity'],
-  ];
-  for (const [name, contentEncoding, acceptEncoding] of requests) {
-    const response = await rawRequest(`${baseUrl}/${wasm.path}`, {
-      headers: { 'Accept-Encoding': acceptEncoding },
-    });
-    const expected = wasm.representations[name];
-    expect(response.status).toBe(200);
-    expect(response.headers['content-type']).toBe('application/wasm');
-    expect(response.headers['content-encoding']).toBe(contentEncoding);
-    expect(response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
-    expect(response.headers.vary).toBe('Accept-Encoding');
-    expect(response.headers.etag).toBe(`"sha256-${expected.sha256}"`);
-    expect(response.bytes).toBe(expected.bytes);
-    expect(response.sha256).toBe(expected.sha256);
-    expectIsolationHeaders(response.headers);
+  expect(Object.keys(wasm.representations).sort()).toEqual(['br', 'gzip', 'identity']);
+  // The contract checks follow the manifest; these pin what the manifest itself must declare.
+  expect(wasm.cache).toBe('immutable');
+  expect(wasm.representations.br.contentEncoding).toBe('br');
+  expect(wasm.representations.gzip.contentEncoding).toBe('gzip');
+  const responses = await expectServedAsDeclared(baseUrl, wasm);
+  for (const [name, response] of Object.entries(responses)) {
+    expect(response.headers.etag).toBe(`"sha256-${wasm.representations[name].sha256}"`);
   }
 
   const cached = await rawRequest(`${baseUrl}/${wasm.path}`, {
@@ -137,14 +91,32 @@ test('deployment server negotiates exact compressed bytes, MIME, isolation, and 
   expect(head.headers['content-encoding']).toBe('gzip');
   expectIsolationHeaders(head.headers);
 
-  const missing = await rawRequest(`${baseUrl}/${wasm.representations.br.path}`);
-  expect(missing.status).toBe(404);
-  expect(missing.headers['cache-control']).toBe('no-store');
-  expectIsolationHeaders(missing.headers);
+  await expectUndeclaredHidden(baseUrl, manifest);
+});
 
-  const privateConfiguration = await rawRequest(`${baseUrl}/_headers`);
-  expect(privateConfiguration.status).toBe(404);
-  expectIsolationHeaders(privateConfiguration.headers);
+test('deployed presets are revalidated and negotiated like the bundle, with every indexed file present', async () => {
+  const presets = manifest.files.filter(file => file.path.startsWith('presets/'));
+  const declared = new Set(presets.map(file => file.path));
+  expect(declared.has('presets/index.json')).toBe(true);
+  const index = JSON.parse(await readFile(path.join(packageRoot, 'presets', 'index.json'), 'utf8'));
+  expect(index.presets.length).toBeGreaterThan(0);
+  for (const entry of index.presets) {
+    for (const reference of [entry.layout, entry.thumbnail].filter(Boolean)) {
+      expect(declared.has(`presets/${reference}`), reference).toBe(true);
+    }
+  }
+  expect((await readFile(path.join(packageRoot, '_headers'), 'utf8'))).toContain('/presets/*\n  Cache-Control: no-cache');
+
+  // Formats compressed inside gain nothing from .br/.gz; nor does a file below the packager's 1 KiB floor.
+  const compressedInside = /\.(mcap|png|glb)$/i;
+  for (const file of presets) {
+    expect(file.cache, file.path).toBe('revalidate');
+    const expected = compressedInside.test(file.path) || file.representations.identity.bytes < 1024
+      ? ['identity'] : ['br', 'gzip', 'identity'];
+    expect(Object.keys(file.representations).sort(), file.path).toEqual(expected);
+    await expectServedAsDeclared(baseUrl, file);
+  }
+  expect(presets.some(file => file.representations.br), 'some sample is precompressed').toBe(true);
 });
 
 test('cold Chromium boot runs the threaded app from the content-addressed package', async ({ page }) => {
@@ -157,12 +129,12 @@ test('cold Chromium boot runs the threaded app from the content-addressed packag
 
   await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
   const startup = await page.waitForFunction(() => {
-    const status = document.querySelector('#qtstatus')?.textContent || '';
-    if (status.startsWith('Application exit')) {
-      return { error: status };
+    const state = document.body?.dataset.state;
+    if (state === 'failed') {
+      return { error: document.querySelector('#status')?.textContent || '' };
     }
     const screen = document.querySelector('#screen');
-    if (status === 'Loading...' && screen && getComputedStyle(screen).display !== 'none') {
+    if (state === 'ready' && screen && getComputedStyle(screen).display !== 'none') {
       return { ready: true };
     }
     return false;
@@ -184,5 +156,36 @@ test('cold Chromium boot runs the threaded app from the content-addressed packag
   expect(wasmHeaders['cache-control']).toBe('public, max-age=31536000, immutable');
   expect(responses.has(`${assetBase}/plotjuggler4.js`)).toBe(true);
   expect(responses.has(`${assetBase}/qtloader.js`)).toBe(true);
+  // The production build discovers the samples deployed beside the page.
+  await expect.poll(() => responses.get(`${baseUrl}/presets/index.json`)?.['cache-control']).toBe('no-cache');
   expect(pageErrors).toEqual([]);
+});
+
+test('a phone is warned before the download and starts only on Continue anyway', async ({ browser }) => {
+  const context = await browser.newContext({ ...devices['Pixel 7'] });
+  const page = await context.newPage();
+  const pageErrors = [];
+  const wasmRequests = [];
+  page.on('pageerror', error => pageErrors.push(error.stack || error.message));
+  page.on('request', request => {
+    if (request.url().endsWith('.wasm')) {
+      wasmRequests.push(request.url());
+    }
+  });
+  try {
+    await page.goto(`${baseUrl}/`, { waitUntil: 'load' });
+    await expect(page.locator('#mobile')).toBeVisible();
+    await expect(page.locator('#mobile')).toContainText('not intended for mobile');
+    expect(await page.evaluate(() => document.body.dataset.state)).toBe('confirm');
+    // Nothing is fetched while the warning is up.
+    await page.waitForTimeout(1500);
+    expect(wasmRequests).toEqual([]);
+
+    await page.locator('#continue').click();
+    await page.waitForFunction(() => document.body.dataset.state === 'ready', undefined, { timeout: 90_000 });
+    expect(wasmRequests).toEqual([`${baseUrl}/assets/${manifest.bundleId}/plotjuggler4.wasm`]);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await context.close();
+  }
 });

@@ -5,12 +5,11 @@
 
 namespace PJ {
 
-/// QwtPlotCurve with an optional batched dots pass over the Lines style — the
-/// PJ4 home of PJ3's patched-Qwt "LinesAndDots" drawing. Dots are one widened-pen
-/// drawDots() batch, not per-point symbols: on the OpenGL paint engine every
-/// symbol blit costs a QPixmap-to-QImage conversion plus a texture upload
-/// (fresh cacheKey each call), and every symbol path costs CPU triangulation,
-/// so per-point QPainter calls collapse the replot rate on dense curves.
+/// QwtPlotCurve with an optional dots pass over the Lines style — the PJ4 home of
+/// PJ3's patched-Qwt "LinesAndDots" drawing. drawCurve() paints it only on the
+/// QPainter canvases (the raster QwtPlotCanvas: GPU canvas disabled, or the
+/// fallback after a GPU failure); PlotRhiCanvas never calls drawCurve(), it
+/// reads dotWidth() and builds the same square dots as geometry.
 class PlotCurve : public QwtPlotCurve {
  public:
   explicit PlotCurve(const QString& title);
@@ -20,6 +19,11 @@ class PlotCurve : public QwtPlotCurve {
   void setDotWidth(double width);
   [[nodiscard]] double dotWidth() const;
 
+  /// Text shown in parentheses after the title in the legend only: the title stays the curve's identity. Empty: none.
+  /// Returns whether it changed.
+  bool setLegendSuffix(const QString& suffix);
+  [[nodiscard]] QList<QwtLegendData> legendData() const override;
+
  protected:
   void drawCurve(
       QPainter* painter, int style, const QwtScaleMap& x_map, const QwtScaleMap& y_map, const QRectF& canvas_rect,
@@ -27,6 +31,7 @@ class PlotCurve : public QwtPlotCurve {
 
  private:
   double dot_width_ = 0.0;
+  QString legend_suffix_;
 };
 
 }  // namespace PJ

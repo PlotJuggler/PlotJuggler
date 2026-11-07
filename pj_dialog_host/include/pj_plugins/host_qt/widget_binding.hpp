@@ -7,8 +7,10 @@
 #include <functional>
 #include <optional>
 #include <pj_plugins/host/widget_data_view.hpp>
+#include <pj_plugins/host_qt/embedded_view_host.hpp>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace PJ {
 
@@ -33,6 +35,16 @@ using WidgetEventCallback = std::function<void(const std::string& widget_name, c
 /// source of truth so it can be unit-tested without constructing a dialog.
 QString resolveNamedIconPath(std::string_view icon_name);
 
+/// Where a plugin picker opens: a structured picker's initial_directory and
+/// suggested_name, kept apart so FileDialog never has to stat a path to tell
+/// them apart. Both empty for a legacy picker, and for a structured one that
+/// fails validation (logged), so the dialog keeps its default folder.
+struct FilePickerStart {
+  QString dir;
+  QString name;
+};
+FilePickerStart filePickerStart(const WidgetDataView& view, std::string_view name);
+
 class AppSession;
 class CatalogModel;
 
@@ -40,11 +52,18 @@ class CatalogModel;
 /// Uses QSignalBlocker to prevent re-entrant signal firing during updates.
 /// When session and catalog are provided, QFrame chart containers use a full
 /// PlotWidget (zoom/tracker/legend) instead of ChartPreviewWidget.
+/// When `embedded_views` is set, a QFrame carrying the `scene_view` key hosts a
+/// view built by it, its topics reconciled by difference; when unset such frames
+/// are left untouched. Returns the `scene_view` requests it could not honour, in
+/// request order, for the caller to deliver to the plugin after this call (never
+/// from inside it). An unchanged request is not re-applied, so a refused topic
+/// is reported, and retried, again only once the frame's kind or set changes.
 /// Styled-widget adaptation (QRadioButton/QCheckBox/QComboBox → PJ controls)
 /// lives in widget_adapters.hpp; the engines call adaptStyledWidgets() once
 /// after loading the .ui, and applyWidgetData keeps the replacements in sync.
-void applyWidgetData(
-    QWidget* root, const PJ::WidgetDataView& view, AppSession* session = nullptr, CatalogModel* catalog = nullptr);
+std::vector<EmbeddedViewFailure> applyWidgetData(
+    QWidget* root, const PJ::WidgetDataView& view, AppSession* session = nullptr, CatalogModel* catalog = nullptr,
+    const EmbeddedViewHost* embedded_views = nullptr);
 
 /// Connect primary change signals of all editable widgets under root
 /// to the given callback. The callback receives the widget objectName and

@@ -60,9 +60,16 @@ constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
 // same path works under /usr, /usr/local, or a mounted AppImage. It is a seed
 // source only (see seedBundledPlugins), never a scanned load path. A dev build
 // tree has no such directory, so seeding is a no-op there; developers point at
-// their freshly built plugins with --plugin-dir instead.
+// their freshly built plugins with --plugin-dir instead. A macOS app bundle
+// keeps them in Contents/Resources/plugins: each plugin directory holds a
+// manifest next to its library, and code signing refuses non-code files under
+// Contents/PlugIns (packaging/macos).
 QString bundledPluginsDir() {
+#if defined(Q_OS_MACOS)
+  return QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/plugins"));
+#else
   return QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../lib/plotjuggler/plugins"));
+#endif
 }
 
 // Copies one bundled payload (a per-id directory, or a lone DSO file) into the
@@ -270,6 +277,7 @@ ExtensionCatalogService::ExtensionCatalogService(
   const std::scoped_lock routing_lock(routing_mutex_);
   const std::unique_lock catalog_lock(catalog_mutex_);
   rebuildParserClaims();
+  resolveCustomTopicsEditor();
 }
 
 QStringList ExtensionCatalogService::customPluginFolders() const {
@@ -619,6 +627,7 @@ void ExtensionCatalogService::reload() {
     changed = plugin_catalog_->reload();
     if (changed) {
       rebuildParserClaims();
+      resolveCustomTopicsEditor();
     }
   }
   if (changed) {
@@ -705,6 +714,10 @@ const std::vector<LoadedToolbox>& ExtensionCatalogService::toolboxes() const {
   return plugin_catalog_->toolboxes();
 }
 
+const std::vector<LoadedWidget>& ExtensionCatalogService::widgets() const {
+  return plugin_catalog_->widgets();
+}
+
 std::vector<const LoadedDataSource*> ExtensionCatalogService::fileImportSources() const {
   const auto& catalog = *plugin_catalog_;
   return catalog.fileImportSources();
@@ -730,6 +743,57 @@ const LoadedToolbox* ExtensionCatalogService::findToolbox(QStringView id) const 
   const auto it = std::find_if(
       all.begin(), all.end(), [id](const LoadedToolbox& toolbox) { return QString::fromStdString(toolbox.id) == id; });
   return it == all.end() ? nullptr : &*it;
+}
+
+const LoadedWidget* ExtensionCatalogService::findWidget(QStringView plugin_id) const {
+  const auto& all = widgets();
+  const auto it = std::find_if(all.begin(), all.end(), [plugin_id](const LoadedWidget& widget) {
+    return QString::fromStdString(widget.id) == plugin_id;
+  });
+  return it == all.end() ? nullptr : &*it;
+}
+
+QString ExtensionCatalogService::toolboxBadge(QStringView id) const {
+  const LoadedToolbox* toolbox = findToolbox(id);
+  if (toolbox == nullptr) {
+    return {};
+  }
+  if (!toolbox->badge.empty()) {
+    return QString::fromStdString(toolbox->badge);
+  }
+  return toolbox->name.empty() ? id.toString() : QString::fromStdString(toolbox->name);
+}
+
+QString ExtensionCatalogService::toolboxDisplayName(QStringView id) const {
+  const LoadedToolbox* toolbox = findToolbox(id);
+  return toolbox == nullptr || toolbox->name.empty() ? id.toString() : QString::fromStdString(toolbox->name);
+}
+
+QString ExtensionCatalogService::pickCustomTopicsEditor(const QString& current, const QStringList& declarers) {
+  if (declarers.contains(current)) {
+    return current;
+  }
+  return declarers.isEmpty() ? QString{} : declarers.front();
+}
+
+void ExtensionCatalogService::resolveCustomTopicsEditor() {
+  QStringList declarers;
+  for (const LoadedToolbox& toolbox : toolboxes()) {
+    if (toolbox.custom_topics_editor) {
+      declarers.push_back(QString::fromStdString(toolbox.id));
+    }
+  }
+  const QString winner = pickCustomTopicsEditor(custom_topics_editor_id_, declarers);
+  custom_topics_editor_id_ = winner;
+  QStringList ignored = declarers;
+  ignored.removeOne(winner);
+  if (!ignored.isEmpty()) {
+    reportDiagnostic(
+        DiagnosticLevel::kWarning,
+        QStringLiteral("Several toolboxes declare custom_topics_editor; using '%1', ignoring %2")
+            .arg(winner, ignored.join(QStringLiteral(", "))),
+        winner);
+  }
 }
 
 QString ExtensionCatalogService::buildFileFilter() const {
@@ -759,6 +823,22 @@ QString ExtensionCatalogService::descriptorIncompatReason(const PluginDescriptor
       },
       currentPluginHostCompatibility());
   return QString::fromStdString(result.reason);
+}
+
+const LoadedDataSource* findDataSourceByIdentity(
+    const std::vector<const LoadedDataSource*>& candidates, const QString& manifest_id, const QString& name) {
+  const auto find_by = [&candidates](const QString& wanted, std::string LoadedDataSource::* field) {
+    const auto found =
+        std::find_if(candidates.cbegin(), candidates.cend(), [&wanted, field](const LoadedDataSource* candidate) {
+          return candidate != nullptr && QString::fromStdString(candidate->*field) == wanted;
+        });
+    return found != candidates.cend() ? *found : nullptr;
+  };
+  const LoadedDataSource* source = manifest_id.isEmpty() ? nullptr : find_by(manifest_id, &LoadedDataSource::id);
+  if (source == nullptr && !name.isEmpty()) {
+    source = find_by(name, &LoadedDataSource::name);
+  }
+  return source;
 }
 
 }  // namespace PJ

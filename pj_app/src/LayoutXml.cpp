@@ -3,16 +3,24 @@
 
 #include "LayoutXml.h"
 
+#include <QCoreApplication>
 #include <QDomNodeList>
 #include <QFileInfo>
+#include <QHash>
+#include <QRegularExpression>
 #include <QSet>
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
+#include "LoadInput.h"
 #include "pj_plotting/PlotXml.h"
+#include "pj_runtime/HttpUrl.h"
+#include "pj_runtime/XmlCdata.h"
 
 using namespace Qt::StringLiterals;
 
@@ -20,11 +28,38 @@ namespace PJ::layout_xml {
 
 namespace {
 
-bool isOpaqueBrowserUploadIdentity(const QString& value) {
+constexpr QLatin1StringView kStreamingSourcesTag("previouslyLoaded_StreamingSources");
+
+// A browser upload or stream-record identity: a token, never a filesystem path.
+bool isOpaqueSourceIdentity(const QString& value) {
   // Keep this deliberately narrow. `:` is legal in POSIX path components, so a
   // relative path such as logs/http://capture.mcap must retain the exact desktop
   // filesystem behavior it had before browser identities existed.
-  return value.startsWith(QLatin1StringView("pj-upload://"));
+  return isBrowserUploadIdentity(value) || isStreamIdentity(value);
+}
+
+// One <dataset> timeline child (of a <fileInfo> or a <streamInfo>). `schema_version`
+// is the root's pj4_version: below 4, the saved offset includes the global reference.
+DataSourceDatasetRef readDatasetRef(const QDomElement& dataset, int schema_version) {
+  DataSourceDatasetRef dataset_ref;
+  dataset_ref.source_name = dataset.attribute(u"source_name"_s);
+  bool source_index_ok = false;
+  dataset_ref.source_index = dataset.attribute(u"source_index"_s, u"-1"_s).toInt(&source_index_ok);
+  if (!source_index_ok) {
+    dataset_ref.source_index = -1;
+  }
+  if (dataset.hasAttribute(u"display_offset_ns"_s)) {
+    bool ok = false;
+    dataset_ref.display_offset_ns = dataset.attribute(u"display_offset_ns"_s).toLongLong(&ok);
+    dataset_ref.has_display_offset = ok;
+    dataset_ref.display_offset_includes_global_reference = ok && schema_version < 4;
+  }
+  bool dataset_order_ok = false;
+  dataset_ref.timeline_order = dataset.attribute(u"timeline_order"_s, u"-1"_s).toInt(&dataset_order_ok);
+  if (!dataset_order_ok) {
+    dataset_ref.timeline_order = -1;
+  }
+  return dataset_ref;
 }
 
 bool isCanonicalSha256(const QString& value) {
@@ -37,6 +72,188 @@ bool isCanonicalSha256(const QString& value) {
 
 }  // namespace
 
+QUrl resolveFileSourceUrl(const QString& filename, const QUrl& layout_url, QString* error) {
+  const auto fail = [error](const QString& message) {
+    if (error != nullptr) {
+      *error = message;
+    }
+    return QUrl();
+  };
+  if (!isHttpUrl(layout_url)) {
+    return fail(
+        QCoreApplication::translate("LayoutXml", "Data source '%1' has no web location to load from.").arg(filename));
+  }
+  if (filename.isEmpty()) {
+    return fail(QCoreApplication::translate("LayoutXml", "The layout names a data source without a filename."));
+  }
+  static const QRegularExpression kDriveLetter(u"^[A-Za-z]:"_s);
+  static const QRegularExpression kScheme(u"^[A-Za-z][A-Za-z0-9+.-]*:"_s);
+  if (filename.startsWith(u'/') || filename.contains(u'\\') || kDriveLetter.match(filename).hasMatch()) {
+    return fail(
+        QCoreApplication::translate(
+            "LayoutXml", "Data source '%1' is a file on a local machine, which a web layout cannot open.")
+            .arg(filename));
+  }
+  QUrl resolved;
+  if (kScheme.match(filename).hasMatch()) {
+    resolved = QUrl(filename, QUrl::StrictMode);
+    if (!isHttpUrl(resolved)) {
+      return fail(QCoreApplication::translate("LayoutXml", "Data source '%1' is not an http(s) URL.").arg(filename));
+    }
+  } else {
+    // A path, as the desktop writes it: '#', '?' and '%' are part of the name.
+    QUrl relative;
+    relative.setPath(filename, QUrl::DecodedMode);
+    resolved = layout_url.resolved(relative);
+  }
+  if (!resolved.isValid() || resolved.fileName().isEmpty()) {
+    return fail(QCoreApplication::translate("LayoutXml", "Data source '%1' does not name a file.").arg(filename));
+  }
+  if (error != nullptr) {
+    error->clear();
+  }
+  return resolved;
+}
+
+QString streamSourceIdentity(const QString& stream_id) {
+  return QLatin1StringView(kStreamIdentityScheme) + stream_id;
+}
+
+namespace {
+
+// Why `source` cannot be a stream record (empty when it can); records `source.id` in `seen_ids`.
+// The one rule both the reader and the writer apply, so neither accepts what the other refuses.
+QString streamRecordProblem(const StreamingSourceRef& source, QSet<QString>& seen_ids) {
+  if (source.id.isEmpty()) {
+    return QCoreApplication::translate("LayoutXml", "The layout names a streaming source without an id.");
+  }
+  if (seen_ids.contains(source.id)) {
+    return QCoreApplication::translate("LayoutXml", "The layout names streaming source '%1' more than once.")
+        .arg(source.id);
+  }
+  seen_ids.insert(source.id);
+  if (source.plugin_id.isEmpty() && source.plugin_manifest_id.isEmpty()) {
+    return QCoreApplication::translate("LayoutXml", "Streaming source '%1' does not name its plugin.").arg(source.id);
+  }
+  if (source.plugin_config_json.trimmed().isEmpty()) {
+    return QCoreApplication::translate("LayoutXml", "Streaming source '%1' has no plugin configuration.")
+        .arg(source.id);
+  }
+  return {};
+}
+
+}  // namespace
+
+QList<StreamingSourceRef> extractStreamingSources(const QDomDocument& doc, QString* error) {
+  const auto fail = [error](const QString& message) {
+    if (error != nullptr) {
+      *error = message;
+    }
+    return QList<StreamingSourceRef>();
+  };
+  if (error != nullptr) {
+    error->clear();
+  }
+  const QDomElement wrapper = doc.documentElement().firstChildElement(kStreamingSourcesTag);
+  if (!wrapper.nextSiblingElement(kStreamingSourcesTag).isNull()) {
+    return fail(QCoreApplication::translate("LayoutXml", "The layout records its streaming sources more than once."));
+  }
+  QList<StreamingSourceRef> sources;
+  QSet<QString> seen_ids;
+  for (QDomElement stream_info = wrapper.firstChildElement(u"streamInfo"_s); !stream_info.isNull();
+       stream_info = stream_info.nextSiblingElement(u"streamInfo"_s)) {
+    StreamingSourceRef source;
+    source.id = stream_info.attribute(u"id"_s);
+    source.source_name = stream_info.attribute(u"source_name"_s);
+    const QDomElement plugin = stream_info.firstChildElement(u"plugin"_s);
+    source.plugin_id = plugin.attribute(u"ID"_s);
+    source.plugin_manifest_id = plugin.attribute(u"manifest_id"_s);
+    source.plugin_config_json = plugin.text();
+    if (const QString problem = streamRecordProblem(source, seen_ids); !problem.isEmpty()) {
+      return fail(problem);
+    }
+    if (!plugin.nextSiblingElement(u"plugin"_s).isNull()) {
+      return fail(
+          QCoreApplication::translate("LayoutXml", "Streaming source '%1' names more than one plugin.").arg(source.id));
+    }
+    // Stream records exist only from this schema on, so their offset never takes the
+    // pre-v4 migration, also in a hand-written layout that omits pj4_version.
+    if (const QDomElement dataset = stream_info.firstChildElement(u"dataset"_s); !dataset.isNull()) {
+      source.dataset = readDatasetRef(dataset, kStreamingLayoutSchemaVersion);
+    }
+    sources.push_back(std::move(source));
+  }
+  return sources;
+}
+
+bool writeStreamingSources(QDomDocument& doc, const QList<StreamingSourceRef>& sources, QString* error) {
+  const auto fail = [error](const QString& message) {
+    if (error != nullptr) {
+      *error = message;
+    }
+    return false;
+  };
+  if (error != nullptr) {
+    error->clear();
+  }
+  if (sources.isEmpty()) {
+    return true;
+  }
+  QDomElement root = doc.documentElement();
+  if (!root.firstChildElement(kStreamingSourcesTag).isNull()) {
+    return fail(QCoreApplication::translate("LayoutXml", "The layout records its streaming sources more than once."));
+  }
+  QSet<QString> seen_ids;
+  for (const StreamingSourceRef& source : sources) {
+    if (const QString problem = streamRecordProblem(source, seen_ids); !problem.isEmpty()) {
+      return fail(problem);
+    }
+  }
+  QDomElement wrapper = doc.createElement(kStreamingSourcesTag);
+  for (const StreamingSourceRef& source : sources) {
+    QDomElement stream_info = doc.createElement(u"streamInfo"_s);
+    stream_info.setAttribute(u"id"_s, source.id);
+    if (!source.source_name.isEmpty()) {
+      stream_info.setAttribute(u"source_name"_s, source.source_name);
+    }
+    QDomElement plugin = doc.createElement(u"plugin"_s);
+    plugin.setAttribute(u"ID"_s, source.plugin_id);
+    if (!source.plugin_manifest_id.isEmpty()) {
+      plugin.setAttribute(u"manifest_id"_s, source.plugin_manifest_id);
+    }
+    appendJsonAsCdata(doc, plugin, source.plugin_config_json);
+    stream_info.appendChild(plugin);
+
+    const DataSourceDatasetRef& state = source.dataset;
+    QDomElement dataset = doc.createElement(u"dataset"_s);
+    if (!state.source_name.isEmpty()) {
+      dataset.setAttribute(u"source_name"_s, state.source_name);
+    }
+    if (state.source_index >= 0) {
+      dataset.setAttribute(u"source_index"_s, QString::number(state.source_index));
+    }
+    if (state.has_display_offset) {
+      dataset.setAttribute(u"display_offset_ns"_s, QString::number(state.display_offset_ns));
+    }
+    if (state.timeline_order >= 0) {
+      dataset.setAttribute(u"timeline_order"_s, QString::number(state.timeline_order));
+    }
+    if (dataset.hasAttributes()) {
+      stream_info.appendChild(dataset);
+    }
+    wrapper.appendChild(stream_info);
+  }
+  root.appendChild(wrapper);
+  root.setAttribute(u"pj4_version"_s, QString::number(kStreamingLayoutSchemaVersion));
+  return true;
+}
+
+bool isSourceBoundLayout(const QDomDocument& doc) {
+  const QDomElement root = doc.documentElement();
+  return root.attribute(u"binding"_s, u"source"_s) != "generic"_L1 &&
+         (!root.firstChildElement(kStreamingSourcesTag).isNull() || !extractDataSource(doc, QDir()).isEmpty());
+}
+
 QString ensureLayoutExtension(const QString& path) {
   if (path.isEmpty() || !QFileInfo(path).suffix().isEmpty()) {
     return path;
@@ -45,33 +262,7 @@ QString ensureLayoutExtension(const QString& path) {
 }
 
 bool containsEphemeralBrowserPath(const QByteArray& serialized) {
-  return serialized.contains("pj-upload://") || serialized.contains("/pj_uploads");
-}
-
-void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& json) {
-  // Indices kept as qsizetype to avoid narrowing on -Werror builds; Qt 6's
-  // QString APIs return qsizetype throughout.
-  qsizetype start = 0;
-  while (true) {
-    const qsizetype hit = json.indexOf("]]>"_L1, start);
-    if (hit < 0) {
-      parent.appendChild(doc.createCDATASection(json.mid(start)));
-      return;
-    }
-    // End this section AFTER "]]" so the next section begins with ">".
-    parent.appendChild(doc.createCDATASection(json.mid(start, hit + 2 - start)));
-    start = hit + 2;
-  }
-}
-
-QString directCdataText(const QDomElement& element) {
-  QString out;
-  for (QDomNode n = element.firstChild(); !n.isNull(); n = n.nextSibling()) {
-    if (n.isCDATASection() || n.isText()) {
-      out += n.nodeValue();  // child *elements* (e.g. <source_fallback>) are skipped
-    }
-  }
-  return out;
+  return serialized.contains(kBrowserUploadScheme) || serialized.contains("/pj_uploads");
 }
 
 QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
@@ -99,7 +290,7 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     // Browser upload identities are opaque, session-scoped URI tokens. Never
     // reinterpret them as relative filesystem paths (which would silently turn
     // pj-upload://... into <layout-dir>/pj-upload:/...).
-    if (isOpaqueBrowserUploadIdentity(filename)) {
+    if (isOpaqueSourceIdentity(filename)) {
       info.resolved_path = filename;
     } else {
       const QFileInfo qfi(filename);
@@ -109,6 +300,8 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     const QString content_sha256 = file_info.attribute(u"content_sha256"_s);
     if (isCanonicalSha256(content_sha256)) {
       info.content_sha256 = content_sha256;
+    } else {
+      info.content_sha256_malformed = !content_sha256.isEmpty();
     }
 
     // Legacy single-track state on <fileInfo> (optional; absent in pre-v3
@@ -133,32 +326,13 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     // to distinct tracks. Empty in a <=v3 layout (falls back to the flat state).
     for (QDomElement dataset = file_info.firstChildElement(u"dataset"_s); !dataset.isNull();
          dataset = dataset.nextSiblingElement(u"dataset"_s)) {
-      DataSourceDatasetRef dataset_ref;
-      dataset_ref.source_name = dataset.attribute(u"source_name"_s);
-      bool source_index_ok = false;
-      dataset_ref.source_index = dataset.attribute(u"source_index"_s, u"-1"_s).toInt(&source_index_ok);
-      if (!source_index_ok) {
-        dataset_ref.source_index = -1;
-      }
-      if (dataset.hasAttribute(u"display_offset_ns"_s)) {
-        bool ok = false;
-        dataset_ref.display_offset_ns = dataset.attribute(u"display_offset_ns"_s).toLongLong(&ok);
-        dataset_ref.has_display_offset = ok;
-        dataset_ref.display_offset_includes_global_reference = ok && schema_version < 4;
-      }
-      bool dataset_order_ok = false;
-      dataset_ref.timeline_order = dataset.attribute(u"timeline_order"_s, u"-1"_s).toInt(&dataset_order_ok);
-      if (!dataset_order_ok) {
-        dataset_ref.timeline_order = -1;
-      }
-      info.datasets.push_back(std::move(dataset_ref));
+      info.datasets.push_back(readDatasetRef(dataset, schema_version));
     }
 
     const QDomElement plugin = file_info.firstChildElement(u"plugin"_s);
     if (!plugin.isNull()) {
       info.plugin_id = plugin.attribute(u"ID"_s);
       info.plugin_manifest_id = plugin.attribute(u"manifest_id"_s);
-      info.rewrite_plugin_filepath = plugin.attribute(u"filepath_mode"_s) == "source"_L1;
       // QDomElement::text() concatenates all child text/CDATA — exactly
       // the round-trip of doc.createCDATASection above.
       info.plugin_config_json = plugin.text();
@@ -401,48 +575,88 @@ namespace {
 
 // An (id, source, path) attribute triple that carries a dataset qualifier.
 struct DatasetIdentityAttributes {
-  const char* id;
-  const char* source;
-  const char* path;
+  QString id;
+  QString source;
+  QString path;
 };
-// The three curve pairs (time-series + both XY axes), applied to <plot><curve>.
-constexpr std::array<DatasetIdentityAttributes, 3> kCurveIdentityAttributes{{
-    {"dataset_id", "dataset_source", "dataset_path"},
-    {"x_dataset_id", "x_dataset_source", "x_dataset_path"},
-    {"y_dataset_id", "y_dataset_source", "y_dataset_path"},
-}};
-// The single processor-input pair, applied to <processor> (its input rebinds on
-// reload exactly like a plotted curve, so it carries the same qualifiers).
-constexpr DatasetIdentityAttributes kProcessorInputIdentityAttributes{
-    "input_dataset_id", "input_dataset_source", "input_dataset_path"};
-constexpr DatasetIdentityAttributes kTransformInputIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
-constexpr DatasetIdentityAttributes kMarkerScopeIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
-constexpr DatasetIdentityAttributes kSceneIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
-constexpr DatasetIdentityAttributes kSourceIdentityAttributes{
-    "source_dataset_id", "source_dataset_source", "source_dataset_path"};
 
-// Visits every <processor> that is a descendant of <data_processors>.
+// The five qualifier shapes, built once. kPlain: a time-series curve, a <transform> /
+// <on_demand> / <CustomWidget> <input>, a dataset-bound <generator> (an all_datasets one carries no
+// dataset_id and is skipped), a marker scope, a scene <layer> / <config_topic>. kX / kY:
+// the XY curve axes. kInput: a <processor>'s input, which rebinds on reload exactly like a
+// plotted curve. kSource: a scene <robot_model> / <trail>.
+enum class Qualifier : std::uint8_t { kPlain, kX, kY, kInput, kSource };
+
+const std::array<DatasetIdentityAttributes, 5>& qualifierShapes() {
+  static const std::array<DatasetIdentityAttributes, 5> shapes{{
+      {u"dataset_id"_s, u"dataset_source"_s, u"dataset_path"_s},
+      {u"x_dataset_id"_s, u"x_dataset_source"_s, u"x_dataset_path"_s},
+      {u"y_dataset_id"_s, u"y_dataset_source"_s, u"y_dataset_path"_s},
+      {u"input_dataset_id"_s, u"input_dataset_source"_s, u"input_dataset_path"_s},
+      {u"source_dataset_id"_s, u"source_dataset_source"_s, u"source_dataset_path"_s},
+  }};
+  return shapes;
+}
+
+const DatasetIdentityAttributes& qualifier(Qualifier shape) {
+  return qualifierShapes()[static_cast<std::size_t>(shape)];
+}
+
+// The three <plot><curve> shapes: time-series and both XY axes.
+std::span<const DatasetIdentityAttributes, 3> curveQualifiers() {
+  return std::span(qualifierShapes()).first<3>();
+}
+
+// Visits every `tag` element in the document.
 template <typename Fn>
-void forEachProcessor(QDomDocument& doc, Fn&& fn) {
-  const QDomNodeList processors = doc.elementsByTagName(u"processor"_s);
-  for (int index = 0; index < processors.size(); ++index) {
-    QDomElement processor = processors.at(index).toElement();
-    if (!processor.isNull()) {
-      fn(processor);
+void forEachTagged(QDomDocument& doc, const QString& tag, Fn&& fn) {
+  const QDomNodeList nodes = doc.elementsByTagName(tag);
+  for (int index = 0; index < nodes.size(); ++index) {
+    QDomElement element = nodes.at(index).toElement();
+    if (!element.isNull()) {
+      fn(element);
     }
   }
 }
 
+// Visits every <processor> that is a descendant of <data_processors>.
+template <typename Fn>
+void forEachProcessor(QDomDocument& doc, Fn&& fn) {
+  forEachTagged(doc, u"processor"_s, std::forward<Fn>(fn));
+}
+
+// Visits every marker <generator> that is a descendant of <data_processors>.
+template <typename Fn>
+void forEachGenerator(QDomDocument& doc, Fn&& fn) {
+  forEachTagged(doc, u"generator"_s, std::forward<Fn>(fn));
+}
+
+// Visits every <input> of a <transform> and of an <on_demand> recipe: both carry the same
+// dataset identity triple (Qualifier::kPlain).
 template <typename Fn>
 void forEachTransformInput(QDomDocument& doc, Fn&& fn) {
-  const QDomNodeList transforms = doc.elementsByTagName(u"transform"_s);
-  for (int transform_index = 0; transform_index < transforms.size(); ++transform_index) {
-    const QDomElement transform = transforms.at(transform_index).toElement();
-    for (QDomElement input = transform.firstChildElement(u"input"_s); !input.isNull();
+  for (const QString& tag : {u"transform"_s, u"on_demand"_s}) {
+    const QDomNodeList processors = doc.elementsByTagName(tag);
+    for (int index = 0; index < processors.size(); ++index) {
+      const QDomElement processor = processors.at(index).toElement();
+      for (QDomElement input = processor.firstChildElement(u"input"_s); !input.isNull();
+           input = input.nextSiblingElement(u"input"_s)) {
+        fn(input);
+      }
+    }
+  }
+}
+
+// Visits every wire (<input>) of a <CustomWidget>. Selected through the parent: a marker rule's
+// <input> elements are not wires and carry no dataset qualifiers.
+template <typename Fn>
+void forEachCustomWidgetInput(QDomDocument& doc, Fn&& fn) {
+  forEachTagged(doc, u"CustomWidget"_s, [&fn](QDomElement& widget) {
+    for (QDomElement input = widget.firstChildElement(u"input"_s); !input.isNull();
          input = input.nextSiblingElement(u"input"_s)) {
       fn(input);
     }
-  }
+  });
 }
 
 // Applies `visit` to the document element and every descendant, iteratively so a
@@ -467,29 +681,14 @@ void forEachElement(QDomDocument& doc, Fn&& visit) {
 
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
   // Generic layouts bind structural identities to the unique matching dataset
-  // that is live when the layout is opened. Scene2D/Scene3D loaders implement the
-  // same unique-only fallback as plots and processors; keeping their upload path
+  // that is live when the layout is opened. Scene2D/Scene3D loaders and State Transitions rows
+  // implement the same unique-only fallback as plots and processors; keeping their upload path
   // would both source-bind the layout and leak an ephemeral browser identity.
-  const auto strip_pair = [](QDomElement& element, const DatasetIdentityAttributes& pair) {
-    element.removeAttribute(QString::fromLatin1(pair.id));
-    element.removeAttribute(QString::fromLatin1(pair.source));
-    element.removeAttribute(QString::fromLatin1(pair.path));
-  };
-  forEachPlotCurve(doc, [&strip_pair](QDomElement curve) {
-    for (const DatasetIdentityAttributes& pair : kCurveIdentityAttributes) {
-      strip_pair(curve, pair);
-    }
-  });
-  forEachProcessor(
-      doc, [&strip_pair](QDomElement& processor) { strip_pair(processor, kProcessorInputIdentityAttributes); });
-  forEachTransformInput(
-      doc, [&strip_pair](QDomElement& input) { strip_pair(input, kTransformInputIdentityAttributes); });
-  forEachMarkerScope(doc, [&strip_pair](QDomElement scope) { strip_pair(scope, kMarkerScopeIdentityAttributes); });
-  forEachElement(doc, [&strip_pair](QDomElement& element) {
-    if (element.tagName() == "layer"_L1 || element.tagName() == "config_topic"_L1) {
-      strip_pair(element, kSceneIdentityAttributes);
-    } else if (element.tagName() == "robot_model"_L1 || element.tagName() == "trail"_L1) {
-      strip_pair(element, kSourceIdentityAttributes);
+  forEachElement(doc, [](QDomElement& element) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      element.removeAttribute(shape.id);
+      element.removeAttribute(shape.source);
+      element.removeAttribute(shape.path);
     }
   });
 }
@@ -498,32 +697,30 @@ namespace {
 
 // Stamps the FileLoader-known full path next to `pair`'s numeric id on `element`.
 void stampIdentityPair(QDomElement& element, const DatasetIdentityAttributes& pair, const DatasetPathLookup& lookup) {
-  const QString id_name = QString::fromLatin1(pair.id);
-  if (!element.hasAttribute(id_name)) {
+  if (!element.hasAttribute(pair.id)) {
     return;
   }
   bool ok = false;
-  const qulonglong raw_id = element.attribute(id_name).toULongLong(&ok);
+  const qulonglong raw_id = element.attribute(pair.id).toULongLong(&ok);
   if (!ok || raw_id == 0 || raw_id > std::numeric_limits<std::uint32_t>::max()) {
     return;
   }
   const QString path = lookup(static_cast<std::uint32_t>(raw_id));
   if (!path.isEmpty()) {
-    element.setAttribute(QString::fromLatin1(pair.path), path);
+    element.setAttribute(pair.path, path);
   }
 }
 
 // Strips `pair`'s numeric id from `element` when it carries no full-path
 // qualifier (an unvalidated volatile hint that must not survive a file save).
 void stripUnvalidatedIdentityPair(QDomElement& element, const DatasetIdentityAttributes& pair) {
-  const QString id_name = QString::fromLatin1(pair.id);
-  if (!element.hasAttribute(id_name) || !element.attribute(QString::fromLatin1(pair.path)).isEmpty()) {
+  if (!element.hasAttribute(pair.id) || !element.attribute(pair.path).isEmpty()) {
     return;  // absent, or path-qualified (and thus validatable) — keep it.
   }
   bool ok = false;
-  const qulonglong id = element.attribute(id_name).toULongLong(&ok);
+  const qulonglong id = element.attribute(pair.id).toULongLong(&ok);
   if (ok && id != 0) {  // 0 is a local-scene sentinel, not a remintable id.
-    element.removeAttribute(id_name);
+    element.removeAttribute(pair.id);
   }
 }
 
@@ -534,40 +731,43 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
     return;
   }
   forEachPlotCurve(doc, [&lookup](QDomElement curve) {
-    for (const DatasetIdentityAttributes& pair : kCurveIdentityAttributes) {
+    for (const DatasetIdentityAttributes& pair : curveQualifiers()) {
       stampIdentityPair(curve, pair, lookup);
     }
   });
-  forEachProcessor(doc, [&lookup](QDomElement& processor) {
-    stampIdentityPair(processor, kProcessorInputIdentityAttributes, lookup);
-  });
+  forEachProcessor(
+      doc, [&lookup](QDomElement& processor) { stampIdentityPair(processor, qualifier(Qualifier::kInput), lookup); });
   forEachTransformInput(
-      doc, [&lookup](QDomElement& input) { stampIdentityPair(input, kTransformInputIdentityAttributes, lookup); });
+      doc, [&lookup](QDomElement& input) { stampIdentityPair(input, qualifier(Qualifier::kPlain), lookup); });
+  forEachGenerator(doc, [&lookup](QDomElement& gen) { stampIdentityPair(gen, qualifier(Qualifier::kPlain), lookup); });
   forEachMarkerScope(
-      doc, [&lookup](QDomElement scope) { stampIdentityPair(scope, kMarkerScopeIdentityAttributes, lookup); });
+      doc, [&lookup](QDomElement scope) { stampIdentityPair(scope, qualifier(Qualifier::kPlain), lookup); });
+  forEachCustomWidgetInput(
+      doc, [&lookup](QDomElement& input) { stampIdentityPair(input, qualifier(Qualifier::kPlain), lookup); });
 }
 
 void removeUnvalidatedDatasetIds(QDomDocument& doc) {
   forEachPlotCurve(doc, [](QDomElement curve) {
-    for (const DatasetIdentityAttributes& pair : kCurveIdentityAttributes) {
+    for (const DatasetIdentityAttributes& pair : curveQualifiers()) {
       stripUnvalidatedIdentityPair(curve, pair);
     }
   });
   forEachProcessor(
-      doc, [](QDomElement& processor) { stripUnvalidatedIdentityPair(processor, kProcessorInputIdentityAttributes); });
+      doc, [](QDomElement& processor) { stripUnvalidatedIdentityPair(processor, qualifier(Qualifier::kInput)); });
   forEachTransformInput(
-      doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, kTransformInputIdentityAttributes); });
-  forEachMarkerScope(
-      doc, [](QDomElement scope) { stripUnvalidatedIdentityPair(scope, kMarkerScopeIdentityAttributes); });
+      doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, qualifier(Qualifier::kPlain)); });
+  forEachGenerator(doc, [](QDomElement& gen) { stripUnvalidatedIdentityPair(gen, qualifier(Qualifier::kPlain)); });
+  forEachMarkerScope(doc, [](QDomElement scope) { stripUnvalidatedIdentityPair(scope, qualifier(Qualifier::kPlain)); });
+  forEachCustomWidgetInput(
+      doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, qualifier(Qualifier::kPlain)); });
 }
 
 void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {
   remapDatasetSourcePaths(doc, [&layout_dir](const QString& saved_path) {
-    if (isOpaqueBrowserUploadIdentity(saved_path)) {
+    if (isOpaqueSourceIdentity(saved_path)) {
       return saved_path;
     }
-    const QFileInfo info(saved_path);
-    return QDir::cleanPath(info.isAbsolute() ? info.absoluteFilePath() : layout_dir.absoluteFilePath(saved_path));
+    return QDir::cleanPath(QFileInfo(saved_path).isAbsolute() ? saved_path : layout_dir.absoluteFilePath(saved_path));
   });
 }
 
@@ -575,20 +775,83 @@ void remapDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& remap
   if (!remap) {
     return;
   }
-  static constexpr std::array<const char*, 5> kPathAttributes{
-      "dataset_path", "x_dataset_path", "y_dataset_path", "input_dataset_path", "source_dataset_path"};
   forEachElement(doc, [&remap](QDomElement& element) {
-    for (const char* raw_name : kPathAttributes) {
-      const QString name = QString::fromLatin1(raw_name);
-      if (!element.hasAttribute(name)) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      if (!element.hasAttribute(shape.path)) {
         continue;
       }
-      const QString saved_path = element.attribute(name);
+      const QString saved_path = element.attribute(shape.path);
       if (saved_path.isEmpty()) {
         continue;
       }
-      element.setAttribute(name, remap(saved_path));
+      element.setAttribute(shape.path, remap(saved_path));
     }
+  });
+}
+
+void stampDatasetIdentities(QDomDocument& doc, const QHash<std::uint32_t, QString>& identity_for_dataset) {
+  if (identity_for_dataset.isEmpty()) {
+    return;
+  }
+  forEachElement(doc, [&identity_for_dataset](QDomElement& element) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      bool ok = false;
+      const std::uint32_t dataset_id = element.attribute(shape.id).toUInt(&ok);
+      if (const auto identity = identity_for_dataset.constFind(dataset_id);
+          ok && identity != identity_for_dataset.cend()) {
+        element.setAttribute(shape.path, identity.value());
+      }
+    }
+  });
+}
+
+void bindStreamQualifiers(QDomDocument& doc, const QHash<QString, std::uint32_t>& dataset_for_identity) {
+  if (dataset_for_identity.isEmpty()) {
+    return;
+  }
+  forEachElement(doc, [&dataset_for_identity](QDomElement& element) {
+    std::optional<std::uint32_t> bound;
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      const auto dataset = dataset_for_identity.constFind(element.attribute(shape.path));
+      if (dataset == dataset_for_identity.cend()) {
+        continue;
+      }
+      element.setAttribute(shape.id, QString::number(dataset.value()));
+      element.removeAttribute(shape.source);
+      element.removeAttribute(shape.path);
+      bound = dataset.value();
+    }
+    if (!bound.has_value()) {
+      return;
+    }
+    const QString tag = element.tagName();
+    if (tag == "curve"_L1 || tag == "layer"_L1 || tag == "config_topic"_L1) {
+      plot_xml::markPendingIntent(element);
+      return;
+    }
+    // A robot or trail payload names its stream for its <layer>, which is what waits for the
+    // topic; a layer with no identity of its own demands the topic from the payload's stream.
+    QDomElement layer = element.parentNode().toElement();
+    if (layer.tagName() != "layer"_L1) {
+      return;
+    }
+    plot_xml::markPendingIntent(layer);
+    const DatasetIdentityAttributes& own = qualifier(Qualifier::kPlain);
+    if (!layer.hasAttribute(own.id) && !layer.hasAttribute(own.source) && !layer.hasAttribute(own.path)) {
+      layer.setAttribute(own.id, QString::number(*bound));
+    }
+  });
+}
+
+void relativizeDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& relocate) {
+  if (!relocate) {
+    return;
+  }
+  remapDatasetSourcePaths(doc, [&relocate](const QString& saved_path) -> QString {
+    if (isOpaqueSourceIdentity(saved_path) || !QFileInfo(saved_path).isAbsolute()) {
+      return saved_path;
+    }
+    return relocate(saved_path);
   });
 }
 
@@ -711,10 +974,10 @@ bool isSamePath(const QString& a, const QString& b) {
   if (a.isEmpty() || b.isEmpty()) {
     return false;
   }
-  const bool a_is_browser_upload = isOpaqueBrowserUploadIdentity(a);
-  const bool b_is_browser_upload = isOpaqueBrowserUploadIdentity(b);
-  if (a_is_browser_upload || b_is_browser_upload) {
-    return a_is_browser_upload && b_is_browser_upload && a == b;
+  const bool a_is_opaque = isOpaqueSourceIdentity(a);
+  const bool b_is_opaque = isOpaqueSourceIdentity(b);
+  if (a_is_opaque || b_is_opaque) {
+    return a_is_opaque && b_is_opaque && a == b;
   }
   const QString canon_a = QFileInfo(a).canonicalFilePath();
   const QString canon_b = QFileInfo(b).canonicalFilePath();

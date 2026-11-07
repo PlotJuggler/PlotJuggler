@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# PlotJuggler 4 as a conda package, for the PlotJuggler prefix.dev channel.
+# It installs next to RoboStack's ROS 2 packages in one environment, which is
+# how ROS users on conda get PJ4. Built by build_conda.sh, which supplies
+# PJ_QT_VERSION and PJ_VERSION from versions.env (or the release tag).
+
+context:
+  version: ${{ env.get("PJ_VERSION") }}
+
+package:
+  name: plotjuggler4
+  version: ${{ version }}
+
+source:
+  path: ../..
+
+build:
+  number: 0
+  skip:
+    - win
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - ${{ compiler('cxx') }}
+    - if: unix
+      then: ${{ stdlib('c') }}
+    - cmake >=3.28
+    - ninja
+    - pkg-config
+  host:
+    - qt6-main ${{ env.get("PJ_QT_VERSION") }}.*
+    - qwt 6.3.*
+    - fmt
+    - tsl_robin_map 1.4.*
+    - glm 1.0.*
+    - nlohmann_json 3.12.*
+    - python 3.12.*
+    - pybind11 2.13.*
+    - zstd 1.5.*
+    - lz4-c
+    - fast_float 8.*
+    # conda-forge's GPL variant links lzo; PJ4 ships MPL-2.0.
+    - libarchive 3.8.* lgpl_*
+    - libjpeg-turbo 3.*
+    - libpng 1.6.*
+    - backward-cpp 1.6.*
+    - draco
+    - assimp
+    # backward-cpp's dw backend and the GL/EGL stubs pj_scene3D links; macOS
+    # has its own OpenGL framework and symbolizes without elfutils.
+    - if: linux
+      then:
+        - elfutils
+        - libgl-devel
+        - libopengl-devel
+        - libegl-devel
+    # conda-forge's LGPL build, not recipes/ffmpeg: that one is named ffmpeg
+    # too, so installing PJ4 would swap it into a ROS environment and break
+    # OpenCV and VTK, which need the codecs and libraries it leaves out.
+    - ffmpeg ${{ ffmpeg }}.* lgpl_*
+    # PJ4's own packages (recipes/), from the plotjuggler channel.
+    - luau 0.700.*
+    - libmcap 2.1.*
+    - cloudini 1.4.*
+    - kissfft 131.1.*
+    - libnanoarrow 0.7.*
+  # ffmpeg's run_export demands at least the patch release built against,
+  # often newer than a RoboStack snapshot's; the ABI holds within a major.
+  ignore_run_exports:
+    from_package:
+      - ffmpeg
+  run:
+    # The embedded interpreter links libpython and loads the stdlib from the
+    # env; python's run_exports only pin the ABI, not the package itself.
+    - python 3.12.*
+    - ${{ pin_compatible('ffmpeg', lower_bound='x.x', upper_bound='x') }}
+    # PJ4 ships MPL-2.0 and must not pull GPL builds into the environment.
+    - ffmpeg * lgpl_*
+    - libarchive * lgpl_*
+
+tests:
+  - script:
+      env:
+        QT_QPA_PLATFORM: offscreen
+      content:
+        - plotjuggler4 --version
+        # The embedded interpreter's PYTHONHOME is baked at build time; this
+        # proves conda's prefix relocation rewrote it to the installed env.
+        - plotjuggler4 --selftest-python
+        - test -x "$PREFIX/bin/pj-plugin-check"
+
+about:
+  homepage: https://plotjuggler.io
+  repository: https://github.com/PlotJuggler/PlotJuggler
+  license: MPL-2.0
+  license_file: LICENSE
+  summary: PlotJuggler 4, the time series visualization tool

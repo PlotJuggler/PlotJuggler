@@ -11,6 +11,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
+#include <QShortcut>
 #include <QSvgRenderer>
 #include <Qt>
 #include <algorithm>
@@ -51,6 +52,9 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   connect(ui_->playbackLoop, &QPushButton::toggled, this, &TimelineWidget::onLoopToggled);
   connect(ui_->playbackRate, &DoubleScrubber::valueChanged, this, &TimelineWidget::onRateChanged);
   connect(ui_->playbackStep, &DoubleScrubber::valueChanged, this, &TimelineWidget::onStepChanged);
+  auto* playback_shortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
+  playback_shortcut->setAutoRepeat(false);
+  connect(playback_shortcut, &QShortcut::activated, ui_->buttonPlay, &QPushButton::click);
 }
 
 TimelineWidget::~TimelineWidget() {

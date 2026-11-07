@@ -19,7 +19,13 @@ class PjScriptingCoreConan(ConanFile):
     # Consumers that link the engine into a shared lib (the GUI plugin .so) need a PIC
     # Luau; default it here so the package's own Luau binary id matches theirs.
     default_options = {"luau/*:fPIC": True}
-    exports_sources = "CMakeLists.txt", "src/luau_engine.cpp", "src/marker_engine.cpp", "include/*"
+    exports_sources = (
+        "CMakeLists.txt",
+        "src/luau_engine.cpp",
+        "src/marker_engine.cpp",
+        "src/luau_sandbox_state.h",
+        "include/*",
+    )
 
     def requirements(self):
         # pj_base (PlotMarker) is exposed by marker_engine.h, so consumers need its

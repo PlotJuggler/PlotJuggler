@@ -6,42 +6,27 @@
 #include <limits>
 #include <optional>
 
-#include "pj_scene3d_core/browser_budget.h"
+#include "pj_scene3d_core/scene_limits.h"
 
 namespace pj::scene3d {
 
-// Browser-only SceneEntities limits. Procedural solids stay instanced, while
+// SceneEntities admission against SceneLimits. Procedural solids stay instanced, while
 // line and triangle primitives retain double-precision vertices until the view
 // has subtracted its render origin. The two independent view budgets prevent a
 // marker-heavy topic from allocating unbounded CPU staging and QRhi buffers.
-// Native rendering does not consume these constants.
-inline constexpr std::uint64_t kBrowserMaxMarkerWireBytes = 32ULL * 1024ULL * 1024ULL;
-inline constexpr std::uint64_t kBrowserMaxMarkerInstancesPerLayer = 50'000;
-inline constexpr std::uint64_t kBrowserMaxMarkerInstancesPerView = 100'000;
-inline constexpr std::uint64_t kBrowserMaxMarkerStreamVerticesPerLayer = 500'000;
-inline constexpr std::uint64_t kBrowserMaxMarkerStreamVerticesPerView = 1'000'000;
-inline constexpr std::uint64_t kBrowserMaxMarkerFramesPerLayer = 4'096;
-inline constexpr std::uint64_t kBrowserMaxMarkerRetainedBytesPerLayer = 64ULL * 1024ULL * 1024ULL;
 
-[[nodiscard]] constexpr bool browserMarkerWirePayloadFits(std::uint64_t bytes) noexcept {
-  return bytes <= kBrowserMaxMarkerWireBytes;
-}
-
-[[nodiscard]] constexpr bool browserMarkerLayerCountsFit(
-    std::uint64_t instances, std::uint64_t stream_vertices, std::uint64_t frames) noexcept {
-  return instances <= kBrowserMaxMarkerInstancesPerLayer &&
-         stream_vertices <= kBrowserMaxMarkerStreamVerticesPerLayer && frames <= kBrowserMaxMarkerFramesPerLayer;
-}
-
-[[nodiscard]] constexpr bool browserMarkerRetainedBytesFit(std::uint64_t bytes) noexcept {
-  return bytes <= kBrowserMaxMarkerRetainedBytesPerLayer;
+[[nodiscard]] constexpr bool markerLayerCountsFit(
+    std::uint64_t instances, std::uint64_t stream_vertices, std::uint64_t frames,
+    const SceneLimits& limits = kSceneLimits) noexcept {
+  return instances <= limits.max_marker_instances_per_layer &&
+         stream_vertices <= limits.max_marker_stream_vertices_per_layer && frames <= limits.max_marker_frames_per_layer;
 }
 
 // Solid cubes submit one fill instance. Normal (non-wireframe) rendering also
 // submits one instance for the twelve-edge overlay, whereas explicit wireframe
 // uses only the original cube instance. Keep this renderer expansion inside the
 // same per-layer and per-view budgets that bound the staging buffer.
-[[nodiscard]] constexpr std::optional<std::uint64_t> browserMarkerSubmittedInstanceCount(
+[[nodiscard]] constexpr std::optional<std::uint64_t> markerSubmittedInstanceCount(
     std::uint64_t logical_instances, std::uint64_t cube_instances, bool wireframe) noexcept {
   if (wireframe) {
     return logical_instances;
@@ -50,16 +35,6 @@ inline constexpr std::uint64_t kBrowserMaxMarkerRetainedBytesPerLayer = 64ULL * 
     return std::nullopt;
   }
   return logical_instances + cube_instances;
-}
-
-[[nodiscard]] constexpr bool tryConsumeBrowserMarkerInstances(
-    std::uint64_t requested, std::uint64_t& remaining) noexcept {
-  return tryConsumeBrowserBudget(requested, remaining);
-}
-
-[[nodiscard]] constexpr bool tryConsumeBrowserMarkerStreamVertices(
-    std::uint64_t requested, std::uint64_t& remaining) noexcept {
-  return tryConsumeBrowserBudget(requested, remaining);
 }
 
 }  // namespace pj::scene3d

@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- A topic-sourced robot whose meshes are named only by package: one served,
+     one missing, and one from an origin that refuses CORS. -->
+<robot name="package_robot">
+  <link name="map">
+    <visual>
+      <geometry>
+        <mesh filename="package://pj_fixture_description/meshes/cube.stl"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <link name="missing_part">
+    <visual>
+      <geometry>
+        <mesh filename="package://pj_fixture_description/meshes/missing.stl"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="map_to_missing_part" type="fixed">
+    <parent link="map"/>
+    <child link="missing_part"/>
+    <origin xyz="2 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="denied_part">
+    <visual>
+      <geometry>
+        <mesh filename="package://pj_denied_description/meshes/cube.stl"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="map_to_denied_part" type="fixed">
+    <parent link="map"/>
+    <child link="denied_part"/>
+    <origin xyz="-2 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

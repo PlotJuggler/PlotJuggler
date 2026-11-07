@@ -729,7 +729,7 @@ Binary compatibility (ABI) is the biggest technical challenge:
 - Compatibility is a hard runtime gate. `--plugin-dir` and Preferences folders retain strict shadow priority: an incompatible authoritative copy suppresses a managed same-id fallback but is itself not loaded, making developer override failures explicit instead of silently testing another build.
 - If SDK changes incompatibly, PlotJuggler provides internal adapter
 - **Existing plugins are never broken by PlotJuggler updates**
-- Stability target: current Qt baseline 6.11 (6.12 LTS target); see REQUIREMENTS.md NF-02.
+- Stability target: current Qt baseline 6.12 LTS; see REQUIREMENTS.md NF-02.
 
 ---
 

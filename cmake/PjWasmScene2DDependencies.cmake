@@ -141,3 +141,5 @@ add_library(PNG::PNG ALIAS png_static)
 
 message(STATUS
     "WASM Scene2D codecs: libjpeg-turbo 3.1.4.1, libpng 1.6.58, zlib ${ZLIB_VERSION}")
+
+include(${CMAKE_CURRENT_LIST_DIR}/PjWasmFfmpeg.cmake)

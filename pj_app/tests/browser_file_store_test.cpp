@@ -6,6 +6,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDeadlineTimer>
+#include <QDirIterator>
 #include <QFile>
 #include <QTemporaryDir>
 #include <memory>
@@ -97,6 +98,34 @@ TEST(BrowserFileStore, DuplicateBasenamesHaveIndependentLeases) {
   EXPECT_FALSE(QFile::exists(second_path));
 }
 
+// A streamed download writes its file itself: reserve() hands out the placement,
+// and its lease removes whatever was written there, like a staged upload's.
+TEST(BrowserFileStore, ReservedPlacementIsReleasedWithItsLease) {
+  QTemporaryDir temporary;
+  ASSERT_TRUE(temporary.isValid());
+  BrowserFileStore store(temporary.path());
+
+  auto result = store.reserve(QStringLiteral("dir/recording.mcap"));
+  ASSERT_TRUE(result.input.has_value()) << result.error.toStdString();
+  EXPECT_TRUE(isBrowserUploadIdentity(result.input->source_identity));
+  EXPECT_EQ(
+      BrowserFileStore::displayNameForIdentity(result.input->source_identity), QStringLiteral("dir/recording.mcap"));
+  EXPECT_TRUE(result.input->content_sha256.isEmpty());
+  const QString path = result.input->backing_path;
+  EXPECT_EQ(QFileInfo(path).fileName(), QStringLiteral("recording.mcap"));
+  EXPECT_FALSE(QFile::exists(path)) << "the caller creates the file";
+
+  QFile written(path);
+  ASSERT_TRUE(written.open(QIODevice::WriteOnly));
+  ASSERT_EQ(written.write("streamed"), 8);
+  written.close();
+  result.input.reset();
+  EXPECT_FALSE(QFile::exists(path));
+  EXPECT_TRUE(QDir(temporary.path()).isEmpty()) << "the lease removes its directories too";
+
+  EXPECT_FALSE(store.reserve(QString()).input.has_value());
+}
+
 TEST(BrowserFileStore, ZeroByteFileIsValid) {
   QTemporaryDir temporary;
   ASSERT_TRUE(temporary.isValid());
@@ -145,6 +174,33 @@ TEST(BrowserFileStore, StageAsyncMultiChunkIsByteIdentical) {
   EXPECT_EQ(staged.size(), payload_size);
   EXPECT_EQ(staged.readAll(), payload);
   staged.close();
+}
+
+// MEMFS regrows (and copies) a file's backing array as appends extend it, so
+// stageAsync sizes the file to its final length before the first chunk lands.
+TEST(BrowserFileStore, StageAsyncSizesFileBeforeFirstChunk) {
+  testApp();
+  QTemporaryDir temporary;
+  ASSERT_TRUE(temporary.isValid());
+  BrowserFileStore store(temporary.path());
+  const qsizetype payload_size = 40 * 1024 * 1024 + 7;
+  bool done = false;
+  std::optional<BrowserFileStore::StageResult> captured;
+  store.stageAsync(
+      QStringLiteral("big.mcap"), QByteArray(payload_size, 'p'), [&](BrowserFileStore::StageResult result) {
+        captured = std::move(result);
+        done = true;
+      });
+
+  QDirIterator staged_files(temporary.path(), QDir::Files, QDirIterator::Subdirectories);
+  ASSERT_TRUE(staged_files.hasNext()) << "stageAsync did not create its file up front";
+  EXPECT_EQ(QFileInfo(staged_files.next()).size(), payload_size) << "no chunk is written yet";
+
+  ASSERT_TRUE(pumpUntil(done));
+  ASSERT_TRUE(captured->input.has_value()) << captured->error.toStdString();
+  QFile staged(captured->input->backing_path);
+  ASSERT_TRUE(staged.open(QIODevice::ReadOnly));
+  EXPECT_EQ(staged.readAll(), QByteArray(payload_size, 'p'));
 }
 
 // A file smaller than one chunk still routes through the async path cleanly.

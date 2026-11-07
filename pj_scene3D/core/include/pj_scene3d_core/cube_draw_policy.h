@@ -9,6 +9,13 @@
 
 namespace pj::scene3d {
 
+// Default cube LOD threshold, in device pixels, for point-cloud cubes.
+// One pixel is the conservative choice on both counts: cosmetically a cube keeps its
+// real geometry until it is genuinely sub-pixel, and a threshold sweep on the benchmark
+// showed the speedup is already at its maximum by 1 px (it comes from dropping the fan
+// draw for the whole cloud, not from how many cubes convert), so raising it buys nothing.
+inline constexpr float kDefaultCubeLodThresholdPx = 1.0f;
+
 // How to draw a cloud of axis-aligned cubes this frame.
 //
 // Two passes render such a cloud — the point cloud (instance data from a VBO) and the
@@ -49,6 +56,12 @@ struct CubeCloudView {
   // proj[1][1] * device_height / 2 — pixels a one-metre object spans at clip w == 1.
   float pixels_per_metre{0.0f};
   float lod_threshold_px{0.0f};  // 0 disables the sprite degradation
+  // How far each instance can reach past its world extent ON SCREEN, in NDC units per
+  // axis: a screen-sized sprite of S device pixels reaches S / viewport_px past its
+  // centre. Pixel-sized points have no world extent at all, and a sphere's minimum
+  // size can outgrow its projection, so without this the frustum reject drops a sprite
+  // whose centre is just off screen while its quad still overlaps the viewport.
+  glm::vec2 screen_reach_ndc{0.0f};
 };
 
 // The whole decision, in the order the cases actually nest.
@@ -95,8 +108,14 @@ struct CubeCloudView {
   const glm::vec3 reach(view.cube_size_m * 0.5f);
   const AABB drawn{view.centre_bounds.min - reach, view.centre_bounds.max + reach, true};
 
-  // 2. Off screen entirely.
-  if (aabbOutsideFrustum(drawn, view.clip_from_cloud)) {
+  // 2. Off screen entirely. The screen reach widens the side planes: scaling clip x
+  //    by 1 / (1 + reach) turns |x| <= w * (1 + reach) into the plain |x| <= w test.
+  glm::mat4 cull_from_cloud = view.clip_from_cloud;
+  for (int column = 0; column < 4; ++column) {
+    cull_from_cloud[column][0] /= 1.0f + view.screen_reach_ndc.x;
+    cull_from_cloud[column][1] /= 1.0f + view.screen_reach_ndc.y;
+  }
+  if (aabbOutsideFrustum(drawn, cull_from_cloud)) {
     return CubeDrawMode::kSkip;
   }
 

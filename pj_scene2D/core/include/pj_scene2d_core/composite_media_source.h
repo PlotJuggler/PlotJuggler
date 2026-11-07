@@ -3,8 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "pj_scene2d_core/media_frame.h"
@@ -22,6 +25,15 @@ namespace PJ {
 ///     PixelLayer using this composite layer's opacity.
 ///   - Overlays: every layer's `.overlays` are concatenated in layer order
 ///     (so overlays from layer 0 render under overlays from layer 1).
+///   - Pairing: an annotation naming its image (`image_topic` not empty) from a layer
+///     set to pair its annotations (`setLayerPairing`) is shown only over the image
+///     it names, at its time: the base layer's image topic must match, and its
+///     timestamp must lie within one cadence of the delivered frame's own stamp
+///     (`DecodedFrame::stamp`, else its pts), so an image still decoding never pairs
+///     with the tracker's instant. A rejected annotation stays retained and is
+///     checked again at every composite, so it appears once its image arrives. The
+///     annotations of any other layer (a parser's, whose `image_topic` is only a
+///     header frame id) are shown as they are.
 ///
 /// Returns nullopt if no layer produced new data on this poll.
 ///
@@ -51,6 +63,15 @@ class CompositeMediaSource : public MediaSource {
   /// source re-decodes (the "black until play" symptom on add/remove/hide).
   void adoptContributions(const CompositeMediaSource& previous);
 
+  /// Pairing for the layer tagged `identity` (no-op for an unknown one): `image_topic` is the store topic its pixels
+  /// come from (what annotations name), `pairs_annotations` whether its own annotations name the image they were made
+  /// from (an on-demand derived topic's) and are checked against the shown one, `cadence(entry_ts)` the image
+  /// interval around the delivered frame's store entry (`DecodedFrame::entry_ts`, else its pts; empty: 100 ms), and
+  /// `warning` receives, at every composite, why its annotations were hidden, or an empty string once none is.
+  void setLayerPairing(
+      const void* identity, std::string image_topic, bool pairs_annotations, std::function<int64_t(int64_t)> cadence,
+      std::function<void(const std::string&)> warning);
+
   /// Number of layers currently owned.
   [[nodiscard]] size_t layerCount() const noexcept {
     return layers_.size();
@@ -77,6 +98,11 @@ class CompositeMediaSource : public MediaSource {
     // multi-rate layers are the norm; the compositor never drops a layer).
     std::vector<PixelLayer> pixel_layers;
     std::vector<SceneFrame> overlays;
+    // Pairing (setLayerPairing).
+    std::string image_topic;
+    bool pairs_annotations = false;
+    std::function<int64_t(int64_t)> cadence;
+    std::function<void(const std::string&)> warning;
   };
 
   std::vector<Layer> layers_;

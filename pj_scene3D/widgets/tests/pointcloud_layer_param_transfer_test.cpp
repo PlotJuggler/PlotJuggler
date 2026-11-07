@@ -18,8 +18,8 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
-#include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_scene_common/layer_params.h"
 using namespace Qt::StringLiterals;
 
@@ -33,22 +33,21 @@ PJ::ObjectTopicId topic(uint32_t id) {
 
 TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenRealLayers) {
   using pj::scene3d::PointCloudLayer;
-  using pj::scene3d::PointcloudRenderPass;
 
   PointCloudLayer src(topic(1), u"A"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   PointCloudLayer dst(topic(2), u"B"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
 
   // Push src away from EVERY default, so a no-op apply can't masquerade as a pass.
-  src.setShape(PointcloudRenderPass::Shape::kPoint);          // default kSphere
-  src.setSizeMeters(0.25f);                                   // default 0.02
-  src.setSizePixels(7.5f);                                    // default 2; fractional must NOT truncate
-  src.setColorType(PointcloudRenderPass::ColorType::kSolid);  // default kField
+  src.setShape(pj::scene3d::PointShape::kPoint);          // default kSphere
+  src.setSizeMeters(0.25f);                               // default 0.02
+  src.setSizePixels(7.5f);                                // default 2; fractional must NOT truncate
+  src.setColorType(pj::scene3d::PointColorType::kSolid);  // default kField
   src.setSolidColor(QColor(10, 20, 30));
-  src.setColormap(PointcloudRenderPass::Colormap::kViridis);  // default kTurbo
-  src.setInvertLut(true);                                     // default false
-  src.setOutsideRangeOpacity(0.35f);                          // default 1.0
-  src.setOutsideRangeVisible(false);                          // default true
-  src.setAutoRange(false);                                    // default true
+  src.setColormap(PJ::Colormap::kViridis);  // default kTurbo
+  src.setInvertLut(true);                   // default false
+  src.setOutsideRangeOpacity(0.35f);        // default 1.0
+  src.setOutsideRangeVisible(false);        // default true
+  src.setAutoRange(false);                  // default true
   src.setManualRange(-3.0f, 9.0f);
 
   ASSERT_NE(dst.shape(), src.shape()) << "test premise: dst still at defaults before paste";

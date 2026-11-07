@@ -24,6 +24,7 @@
 #include <QStyle>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <chrono>
@@ -59,10 +60,13 @@
 #endif
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataSourceRuntimeHost.h"
+#include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TsanAnnotations.h"
+#include "pj_runtime/parse_locked.h"
 #ifdef PJ_WITH_SCENE3D
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_runtime/TransformService.h"
 #endif
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/FileDialog.h"
@@ -73,47 +77,10 @@
 #ifdef PJ_WASM_ENABLE_MCAP_PROBE_PARSER
 #include "../tests/wasm_mcap_probe_topics.h"
 #endif
-#if defined(__SANITIZE_THREAD__)
-#define PJ_FILE_LOADER_TSAN 1
-#elif defined(__has_feature)
-#if __has_feature(thread_sanitizer)
-#define PJ_FILE_LOADER_TSAN 1
-#endif
-#endif
-#ifdef PJ_FILE_LOADER_TSAN
-#include <sanitizer/tsan_interface.h>
-#endif
 
 using namespace Qt::StringLiterals;
 
 namespace PJ {
-
-namespace {
-
-// ThreadSanitizer cannot see QThread::wait(), a futex inside prebuilt Qt, so it
-// reports every GUI-thread access after a join against the worker's earlier
-// accesses to the same load state. The worker releases a token on the FileLoader
-// after its last such access; the GUI thread acquires it once wait() returns,
-// which makes the ordering the join already guarantees visible to TSan. An
-// acquire whose worker never released merges only an older clock. Both are
-// no-ops outside a TSan build.
-void tsanWorkerHandOff(FileLoader* loader) {
-#ifdef PJ_FILE_LOADER_TSAN
-  __tsan_release(loader);
-#else
-  static_cast<void>(loader);
-#endif
-}
-
-void tsanWorkerJoined(FileLoader* loader) {
-#ifdef PJ_FILE_LOADER_TSAN
-  __tsan_acquire(loader);
-#else
-  static_cast<void>(loader);
-#endif
-}
-
-}  // namespace
 
 // Rendezvous between an import worker parked in the synchronous message-box ABI
 // and the GUI thread that answers it. Deliberately NOT FileLoader state: the
@@ -427,13 +394,7 @@ void probeObjectDecoding(SessionManager& session, ObjectStore& object_store, Dat
       continue;
     }
 
-    PJ::Expected<PJ::sdk::ObjectRecord> record = PJ::unexpected(std::string("parser not invoked"));
-    if (binding.mutex) {
-      std::lock_guard<std::mutex> lock(*binding.mutex);
-      record = binding.parser->parseObject(resolved->timestamp, resolved->payload);
-    } else {
-      record = binding.parser->parseObject(resolved->timestamp, resolved->payload);
-    }
+    auto record = PJ::parseLocked(binding, resolved->timestamp, resolved->payload);
     if (!record) {
       qCWarning(lcFileLoader).noquote() << marker + u"_FAILED"_s << u"topic=%1"_s.arg(topic)
                                         << u"entries=%1"_s.arg(entry_count)
@@ -880,6 +841,22 @@ class ScopedPointerReset {
   T*& slot_;
 };
 
+// The plugin's canonical post-load config, stripped of host-private replay
+// keys (a plugin may echo `__pj_saved_filepath` back from saveConfig, and the
+// result is what layouts persist). A saveConfig failure is non-fatal: it is
+// logged and yields an empty config, so the layout save skips plugin config.
+std::string captureSavedConfig(DataSourceHandle& handle, const QString& source_name) {
+  std::string captured_config;
+  auto status = handle.saveConfig(captured_config);
+  if (status) {
+    return detail::stripHostReplayKeys(captured_config);
+  }
+  qCWarning(lcFileLoader).noquote() << FileLoader::tr(
+                                           "Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
+                                           .arg(source_name, QString::fromStdString(status.error()));
+  return {};
+}
+
 }  // namespace
 
 // Default ingest policies the app applies to every DataSourceRuntimeHost it
@@ -1038,10 +1015,9 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   const QString last_dir = settings.value(kLastDirKey, QString()).toString();
 
   // PJ::FileDialog wraps a non-native QFileDialog in our frameless
-  // chrome — see pj_widgets/FileDialog.h. The native GTK dialog also
-  // crashes on this app's libpng ABI skew (see the --exclude-libs,ALL
-  // note in pj_app/CMakeLists.txt), so we avoid it both for look and
-  // for stability. The shell-injected picker threads MainWindow's chrome
+  // chrome, or opens the system dialog where the user opted in
+  // (FileDialog::setUseSystemDialog, Windows and macOS only) — see
+  // pj_widgets/FileDialog.h. The shell-injected picker threads MainWindow's chrome
   // metrics into the dialog (toolbar icon size, kept in step via
   // chromeMetricsChanged) — see setFilePicker().
   const QStringList paths = file_picker_ != nullptr
@@ -1052,13 +1028,24 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   }
   // Remember the directory of the last pick for next time.
   settings.setValue(kLastDirKey, QFileInfo(paths.last()).absolutePath());
-  // Load each selected file in order so several datasets populate in one go.
-  // Each loadFile may pop its own data-source config dialog and reports its own
-  // failures, so a single bad file doesn't abort the rest.
+  loadFiles(paths, dialog_parent);
+#endif
+}
+
+void FileLoader::loadFiles(const QStringList& paths, QWidget* dialog_parent) {
   for (const QString& path : paths) {
     loadFile(path, dialog_parent);
   }
-#endif
+}
+
+QStringList FileLoader::droppedFilePaths(const QMimeData& mime) {
+  QStringList paths;
+  for (const QUrl& url : mime.urls()) {
+    if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile()) {
+      paths.append(url.toLocalFile());
+    }
+  }
+  return paths;
 }
 
 void FileLoader::replaceFromDialog(DatasetId dataset_id, QWidget* dialog_parent) {
@@ -1101,7 +1088,7 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
         if (!staged.input.has_value()) {
           const QString reason =
               staged.error.isEmpty() ? FileLoader::tr("Could not stage the selected file.") : staged.error;
-          qCWarning(lcFileLoader).noquote() << reason;
+          self->logLoadFailure(staged.browser_name, reason);
           self->reportLoadWarning(guarded_parent.data(), reason);
           emit self->fileLoadFailed(staged.browser_name, reason);
           return;
@@ -1123,11 +1110,11 @@ void FileLoader::selectBrowserInput(QWidget* dialog_parent, BrowserSelectionCall
         });
       });
 }
+#endif
 
 QString FileLoader::browserContentSha256(const QString& source_identity) const {
   return browser_content_sha256_.value(source_identity);
 }
-#endif
 
 FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   bool worker_handoff = false;
@@ -1182,7 +1169,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     erase_created_live_dataset();
     rollback_tombstones();
     emitLoadFinished(ticket, LoadOutcome::kFailed, source_identity, 0);
-    qCWarning(lcFileLoader).noquote() << reason;
+    logLoadFailure(source_identity, reason);
     reportLoadWarning(dialog_parent.data(), reason);
     emit fileLoadFailed(source_identity, reason);
     return false;
@@ -1218,23 +1205,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // the rest of this coroutine/worker load.
   const LoadedDataSource* source = matches.front();
   if (hints.require_expected_plugin) {
-    const auto match_by = [&matches](auto&& field_of) {
-      return std::find_if(matches.begin(), matches.end(), [&field_of](const LoadedDataSource* candidate) {
-        return candidate != nullptr && field_of(*candidate);
-      });
-    };
-    auto expected = matches.end();
-    if (!hints.expected_manifest_id.isEmpty()) {
-      expected = match_by([&hints](const LoadedDataSource& candidate) {
-        return QString::fromStdString(candidate.id) == hints.expected_manifest_id;
-      });
-    }
-    if (expected == matches.end() && !hints.expected_plugin_id.isEmpty()) {
-      expected = match_by([&hints](const LoadedDataSource& candidate) {
-        return QString::fromStdString(candidate.name) == hints.expected_plugin_id;
-      });
-    }
-    if (expected == matches.end()) {
+    const LoadedDataSource* expected =
+        findDataSourceByIdentity(matches, hints.expected_manifest_id, hints.expected_plugin_id);
+    if (expected == nullptr) {
       const QString expected_label = !hints.expected_plugin_id.isEmpty()     ? hints.expected_plugin_id
                                      : !hints.expected_manifest_id.isEmpty() ? hints.expected_manifest_id
                                                                              : tr("(unspecified)");
@@ -1242,7 +1215,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
                      .arg(expected_label, ext));
       co_return;
     }
-    source = *expected;
+    source = expected;
   }
   const QString source_name = QString::fromStdString(source->name);
   const QString source_manifest_id = QString::fromStdString(source->id);
@@ -1331,9 +1304,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // Reuse the id referenced by the layout; keep the recorded config
     // when legacy XML has no preset. Match the recorded source by path
     // (not just the most-recent one) so a multi-file session recovers the
-    // right file's config when reloading any of its sources.
+    // right file's config when reloading any of its sources. The emitted
+    // config is what the session records and a later Reload replays verbatim,
+    // so a preset gets the path rewrite a fresh load gets; one that is not a
+    // JSON object cannot carry a path and is emitted as it is.
     QString emit_config = hints.preset_config_json;
-    if (emit_config.isEmpty()) {
+    if (!emit_config.isEmpty()) {
+      const std::optional<std::string> rewritten =
+          detail::rewriteReplayFilepaths(emit_config.toStdString(), input.backing_path, detail::SavedFilepath::kOmit);
+      if (rewritten.has_value()) {
+        emit_config = QString::fromStdString(*rewritten);
+      }
+    } else {
       // loadedSources() paths are stored normalized; compare canonically so a
       // symlink/relative alias of a tracked file still recovers its config.
       const auto& prior = session_.loadedSources();
@@ -1397,6 +1379,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       std::move(object_parser_registrar), nullptr, nullptr, combineKeepalive(handle.libraryOwner(), input.lease),
       session_.ingestTapsShared());
   DataSourceRuntimeHost& ingest_session = *ingest_session_ptr;
+  ingest_session.setDiagnosticSink(diagnostic_sink_, source_plugin_name, display_name_utf8);
   DataSourceRuntimeHost::MessageBoxHandler message_box_handler;
   if (dialog_parent != nullptr) {
     message_box_handler = makePluginMessageBoxHandler(dialog_parent, active_plugin_message_dialog_, message_gate_);
@@ -1433,16 +1416,22 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
 
   if (hints.dialog_policy == DialogPolicy::kNever) {
     // Automated (layout-driven) replay: the dialog is prohibited and the
-    // saved preset is AUTHORITATIVE — the browser replay's filepath rewrite
-    // when requested, the minimal fresh-filepath config for an intentionally
-    // empty preset (a plugin whose saveConfig returned nothing is
-    // legitimate), the saved bytes verbatim otherwise. A rejected preset
-    // FAILS the source: silently retrying with the QSettings pre-fill would
-    // replay the layout with a configuration the user never saved.
-    const std::string preset = hints.rewrite_preset_filepath
-                                   ? detail::rewriteReplayFilepaths(preset_bytes, input.backing_path)
-                               : preset_bytes.empty() ? buildLoadConfig(std::string_view{}, input.backing_path)
-                                                      : preset_bytes;
+    // saved preset is AUTHORITATIVE, pointed at the file being loaded
+    // (optionally recording the replaced path for the plugin to rebase
+    // sidecar files). An empty preset is legitimate: a plugin whose saveConfig
+    // returned nothing gets the minimal fresh-filepath config. A rejected
+    // preset FAILS the source: silently retrying with the QSettings pre-fill
+    // would replay the layout with a configuration the user never saved.
+    auto rewritten = detail::rewriteReplayFilepaths(
+        preset_bytes, input.backing_path,
+        hints.record_saved_filepath && !isBrowserUploadIdentity(source_identity) ? detail::SavedFilepath::kRecord
+                                                                                 : detail::SavedFilepath::kOmit);
+    if (!rewritten.has_value()) {
+      (void)fail(
+          tr("Plugin '%1': the saved configuration is not a JSON object and cannot be replayed.").arg(source_name));
+      co_return;
+    }
+    std::string preset = std::move(*rewritten);
     if (auto status = handle.loadConfig(preset); !status) {
       (void)fail(tr("Plugin '%1' rejected the layout's saved configuration: %2")
                      .arg(source_name, QString::fromStdString(status.error())));
@@ -1771,6 +1760,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // back here on the GUI thread.
     cancel_mode_.store(0);
     const std::uint64_t fanout_generation = load_generation_;
+    // One failed fan-out entry: logged, and reported once under "<identity> (<entry>)".
+    const auto report_entry_failed = [&](std::size_t idx, const QString& iter_display, const QString& reason) {
+      logLoadFailure(
+          u"%1 (%2)"_s.arg(source_identity, iter_display), reason,
+          u"[FileLoader] fanout[%1]: %2"_s.arg(idx).arg(reason));
+    };
+    // A failure before start(): the entry also joins failed_labels here. The start
+    // failure joins it later, through outcome == kFailed.
+    const auto entry_failed = [&](std::size_t idx, const QString& iter_display, const QString& reason) {
+      report_entry_failed(idx, iter_display, reason);
+      failed_labels << iter_display;
+    };
     for (std::size_t idx = 0; idx < fanouts.size(); ++idx) {
       const std::string& cfg_i = fanouts[idx];
       const QString suffix = detail::parseDisplaySuffix(cfg_i, QString::number(idx + 1));
@@ -1780,17 +1781,17 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       // draggable on the Source Timeline (rather than sharing the primary's).
       auto iter_td = engine.createTimeDomain(iter_display.toStdString());
       if (!iter_td.has_value()) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
-                                << "]: createTimeDomain failed:" << QString::fromStdString(iter_td.error());
-        failed_labels << iter_display;
+        entry_failed(
+            idx, iter_display,
+            tr("Could not create the time domain for %1: %2")
+                .arg(iter_display, QString::fromStdString(iter_td.error())));
         continue;
       }
       auto iter_dataset_or = engine.createDataset(
           DatasetDescriptor{.source_name = iter_display.toStdString(), .time_domain_id = *iter_td});
       if (!iter_dataset_or.has_value()) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
-                                << "]: createDataset failed:" << QString::fromStdString(iter_dataset_or.error());
-        failed_labels << iter_display;
+        entry_failed(
+            idx, iter_display, tr("createDataset failed: %1").arg(QString::fromStdString(iter_dataset_or.error())));
         continue;
       }
       const auto iter_dataset_id = static_cast<DatasetId>(*iter_dataset_or);
@@ -1803,8 +1804,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       // mapped.
       DataSourceHandle iter_handle(source_vtable, source_library_owner);
       if (!iter_handle.valid()) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx << "]: createHandle failed";
-        failed_labels << iter_display;
+        entry_failed(idx, iter_display, tr("Plugin '%1': createHandle failed.").arg(source_name));
         continue;
       }
 
@@ -1814,6 +1814,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
             session_.registerObjectTopicParser(id, std::move(parser));
           },
           nullptr, nullptr, combineKeepalive(iter_handle.libraryOwner(), input.lease), session_.ingestTapsShared());
+      iter_ingest.setDiagnosticSink(diagnostic_sink_, source_plugin_name, iter_display.toStdString());
       if (message_box_handler) {
         iter_ingest.setMessageBoxHandler(message_box_handler);
       }
@@ -1821,22 +1822,23 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
 
       ServiceRegistryBuilder iter_registry;
       if (auto status = iter_ingest.registerServices(iter_registry); !status) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
-                                << "]: service registration failed:" << QString::fromStdString(status.error());
-        failed_labels << iter_display;
+        entry_failed(
+            idx, iter_display,
+            tr("Plugin '%1': service registration failed: %2")
+                .arg(source_name, QString::fromStdString(status.error())));
         continue;
       }
 
       if (auto status = iter_handle.bind(iter_registry.view()); !status) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
-                                << "]: bind failed:" << QString::fromStdString(status.error());
-        failed_labels << iter_display;
+        entry_failed(
+            idx, iter_display,
+            tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
         continue;
       }
       if (auto status = iter_handle.loadConfig(cfg_i); !status) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
-                                << "]: loadConfig failed:" << QString::fromStdString(status.error());
-        failed_labels << iter_display;
+        entry_failed(
+            idx, iter_display,
+            tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
         continue;
       }
 
@@ -1962,8 +1964,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         capture_loader_metadata();
         outcome = EntryOutcome::kKept;
       } else if (!start_status) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
-                                << "]: start failed:" << QString::fromStdString(start_status.error());
+        report_entry_failed(
+            idx, iter_display,
+            tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(start_status.error())));
         outcome = EntryOutcome::kFailed;
       } else {
         iter_ingest.flushAll();
@@ -2080,12 +2083,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // Capture the plugin's canonical post-load state AFTER start() + ingest so a
   // layout persists discovered fields / applied defaults / ingest-time policy
   // overrides. saveConfig failures here are non-fatal.
-  std::string captured_config;
-  if (auto status = handle.saveConfig(captured_config); !status) {
-    qCWarning(lcFileLoader).noquote() << tr("Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
-                                             .arg(source_name, QString::fromStdString(status.error()));
-    captured_config.clear();
-  }
+  std::string captured_config = captureSavedConfig(handle, source_name);
 
   // Remember which file each dataset came from so a later load of a DIFFERENT
   // file sharing this basename is not mistaken for a reload of it (the match
@@ -2147,6 +2145,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
     // Entries failed and nothing survived them: report the aggregate as a
     // failure instead of announcing a dataset-less success.
+    // Each failed entry already reported its own data-source-load-failed.
     const QString reason = tr("All %1 entries of '%2' failed to load:\n%3")
                                .arg(failed_labels.size())
                                .arg(display_name, failed_labels.join(u"\n"_s));
@@ -2198,16 +2197,14 @@ LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_pare
                          : !input.backing_path.isEmpty()  ? input.backing_path
                                                           : input.display_name;
     const QString reason = tr("Cannot load '%1': not a readable file.").arg(path);
-    qCWarning(lcFileLoader).noquote() << reason;
+    logLoadFailure(path, tr("not a readable file."));
     reportLoadWarning(dialog_parent, reason);
     emit fileLoadFailed(path, reason);
     return 0;
   }
-#ifdef PJ_TARGET_WASM
   if (!input.content_sha256.isEmpty()) {
     browser_content_sha256_.insert(input.source_identity, input.content_sha256);
   }
-#endif
   ++next_load_ticket_;
   if (next_load_ticket_ == 0) {
     ++next_load_ticket_;  // reserve zero for "invalid", even after wraparound
@@ -2276,7 +2273,13 @@ void FileLoader::runIngestOnWorker(std::uint64_t generation) {
   if (!status) {
     ctx_->start_error = QString::fromStdString(status.error());
   }
-  tsanWorkerHandOff(this);  // the worker's last access to shared load state
+  // ThreadSanitizer cannot see QThread::wait(), a futex inside prebuilt Qt, so it
+  // reports every GUI-thread access after a join against the worker's earlier
+  // accesses to the same load state. The worker releases a token on the FileLoader
+  // after its last such access; the GUI thread acquires it once wait() returns
+  // (onWorkerFinished and the shutdown join), which makes the ordering the join
+  // already guarantees visible to TSan.
+  tsan::release(this);
   QMetaObject::invokeMethod(this, [this, generation]() { onWorkerFinished(generation); }, Qt::QueuedConnection);
 }
 
@@ -2286,7 +2289,7 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
   }
   if (worker_) {
     worker_->wait();  // the worker posted us as its last act, so this returns promptly
-    tsanWorkerJoined(this);
+    tsan::acquire(this);
     worker_.reset();
   }
 
@@ -2342,7 +2345,7 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
     ingest_outcome = IngestOutcome::kFailed;
     emitLoadFinished(ticket, LoadOutcome::kFailed, path, 0);
     const QString reason = tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
-    qCWarning(lcFileLoader).noquote() << reason;
+    logLoadFailure(path, reason);
     if (!replacing) {
       // Real-delete the abandoned first-load shell (no tombstone), invalidating
       // any TF it ingested before failing, then erase its engine storage, so a
@@ -2373,7 +2376,11 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
         emitLoadFinished(ticket, cancel == 0 ? LoadOutcome::kFailed : LoadOutcome::kCancelled, path, 0);
         const QString reason = tr("Plugin '%1': derived-series replay failed: %2")
                                    .arg(source_name, QString::fromStdString(replayed.error()));
-        qCWarning(lcFileLoader).noquote() << reason;
+        if (cancel == 0) {
+          logLoadFailure(path, reason);
+        } else {
+          qCWarning(lcFileLoader).noquote() << reason;
+        }
         failReplacingLoad(dataset_id, path, reason);
         refill_ok = false;
       } else {
@@ -2488,12 +2495,7 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   }
 
   // Capture the plugin's canonical post-load state for layout persistence.
-  std::string captured_config;
-  if (auto status = ctx_->handle.saveConfig(captured_config); !status) {
-    qCWarning(lcFileLoader).noquote() << tr("Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
-                                             .arg(ctx_->source_name, QString::fromStdString(status.error()));
-    captured_config.clear();
-  }
+  std::string captured_config = captureSavedConfig(ctx_->handle, ctx_->source_name);
   session_.setDatasetSourcePath(dataset_id, ctx_->path);
   // Publish the loader-metadata document staged during this (now committed)
   // load — successful and kept-partial commits alike; a discarded load never
@@ -2545,6 +2547,11 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   // file whose data is EARLIER than any prior dataset must reframe every plot to the
   // new origin. No-op when "Use time offset" is off.
   session_.refreshDatasetTimeReference(dataset_id);
+  // The same bypass means no samplesIngested covered those rows. Publish them, or a
+  // curve already bound to the dataset (a reload/replace refills its topics in place)
+  // keeps the empty window it re-indexed when the refill began.
+  const auto topic_ids = session_.dataEngine().listTopics(dataset_id);
+  session_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/false);
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   logSuccessfulLoad(session_.dataEngine(), catalog_, path, source_name, {dataset_id});
 #endif
@@ -2561,6 +2568,13 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   probeColdObjectFetch(session_.objectStore(), dataset_id);
 #endif
   emit fileLoaded(path, QString(), source_name, QString::fromStdString(captured_config), source_manifest_id);
+}
+
+void FileLoader::logLoadFailure(const QString& identity, const QString& reason, const QString& log_text) const {
+  qCWarning(lcFileLoader).noquote() << (log_text.isEmpty() ? reason : log_text);
+  emitDiagnosticTo(
+      diagnostic_sink_, DiagnosticLevel::kError, "File Loader", "data-source-load-failed",
+      tr("Could not load '%1': %2").arg(identity, reason).toStdString());
 }
 
 void FileLoader::reportLoadWarning(QWidget* parent, const QString& reason) {
@@ -2782,7 +2796,7 @@ void FileLoader::joinForShutdown() {
   }
   if (worker_) {
     worker_->wait();
-    tsanWorkerJoined(this);
+    tsan::acquire(this);
     worker_.reset();
   }
   // onWorkerFinished / the fan-out continuation will not run after this

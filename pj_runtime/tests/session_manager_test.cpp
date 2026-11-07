@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -23,17 +24,27 @@
 #include <utility>
 #include <vector>
 
+#include "on_demand_test_utils.h"
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/builtin/log.hpp"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_datastore/data_processor.hpp"
+#include "pj_datastore/saturating_time.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DerivedTopics.h"
+#include "pj_runtime/EnginePool.h"
+#include "pj_runtime/OnDemandService.h"
+#include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TransformService.h"
+#include "pj_tf/tf_buffer.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -591,6 +602,35 @@ TEST(SessionManagerRangeTest, DatasetDisplayRangeAppliesDatasetDisplayOffset) {
   ASSERT_TRUE(range.has_value());
   EXPECT_DOUBLE_EQ(range->min.value, 3.0);
   EXPECT_DOUBLE_EQ(range->max.value, 7.0);
+}
+
+// A finding sits at kFindingTimestamp, a sentinel off the data clock: folding it into the dataset's
+// bounds would stretch the range back to the year 1677.
+TEST(SessionManagerRangeTest, DerivedFindingDoesNotWidenTheDatasetRange) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto cloud = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/points",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  auto finding = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "owner/pin/cropped",
+          .metadata_json = PJ::derivedTopicMetadata(PJ::sdk::BuiltinObjectType::kPointCloud),
+      });
+  ASSERT_TRUE(cloud.has_value() && finding.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*cloud, 100, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*cloud, 900, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*finding, PJ::kFindingTimestamp, std::vector<uint8_t>{2}).has_value());
+
+  const auto range = session.datasetDisplayRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_DOUBLE_EQ(range->min.value, 100.0e-9);
+  EXPECT_DOUBLE_EQ(range->max.value, 900.0e-9);
 }
 
 TEST(SessionManagerRangeTest, DatasetDisplayRangeIsNulloptForEmptyDataset) {
@@ -1472,6 +1512,34 @@ TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsKeepsMarkerTopics) {
       << "the marker topic survives an empty refill — the producer is the host, not the file";
 }
 
+// An on-demand node's derived topic is host-published too: the refill never rewrites it, and its id
+// is what the node's ResultHistory publishes into.
+TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsKeepsDerivedObjectTopics) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  auto cam = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam/a", .metadata_json = "{}"});
+  auto derived = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *ds,
+          .topic_name = "owner/crop/cropped",
+          .metadata_json = PJ::derivedTopicMetadata(PJ::sdk::BuiltinObjectType::kPointCloud)});
+  ASSERT_TRUE(cam.has_value() && derived.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*cam, 100, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*derived, 100, std::vector<uint8_t>{2}).has_value());
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    ASSERT_TRUE(session.objectStore().pushOwned(*cam, 1000, std::vector<uint8_t>{3}).has_value());
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+
+  const auto after = session.objectStore().listTopics(*ds);
+  EXPECT_NE(std::find(after.begin(), after.end(), *derived), after.end()) << "the derived topic survives";
+}
+
 TEST(SessionManagerRefillGuardTest, MovedGuardRollsBackExactlyOnce) {
   // The guard is move-only and lives in std::optional<RefillGuard> in FileLoader;
   // the move must neutralize the source (null session_ + mark committed) so the
@@ -1888,3 +1956,650 @@ TEST(SessionManagerTimeTest, DisplayTimeForSourceHonoursCurrentOffsetAndRejectsU
   ASSERT_TRUE(display.has_value());
   EXPECT_DOUBLE_EQ(display->value, 3.0);
 }
+
+// A preview belongs to the plugin instance that made it (OWN-08): ending the previews
+// an instance lists removes those ephemeral transforms and marker rules in both
+// engines and repaints once. A persistent or unknown id in the list is skipped, and an
+// unlisted preview stays.
+TEST(SessionManagerTest, RemoveEphemeralsEndsOnlyTheListedPreviews) {
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/sensor", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value());
+  writer.appendScalar(*handle, 100, 1.0);
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  struct Recipe {
+    std::string owner;
+    std::string id;
+    bool ephemeral;
+  };
+  const std::vector<Recipe> recipes{{"a", "preview", true}, {"a", "kept", false}, {"b", "preview", true}};
+  for (const Recipe& recipe : recipes) {
+    const std::string script = "-- pj-script: luau\nreturn { id=\"" + recipe.id + "\", name=\"" + recipe.id +
+                               "\", output=\"same\",\n"
+                               "  create = function(p) return { calculate = function(t, v) return v end } end }\n";
+    ASSERT_TRUE(
+        session.dataProcessorService()
+            .upsertTransform(
+                recipe.owner, recipe.id, {"/sensor"}, {recipe.owner + "_" + recipe.id}, script, "{}", recipe.ephemeral)
+            .has_value());
+    PJ::BatchEngine::GeneratorRecipe rule;
+    rule.id = recipe.owner + "/" + recipe.id;
+    rule.dataset_id = *dataset;
+    if (!recipe.ephemeral) {
+      rule.outputs = {std::string(PJ::sdk::kGlobalMarkerTopic)};
+    }
+    rule.script = "createMarker(100)";
+    rule.ephemeral = recipe.ephemeral;
+    ASSERT_TRUE(session.batchEngine().upsertGenerator(rule).has_value());
+  }
+  QSignalSpy markers_changed(&session, &PJ::SessionManager::markersChanged);
+
+  session.removeEphemerals({"a/preview", "a/kept", "a/gone"}, {"a/preview", "a/kept", "a/gone"}, {});
+
+  EXPECT_EQ(session.dataProcessorService().transformIdsForPlugin("a"), std::vector<std::string>{"kept"});
+  EXPECT_EQ(session.dataProcessorService().transformIdsForPlugin("b"), std::vector<std::string>{"preview"});
+  EXPECT_EQ(session.batchEngine().firstBinding("a/preview"), nullptr);
+  EXPECT_NE(session.batchEngine().firstBinding("a/kept"), nullptr);
+  EXPECT_NE(session.batchEngine().firstBinding("b/preview"), nullptr);
+  EXPECT_EQ(markers_changed.count(), 1) << "the removed preview's markers are repainted away once";
+}
+
+// ---- The on-demand engine through the session's dataset life cycle (ARCHITECTURE §8, §13) -------------------
+
+namespace PJ {
+namespace {
+
+using OnDemandStatus = NodeScheduler::NodeState::Status;
+
+constexpr Timestamp kOnDemandSec = 1'000'000'000;
+constexpr const char* kCloudMetadata = R"({"builtin_object_type":"kPointCloud"})";
+
+RecipeGraph::Recipe cropRecipe(std::string id = "crop", std::string input = "cloud") {
+  return test::onDemandRecipe(
+      std::move(id), {std::move(input)},
+      {{"cropped", scripting::OutputType::kObject, sdk::BuiltinObjectType::kPointCloud}});
+}
+
+/// A session with the dataset `log` holding the cloud topic `cloud`, its on-demand engine running the fake.
+struct OnDemandSession {
+  OnDemandSession() {
+    OnDemandService::setRunForTest(fake.function());
+    session = std::make_unique<SessionManager>();
+    OnDemandService::setRunForTest({});
+    ds = addDataset("log");
+    cloud = addCloud(ds, "cloud");
+    QObject::connect(session.get(), &SessionManager::objectTopicsChanged, [this] { ++topics_changed; });
+    QObject::connect(session.get(), &SessionManager::derivedEntriesPublished, [this] { ++published; });
+    QObject::connect(
+        session.get(), &SessionManager::derivedStateChanged,
+        [this](const QString& key, const std::vector<ObjectTopicId>& topics) {
+          state_changes.emplace_back(key.toStdString(), topics);
+        });
+  }
+
+  DatasetId addDataset(const std::string& name) {
+    return session->dataEngine().createDataset(DatasetDescriptor{.source_name = name}).value();
+  }
+  ObjectTopicId addCloud(DatasetId dataset, const std::string& name) {
+    return session->objectStore().registerTopic({dataset, name, kCloudMetadata}).value();
+  }
+  void push(ObjectTopicId topic, Timestamp t, size_t points = 4) {
+    const auto bytes = serializeBuiltinObject(sdk::BuiltinObject(test::makeCloud(points))).value();
+    ASSERT_TRUE(session->objectStore().pushOwned(topic, t, bytes).has_value());
+  }
+  OnDemandService& service() {
+    return session->onDemandService();
+  }
+  void install(RecipeGraph::Recipe recipe) {
+    const auto installed = service().install(std::move(recipe));
+    ASSERT_TRUE(installed.has_value()) << installed.error();
+  }
+  /// Runs what is posted (a resume), then publishes everything submitted.
+  void settle() {
+    QCoreApplication::processEvents();
+    session->enginePool().waitIdle();
+  }
+  /// Waits, without running the event loop, until a computed run waits for its publication.
+  void waitComputedUndrained() {
+    for (int spin = 0; spin < 5000 && session->enginePool().pendingPublishes() == 0; ++spin) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(session->enginePool().pendingPublishes(), 1u);
+  }
+  [[nodiscard]] std::optional<NodeScheduler::NodeState> state(const std::string& key = "owner/crop") {
+    return service().state(key);
+  }
+  [[nodiscard]] std::optional<ObjectTopicId> topic(const std::string& name, DatasetId dataset = 0) const {
+    return session->objectStore().findTopic(dataset != 0 ? dataset : ds, name);
+  }
+  [[nodiscard]] std::vector<Timestamp> ring(const std::string& name, DatasetId dataset = 0) const {
+    const auto found = topic(name, dataset);
+    return found ? test::timestampsOf(session->objectStore(), *found) : std::vector<Timestamp>{};
+  }
+  [[nodiscard]] std::optional<SequentialUID> shownUid(const std::string& name, Timestamp t) const {
+    const auto found = topic(name);
+    const auto entry = found ? session->objectStore().latestEntryIdAt(*found, t) : std::nullopt;
+    return entry ? std::optional<SequentialUID>(entry->uid) : std::nullopt;
+  }
+  [[nodiscard]] uint32_t shownWidth(const std::string& name, Timestamp t) const {
+    return test::decodeAt<sdk::PointCloud>(session->objectStore(), topic(name).value(), t).width;
+  }
+
+  test::FakeRun fake;  ///< outlives the session, whose pool joins the runs
+  std::unique_ptr<SessionManager> session;
+  DatasetId ds = 0;
+  ObjectTopicId cloud;
+  int topics_changed = 0;
+  int published = 0;
+  std::vector<std::pair<std::string, std::vector<ObjectTopicId>>> state_changes;
+};
+
+// ASY-04, CACHE-01: a reload drops the results at its start, serves nothing while the dataset refills, and
+// recomputes at the parked cursor from the refilled data once it committed.
+TEST(SessionManagerTest, ReloadBumpsTheEpochAndRecomputesAtTheParkedCursor) {
+  OnDemandSession fx;
+  fx.push(fx.cloud, 20 * kOnDemandSec, 4);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  ASSERT_EQ(fx.ring("owner/crop/cropped"), (std::vector<Timestamp>{20 * kOnDemandSec}));
+
+  {
+    RefillGuard guard = fx.session->beginRefill(fx.ds);
+    EXPECT_TRUE(fx.ring("owner/crop/cropped").empty()) << "the old meaning's result is gone";
+    EXPECT_EQ(fx.state()->status, OnDemandStatus::kPending);
+    fx.push(fx.cloud, 20 * kOnDemandSec, 6);
+    fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+    fx.settle();
+    EXPECT_EQ(fx.fake.started(), 1) << "nothing runs on the partly refilled data";
+    EXPECT_EQ(fx.state()->status, OnDemandStatus::kPending);
+    guard.commit();
+  }
+  EXPECT_EQ(fx.fake.started(), 1) << "the commit resumes from the event loop";
+  fx.settle();
+  EXPECT_EQ(fx.fake.finished(), 2);
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady);
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), (std::vector<Timestamp>{20 * kOnDemandSec}));
+  EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 6u);
+}
+
+// A result computed from the old data but not yet published when the reload begins is never published.
+TEST(SessionManagerTest, ReloadBeginningInvalidatesAComputedUndrainedResult) {
+  OnDemandSession fx;
+  fx.push(fx.cloud, 20 * kOnDemandSec, 4);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.waitComputedUndrained();
+  {
+    RefillGuard guard = fx.session->beginRefill(fx.ds);
+    fx.push(fx.cloud, 20 * kOnDemandSec, 6);
+    guard.commit();
+  }
+  fx.settle();
+  EXPECT_EQ(fx.fake.finished(), 2);
+  EXPECT_EQ(fx.published, 1) << "only the refilled data's result";
+  EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 6u);
+}
+
+// A rollback restores the dataset's bytes but not a result of the old epoch: it is computed again.
+TEST(SessionManagerTest, RollbackDoesNotRestoreAnOldEpochResult) {
+  OnDemandSession fx;
+  fx.push(fx.cloud, 20 * kOnDemandSec, 4);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  const std::optional<SequentialUID> before = fx.shownUid("owner/crop/cropped", 20 * kOnDemandSec);
+  ASSERT_TRUE(before.has_value());
+  {
+    RefillGuard guard = fx.session->beginRefill(fx.ds);
+    fx.push(fx.cloud, 20 * kOnDemandSec, 6);
+  }  // rolled back
+  EXPECT_TRUE(fx.ring("owner/crop/cropped").empty()) << "the rollback restored no result";
+  fx.settle();
+  EXPECT_EQ(fx.fake.finished(), 2) << "the cache of the old epoch serves nothing";
+  const std::optional<SequentialUID> after = fx.shownUid("owner/crop/cropped", 20 * kOnDemandSec);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_NE(after->value, before->value);
+  EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 4u) << "computed from the restored bytes";
+}
+
+// GAP-32: removing the dataset while its node computes leaves no node, no state, no topic and no publication.
+TEST(SessionManagerTest, DatasetRemovalMidFlightLeavesNoState) {
+  OnDemandSession fx;
+  fx.fake.gated = true;
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  const ObjectTopicId output = fx.topic("owner/crop/cropped").value();
+  EXPECT_EQ(fx.service().keyOfTopic(output), "owner/crop");
+  EXPECT_EQ(fx.service().stateOfTopic(output)->status, OnDemandStatus::kPending);
+  ASSERT_FALSE(fx.state_changes.empty());
+  EXPECT_EQ(fx.state_changes.back().first, "owner/crop");
+  EXPECT_EQ(fx.state_changes.back().second, std::vector<ObjectTopicId>{output});
+
+  fx.session->evictDatasetObjects(fx.ds);  // the shell's order: objects, catalog, then the dataset
+  fx.session->removeDataset(fx.ds);
+  fx.fake.allow(1);
+  fx.settle();
+  EXPECT_EQ(fx.service().graph().find("owner/crop"), nullptr);
+  EXPECT_FALSE(fx.state().has_value());
+  EXPECT_FALSE(fx.service().keyOfTopic(output).has_value());
+  EXPECT_TRUE(fx.service().history().topicsOf("owner/crop").empty());
+  EXPECT_EQ(fx.published, 0);
+  EXPECT_EQ(fx.fake.started(), 1);
+}
+
+// GAP-32: a merge re-binds a consumed dataset's recipes onto the anchor, and they run there at their cursor, which
+// moves by the dataset's raw shift like its data.
+TEST(SessionManagerTest, MergeReinstallsOnDemandRecipesOnTheAnchor) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  const ObjectTopicId cloud_b = fx.addCloud(source, "cloud_b");
+  fx.push(cloud_b, 20 * kOnDemandSec);
+  fx.install(cropRecipe("crop", "cloud_b"));
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  ASSERT_EQ(fx.ring("owner/crop/cropped", source), (std::vector<Timestamp>{20 * kOnDemandSec}));
+
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 5 * kOnDemandSec}}).has_value());
+  fx.settle();
+  const RecipeGraph::Node* node = fx.service().graph().find("owner/crop");
+  ASSERT_NE(node, nullptr);
+  EXPECT_EQ(node->dataset, fx.ds);
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady) << fx.state()->detail;
+  EXPECT_EQ(fx.state()->requested_t, 25 * kOnDemandSec) << "its cursor moved with its data";
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), (std::vector<Timestamp>{25 * kOnDemandSec}));
+  EXPECT_EQ(fx.fake.finished(), 2) << "the anchor's data is new to it";
+  EXPECT_GE(fx.topics_changed, 1) << "the consumed dataset's output topic is retired";
+}
+
+// A consumed dataset's finding moves with its data: its pinned time is shifted by the merge's raw shift, and it is
+// evaluated again there.
+TEST(SessionManagerTest, MergeShiftsPinnedTimeAndReevaluatesTheFinding) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  const ObjectTopicId cloud_b = fx.addCloud(source, "cloud_b");
+  fx.push(cloud_b, 10 * kOnDemandSec);
+  fx.push(cloud_b, 20 * kOnDemandSec);
+  RecipeGraph::Recipe pinned = cropRecipe("pin", "cloud_b");
+  pinned.pinned_t = 15 * kOnDemandSec;
+  fx.install(pinned);
+  fx.service().requestAt("owner/pin", 0);
+  fx.settle();
+  ASSERT_EQ(fx.fake.finished(), 1);
+
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 5 * kOnDemandSec}}).has_value());
+  fx.settle();
+  const RecipeGraph::Node* node = fx.service().graph().find("owner/pin");
+  ASSERT_NE(node, nullptr);
+  EXPECT_EQ(node->recipe.pinned_t, 20 * kOnDemandSec);
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[1].query_time, 20 * kOnDemandSec);
+  EXPECT_EQ(fx.state("owner/pin")->requested_t, 20 * kOnDemandSec);
+  EXPECT_EQ(fx.ring("owner/pin/cropped"), (std::vector<Timestamp>{kFindingTimestamp}));
+}
+
+// An input qualified with the consumed dataset's source (`other:cloud_b`, `other:owner/crop/cropped`) keeps working
+// after the merge: it binds on the anchor, and the script still reads it under the name it declared.
+TEST(SessionManagerTest, MergeRebindsAQualifiedInputOnTheAnchor) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  const ObjectTopicId cloud_b = fx.addCloud(source, "cloud_b");
+  fx.push(cloud_b, 20 * kOnDemandSec);
+  fx.install(cropRecipe("crop", "other:cloud_b"));
+  fx.install(cropRecipe("reader", "other:owner/crop/cropped"));
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  ASSERT_EQ(fx.state()->status, OnDemandStatus::kReady);
+
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 0}}).has_value());
+  fx.settle();
+  const RecipeGraph::Node* node = fx.service().graph().find("owner/crop");
+  ASSERT_NE(node, nullptr) << "the recipe still resolves";
+  EXPECT_EQ(node->dataset, fx.ds);
+  EXPECT_EQ(node->recipe.inputs, std::vector<std::string>{"other:cloud_b"}) << "the script's name is kept";
+  EXPECT_EQ(node->bindings[0].name, "cloud_b");
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady) << fx.state()->detail;
+  const RecipeGraph::Node* reader = fx.service().graph().find("owner/reader");
+  ASSERT_NE(reader, nullptr) << "the chained reader still resolves";
+  EXPECT_EQ(reader->dataset, fx.ds);
+  EXPECT_EQ(reader->bindings[0].upstream, "owner/crop");
+  EXPECT_EQ(reader->bindings[0].name, "cropped");
+  EXPECT_EQ(reader->recipe.inputs, std::vector<std::string>{"other:owner/crop/cropped"}) << "the script's name is kept";
+  EXPECT_FALSE(fx.service().graph().missingInput("owner/reader").has_value());
+}
+
+// A consumed dataset stays registered, so its source keeps qualifying inputs: they bind on the anchor from then on.
+TEST(SessionManagerTest, AQualifiedInputKeepsBindingOnTheAnchorAfterItsMerge) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  fx.push(fx.addCloud(source, "cloud_b"), 20 * kOnDemandSec);
+  fx.install(cropRecipe("crop", "other:cloud_b"));
+  fx.install(cropRecipe("reader", "other:owner/crop/cropped"));
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 0}}).has_value());
+  fx.settle();
+
+  const auto reinstalled = fx.service().install(cropRecipe("reader", "other:owner/crop/cropped"));
+  EXPECT_TRUE(reinstalled.has_value()) << (reinstalled ? "" : reinstalled.error());
+
+  const DatasetId third = fx.addDataset("third");
+  fx.push(fx.addCloud(third, "cloud_c"), 20 * kOnDemandSec);
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{third, 0}}).has_value());
+  fx.settle();
+  EXPECT_NE(fx.service().graph().find("owner/crop"), nullptr) << "a second merge keeps the qualified input";
+  EXPECT_NE(fx.service().graph().find("owner/reader"), nullptr) << "and its chained reader";
+}
+
+// An anchor merged away in turn takes the datasets it consumed with it.
+TEST(SessionManagerTest, AQualifiedInputFollowsItsAnchorIntoALaterMerge) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  fx.push(fx.addCloud(source, "cloud_b"), 20 * kOnDemandSec);
+  fx.install(cropRecipe("crop", "other:cloud_b"));
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 0}}).has_value());
+  fx.settle();
+
+  const DatasetId final_anchor = fx.addDataset("final");
+  fx.push(fx.addCloud(final_anchor, "cloud_c"), 20 * kOnDemandSec);
+  ASSERT_TRUE(fx.session->mergeDatasets(final_anchor, {{fx.ds, 0}}).has_value());
+  fx.settle();
+  const RecipeGraph::Node* node = fx.service().graph().find("owner/crop");
+  ASSERT_NE(node, nullptr) << "the recipe still resolves";
+  EXPECT_EQ(node->dataset, final_anchor);
+}
+
+// A dataset's suspension cancels its nodes' runs: their epoch moved, so their results could never be published.
+TEST(SessionManagerTest, SuspendingADatasetCancelsItsRunningRun) {
+  OnDemandSession fx;
+  fx.fake.delay = std::chrono::milliseconds(5000);  // polls its cancellation
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  RefillGuard guard = fx.session->beginRefill(fx.ds);
+  for (int spin = 0; spin < 3000 && fx.fake.finished() == 0; ++spin) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_EQ(fx.fake.finished(), 1);
+  EXPECT_TRUE(fx.fake.records()[0].cancelled);
+  guard.commit();
+}
+
+// A rollback restores the same bytes and identities, but a new epoch: a failure remembered before the reload does not
+// fail the request again without a run.
+TEST(SessionManagerTest, ARollbackRunsAFailedRecipeAgain) {
+  OnDemandSession fx;
+  fx.fake.fail = "boom";
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  ASSERT_EQ(fx.state()->status, OnDemandStatus::kError);
+  fx.fake.fail.clear();
+  { RefillGuard guard = fx.session->beginRefill(fx.ds); }  // rolled back
+  fx.settle();
+  EXPECT_EQ(fx.fake.finished(), 2);
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady);
+}
+
+// The finding's store timestamp is a sentinel, never a time: a merge never shifts it, also not for a moment.
+TEST(SessionManagerTest, MergeNeverShiftsTheFindingSentinel) {
+  OnDemandSession fx;
+  const DatasetId source = fx.addDataset("other");
+  const ObjectTopicId cloud_b = fx.addCloud(source, "cloud_b");
+  fx.push(cloud_b, 10 * kOnDemandSec);
+  RecipeGraph::Recipe pinned = cropRecipe("pin", "cloud_b");
+  pinned.pinned_t = 15 * kOnDemandSec;
+  fx.install(pinned);
+  fx.service().requestAt("owner/pin", 0);
+  fx.settle();
+  ASSERT_EQ(fx.ring("owner/pin/cropped", source), (std::vector<Timestamp>{kFindingTimestamp}));
+
+  ASSERT_TRUE(fx.session->mergeDatasets(fx.ds, {{source, 5 * kOnDemandSec}}).has_value());
+  for (const ObjectTopicId topic : fx.session->objectStore().listTopics(fx.ds)) {
+    for (const Timestamp t : test::timestampsOf(fx.session->objectStore(), topic)) {
+      EXPECT_NE(t, saturatingAdd(kFindingTimestamp, 5 * kOnDemandSec)) << "a derived entry merged as raw data";
+    }
+  }
+  fx.settle();
+  EXPECT_EQ(fx.ring("owner/pin/cropped"), (std::vector<Timestamp>{kFindingTimestamp}));
+}
+
+// A raw input evicted from under a recipe leaves it installed, missing that input by name, and a tombstone clears
+// the dropped result; the input coming back relinks it.
+TEST(SessionManagerTest, RemovingARawInputLeavesItsReadersMissingAndAllowsRelinking) {
+  OnDemandSession fx;
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  ASSERT_EQ(fx.state()->status, OnDemandStatus::kReady);
+
+  fx.session->evictObjectTopics({fx.cloud});
+  fx.settle();
+  ASSERT_NE(fx.service().graph().find("owner/crop"), nullptr);
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kMissingInput);
+  EXPECT_NE(fx.state()->detail.find("'cloud'"), std::string::npos) << fx.state()->detail;
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), std::vector<Timestamp>{20 * kOnDemandSec})
+      << "only the tombstone that clears the dropped result a layer may still draw";
+  EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 0u);
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  fx.settle();
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), std::vector<Timestamp>{20 * kOnDemandSec})
+      << "nothing drawn at 10 s once the tombstone is written: no second one";
+
+  const ObjectTopicId again = fx.addCloud(fx.ds, "cloud");
+  fx.push(again, 20 * kOnDemandSec, 6);
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady);
+  EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 6u);
+}
+
+// PUB-02: a dataset removal retires every output topic of its recipes and announces it once; an edit keeps its
+// topics and announces nothing; an edit that renames an output retires the old one.
+TEST(SessionManagerTest, RemovalRetiresTopicsAndAnnouncesOnce) {
+  OnDemandSession fx;
+  fx.install(cropRecipe("crop"));
+  fx.install(cropRecipe("crop2"));
+  const ObjectTopicId kept = fx.topic("owner/crop/cropped").value();
+  EXPECT_EQ(fx.topics_changed, 0);
+  RecipeGraph::Recipe edited = cropRecipe("crop");
+  edited.params_json = R"({"zmin": 1})";
+  fx.install(edited);
+  EXPECT_EQ(fx.topic("owner/crop/cropped"), kept);
+  EXPECT_EQ(fx.topics_changed, 0);
+  RecipeGraph::Recipe renamed = cropRecipe("crop2");
+  renamed.outputs[0].name = "trimmed";
+  fx.install(renamed);
+  EXPECT_EQ(fx.topics_changed, 1);
+
+  fx.session->removeDataset(fx.ds);
+  EXPECT_EQ(fx.topics_changed, 2);
+  EXPECT_FALSE(fx.topic("owner/crop/cropped").has_value());
+  EXPECT_FALSE(fx.topic("owner/crop2/trimmed").has_value());
+}
+
+// The session's resolver: a dataset-qualified input resolves only in that dataset, the qualifier stripped; an object
+// topic with no builtin type is no object input; an on-demand output, qualified or not, never resolves as a topic (the
+// graph binds those itself, a qualified one only on its node's dataset).
+TEST(SessionManagerTest, TheResolverBindsQualifiedTopicsAndNeverAnOnDemandOutput) {
+  OnDemandSession fx;
+  const DatasetId other = fx.addDataset("other");
+  fx.addCloud(other, "cloud");
+  ASSERT_TRUE(fx.session->objectStore().registerTopic({fx.ds, "untyped", "{}"}).has_value());
+  const auto ambiguous = fx.service().install(cropRecipe("crop", "cloud"));
+  ASSERT_FALSE(ambiguous.has_value());
+  EXPECT_NE(ambiguous.error().find("more than one dataset"), std::string::npos) << ambiguous.error();
+
+  fx.install(cropRecipe("crop", "other:cloud"));
+  EXPECT_EQ(fx.service().graph().find("owner/crop")->dataset, other);
+  EXPECT_EQ(fx.service().graph().find("owner/crop")->bindings[0].name, "cloud");
+  const auto untyped = fx.service().install(cropRecipe("raw", "untyped"));
+  ASSERT_FALSE(untyped.has_value());
+  EXPECT_NE(untyped.error().find("unknown input 'untyped'"), std::string::npos) << untyped.error();
+  const auto elsewhere = fx.service().install(cropRecipe("reader", "log:owner/crop/cropped"));
+  ASSERT_FALSE(elsewhere.has_value());
+  EXPECT_NE(elsewhere.error().find("names another dataset"), std::string::npos) << elsewhere.error();
+  fx.install(cropRecipe("reader", "other:owner/crop/cropped"));
+  EXPECT_EQ(fx.service().graph().find("owner/reader")->dataset, other);
+  EXPECT_EQ(fx.service().graph().find("owner/reader")->bindings[0].upstream, "owner/crop");
+}
+
+// CON-11/14: destroying the session cancels the on-demand run before the pool joins it; nothing is published.
+TEST(SessionManagerTest, SessionDestructionCancelsOnDemandRunsBeforeThePool) {
+  OnDemandSession fx;
+  fx.fake.delay = std::chrono::milliseconds(5000);  // polls its cancellation
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  fx.session.reset();
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_TRUE(records[0].cancelled);
+  EXPECT_EQ(fx.published, 0);
+}
+
+// The refill's caller commits the reload's TF right after the refill (FileLoader does, before the event loop turns):
+// the requests resume from the event loop, so the recompute runs once, on the reloaded TF.
+TEST(SessionManagerTest, AReloadResumesAfterItsCallerCommitsTheReloadedTf) {
+  OnDemandSession fx;
+  TransformService transforms(*fx.session);
+  fx.session->setTransformService(&transforms);
+  pj::tf::StampedTransform tf;
+  tf.stamp = fromRaw(1 * kOnDemandSec);
+  tf.parent_frame = "map";
+  tf.child_frame = "base_link";
+  ASSERT_TRUE(transforms.transformBuffer(fx.ds)->setTransform(tf).has_value());
+  fx.fake.observe_tf = true;
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.settle();
+  ASSERT_EQ(fx.fake.finished(), 1);
+
+  transforms.beginReplacingLoad(fx.ds);
+  {
+    RefillGuard guard = fx.session->beginRefill(fx.ds);
+    fx.push(fx.cloud, 20 * kOnDemandSec, 6);
+    guard.commit();
+  }
+  transforms.commitReplacingLoad(fx.ds);
+  const uint64_t reloaded = transforms.snapshot(fx.ds)->revision();
+  ASSERT_NE(reloaded, fx.fake.records()[0].tf->revision());
+  fx.settle();
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 2u) << "one recompute, not one on the old TF and another on the new";
+  EXPECT_EQ(records[1].tf->revision(), reloaded);
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady);
+  fx.session->setTransformService(nullptr);
+}
+
+// ARCHITECTURE §19: while a dataset ingests, its runs share one TF snapshot for the brake period, and a result that
+// read it serves its request (the revision a request compares is that snapshot's), so nothing runs again until the
+// ingest ends.
+TEST(SessionManagerTest, OnDemandRunsShareOneTfSnapshotDuringALiveIngest) {
+  OnDemandSession fx;
+  TransformService transforms(*fx.session);
+  fx.session->setTransformService(&transforms);
+  const auto write = [&](Timestamp t) {
+    pj::tf::StampedTransform tf;
+    tf.stamp = fromRaw(t);
+    tf.parent_frame = "map";
+    tf.child_frame = "base_link";
+    tf.transform.t.x = static_cast<double>(t);
+    ASSERT_TRUE(transforms.transformBuffer(fx.ds)->setTransform(tf).has_value());
+  };
+  write(1 * kOnDemandSec);
+  fx.fake.observe_tf = true;
+  fx.fake.gated = true;
+  fx.push(fx.cloud, 10 * kOnDemandSec);
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  const IngestToken ingest = fx.session->beginIngest(fx.ds, u"load"_s, 0, false, {});
+
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  write(2 * kOnDemandSec);  // the ingest moves the TF on
+  fx.fake.allow(1);
+  fx.settle();
+  EXPECT_EQ(fx.fake.started(), 1) << "the result read the snapshot its request compares";
+  EXPECT_EQ(fx.state()->status, OnDemandStatus::kReady);
+
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.fake.allow(1);
+  fx.settle();
+  const std::shared_ptr<const pj::tf::TransformSnapshot> held = fx.fake.records()[1].tf;
+  const long holders = held.use_count();
+  fx.session->endIngest(ingest, IngestOutcome::kCompleted);
+  EXPECT_EQ(held.use_count(), holders - 1) << "the session lets the snapshot go when the ingest ends";
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  fx.fake.allow(1);
+  fx.settle();
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 3u);
+  EXPECT_EQ(records[1].tf, records[0].tf) << "one snapshot during the ingest";
+  ASSERT_NE(records[2].tf, nullptr);
+  EXPECT_NE(records[2].tf->revision(), records[0].tf->revision()) << "a fresh one after it";
+  fx.session->setTransformService(nullptr);
+}
+
+// ARCHITECTURE §19 for a stream, which never begins an ingest: a dataset with a live announcement within the brake
+// period shares one TF snapshot between its runs, as during a file ingest.
+TEST(SessionManagerTest, TfSnapshotsAreThrottledWhileAStreamingDatasetIngests) {
+  auto now = std::chrono::steady_clock::now();  // outlives the fixture, whose session reads it through the clock
+  OnDemandSession fx;
+  fx.session->setTfClock([&now] { return now; });
+  TransformService transforms(*fx.session);
+  fx.session->setTransformService(&transforms);
+  const auto write = [&](Timestamp t) {
+    pj::tf::StampedTransform tf;
+    tf.stamp = fromRaw(t);
+    tf.parent_frame = "map";
+    tf.child_frame = "base_link";
+    tf.transform.t.x = static_cast<double>(t);
+    ASSERT_TRUE(transforms.transformBuffer(fx.ds)->setTransform(tf).has_value());
+  };
+  write(1 * kOnDemandSec);
+  fx.fake.observe_tf = true;
+  fx.fake.gated = true;
+  fx.push(fx.cloud, 10 * kOnDemandSec);
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  ASSERT_FALSE(fx.session->ingestActive(fx.ds));
+
+  fx.session->notifyIngest({}, /*live=*/true, fx.ds);
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  write(2 * kOnDemandSec);  // the stream moves the TF on
+  fx.session->notifyIngest({}, /*live=*/true, fx.ds);
+  fx.fake.allow(1);
+  fx.settle();
+  EXPECT_EQ(fx.fake.started(), 1) << "the result read the snapshot its request compares";
+
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.fake.allow(1);
+  fx.settle();
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[1].tf, records[0].tf) << "one snapshot while the stream ingests";
+
+  now += std::chrono::milliseconds(600);  // past kTfSnapshotPeriod (500 ms) with no announcement: the stream stopped
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  fx.fake.allow(1);
+  fx.settle();
+  const auto after = fx.fake.records();
+  ASSERT_EQ(after.size(), 3u);
+  EXPECT_NE(after[2].tf->revision(), after[0].tf->revision()) << "a fresh snapshot once the stream is quiet";
+  fx.session->setTransformService(nullptr);
+}
+
+}  // namespace
+}  // namespace PJ

@@ -2,10 +2,14 @@
   "name": "plotjuggler-wasm-browser-tests",
   "private": true,
   "scripts": {
-    "test": "playwright test ingress_file_selection.spec.js persistence_layout.spec.js plotting.spec.js scene2d.spec.js scene3d_foundation.spec.js scene3d_data.spec.js scene3d_models.spec.js scene3d_quality.spec.js editors.spec.js streaming.spec.js --reporter=line --workers=1",
+    "test": "playwright test --project=chromium --reporter=line --grep-invert @serial",
+    "test:serial": "playwright test --project=chromium --reporter=line --workers=1 --grep @serial",
+    "test:firefox": "playwright test --project=firefox --reporter=line --workers=1",
     "test:deployment": "playwright test -c deployment.playwright.config.js",
-    "test:package": "node --test package_wasm.test.mjs",
-    "test:scene3d-capability": "playwright test -c scene3d_capability.playwright.config.js"
+    "test:package": "node --test package_wasm.test.mjs wasm_notices.test.mjs wasm_source_offer.test.mjs",
+    "fetch:assets": "node support/hosted_assets.js",
+    "test:scene3d-capability": "playwright test -c scene3d_capability.playwright.config.js --project=chromium",
+    "test:scene3d-capability:firefox": "playwright test -c scene3d_capability.playwright.config.js --project=firefox"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1"

@@ -4,7 +4,7 @@
 
 No build tree or third-party Python package is required. Use the same Qt lupdate
 as the application build, for example:
-  python3 tests/check_translations_4x.py --lupdate .qt/6.11.1/gcc_64/bin/lupdate
+  python3 tests/check_translations_4x.py --lupdate .qt/6.12.0/gcc_64/bin/lupdate
 
 --update-ts refreshes the catalog before validation. New untranslated strings are
 reported as errors; an English fallback is never counted as a Chinese translation.

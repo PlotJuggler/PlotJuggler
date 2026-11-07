@@ -83,8 +83,8 @@ TEST_F(PlotScaleDrawTest, InstalledOnAllPlotAxes) {
 }
 
 // "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass
-// (stock Qwt has no such style; per-sample symbols are pathological on the GL
-// paint engine); toggling back to Lines must disable the pass.
+// (stock Qwt has no such style, and no per-sample symbol stands in for it);
+// toggling back to Lines must disable the pass.
 TEST_F(PlotScaleDrawTest, LinesAndDotsMapsToLinesPlusBatchedDots) {
   TestPlot plot;
   PJ::PlotCurve curve(QStringLiteral("curve"));

@@ -90,6 +90,7 @@ void TopicStorage::evictBefore(Timestamp t_keep_min) {
   // entirely older than t_keep_min.
   size_t end_to_remove = 0;
   while (end_to_remove < sealed_chunks_.size() && sealed_chunks_[end_to_remove].stats.t_max < t_keep_min) {
+    evicted_through_chunk_id_ = std::max(evicted_through_chunk_id_, sealed_chunks_[end_to_remove].id);
     ++end_to_remove;
   }
 
@@ -103,6 +104,12 @@ void TopicStorage::evictBefore(Timestamp t_keep_min) {
     }
     sealed_chunks_.erase(sealed_chunks_.begin(), sealed_chunks_.begin() + static_cast<std::ptrdiff_t>(end_to_remove));
     chunk_agg_valid_ = false;  // the time/size aggregate rebuilds lazily
+  }
+
+  // The chunk now at the front may straddle the cutoff: its sub-cutoff rows are as lost to
+  // a consumer that has not read it as a dropped chunk's are.
+  if (!sealed_chunks_.empty() && sealed_chunks_.front().stats.t_min < t_keep_min) {
+    evicted_through_chunk_id_ = std::max(evicted_through_chunk_id_, sealed_chunks_.front().id);
   }
 
   // Raise the logical retention floor to the requested cutoff. Whole-chunk
@@ -121,6 +128,7 @@ void TopicStorage::clearChunks() noexcept {
   ++series_generation_;
   // A full replace/reload retains no data, so it must carry no stale floor.
   retention_floor_ = kNoRetentionFloor;
+  evicted_through_chunk_id_ = 0;
 }
 
 TopicStorage::DetachedState TopicStorage::detachChunks() {
@@ -130,6 +138,7 @@ TopicStorage::DetachedState TopicStorage::detachChunks() {
   detached.column_descriptors = column_descriptors_;
   detached.array_expansion_counts = array_expansion_counts_;
   detached.retention_floor = retention_floor_;
+  detached.evicted_through_chunk_id = evicted_through_chunk_id_;
   detached.schema_id = descriptor_.schema_id;
   detached.max_observed_array_length = max_observed_array_length_;
   detached.truncated_sample_count = truncated_sample_count_;
@@ -154,6 +163,7 @@ void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
   ++series_generation_;
   column_descriptors_ = std::move(detached.column_descriptors);
   retention_floor_ = detached.retention_floor;
+  evicted_through_chunk_id_ = detached.evicted_through_chunk_id;
   descriptor_.schema_id = detached.schema_id;
   max_observed_array_length_ = detached.max_observed_array_length;
   truncated_sample_count_ = detached.truncated_sample_count;
@@ -312,6 +322,10 @@ Timestamp TopicStorage::timeMax() const noexcept {
 
 Timestamp TopicStorage::retentionFloor() const noexcept {
   return retention_floor_;
+}
+
+ChunkId TopicStorage::evictedThroughChunkId() const noexcept {
+  return evicted_through_chunk_id_;
 }
 
 void TopicStorage::updateSchema(SchemaId new_schema) {

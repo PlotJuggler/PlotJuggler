@@ -6,14 +6,20 @@
 #include <QDir>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QDomNodeList>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <array>
 #include <cstdint>
+#include <string>
 
 #include "LayoutXml.h"
+#include "pj_runtime/XmlCdata.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -25,7 +31,7 @@ using PJ::layout_xml::DataSourceRef;
 QString roundTripJson(const QString& input) {
   QDomDocument doc;
   QDomElement plugin = doc.createElement(u"plugin"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, plugin, input);
+  PJ::appendJsonAsCdata(doc, plugin, input);
   doc.appendChild(plugin);
 
   // Round-trip through serialize -> reparse to confirm the document
@@ -87,9 +93,9 @@ TEST(AppendJsonAsCdata, RoundTripsUnicodeAndAngleBrackets) {
 
 QDomElement buildProcessorWithSource(QDomDocument& doc, const QString& params, const QString& source) {
   QDomElement processor = doc.createElement(u"processor"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, processor, params);  // params: a direct CDATA child
+  PJ::appendJsonAsCdata(doc, processor, params);  // params: a direct CDATA child
   QDomElement src = doc.createElement(u"source_fallback"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, src, source);
+  PJ::appendJsonAsCdata(doc, src, source);
   processor.appendChild(src);  // source: nested inside a child element
   doc.appendChild(processor);
   return processor;
@@ -101,7 +107,7 @@ TEST(DirectCdataText, ReadsOwnPayloadIgnoringChildElement) {
   const QString source = u"return { id='scale', create=function(p) end }"_s;
   QDomElement processor = buildProcessorWithSource(doc, params, source);
 
-  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(PJ::directCdataText(processor), params);
   EXPECT_EQ(processor.firstChildElement(u"source_fallback"_s).text(), source);
   // Document the gotcha being guarded against: text() recurses and merges both.
   EXPECT_EQ(processor.text(), params + source);
@@ -116,7 +122,7 @@ TEST(DirectCdataText, SurvivesSerializeReparseWithClosingCdata) {
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
   const QDomElement processor = reparsed.documentElement();
-  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(PJ::directCdataText(processor), params);
   EXPECT_EQ(processor.firstChildElement(u"source_fallback"_s).text(), source);
 }
 
@@ -124,10 +130,10 @@ TEST(DirectCdataText, EmptyWhenNoDirectCdata) {
   QDomDocument doc;
   QDomElement processor = doc.createElement(u"processor"_s);
   QDomElement src = doc.createElement(u"source_fallback"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, src, u"source-only"_s);
+  PJ::appendJsonAsCdata(doc, src, u"source-only"_s);
   processor.appendChild(src);
   doc.appendChild(processor);
-  EXPECT_TRUE(PJ::layout_xml::directCdataText(processor).isEmpty());
+  EXPECT_TRUE(PJ::directCdataText(processor).isEmpty());
 }
 
 // ---------- extractDataSource ----------------------------------------------
@@ -148,7 +154,7 @@ QDomDocument buildDataSourceDoc(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, plugin_id);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -167,7 +173,7 @@ void appendFileInfo(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, plugin_id);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -231,15 +237,54 @@ TEST(ExtractDataSource, CanonicalBrowserContentFingerprintIsOptionalAndValidated
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().content_sha256, QLatin1StringView(kSha256));
 
+  EXPECT_FALSE(refs.front().content_sha256_malformed);
+
   file_info.setAttribute(u"content_sha256"_s, u"ABCDEF"_s);
   refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   ASSERT_EQ(refs.size(), 1);
   EXPECT_TRUE(refs.front().content_sha256.isEmpty());
+  EXPECT_TRUE(refs.front().content_sha256_malformed);
 
   file_info.removeAttribute(u"content_sha256"_s);
   refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   ASSERT_EQ(refs.size(), 1);
   EXPECT_TRUE(refs.front().content_sha256.isEmpty());
+  EXPECT_FALSE(refs.front().content_sha256_malformed);
+}
+
+// A downloaded layout's sources live beside it; relative names are paths, so
+// filesystem characters never turn into URL syntax.
+TEST(ResolveFileSourceUrl, RelativeAndAbsoluteNetworkReferencesResolve) {
+  const QUrl layout(u"https://host.test/presets/fr3/layout.pj4.xml?v=2"_s);
+  const auto resolve = [&layout](const QString& filename) {
+    QString error;
+    const QUrl url = PJ::layout_xml::resolveFileSourceUrl(filename, layout, &error);
+    EXPECT_TRUE(error.isEmpty()) << filename.toStdString() << ": " << error.toStdString();
+    return url.toString(QUrl::FullyEncoded).toStdString();
+  };
+  EXPECT_EQ(resolve(u"data.mcap"_s), "https://host.test/presets/fr3/data.mcap");
+  EXPECT_EQ(resolve(u"pj4-sources/1/duplicate.csv"_s), "https://host.test/presets/fr3/pj4-sources/1/duplicate.csv");
+  EXPECT_EQ(resolve(u"../shared/run 1#2?.csv"_s), "https://host.test/presets/shared/run%201%232%3F.csv");
+  EXPECT_EQ(resolve(u"https://cdn.test/data.mcap"_s), "https://cdn.test/data.mcap");
+}
+
+// A web-hosted layout never points the app at local files or other schemes.
+TEST(ResolveFileSourceUrl, RejectsLocalPathsOtherSchemesAndUnanchoredLayouts) {
+  const QUrl layout(u"https://host.test/presets/fr3/layout.pj4.xml"_s);
+  for (const QString& filename :
+       {u""_s, u"/home/user/data.mcap"_s, u"//server/share/data.mcap"_s, u"C:/data/run.mcap"_s, u"C:\\data\\run.mcap"_s,
+        u"data\\run.mcap"_s, u"file:///home/user/data.mcap"_s, u"pj-upload://3f2b/1/data.csv"_s,
+        u"javascript:alert(1)"_s, u"data/"_s}) {
+    QString error;
+    EXPECT_TRUE(PJ::layout_xml::resolveFileSourceUrl(filename, layout, &error).isEmpty()) << filename.toStdString();
+    EXPECT_FALSE(error.isEmpty()) << filename.toStdString();
+  }
+  for (const QUrl& location : {QUrl(u"file:///data/layouts/robot.pj4.xml"_s), QUrl()}) {
+    QString error;
+    EXPECT_TRUE(PJ::layout_xml::resolveFileSourceUrl(u"data.mcap"_s, location, &error).isEmpty())
+        << location.toString().toStdString();
+    EXPECT_FALSE(error.isEmpty());
+  }
 }
 
 TEST(ExtractDataSource, RelativeFilesystemPathContainingSchemeTextStillAnchors) {
@@ -260,10 +305,9 @@ TEST(ExtractDataSource, PluginIdAndCdataJsonRoundTrip) {
   EXPECT_EQ(refs.front().prefix, u"robot"_s);
   EXPECT_EQ(refs.front().plugin_id, u"DataLoad MCAP"_s);
   EXPECT_EQ(refs.front().plugin_config_json, json);
-  EXPECT_FALSE(refs.front().rewrite_plugin_filepath);
 }
 
-TEST(ExtractDataSource, LogicalPluginFilepathMarkerOptsIntoResolvedReplayPath) {
+TEST(ExtractDataSource, SourceFilepathModeResolvesAgainstLayoutDir) {
   const QString json = uR"({"filepath":"run.csv"})"_s;
   QDomDocument doc = buildDataSourceDoc(u"run.csv"_s, QString(), u"CSV Loader"_s, json);
   QDomElement plugin = doc.documentElement()
@@ -279,7 +323,6 @@ TEST(ExtractDataSource, LogicalPluginFilepathMarkerOptsIntoResolvedReplayPath) {
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().resolved_path, layout_dir.absoluteFilePath(u"run.csv"_s));
   EXPECT_EQ(refs.front().plugin_config_json, json);
-  EXPECT_TRUE(refs.front().rewrite_plugin_filepath);
 }
 
 TEST(ExtractDataSource, PluginCdataWithClosingSequenceRoundTrips) {
@@ -330,7 +373,7 @@ void appendMaterialize(QDomDocument& doc, const QString& provider, const QString
   QDomElement materialize = doc.createElement(u"materialize"_s);
   materialize.setAttribute(u"provider"_s, provider);
   materialize.setAttribute(u"identity"_s, identity);
-  PJ::layout_xml::appendJsonAsCdata(doc, materialize, descriptor);
+  PJ::appendJsonAsCdata(doc, materialize, descriptor);
   file_info.appendChild(materialize);
 }
 
@@ -774,6 +817,20 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   transform_input.setAttribute(u"dataset_id"_s, u"7"_s);
   transform.appendChild(transform_input);
   processors.appendChild(transform);
+  // A dataset-bound marker generator saved with an absolute path (as DerivedObjects::save
+  // writes it), an unplaceable one, and an all_datasets one that names no dataset.
+  QDomElement generator = pd.doc.createElement(u"generator"_s);
+  generator.setAttribute(u"dataset_id"_s, u"7"_s);
+  generator.setAttribute(u"dataset_path"_s, u"/saved/elsewhere/run.mcap"_s);
+  processors.appendChild(generator);
+  QDomElement unplaced_generator = pd.doc.createElement(u"generator"_s);
+  unplaced_generator.setAttribute(u"dataset_id"_s, u"8"_s);
+  unplaced_generator.setAttribute(u"dataset_source"_s, u"stream"_s);
+  unplaced_generator.setAttribute(u"dataset_path"_s, QString());
+  processors.appendChild(unplaced_generator);
+  QDomElement global_generator = pd.doc.createElement(u"generator"_s);
+  global_generator.setAttribute(u"all_datasets"_s, u"1"_s);
+  processors.appendChild(global_generator);
 
   // Scene elements must be invisible to all three passes.
   QDomElement scene = pd.doc.createElement(u"scene3d"_s);
@@ -801,6 +858,9 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_FALSE(xy.hasAttribute(u"y_dataset_path"_s));  // id 8 unknown to the lookup
   EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), u"data/run.mcap"_s);
   EXPECT_EQ(transform_input.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(generator.attribute(u"dataset_path"_s), u"data/run.mcap"_s) << "the absolute save-time path is replaced";
+  EXPECT_TRUE(unplaced_generator.attribute(u"dataset_path"_s).isEmpty());
+  EXPECT_FALSE(global_generator.hasAttribute(u"dataset_path"_s));
   EXPECT_FALSE(layer.hasAttribute(u"dataset_path"_s)) << "scene layers are not stamped";
   EXPECT_FALSE(robot.hasAttribute(u"source_dataset_path"_s)) << "robot models are not stamped";
 
@@ -811,6 +871,9 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
       << "an unvalidated volatile id must not survive a file save";
   EXPECT_TRUE(processor.hasAttribute(u"input_dataset_id"_s));
   EXPECT_TRUE(transform_input.hasAttribute(u"dataset_id"_s));
+  EXPECT_TRUE(generator.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(unplaced_generator.hasAttribute(u"dataset_id"_s)) << "a path-less generator id is a volatile hint";
+  EXPECT_EQ(unplaced_generator.attribute(u"dataset_source"_s), u"stream"_s);
   // Scene ids survive untouched — restore requires them and the scene family owns
   // its own qualifier round-trip.
   EXPECT_TRUE(layer.hasAttribute(u"dataset_id"_s)) << "scene layer id must not be stripped";
@@ -826,6 +889,91 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_EQ(xy.attribute(u"x_dataset_path"_s), expected);
   EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), expected);
   EXPECT_EQ(transform_input.attribute(u"dataset_path"_s), expected);
+  EXPECT_EQ(generator.attribute(u"dataset_path"_s), expected);
+}
+
+// LAY-17: an <on_demand> recipe's inputs carry their dataset like a transform's: a known id gets its path at
+// file save, an unvalidated volatile id is stripped, and a generic layout keeps no qualifier.
+TEST(DatasetSourcePath, OnDemandInputsAreStampedAndStripped) {
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"root"_s);
+  doc.appendChild(root);
+  QDomElement processors = doc.createElement(u"data_processors"_s);
+  root.appendChild(processors);
+  QDomElement on_demand = doc.createElement(u"on_demand"_s);
+  processors.appendChild(on_demand);
+  QDomElement known = doc.createElement(u"input"_s);
+  known.setAttribute(u"name"_s, u"cloud"_s);
+  known.setAttribute(u"dataset_id"_s, u"7"_s);
+  known.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  on_demand.appendChild(known);
+  QDomElement unknown = doc.createElement(u"input"_s);
+  unknown.setAttribute(u"name"_s, u"threshold"_s);
+  unknown.setAttribute(u"dataset_id"_s, u"8"_s);
+  on_demand.appendChild(unknown);
+
+  PJ::layout_xml::stampDatasetSourcePaths(
+      doc, [](std::uint32_t id) { return id == 7 ? u"data/run.mcap"_s : QString{}; });
+  EXPECT_EQ(known.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_path"_s)) << "id 8 unknown to the lookup";
+
+  PJ::layout_xml::removeUnvalidatedDatasetIds(doc);
+  EXPECT_TRUE(known.hasAttribute(u"dataset_id"_s)) << "path-qualified: kept";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_id"_s)) << "an unvalidated volatile id must not survive a file save";
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+  for (const QDomElement& input : {known, unknown}) {
+    EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_path"_s));
+    EXPECT_FALSE(input.attribute(u"name"_s).isEmpty()) << "the name stays";
+  }
+}
+
+// A Custom Widget wire carries the same dataset triple and goes through the same three passes: the
+// absolute path the panel saves is replaced by the layout-relative one at file save, an unvalidated
+// volatile id is stripped, and a generic layout keeps no qualifier. A marker rule's <input> outside a
+// <CustomWidget> is not a wire: the stamp and the id pass leave it alone.
+TEST(DatasetSourcePath, CustomWidgetInputsAreStampedAndStripped) {
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"root"_s);
+  doc.appendChild(root);
+  QDomElement custom = doc.createElement(u"CustomWidget"_s);
+  root.appendChild(custom);
+  QDomElement known = doc.createElement(u"input"_s);
+  known.setAttribute(u"name"_s, u"value"_s);
+  known.setAttribute(u"dataset_id"_s, u"7"_s);
+  known.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  known.setAttribute(u"dataset_path"_s, u"/saved/elsewhere/run.mcap"_s);
+  custom.appendChild(known);
+  QDomElement unknown = doc.createElement(u"input"_s);
+  unknown.setAttribute(u"name"_s, u"state"_s);
+  unknown.setAttribute(u"dataset_id"_s, u"8"_s);
+  unknown.setAttribute(u"dataset_source"_s, u"stream"_s);
+  custom.appendChild(unknown);
+  QDomElement marker_input = doc.createElement(u"input"_s);
+  marker_input.setAttribute(u"dataset_id"_s, u"7"_s);
+  root.appendChild(marker_input);
+
+  PJ::layout_xml::stampDatasetSourcePaths(
+      doc, [](std::uint32_t id) { return id == 7 ? u"data/run.mcap"_s : QString{}; });
+  EXPECT_EQ(known.attribute(u"dataset_path"_s), u"data/run.mcap"_s) << "the absolute save-time path is replaced";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_path"_s)) << "id 8 unknown to the lookup";
+  EXPECT_FALSE(marker_input.hasAttribute(u"dataset_path"_s)) << "not a Custom Widget wire";
+
+  PJ::layout_xml::removeUnvalidatedDatasetIds(doc);
+  EXPECT_TRUE(known.hasAttribute(u"dataset_id"_s)) << "path-qualified: kept";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_id"_s)) << "an unvalidated volatile id must not survive a file save";
+  EXPECT_EQ(unknown.attribute(u"dataset_source"_s), u"stream"_s);
+  EXPECT_TRUE(marker_input.hasAttribute(u"dataset_id"_s));
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+  for (const QDomElement& input : {known, unknown}) {
+    EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_path"_s));
+    EXPECT_FALSE(input.attribute(u"name"_s).isEmpty()) << "the name stays";
+  }
 }
 
 // A hidden <marker_scope> carries the same dataset identity as the curves beside it
@@ -907,6 +1055,90 @@ TEST(DatasetSourcePath, DesktopResolverLeavesOpaqueUriQualifiersLiteral) {
   EXPECT_EQ(curve.attribute(u"dataset_path"_s), u"pj-upload://session/7/log.csv"_s);
 }
 
+TEST(DatasetSourcePath, RelativizeRelocatesOnlyAbsoluteFilesystemQualifiers) {
+  const QTemporaryDir root;
+  ASSERT_TRUE(root.isValid());
+  const QString inside = QDir(root.path()).filePath(u"in/data/run.mcap"_s);
+  const QString outside = QDir(root.path()).filePath(u"out/far.mcap"_s);
+
+  QDomDocument doc;
+  const QString xml =
+      u"<root>"
+      u"<scene3d><layer dataset_path=\"%1\"/><config_topic dataset_path=\"%1\"/></scene3d>"
+      u"<layer local=\"true\" dataset_id=\"0\"><robot_model source_dataset_path=\"%1\"/>"
+      u"<trail source_dataset_path=\"%1\"/></layer>"
+      u"<scene2d><layer dataset_path=\"%1\"/></scene2d>"
+      u"<state_transitions>"
+      u"<series dataset_path=\"%1\"/><series dataset_path=\"%2\"/><series dataset_path=\"\"/>"
+      u"</state_transitions>"
+      u"<curve dataset_path=\"data/run.mcap\" x_dataset_path=\"logs/http://capture.mcap\"/>"
+      u"<upload><layer dataset_path=\"pj-upload://session/7/log.csv\"/></upload>"
+      u"</root>"_s.arg(inside, outside);
+  ASSERT_TRUE(doc.setContent(xml));
+
+  QStringList calls;
+  PJ::layout_xml::relativizeDatasetSourcePaths(doc, [&](const QString& path) {
+    calls.push_back(path);
+    return path == inside ? u"data/run.mcap"_s : path;
+  });
+
+  QStringList expected(6, inside);
+  expected.push_back(outside);
+  calls.sort();
+  expected.sort();
+  EXPECT_EQ(calls, expected);
+
+  const QDomElement top = doc.documentElement();
+  const QDomElement scene3d = top.firstChildElement(u"scene3d"_s);
+  EXPECT_EQ(scene3d.firstChildElement(u"layer"_s).attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(scene3d.firstChildElement(u"config_topic"_s).attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  const QDomElement robot_layer = top.firstChildElement(u"layer"_s);
+  EXPECT_EQ(robot_layer.attribute(u"dataset_id"_s), u"0"_s);
+  EXPECT_EQ(robot_layer.firstChildElement(u"robot_model"_s).attribute(u"source_dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(robot_layer.firstChildElement(u"trail"_s).attribute(u"source_dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(
+      top.firstChildElement(u"scene2d"_s).firstChildElement(u"layer"_s).attribute(u"dataset_path"_s),
+      u"data/run.mcap"_s);
+  const QDomElement states = top.firstChildElement(u"state_transitions"_s);
+  EXPECT_EQ(states.elementsByTagName(u"series"_s).at(0).toElement().attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(states.elementsByTagName(u"series"_s).at(1).toElement().attribute(u"dataset_path"_s), outside);
+  EXPECT_EQ(states.elementsByTagName(u"series"_s).at(2).toElement().attribute(u"dataset_path"_s), QString());
+  const QDomElement curve = top.firstChildElement(u"curve"_s);
+  EXPECT_EQ(curve.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(curve.attribute(u"x_dataset_path"_s), u"logs/http://capture.mcap"_s);
+  EXPECT_EQ(
+      top.firstChildElement(u"upload"_s).firstChildElement(u"layer"_s).attribute(u"dataset_path"_s),
+      u"pj-upload://session/7/log.csv"_s);
+}
+
+// A colon in a path component is legal on POSIX: only a real source identity is opaque, on
+// save as on load, so such a file beneath the layout moves with it like any other.
+TEST(DatasetSourcePath, RelativizeAndResolveAgreeOnWhatIsOpaque) {
+  const QTemporaryDir root;
+  ASSERT_TRUE(root.isValid());
+  const QString layout = QDir::cleanPath(root.path());
+  const QString with_colon = layout + u"/logs/http://capture.mcap"_s;
+  const QString upload = u"pj-upload://session/7/log.csv"_s;
+  const QString stream = u"pj-stream://robot"_s;
+
+  QDomDocument doc;
+  QDomElement element = doc.createElement(u"curve"_s);
+  element.setAttribute(u"dataset_path"_s, with_colon);
+  element.setAttribute(u"x_dataset_path"_s, upload);
+  element.setAttribute(u"y_dataset_path"_s, stream);
+  doc.appendChild(element);
+
+  PJ::layout_xml::relativizeDatasetSourcePaths(doc, [&layout](const QString& path) {
+    return path.startsWith(layout + u'/') ? path.mid(layout.size() + 1) : path;
+  });
+  EXPECT_EQ(element.attribute(u"dataset_path"_s), u"logs/http://capture.mcap"_s);
+  EXPECT_EQ(element.attribute(u"x_dataset_path"_s), upload);
+  EXPECT_EQ(element.attribute(u"y_dataset_path"_s), stream);
+
+  PJ::layout_xml::resolveDatasetSourcePaths(doc, QDir(layout));
+  EXPECT_EQ(element.attribute(u"dataset_path"_s), QDir::cleanPath(with_colon));
+}
+
 TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   PlotDoc pd = makePlotDoc();
   QDomElement ts = addTsCurve(pd, u"/imu"_s, u"x"_s);
@@ -940,6 +1172,16 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   input.setAttribute(u"column"_s, u"1"_s);
   transform.appendChild(input);
   processors.appendChild(transform);
+  QDomElement generator = pd.doc.createElement(u"generator"_s);
+  generator.setAttribute(u"id"_s, u"rule"_s);
+  generator.setAttribute(u"all_datasets"_s, u"0"_s);
+  generator.setAttribute(u"dataset_id"_s, u"7"_s);
+  generator.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  generator.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  QDomElement generator_input = pd.doc.createElement(u"input"_s);
+  generator_input.setAttribute(u"name"_s, u"/imu/x"_s);
+  generator.appendChild(generator_input);
+  processors.appendChild(generator);
   pd.doc.documentElement().appendChild(processors);
 
   QDomElement scene = pd.doc.createElement(u"scene3d"_s);
@@ -973,7 +1215,26 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   scene.appendChild(trail);
   pd.doc.documentElement().appendChild(scene);
 
+  // A Custom Widget wire carries the same qualifiers as a curve and must shed them too.
+  QDomElement custom = pd.doc.createElement(u"CustomWidget"_s);
+  custom.setAttribute(u"plugin"_s, u"basic-widgets"_s);
+  QDomElement wire = pd.doc.createElement(u"input"_s);
+  wire.setAttribute(u"name"_s, u"value"_s);
+  wire.setAttribute(u"topic"_s, u"/battery"_s);
+  wire.setAttribute(u"field"_s, u"voltage"_s);
+  wire.setAttribute(u"dataset_id"_s, u"3"_s);
+  wire.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  wire.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  custom.appendChild(wire);
+  pd.doc.documentElement().appendChild(custom);
+
   PJ::layout_xml::removeDatasetQualifiersForGenericLayout(pd.doc);
+
+  EXPECT_EQ(wire.attribute(u"topic"_s), u"/battery"_s);
+  EXPECT_EQ(wire.attribute(u"field"_s), u"voltage"_s);
+  EXPECT_FALSE(wire.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(wire.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(wire.hasAttribute(u"dataset_path"_s));
 
   // Plot curves and <processor> inputs: structural identity (topic/field) survives;
   // the exact dataset qualifiers are gone so binding falls back to unique-only.
@@ -1001,6 +1262,14 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   EXPECT_EQ(input.attribute(u"field"_s), u"x"_s);
   EXPECT_EQ(input.attribute(u"column"_s), u"1"_s);
 
+  // A marker generator keeps its input series, which binds it to the one dataset
+  // that carries them.
+  EXPECT_FALSE(generator.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(generator.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(generator.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(generator.attribute(u"id"_s), u"rule"_s);
+  EXPECT_EQ(generator_input.attribute(u"name"_s), u"/imu/x"_s);
+
   // Scene layers use the same unique-only structural rebind in generic layouts.
   // Removing all source qualifiers also prevents browser upload identities from
   // leaking into a downloaded generic layout.
@@ -1021,6 +1290,31 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   EXPECT_FALSE(trail.hasAttribute(u"source_dataset_path"_s));
   EXPECT_EQ(trail.attribute(u"source_topic_name"_s), u"/poses"_s);
   EXPECT_EQ(trail.attribute(u"past_color"_s), u"#ff00ff"_s);
+}
+
+TEST(GenericLayout, StripsStateTransitionsSeriesQualifiers) {
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(
+      u"<root><state_transitions zoom_px_per_ns=\"1\"><series dataset_id=\"7\" dataset_source=\"run.mcap\" "
+      u"dataset_path=\"data/run.mcap\" topic=\"/mode\" field=\"value\" visible=\"0\"/></state_transitions>"
+      u"<other><series dataset_id=\"7\" dataset_source=\"run.mcap\" dataset_path=\"data/run.mcap\"/></other>"
+      u"</root>"_s));
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+
+  const QDomElement series =
+      doc.documentElement().firstChildElement(u"state_transitions"_s).firstChildElement(u"series"_s);
+  EXPECT_FALSE(series.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(series.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(series.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(series.attribute(u"topic"_s), u"/mode"_s);
+  EXPECT_EQ(series.attribute(u"field"_s), u"value"_s);
+  EXPECT_EQ(series.attribute(u"visible"_s), u"0"_s);
+  // The attribute names mean a dataset qualifier wherever they appear.
+  const QDomElement elsewhere = doc.documentElement().firstChildElement(u"other"_s).firstChildElement(u"series"_s);
+  EXPECT_FALSE(elsewhere.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(elsewhere.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(elsewhere.hasAttribute(u"dataset_path"_s));
 }
 
 // Stamping/removing unvalidated ids are source-bound passes and leave scene-owned
@@ -1368,6 +1662,244 @@ TEST(BrowserLayoutSerialization, DetectsEveryEphemeralPathSentinel) {
   EXPECT_TRUE(
       PJ::layout_xml::containsEphemeralBrowserPath(QByteArrayLiteral(
           "<root><plugin><![CDATA[{\"filepath\":\"/pj_uploads/7/capture.mcap\"}]]></plugin></root>")));
+}
+
+// ---------- streaming sources -----------------------------------------------
+
+QDomDocument parseLayout(const QByteArray& xml) {
+  QDomDocument doc;
+  EXPECT_TRUE(static_cast<bool>(doc.setContent(xml))) << xml.toStdString();
+  return doc;
+}
+
+TEST(LayoutXmlTest, StreamingRoundTripAndDuplicateIds) {
+  using PJ::layout_xml::StreamingSourceRef;
+  // Two streams of one plugin stay two records. The configuration is the saved template:
+  // it round-trips unexpanded and byte-exact, CDATA terminator included.
+  StreamingSourceRef robot;
+  robot.id = u"robot"_s;
+  robot.source_name = u"Robot"_s;
+  robot.plugin_id = u"PlotJuggler Bridge"_s;
+  robot.plugin_manifest_id = u"plotjuggler-bridge"_s;
+  robot.plugin_config_json = uR"({"url":"${deployment.ws_origin}/bridge","note":"]]>"})"_s;
+  robot.dataset.source_name = u"[stream] Robot"_s;
+  robot.dataset.source_index = 0;
+  robot.dataset.display_offset_ns = -250;
+  robot.dataset.has_display_offset = true;
+  robot.dataset.timeline_order = 1;
+  StreamingSourceRef arm = robot;
+  arm.id = u"arm"_s;
+  arm.source_name = u"Arm"_s;
+  arm.plugin_config_json = uR"({"url":"ws://10.0.0.2:9871/bridge"})"_s;
+  arm.dataset = {};
+
+  QDomDocument doc = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+  QString error = u"stale"_s;
+  ASSERT_TRUE(PJ::layout_xml::writeStreamingSources(doc, {robot, arm}, &error)) << error.toStdString();
+  EXPECT_TRUE(error.isEmpty());
+  EXPECT_EQ(PJ::layout_xml::kStreamingLayoutSchemaVersion, 5);
+  EXPECT_EQ(doc.documentElement().attribute(u"pj4_version"_s), u"5"_s)
+      << "only a stream-bearing layout is written with the newer schema";
+
+  error = u"stale"_s;
+  const QList<StreamingSourceRef> refs =
+      PJ::layout_xml::extractStreamingSources(parseLayout(doc.toByteArray(2)), &error);
+  EXPECT_TRUE(error.isEmpty()) << error.toStdString();
+  ASSERT_EQ(refs.size(), 2);
+  const std::array<const StreamingSourceRef*, 2> expected{&robot, &arm};
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    const StreamingSourceRef& want = *expected[index];
+    const StreamingSourceRef& got = refs[static_cast<qsizetype>(index)];
+    EXPECT_EQ(got.id, want.id);
+    EXPECT_EQ(got.source_name, want.source_name);
+    EXPECT_EQ(got.plugin_id, want.plugin_id);
+    EXPECT_EQ(got.plugin_manifest_id, want.plugin_manifest_id);
+    EXPECT_EQ(got.plugin_config_json, want.plugin_config_json);
+    EXPECT_EQ(got.dataset.source_name, want.dataset.source_name);
+    EXPECT_EQ(got.dataset.source_index, want.dataset.source_index);
+    EXPECT_EQ(got.dataset.display_offset_ns, want.dataset.display_offset_ns);
+    EXPECT_EQ(got.dataset.has_display_offset, want.dataset.has_display_offset);
+    EXPECT_FALSE(got.dataset.display_offset_includes_global_reference);
+    EXPECT_EQ(got.dataset.timeline_order, want.dataset.timeline_order);
+  }
+
+  // A layout without streams keeps the plain schema and gains no empty block.
+  QDomDocument plain = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+  EXPECT_TRUE(PJ::layout_xml::writeStreamingSources(plain, {}, &error));
+  EXPECT_EQ(plain.documentElement().attribute(u"pj4_version"_s), u"4"_s);
+  EXPECT_FALSE(plain.documentElement().hasChildNodes());
+  error = u"stale"_s;
+  EXPECT_TRUE(PJ::layout_xml::extractStreamingSources(plain, &error).isEmpty());
+  EXPECT_TRUE(error.isEmpty());
+
+  // The hand-authored preset form: the CDATA payload is kept as written.
+  const QList<StreamingSourceRef> authored = PJ::layout_xml::extractStreamingSources(
+      parseLayout(R"(<root pj4_version="5" binding="source"><previouslyLoaded_StreamingSources>
+  <streamInfo id="robot" source_name="Robot">
+    <plugin ID="PlotJuggler Bridge" manifest_id="plotjuggler-bridge"><![CDATA[
+      {"url":"${deployment.ws_origin}/bridge"}
+    ]]></plugin>
+  </streamInfo>
+</previouslyLoaded_StreamingSources></root>)"),
+      &error);
+  EXPECT_TRUE(error.isEmpty()) << error.toStdString();
+  ASSERT_EQ(authored.size(), 1);
+  EXPECT_EQ(authored.front().plugin_config_json, u"\n      {\"url\":\"${deployment.ws_origin}/bridge\"}\n    "_s);
+  EXPECT_EQ(authored.front().dataset.source_index, -1);
+  EXPECT_FALSE(authored.front().dataset.has_display_offset);
+  EXPECT_EQ(authored.front().dataset.timeline_order, -1);
+
+  // Any invalid record rejects the whole block, so a layout never replays a partial stream set.
+  const auto rejection = [](const char* records) {
+    QString reason;
+    const QList<StreamingSourceRef> parsed = PJ::layout_xml::extractStreamingSources(
+        parseLayout(
+            QByteArray("<root pj4_version=\"5\"><previouslyLoaded_StreamingSources>") + records +
+            "</previouslyLoaded_StreamingSources></root>"),
+        &reason);
+    EXPECT_TRUE(parsed.isEmpty()) << records;
+    EXPECT_FALSE(reason.isEmpty()) << records;
+    return reason.toStdString();
+  };
+  constexpr auto kBridge = R"(<plugin ID="PlotJuggler Bridge"><![CDATA[{"url":"ws://a"}]]></plugin>)";
+  const std::string duplicate =
+      rejection((u"<streamInfo id=\"robot\">%1</streamInfo><streamInfo id=\"robot\">%1</streamInfo>"_s.arg(
+                     QLatin1StringView(kBridge)))
+                    .toUtf8()
+                    .constData());
+  EXPECT_NE(duplicate.find("robot"), std::string::npos) << duplicate;
+  rejection((u"<streamInfo>%1</streamInfo>"_s.arg(QLatin1StringView(kBridge))).toUtf8().constData());
+  rejection(R"(<streamInfo id="robot"/>)");
+  rejection(R"(<streamInfo id="robot"><plugin><![CDATA[{"url":"ws://a"}]]></plugin></streamInfo>)");
+  rejection(R"(<streamInfo id="robot"><plugin manifest_id="plotjuggler-bridge">  </plugin></streamInfo>)");
+
+  // Everything bound to a stream is qualified by its opaque record identity, never a path.
+  const QString identity = PJ::layout_xml::streamSourceIdentity(u"robot"_s);
+  EXPECT_EQ(identity, u"pj-stream://robot"_s);
+  QDomDocument bound = parseLayout(R"(<root><plot><curve topic="/imu" field="x"/></plot></root>)");
+  QDomElement curve = bound.documentElement().firstChildElement(u"plot"_s).firstChildElement(u"curve"_s);
+  curve.setAttribute(u"dataset_path"_s, identity);
+  PJ::layout_xml::resolveDatasetSourcePaths(bound, QDir(u"/tmp/layouts"_s));
+  EXPECT_EQ(curve.attribute(u"dataset_path"_s), identity);
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(identity, identity));
+  EXPECT_FALSE(PJ::layout_xml::isSamePath(identity, PJ::layout_xml::streamSourceIdentity(u"arm"_s)));
+}
+
+// A robot or trail layer names its stream only on its nested payload. Binding marks the owning
+// <layer> pending (it waits for the topic instead of failing the restore) and gives it the
+// stream's dataset, so its topic is demanded from that stream alone.
+TEST(LayoutXmlTest, BindingANestedStreamReferenceMarksItsLayerPending) {
+  QDomDocument doc = parseLayout(R"(<root><scene3d>
+    <layer local="true" object_type="robot_description" order="0">
+      <robot_model source_type="topic" source_topic_name="robot_description" source_dataset_path="pj-stream://robot"/>
+    </layer>
+    <layer role="trail" order="1">
+      <trail source_kind="pose_topic" source_topic_name="pose" source_dataset_path="pj-stream://robot"/>
+    </layer>
+    <layer local="true" object_type="robot_description" order="2">
+      <robot_model source_type="topic" source_topic_name="robot_description" source_dataset_path="data.mcap"/>
+    </layer>
+  </scene3d></root>)");
+
+  PJ::layout_xml::bindStreamQualifiers(doc, {{u"pj-stream://robot"_s, 7U}});
+
+  const QDomNodeList layers = doc.elementsByTagName(u"layer"_s);
+  ASSERT_EQ(layers.size(), 3);
+  for (int index = 0; index < 2; ++index) {
+    const QDomElement layer = layers.at(index).toElement();
+    EXPECT_EQ(layer.attribute(u"pending_intent"_s), u"true"_s) << index;
+    EXPECT_EQ(layer.attribute(u"dataset_id"_s), u"7"_s) << index;
+    const QDomElement payload = layer.firstChildElement();
+    EXPECT_EQ(payload.attribute(u"source_dataset_id"_s), u"7"_s) << index;
+    EXPECT_FALSE(payload.hasAttribute(u"source_dataset_path"_s)) << index;
+  }
+  const QDomElement file_bound = layers.at(2).toElement();
+  EXPECT_FALSE(file_bound.hasAttribute(u"pending_intent"_s));
+  EXPECT_FALSE(file_bound.hasAttribute(u"dataset_id"_s));
+}
+
+// An on-demand input's name is the alias its script reads, and what it binds stays recorded beside it.
+TEST(DatasetIdentityPasses, GenericLayoutKeepsAnOnDemandInputNameAndWhatItReads) {
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(
+      u"<root><on_demand id=\"crop\"><input name=\"run.mcap:cloud\" dataset_id=\"7\" dataset_source=\"run.mcap\" "
+      u"topic=\"cloud\"/></on_demand></root>"_s));
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+
+  const QDomElement input = doc.elementsByTagName(u"input"_s).at(0).toElement();
+  EXPECT_EQ(input.attribute(u"name"_s), u"run.mcap:cloud"_s);
+  EXPECT_EQ(input.attribute(u"topic"_s), u"cloud"_s);
+  EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+}
+
+TEST(LayoutXmlTest, StreamingBlockShapeAndWriterValidation) {
+  using PJ::layout_xml::StreamingSourceRef;
+  // Hand-authored presets often omit pj4_version. Stream records only exist from v5, so their
+  // timeline offset never takes the pre-v4 migration that an unversioned <fileInfo> does.
+  QString error;
+  const QList<StreamingSourceRef> unversioned = PJ::layout_xml::extractStreamingSources(
+      parseLayout(
+          R"(<root binding="source"><previouslyLoaded_StreamingSources><streamInfo id="robot">)"
+          R"(<plugin ID="Stream Plugin"><![CDATA[{"url":"ws://a"}]]></plugin>)"
+          R"(<dataset display_offset_ns="-5"/></streamInfo></previouslyLoaded_StreamingSources></root>)"),
+      &error);
+  ASSERT_EQ(unversioned.size(), 1) << error.toStdString();
+  EXPECT_TRUE(unversioned.front().dataset.has_display_offset);
+  EXPECT_EQ(unversioned.front().dataset.display_offset_ns, -5);
+  EXPECT_FALSE(unversioned.front().dataset.display_offset_includes_global_reference);
+
+  // A second block, or a second plugin in one record, rejects everything like any invalid record.
+  const auto record = [](const char* id) {
+    return QString::fromLatin1(R"(<streamInfo id="%1"><plugin ID="Stream Plugin"><![CDATA[{}]]></plugin></streamInfo>)")
+        .arg(QLatin1StringView(id));
+  };
+  const QString two_blocks =
+      u"<root pj4_version=\"5\"><previouslyLoaded_StreamingSources>%1</previouslyLoaded_StreamingSources>"
+      u"<previouslyLoaded_StreamingSources>%2</previouslyLoaded_StreamingSources></root>"_s.arg(
+          record("robot"), record("arm"));
+  const QString two_plugins =
+      uR"(<root pj4_version="5"><previouslyLoaded_StreamingSources><streamInfo id="robot">)"
+      uR"(<plugin ID="Stream Plugin"><![CDATA[{}]]></plugin><plugin ID="Other Plugin"><![CDATA[{}]]></plugin>)"
+      uR"(</streamInfo></previouslyLoaded_StreamingSources></root>)"_s;
+  for (const QString& xml : {two_blocks, two_plugins}) {
+    error.clear();
+    EXPECT_TRUE(PJ::layout_xml::extractStreamingSources(parseLayout(xml.toUtf8()), &error).isEmpty())
+        << xml.toStdString();
+    EXPECT_FALSE(error.isEmpty()) << xml.toStdString();
+  }
+
+  // The writer refuses what its reader would reject, and then writes nothing.
+  StreamingSourceRef valid;
+  valid.id = u"robot"_s;
+  valid.plugin_id = u"Stream Plugin"_s;
+  valid.plugin_config_json = uR"({"url":"ws://a"})"_s;
+  StreamingSourceRef no_id = valid;
+  no_id.id.clear();
+  StreamingSourceRef no_plugin = valid;
+  no_plugin.plugin_id.clear();
+  StreamingSourceRef no_config = valid;
+  no_config.plugin_config_json = u"  "_s;
+  const QList<QList<StreamingSourceRef>> refused{{no_id}, {valid, valid}, {no_plugin}, {no_config}};
+  for (const QList<StreamingSourceRef>& sources : refused) {
+    QDomDocument doc = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+    error.clear();
+    EXPECT_FALSE(PJ::layout_xml::writeStreamingSources(doc, sources, &error));
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_FALSE(doc.documentElement().hasChildNodes());
+    EXPECT_EQ(doc.documentElement().attribute(u"pj4_version"_s), u"4"_s);
+  }
+  // A second write would leave two blocks, which the reader rejects.
+  QDomDocument doc = parseLayout(R"(<root pj4_version="4" binding="source"/>)");
+  ASSERT_TRUE(PJ::layout_xml::writeStreamingSources(doc, {valid}, &error)) << error.toStdString();
+  StreamingSourceRef arm = valid;
+  arm.id = u"arm"_s;
+  error.clear();
+  EXPECT_FALSE(PJ::layout_xml::writeStreamingSources(doc, {arm}, &error));
+  EXPECT_FALSE(error.isEmpty());
+  EXPECT_EQ(doc.elementsByTagName(u"previouslyLoaded_StreamingSources"_s).size(), 1);
+  EXPECT_EQ(PJ::layout_xml::extractStreamingSources(doc, &error).size(), 1) << error.toStdString();
 }
 
 }  // namespace

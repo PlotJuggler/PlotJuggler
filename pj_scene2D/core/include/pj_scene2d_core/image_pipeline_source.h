@@ -118,7 +118,23 @@ class ImagePipelineSource : public MediaSource {
   /// Thread-safe; a change re-decodes the current frame so even a paused view updates.
   void setRectifyEnabled(bool enabled);
 
+  /// Calibration eligibility for the latest decoded image, independent of the user's toggle.
+  /// Published by the decode worker; safe to read from the UI thread after frame-ready notification.
+  enum class RectificationStatus {
+    kWaitingForImage,
+    kMissingFrameId,
+    kMissingCalibration,
+    kInvalidCalibration,
+    kReady
+  };
+  [[nodiscard]] RectificationStatus rectificationStatus() const {
+    return rectification_status_.load(std::memory_order_relaxed);
+  }
+
  private:
+  /// The frame of the entry at or before `ts_ns`: nullopt for no update (nothing there, already delivered, a
+  /// decode failure), a null frame to clear what is shown (an empty image, or a seek before the shown entry with
+  /// nothing there). Worker thread.
   std::optional<DecodedFrame> decodeAt(int64_t ts_ns);
 
   // Decode one canonical sdk::Image (from a parser or a deserialized blob) into a
@@ -163,7 +179,10 @@ class ImagePipelineSource : public MediaSource {
   PngCodec png_codec_;
   NormalizeMono16 normalize_mono16_;
   AutoImageCodec auto_image_codec_;
-  int64_t last_entry_ts_ = INT64_MIN;
+  /// The last delivered entry, worker-thread only; invalid = none (force_redecode resets to it).
+  SequentialUID last_entry_uid_;
+  /// The last delivered entry's store stamp, worker-thread only: a seek before it with nothing there clears.
+  std::optional<int64_t> last_entry_stamp_;
 
   // Rectification state. camera_info_by_frame_ is injected once (main thread,
   // before first decode) via setCameraInfoMap; each camera's reverse map is then
@@ -183,6 +202,7 @@ class ImagePipelineSource : public MediaSource {
   // the widget/UI thread, read on the worker thread in rectifyIfCalibrated();
   // cross-thread publication mirrors gpu_rectify_available_.
   std::atomic<bool> rectify_enabled_{true};
+  std::atomic<RectificationStatus> rectification_status_{RectificationStatus::kWaitingForImage};
   // Set true by the first setTimestamp() (main thread). Guards setCameraInfoMap:
   // once a decode has been requested the worker may read camera_info_by_frame_
   // unlocked, so a later injection would be a data race — it is refused instead.

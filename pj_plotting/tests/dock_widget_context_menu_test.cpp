@@ -11,16 +11,19 @@
 
 #include <gtest/gtest.h>
 
+#include <QAction>
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QMenu>
 #include <QPoint>
 #include <QString>
 #include <QTimer>
 #include <QWidget>
 
 #include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotDocker.h"
 #include "pj_runtime/IDataWidget.h"
 
 namespace {
@@ -105,6 +108,75 @@ TEST(DockWidgetContextMenu, IgnoredEventFallsThroughToDockMenu) {
   EXPECT_EQ(probe->context_menu_hits, 1)
       << "the content widget still gets exactly one first shot (no re-entrant filter loop)";
   EXPECT_TRUE(event.isAccepted()) << "the filter consumes the original event after taking the fallback path";
+}
+
+TEST(DockWidgetContextMenu, OpenSettingsRequestsTheClickedDocksSettings) {
+  PJ::DockWidget dock;
+  auto* probe = new MenuProbeWidget();
+  dock.adoptObjectWidget(probe);
+  dock.resize(200, 200);
+  dock.show();
+  PJ::DockWidget* requested = nullptr;
+  QObject::connect(
+      &dock, &PJ::DockWidget::settingsPanelToggleRequested, [&](PJ::DockWidget* target) { requested = target; });
+  QTimer click;
+  click.setInterval(10);
+  QObject::connect(&click, &QTimer::timeout, [&]() {
+    if (auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget())) {
+      for (auto* action : menu->actions()) {
+        if (action->text() == QStringLiteral("Open Settings")) {
+          action->trigger();
+          break;
+        }
+      }
+      menu->close();
+    }
+  });
+  click.start();
+  auto event = makeMenuEvent(*probe);
+  QApplication::sendEvent(probe, &event);
+  EXPECT_EQ(requested, &dock);
+}
+
+TEST(DockWidgetContextMenu, SettingsLabelTracksVisibilityForExistingAndNewDocks) {
+  PJ::PlotDocker docker(QStringLiteral("settings"));
+  bool settings_open = false;
+  int toggle_requests = 0;
+  QObject::connect(&docker, &PJ::PlotDocker::settingsPanelToggleRequested, [&](PJ::DockWidget*) { ++toggle_requests; });
+  docker.setConfigurationPanelVisibilityQuery([&]() { return settings_open; });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  for (int pass = 0; pass < 2; ++pass) {
+    auto* probe = new MenuProbeWidget();
+    dock->adoptObjectWidget(probe);
+    docker.resize(400, 300);
+    docker.show();
+    const QString expected = settings_open ? QStringLiteral("Close Settings") : QStringLiteral("Open Settings");
+    bool found = false;
+    QTimer inspect;
+    inspect.setInterval(10);
+    QObject::connect(&inspect, &QTimer::timeout, [&]() {
+      if (auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget())) {
+        for (auto* action : menu->actions()) {
+          if (action->text() == expected) {
+            found = true;
+            EXPECT_TRUE(action->isEnabled());
+            action->trigger();
+          }
+        }
+        menu->close();
+      }
+    });
+    inspect.start();
+    auto event = makeMenuEvent(*probe);
+    QApplication::sendEvent(probe, &event);
+    EXPECT_TRUE(found) << expected.toStdString();
+    EXPECT_EQ(toggle_requests, pass + 1);
+    inspect.stop();
+    settings_open = true;
+    dock = dock->splitVertical();
+    ASSERT_NE(dock, nullptr);
+  }
 }
 
 }  // namespace

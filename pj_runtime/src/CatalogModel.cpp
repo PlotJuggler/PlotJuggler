@@ -12,6 +12,8 @@
 #include <QHash>
 #include <QLoggingCategory>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <nlohmann/json.hpp>
@@ -30,7 +32,9 @@
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DatasetQualifiedName.h"  // markerSeriesField
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 using namespace Qt::StringLiterals;
@@ -82,12 +86,8 @@ struct QStringHash {
 // True when `live_path` and `saved_path` name the same on-disk source. Replicates
 // pj_app's layout_xml::isSamePath semantics without depending on it (pj_runtime is
 // below pj_app): literal-equality short-circuit first, then a QFileInfo-based
-// normalisation fallback. Both sides are normalised with the absoluteFilePath
-// fallback (matching normalizedSourcePath) so that a Windows path with a drive
-// letter ("C:/data/foo.mcap", from the registry) compares equal to its raw
-// "/data/foo.mcap" form from a saved layout. canonicalFilePath is preferred when
-// the file exists (resolves symlinks), and falls back to absoluteFilePath
-// otherwise. Empty inputs never match.
+// normalisation fallback through SessionManager::normalizedSourcePath. Empty
+// inputs never match.
 [[nodiscard]] bool isSamePathLike(const QString& live_path, const QString& saved_path) {
   if (live_path.isEmpty() || saved_path.isEmpty()) {
     return false;
@@ -95,17 +95,10 @@ struct QStringHash {
   if (live_path == saved_path) {
     return true;
   }
-  // canonicalFilePath resolves symlinks but returns empty for non-existent paths
-  // (e.g. a deleted recording). Fall back to absoluteFilePath so that Windows
-  // drive-letter normalisation (stored paths gain "C:/" via normalizedSourcePath)
-  // compares equal to their raw "/data/…" forms from a saved layout.
-  const auto normalize = [](const QString& p) -> QString {
-    const QFileInfo info(p);
-    const QString canonical = info.canonicalFilePath();
-    return QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical);
-  };
-  const QString norm_live = normalize(live_path);
-  const QString norm_saved = normalize(saved_path);
+  // The stored form (normalizedSourcePath) on both sides, so a deleted recording
+  // and a Windows drive-letter path compare equal to their saved-layout forms.
+  const QString norm_live = SessionManager::normalizedSourcePath(live_path);
+  const QString norm_saved = SessionManager::normalizedSourcePath(saved_path);
   return !norm_live.isEmpty() && !norm_saved.isEmpty() && norm_live == norm_saved;
 }
 
@@ -281,6 +274,9 @@ struct CatalogModel::Impl {
 
   SessionManager* session = nullptr;
   ItemMap items;
+  // findScalarForMarkerKey's answers found so far, by dataset, then `strings_too`, then key; cleared with every change
+  // of `items`, before any notification of it, so no slot reads a stale one.
+  tsl::robin_map<DatasetId, std::array<tsl::robin_map<std::string, ScalarFieldPayload>, 2>> scalar_lookups;
   // Datasets hidden by clearAll: rebuildFromDatastore skips them entirely.
   // A reload of the same file creates a fresh DatasetId not in this set, so
   // the curves come back.
@@ -307,19 +303,47 @@ struct CatalogModel::Impl {
   // the samplesIngested gate (rebuildIfChanged) to skip redundant full rebuilds.
   // Unset until the first rebuild, so the first ingest always rebuilds.
   std::optional<std::uint64_t> last_fingerprint;
+  std::atomic<std::size_t> whole_catalog_walks{0};  ///< `items()` and `forEachItem()` calls, for `wholeCatalogWalks()`
 };
 
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>(session)) {
   if (impl_->session != nullptr) {
     connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildIfChanged);
+    // An on-demand install registers its output topics, a removal retires them; neither is an ingest.
+    connect(impl_->session, &SessionManager::objectTopicsChanged, this, &CatalogModel::rebuildIfChanged);
+    connect(impl_->session, &SessionManager::onDemandRecipeInstalled, this, &CatalogModel::rebuildIfChanged);
     connect(this, &CatalogModel::itemsAdded, impl_->session, &SessionManager::publishSharedMarkersToNewDatasets);
   }
 }
 
 CatalogModel::~CatalogModel() = default;
 
+QSet<QString> CatalogModel::ephemeralPreviewKeys() const {
+  QSet<QString> keys;
+  if (impl_->session == nullptr) {
+    return keys;
+  }
+  // From the previews to their topics, then one hash lookup each: no walk of the catalog's items.
+  const OnDemandService& on_demand = impl_->session->onDemandService();
+  for (const DatasetId dataset : impl_->session->dataEngine().listDatasets()) {
+    for (const std::string& node_key : on_demand.graph().keysOf(dataset)) {
+      const RecipeGraph::Node* node = on_demand.graph().find(node_key);
+      if (node == nullptr || !node->recipe.ephemeral) {
+        continue;
+      }
+      for (const ObjectTopicId topic : on_demand.history().topicsOf(node_key)) {
+        if (std::optional<QString> key = objectTopicKey(dataset, topic)) {
+          keys.insert(*std::move(key));
+        }
+      }
+    }
+  }
+  return keys;
+}
+
 std::vector<CatalogItem> CatalogModel::items() const {
+  impl_->whole_catalog_walks.fetch_add(1, std::memory_order_relaxed);
   std::vector<CatalogItem> items;
   items.reserve(impl_->items.size());
   for (const auto& [key, item] : impl_->items) {
@@ -328,6 +352,70 @@ std::vector<CatalogItem> CatalogModel::items() const {
   }
   std::sort(items.begin(), items.end(), catalogItemLess);
   return items;
+}
+
+std::size_t CatalogModel::wholeCatalogWalks() const noexcept {
+  return impl_->whole_catalog_walks.load(std::memory_order_relaxed);
+}
+
+void CatalogModel::forEachItem(const std::function<void(const CatalogItem&)>& visit) const {
+  impl_->whole_catalog_walks.fetch_add(1, std::memory_order_relaxed);
+  for (const auto& entry : impl_->items) {
+    visit(entry.second);
+  }
+}
+
+std::vector<CatalogItem> CatalogModel::objectTopicsNamed(
+    const QString& topic_name, const QString& dataset_source) const {
+  std::vector<CatalogItem> matches;
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (isObjectTopic(item) && item.topic_name == topic_name &&
+        (dataset_source.isEmpty() || datasetSourceName(item.dataset_id) == dataset_source)) {
+      matches.push_back(item);
+    }
+  }
+  std::sort(matches.begin(), matches.end(), catalogItemLess);
+  return matches;
+}
+
+std::optional<CatalogItem> CatalogModel::objectTopicItem(ObjectTopicId topic_id) const {
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (const auto* object_topic = asObjectTopic(item);
+        object_topic != nullptr && object_topic->object_topic_id == topic_id) {
+      return item;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<ScalarFieldPayload> CatalogModel::findScalarForMarkerKey(
+    DatasetId dataset, const std::string& key, bool strings_too) const {
+  auto& found_in_dataset = impl_->scalar_lookups[dataset][strings_too ? 1 : 0];
+  if (const auto hit = found_in_dataset.find(key); hit != found_in_dataset.end()) {
+    return hit->second;
+  }
+  const QString key_text = QString::fromStdString(key);
+  const CatalogItem* first = nullptr;
+  const ScalarFieldPayload* found = nullptr;
+  for (const auto& [item_key, item] : impl_->items) {
+    (void)item_key;
+    // A series key starts with its topic name: reject cheaply before building strings.
+    if (item.dataset_id != dataset || !key_text.startsWith(item.topic_name)) {
+      continue;
+    }
+    if (const ScalarFieldPayload* scalar = markerSeriesField(item, key, strings_too);
+        scalar != nullptr && (first == nullptr || catalogItemLess(item, *first))) {
+      first = &item;
+      found = scalar;
+    }
+  }
+  if (found == nullptr) {
+    return std::nullopt;
+  }
+  found_in_dataset.emplace(key, *found);
+  return *found;
 }
 
 DatasetId CatalogModel::datasetForTopic(const QString& topic_name) const {
@@ -355,6 +443,48 @@ std::optional<CatalogItem> CatalogModel::itemDescriptor(const QString& key) cons
     return std::nullopt;
   }
   return it->second;
+}
+
+std::optional<std::string> CatalogModel::pluginDropName(const QString& key) const {
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return std::nullopt;
+  }
+  const CatalogItem& item = it->second;
+  const std::string topic_name = item.topic_name.toStdString();
+  if (const auto* scalar = asScalarField(item); scalar != nullptr) {
+    // The shared key builder: the plugin names the series as the producer and the plot overlay do.
+    return sdk::markerSeriesKey(topic_name, scalar->field_name.toStdString());
+  }
+  if (isAdvertisedTopic(item)) {
+    return topic_name;
+  }
+  if (!isObjectTopic(item)) {
+    return std::nullopt;
+  }
+  // Only a source name addresses one of several same-named topics; a source loaded twice cannot, so it stays bare.
+  const QString source = datasetSourceName(item.dataset_id).value_or(QString{});
+  if (!source.isEmpty() && objectTopicsNamed(item.topic_name, {}).size() > 1 &&
+      objectTopicsNamed(item.topic_name, source).size() == 1) {
+    return sdk::qualifiedSeriesName(source.toStdString(), topic_name);
+  }
+  return topic_name;
+}
+
+std::optional<QString> CatalogModel::objectTopicKey(DatasetId dataset, ObjectTopicId topic) const {
+  QString key = makeObjectTopicKey(dataset, topic);
+  if (impl_->items.find(key) == impl_->items.end()) {
+    return std::nullopt;
+  }
+  return key;
+}
+
+std::optional<QString> CatalogModel::scalarColumnKey(DatasetId dataset, TopicId topic, std::size_t column) const {
+  QString key = makeCurveKey(dataset, topic, column);
+  if (impl_->items.find(key) == impl_->items.end()) {
+    return std::nullopt;
+  }
+  return key;
 }
 
 std::optional<double> CatalogModel::scalarValueAt(const QString& key, double display_seconds) const {
@@ -463,10 +593,10 @@ std::optional<QString> CatalogModel::stringValueAt(const QString& key, double di
   const DataReader reader(impl_->session->dataEngine());
   const auto value_or =
       reader.latestStringAt(QueryPoint{.topic_id = scalar->topic_id, .t = raw_ns}, scalar->column_index);
-  if (!value_or.has_value() || !value_or->has_value()) {
-    return std::nullopt;  // read error, or no row at/before the query time
+  if (!value_or.has_value() || !value_or->has_value() || !(*value_or)->value) {
+    return std::nullopt;  // read error, no row at/before the query time, or a null cell
   }
-  return QString::fromStdString(**value_or);
+  return QString::fromStdString(*(*value_or)->value);
 }
 
 std::vector<CurveDescriptor> CatalogModel::curves() const {
@@ -535,6 +665,10 @@ std::optional<QString> CatalogModel::datasetSourceName(DatasetId dataset_id) con
     return std::nullopt;
   }
   return QString::fromStdString(dataset->source_name);
+}
+
+std::optional<QString> CatalogModel::resolveCurveKey(const SavedSeriesPath& path, SeriesCapability capability) const {
+  return resolveCurveKey(path.dataset_id, path.dataset_source, path.dataset_path, path.topic, path.field, capability);
 }
 
 std::optional<QString> CatalogModel::resolveCurveKey(
@@ -681,8 +815,7 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
     // Ephemeral (preview) transform outputs are excluded from the catalog, so they
     // must not move the fingerprint either — otherwise each preview keystroke (which
     // mints a fresh output topic id) would trip a full catalog rebuild.
-    const std::unordered_set<TopicId> ephemeral_outputs =
-        impl_->session->dataProcessorService().ephemeralOutputTopics();
+    const std::unordered_set<TopicId> ephemeral_outputs = impl_->session->derivedScalarTopics(/*ephemeral_only=*/true);
     for (const DatasetId dataset_id : reader.listDatasets()) {
       fp += mix(1, dataset_id);
       {
@@ -745,6 +878,7 @@ void CatalogModel::rebuildNow() {
   if (impl_->session == nullptr) {
     if (!impl_->items.empty()) {
       impl_->items.clear();
+      impl_->scalar_lookups.clear();
       emit cleared();
     }
     return;
@@ -769,7 +903,7 @@ void CatalogModel::rebuildNow() {
   // Ephemeral (preview) transform outputs are intentionally NOT catalogued — the
   // Transform Editor's live preview materializes a real output topic, and it must
   // never surface in the Sources tree regardless of when a rebuild fires.
-  const std::unordered_set<TopicId> ephemeral_outputs = impl_->session->dataProcessorService().ephemeralOutputTopics();
+  const std::unordered_set<TopicId> ephemeral_outputs = impl_->session->derivedScalarTopics(/*ephemeral_only=*/true);
 
   // issue #98: a plugin-provided display name (set via setDatasetDisplayName)
   // overrides the file-derived source_name label, with the same '/'→'_'
@@ -890,10 +1024,10 @@ void CatalogModel::rebuildNow() {
 
     for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
       const ObjectTopicDescriptor& object_topic = object_store.descriptor(object_topic_id);
-      // Reserved marker storage topics ("__markers__/...") are internal annotation
-      // state, not user-facing series — keep them out of the Datasets tree. The
-      // overlay reads them straight from the ObjectStore, not via the catalog.
-      if (isMarkerObjectTopic(object_topic.topic_name)) {
+      // Marker topics are internal annotation state, not user-facing series — keep
+      // them out of the Datasets tree. The overlay reads them straight from the
+      // ObjectStore, not via the catalog.
+      if (isMarkerTopic(object_topic)) {
         continue;
       }
       const QString key = makeObjectTopicKey(dataset_id, object_topic_id);
@@ -963,6 +1097,7 @@ void CatalogModel::rebuildNow() {
 
   const Impl::ItemMap previous_items = std::move(impl_->items);
   impl_->items = std::move(next_items);
+  impl_->scalar_lookups.clear();
 
   if (!previous_items.empty() && impl_->items.empty()) {
     emit cleared();
@@ -1013,6 +1148,7 @@ void CatalogModel::clearAll(bool tombstone) {
     }
   }
   impl_->items.clear();
+  impl_->scalar_lookups.clear();
   impl_->removed_names_per_dataset.clear();
   impl_->advertised.clear();
   impl_->per_topic_pause_capable_datasets.clear();
@@ -1125,6 +1261,7 @@ void CatalogModel::removeItems(const std::vector<QString>& keys) {
     impl_->items.erase(it);
     removed.push_back(key);
   }
+  impl_->scalar_lookups.clear();
   if (removed.isEmpty()) {
     return;
   }
@@ -1174,6 +1311,7 @@ bool CatalogModel::removeDataset(DatasetId dataset_id, bool tombstone) {
   for (const QString& key : keys) {
     impl_->items.erase(key);
   }
+  impl_->scalar_lookups.clear();
   // Empty catalog: one cleared() (views reset in O(1)); otherwise one batched
   // itemsRemoved so consumers react once, not per key.
   if (impl_->items.empty()) {

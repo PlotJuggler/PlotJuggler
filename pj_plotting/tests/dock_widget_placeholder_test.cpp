@@ -162,9 +162,15 @@ class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
     loaded_value_ = element.attribute(u"value"_s);
     return true;
   }
+  void finishRestore() override {
+    ++finish_count_;
+  }
 
   int loadCount() const {
     return load_count_;
+  }
+  int finishCount() const {
+    return finish_count_;
   }
   QString loadedValue() const {
     return loaded_value_;
@@ -174,6 +180,7 @@ class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
   QString tag_;
   QString value_;
   int load_count_ = 0;
+  int finish_count_ = 0;
   QString loaded_value_;
 };
 
@@ -200,6 +207,14 @@ class FakeAcceptingObjectWidget : public QWidget, public PJ::IDataWidget {
 
  private:
   int accepted_count_ = 0;
+};
+
+class HoverProbeWidget : public FakeAcceptingObjectWidget {
+ public:
+  bool canAcceptObjectTopic(PJ::ObjectTopicId, PJ::sdk::BuiltinObjectType) const override {
+    return accepts_hover;
+  }
+  bool accepts_hover = false;
 };
 
 void registerImageObjectTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name) {
@@ -532,10 +547,12 @@ TEST(DockWidgetPlaceholderTest, ObjectWidgetClipboardPasteRequiresSameFamilyTag)
   ASSERT_TRUE(QMetaObject::invokeMethod(&same_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
   EXPECT_EQ(same_family_widget->loadCount(), 1);
   EXPECT_EQ(same_family_widget->loadedValue(), u"camera"_s);
+  EXPECT_EQ(same_family_widget->finishCount(), 1) << "a paste is a restore with no shell to settle it";
   EXPECT_EQ(same_family_undo, 1);
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&other_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
   EXPECT_EQ(other_family_widget->loadCount(), 0);
+  EXPECT_EQ(other_family_widget->finishCount(), 0);
 }
 
 TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboardXml) {
@@ -573,6 +590,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboard
   EXPECT_EQ(target.plotWidget(), nullptr);
   EXPECT_EQ(pasted_widget->loadCount(), 1);
   EXPECT_EQ(pasted_widget->loadedValue(), u"camera"_s);
+  EXPECT_EQ(pasted_widget->finishCount(), 1);
   EXPECT_EQ(undo_count, 1);
 }
 
@@ -1215,11 +1233,36 @@ TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {
   EXPECT_EQ(dropped_keys, QStringList{u"dataset:/camera/image"_s});
 }
 
+TEST(DockWidgetPlaceholderTest, ObjectDockRejectsAnIncompatibleHoverWithoutAddingTopics) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "images"});
+  ASSERT_TRUE(dataset);
+  registerImageObjectTopic(session, *dataset, "/image");
+  catalog.rebuildFromDatastore();
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  auto* probe = new HoverProbeWidget();
+  dock->adoptObjectWidget(probe);
+  QMimeData mime;
+  mime.setData(PJ::CurveTreeView::catalogItemsMimeType(), PJ::CurveTreeView::encodeCatalogKeys({items.front().key}));
+  QDragEnterEvent refused(QPoint(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(probe, &refused);
+  EXPECT_FALSE(refused.isAccepted());
+  probe->accepts_hover = true;
+  QDragEnterEvent accepted(QPoint(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(probe, &accepted);
+  EXPECT_TRUE(accepted.isAccepted());
+  EXPECT_EQ(probe->acceptedCount(), 0);
+}
+
 TEST(VisualizationPlaceholderTest, ThreeDIconIsEnabledAndNamed) {
   // The 3D icon used to render disabled (greyed); it must now be enabled and
   // full-tinted like the others. All three carry stable objectNames.
   TestPlaceholderWidget placeholder;
-  for (const char* name : {"buttonVizPlot", "buttonVizScene2D", "buttonVizScene3D"}) {
+  for (const char* name : {"buttonVizPlot", "buttonVizScene2D", "buttonVizScene3D", "buttonVizCustomWidget"}) {
     auto* button = iconButton(&placeholder, name);
     ASSERT_NE(button, nullptr) << name;
     EXPECT_TRUE(button->isEnabled()) << name;
@@ -2007,8 +2050,8 @@ TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropKeepsPlaceholderWhenFactory
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
   catalog.setAdvertisedTopics(
-      *dataset, {{.topic_name = "/camera_info", .classification = PJ::sdk::BuiltinObjectType::kCameraInfo}});
-  const QString key = advertisedKey(catalog, u"/camera_info"_s);
+      *dataset, {{.topic_name = "/map/updates", .classification = PJ::sdk::BuiltinObjectType::kOccupancyGridUpdate}});
+  const QString key = advertisedKey(catalog, u"/map/updates"_s);
   ASSERT_FALSE(key.isEmpty());
 
   PJ::PlotDocker docker(u"test"_s, &session, &catalog);
@@ -2028,6 +2071,151 @@ TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropKeepsPlaceholderWhenFactory
   EXPECT_EQ(dock->plotWidget(), nullptr);
   EXPECT_EQ(signal_count, 0);
   EXPECT_NE(dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
+}
+
+// --- Topics only a plugin panel reads (kCameraInfo) ---
+//
+// Their rows start a drag so a panel can take them; every dock leaves them out and says so.
+
+namespace {
+
+// Registers `topic_name` with `object_type` (a BuiltinObjectType name) and returns its catalog key.
+QString addObjectTopicKey(
+    PJ::SessionManager& session, PJ::CatalogModel& catalog, PJ::DatasetId dataset, const std::string& topic_name,
+    const std::string& object_type) {
+  const auto topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset,
+          .topic_name = topic_name,
+          .metadata_json = R"({"builtin_object_type":")" + object_type + R"("})",
+      });
+  EXPECT_TRUE(topic.has_value());
+  catalog.rebuildFromDatastore();
+  for (const auto& item : catalog.items()) {
+    if (item.topic_name == QString::fromStdString(topic_name) && PJ::asObjectTopic(item) != nullptr) {
+      return item.key;
+    }
+  }
+  return {};
+}
+
+// A mounted scene dock that takes whatever is offered, so a topic reaching it shows up in `offered`.
+class AcceptingObjectWidget : public FakeObjectWidget {
+ public:
+  using FakeObjectWidget::FakeObjectWidget;
+
+  bool tryAcceptObjectTopic(PJ::ObjectTopicId, PJ::sdk::BuiltinObjectType type, const QString&) override {
+    offered.push_back(type);
+    return true;
+  }
+
+  std::vector<PJ::sdk::BuiltinObjectType> offered;
+};
+
+}  // namespace
+
+TEST(DockWidgetPlaceholderTest, CameraInfoInAMixedDropLeavesTheOtherRowsToSeedTheDock) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString camera_key = addObjectTopicKey(session, catalog, *dataset, "/camera/info", "kCameraInfo");
+  const QString image_key = addObjectTopicKey(session, catalog, *dataset, "/camera/image", "kImage");
+  ASSERT_FALSE(camera_key.isEmpty());
+  ASSERT_FALSE(image_key.isEmpty());
+
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+  std::vector<PJ::sdk::BuiltinObjectType> seeded;
+  docker.setObjectWidgetFactory(
+      [&](const QString&, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
+        seeded.push_back(seed->object_type);
+        return seed->object_type == PJ::sdk::BuiltinObjectType::kCameraInfo ? nullptr : new FakeObjectWidget(parent);
+      });
+  QStringList reasons;
+  QObject::connect(&docker, &PJ::PlotDocker::topicRefused, &docker, [&](const QString& reason) { reasons << reason; });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection,
+          Q_ARG(QStringList, (QStringList{camera_key, image_key}))));
+
+  EXPECT_EQ(seeded, (std::vector{PJ::sdk::BuiltinObjectType::kImage}));
+  EXPECT_NE(dock->objectWidget(), nullptr);
+  ASSERT_EQ(reasons.size(), 1);
+  EXPECT_TRUE(reasons.front().contains(u"/camera/info"_s)) << reasons.front().toStdString();
+}
+
+TEST(DockWidgetPlaceholderTest, CameraInfoAloneLeavesARenamedEmptyDockUntouchedAndSaysWhy) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString real_key = addObjectTopicKey(session, catalog, *dataset, "/camera/info", "kCameraInfo");
+  catalog.setAdvertisedTopics(
+      *dataset, {{.topic_name = "/other/info", .classification = PJ::sdk::BuiltinObjectType::kCameraInfo}});
+  const QString advertised_key = advertisedKey(catalog, u"/other/info"_s);
+  ASSERT_FALSE(real_key.isEmpty());
+  ASSERT_FALSE(advertised_key.isEmpty());
+
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+  bool factory_called = false;
+  docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget*) -> PJ::IDataWidget* {
+    factory_called = true;
+    return nullptr;
+  });
+  int placeholder_drops = 0;
+  QObject::connect(&docker, &PJ::PlotDocker::placeholderTopicDropped, &docker, [&]() { ++placeholder_drops; });
+  int refusals = 0;
+  QObject::connect(&docker, &PJ::PlotDocker::topicRefused, &docker, [&]() { ++refusals; });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  dock->setName(u"renamed"_s);
+
+  for (const QString& key : {real_key, advertised_key}) {
+    ASSERT_TRUE(
+        QMetaObject::invokeMethod(
+            dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{key})));
+  }
+
+  EXPECT_FALSE(factory_called);
+  EXPECT_EQ(placeholder_drops, 0);
+  EXPECT_EQ(refusals, 2);
+  EXPECT_EQ(dock->name(), u"renamed"_s);
+  EXPECT_NE(dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, CameraInfoIsNotOfferedToAMountedDockAndTheRestStillIs) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString camera_key = addObjectTopicKey(session, catalog, *dataset, "/camera/info", "kCameraInfo");
+  const QString image_key = addObjectTopicKey(session, catalog, *dataset, "/camera/image", "kImage");
+
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+  auto* mounted = new AcceptingObjectWidget();
+  docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    mounted->setParent(parent);
+    return mounted;
+  });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{image_key})));
+  ASSERT_EQ(dock->objectWidget(), mounted);
+  int refusals = 0;
+  QObject::connect(&docker, &PJ::PlotDocker::topicRefused, &docker, [&]() { ++refusals; });
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection,
+          Q_ARG(QStringList, (QStringList{camera_key, image_key}))));
+
+  EXPECT_EQ(mounted->offered, (std::vector{PJ::sdk::BuiltinObjectType::kImage}));
+  EXPECT_EQ(refusals, 1);
 }
 
 TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropOntoCommittedPlotIsRejected) {

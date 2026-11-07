@@ -30,19 +30,35 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "MainWindow.h"
+#include "PluginPlotTabsController.h"
 #include "ToolboxPresenter.h"
+#include "dataset_test_helpers.h"
+#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/plugin_data_api.hpp"
+#include "pj_base/sdk/service_registry.hpp"
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/TabbedPlotWidget.h"
+#include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
+#include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DerivedRuntimeHosts.h"
+#include "pj_runtime/OnDemandService.h"
 #include "support/gui_test_env.h"
 
 using namespace Qt::StringLiterals;
@@ -93,7 +109,8 @@ class ToolboxPanelFoldTestPeer {
   }
 
   [[nodiscard]] static bool presentPanel(MainWindow& window, QWidget* panel) {
-    return window.presentPanel(panel);
+    window.presentPanel(panel);
+    return window.current_panel_ == panel;
   }
 
   static QWidget* releaseCentralPanel(MainWindow& window) {
@@ -148,17 +165,18 @@ class ToolboxPanelFoldTestPeer {
     return presenter != nullptr ? presenter->sessionOwner() : nullptr;
   }
 
-  // Registers an engine-less presenter (no session, no chrome hooks) for
-  // `container`: the bare shape every presentation case starts from.
+  // Registers an engine-less presenter (no chrome hooks) for `container`: the bare
+  // shape every presentation case starts from. `session_owner` stands in for the
+  // plugin session: the presenter keeps it alive and releases it with its teardown.
   static ToolboxPresenter& registerBare(
       MainWindow& window, const QString& plugin_id, QWidget* container, const QString& title,
       std::function<QString()> save_config, ToolboxRuntimeHost* host,
-      std::function<void(bool pinned)> apply_chrome = {}) {
+      std::function<void(bool pinned)> apply_chrome = {}, std::shared_ptr<void> session_owner = {}) {
     return window.registerToolbox(
         plugin_id, ToolboxPresenter::Spec{
                        .container = container,
                        .engine = nullptr,
-                       .session = {},
+                       .session = std::shared_ptr<ToolboxPanelSession>(std::move(session_owner), nullptr),
                        .host = host,
                        .title = title,
                        .save_config = std::move(save_config),
@@ -194,7 +212,14 @@ class ToolboxPanelFoldTestPeer {
     if (presenter == nullptr) {
       presenter = &registerBare(window, plugin_id, container, title, []() { return u"{}"_s; }, host);
     }
-    return presenter->moveToDock();
+    presenter->moveToDock();
+    return presenter->presentation() == ToolboxPresenter::Presentation::kTakeover;
+  }
+
+  // The plugin-side tab operations, through the controller the window owns (the
+  // one whose created-tab hook MainWindow installed).
+  [[nodiscard]] static PluginPlotTabsController& pluginTabs(MainWindow& window) {
+    return *window.plugin_plot_tabs_;
   }
 
   [[nodiscard]] static bool isTakeover(const MainWindow& window, const QString& plugin_id) {
@@ -248,6 +273,10 @@ class ToolboxPanelFoldTestPeer {
   // is what a teardown-order probe watches.
   [[nodiscard]] static SessionManager* sessionManager(const MainWindow& window) {
     return &window.session_->sessionManager();
+  }
+
+  [[nodiscard]] static AppSession& appSession(const MainWindow& window) {
+    return *window.session_;
   }
 
   static void setSeams(
@@ -375,6 +404,9 @@ class ToolboxPanelFoldTest : public ::testing::Test {
     return {.content = content, .drawer = drawer};
   }
 
+  /// Handed to the next wrapPanel()'s presenter as its plugin session.
+  std::shared_ptr<void> session_owner_;
+
   // Wraps a dummy panel in the real toolbox banner with launchToolbox's own
   // chrome hooks, and registers the engine-less presenter they drive (host =
   // ownHost(), so the seams decide its work-in-flight answer).
@@ -387,10 +419,11 @@ class ToolboxPanelFoldTest : public ::testing::Test {
         /*on_migrate=*/[id]() { Peer::userPin(mainWindow(), id); },
         /*on_float=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToFloating); },
         /*persist_key=*/{},
-        /*on_dock=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToDockOrTab); });
+        /*on_dock=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToDock); });
     container_ = wrapped_.container;
     Peer::registerBare(
-        mainWindow(), id, wrapped_.container, panelTitle(), saveConfig(), ownHost(), wrapped_.apply_chrome);
+        mainWindow(), id, wrapped_.container, panelTitle(), saveConfig(), ownHost(), wrapped_.apply_chrome,
+        std::move(session_owner_));
   }
 
   void dockPanel() {
@@ -524,6 +557,94 @@ class ToolboxPanelFoldTest : public ::testing::Test {
   std::vector<PJ::ToolboxRuntimeHost*> stopped_hosts_;
 };
 
+// A preview belongs to the panel that made it: closing the panel releases its plugin
+// session, whose derived hosts end its previews in the three engines. Its persistent
+// recipes are the user's data and stay, and so do another panel's previews.
+TEST_F(ToolboxPanelFoldTest, ClosingAToolboxEndsItsPreviewsAndKeepsItsRecipes) {
+  PJ::AppSession& app = PJ::ToolboxPanelFoldTestPeer::appSession(mainWindow());
+  PJ::DataProcessorService& processors = app.sessionManager().dataProcessorService();
+  PJ::BatchEngine& markers = app.sessionManager().batchEngine();
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "fold");
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/sensor"), 0U);
+  PJ::ObjectStore& objects = app.sessionManager().objectStore();
+  const PJ::ObjectTopicId cloud =
+      objects.registerTopic({dataset, "cloud", R"({"builtin_object_type":"kPointCloud"})"}).value();
+  ASSERT_TRUE(
+      objects.pushOwned(cloud, 100, PJ::serializeBuiltinObject(PJ::sdk::BuiltinObject(PJ::sdk::PointCloud{})).value())
+          .has_value());
+  app.catalogModel().rebuildFromDatastore();
+  const PJ::RecipeGraph& recipes = app.sessionManager().onDemandService().graph();
+  const std::string own = pluginId().toStdString();
+  const std::string other = own + "_other";
+  const auto on_demand_previews = [&recipes] {
+    return std::ranges::count_if(
+        recipes.keys(), [&recipes](const std::string& key) { return recipes.find(key)->recipe.ephemeral; });
+  };
+  const auto script = [](const std::string& id) {
+    return "-- pj-script: luau\nreturn { id=\"" + id + "\", name=\"" + id +
+           "\", output=\"same\",\n"
+           "  create = function(p) return { calculate = function(t, v) return v end } end }\n";
+  };
+  const std::string marker_script = "local s = series(\"/sensor/value\")\ncreateMarker(s:at(0).t)\n";
+  const std::vector<std::string_view> transform_inputs{"/sensor"};
+  const std::vector<std::string_view> marker_inputs{"/sensor/value"};
+  auto hosts = std::make_shared<PJ::DerivedRuntimeHosts>(app.sessionManager(), app.catalogModel(), own);
+  {
+    // The panel's plugin creates through its bound service.
+    PJ::ServiceRegistryBuilder builder;
+    ASSERT_TRUE(hosts->registerServices(builder).has_value());
+    const PJ::sdk::ServiceRegistry registry(builder.view());
+    const auto service = registry.require<PJ::sdk::DataProcessorsHostService>();
+    ASSERT_TRUE(service.has_value());
+    for (const auto& [id, flags] :
+         {std::pair<std::string, uint32_t>{"preview", PJ_DATA_PROCESSOR_FLAG_EPHEMERAL},
+          std::pair<std::string, uint32_t>{"kept", 0}}) {
+      const std::string output = own + "_" + id;
+      const std::vector<std::string_view> outputs{output};
+      ASSERT_TRUE(service->createTransform(id, transform_inputs, outputs, script(id), "{}", flags).has_value());
+      const std::string_view marker_output = flags == 0 ? PJ::sdk::kGlobalMarkerTopic : std::string_view{};
+      ASSERT_TRUE(
+          service->createMarkers(id + "_rule", marker_inputs, marker_output, marker_script, "{}", flags).has_value());
+      PJ::sdk::DataProcessorRequest on_demand;
+      on_demand.id = id + "_probe";
+      on_demand.kind = "on_demand";
+      on_demand.language = "luau";
+      on_demand.script = "local inputs = ...\nreturn { n = inputs.cloud:count() }\n";
+      on_demand.inputs = {"cloud"};
+      on_demand.outputs = {{"n", "number"}};
+      on_demand.flags = flags;
+      ASSERT_TRUE(service->createV2(on_demand).has_value());
+    }
+  }
+  ASSERT_EQ(on_demand_previews(), 1);
+  // Another panel's previews.
+  ASSERT_TRUE(processors
+                  .upsertTransform(
+                      other, "preview", {"/sensor"}, {other + "_preview"}, script("preview"), "{}", /*ephemeral=*/true)
+                  .has_value());
+  PJ::BatchEngine::GeneratorRecipe rule;
+  rule.id = other + "/preview";
+  rule.dataset_id = dataset;
+  rule.inputs = {"/sensor/value"};
+  rule.script = marker_script;
+  rule.ephemeral = true;
+  ASSERT_TRUE(markers.upsertGenerator(rule).has_value());
+  session_owner_ = std::move(hosts);
+  wrapPanel();
+  setWorkInFlight(false);
+
+  bannerCloseButton()->click();
+
+  ASSERT_TRUE(closed());
+  EXPECT_EQ(processors.transformIdsForPlugin(own), std::vector<std::string>{"kept"});
+  EXPECT_EQ(processors.transformIdsForPlugin(other), std::vector<std::string>{"preview"});
+  EXPECT_EQ(markers.firstBinding(own + "/preview_rule"), nullptr);
+  EXPECT_NE(markers.firstBinding(own + "/kept_rule"), nullptr);
+  EXPECT_NE(markers.firstBinding(other + "/preview"), nullptr);
+  EXPECT_EQ(on_demand_previews(), 0);
+  EXPECT_NE(recipes.find(own + "/kept_probe"), nullptr);
+}
+
 // Rule 2 — the banner X with a download running. Tearing the panel down would
 // destroy the plugin instance, which is also the download's kill switch.
 TEST_F(ToolboxPanelFoldTest, BannerCloseFoldsWhileWorkInFlight) {
@@ -597,6 +718,45 @@ TEST_F(ToolboxPanelFoldTest, IngestStartFoldsTheTakeoverPanel) {
 
   EXPECT_TRUE(foldedIntoTab());
   EXPECT_FALSE(closed());
+}
+
+// UI-11: a plugin that covers the chart area and creates one of its own tabs would
+// otherwise leave that tab hidden behind its panel.
+TEST_F(ToolboxPanelFoldTest, PluginCreatingOwnedTabFoldsItsTakeoverAndShowsTheTab) {
+  presentAsTakeover();
+
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::pluginTabs(mainWindow()).createTab(pluginId(), u"made"_s, u"Made"_s));
+
+  EXPECT_TRUE(busyFolded());
+  EXPECT_FALSE(closed());
+  PJ::PlotDocker* current = tabbedWidget().currentTab();
+  ASSERT_NE(current, nullptr);
+  EXPECT_EQ(current->ownerPlugin(), pluginId());
+  EXPECT_EQ(current->ownerTabId(), u"made"_s);
+}
+
+// Only creation counts: re-creating the same id, or focusing it, leaves the
+// takeover where it is.
+TEST_F(ToolboxPanelFoldTest, PluginTouchingExistingOwnedTabDoesNotFoldTakeover) {
+  auto& tabs = PJ::ToolboxPanelFoldTestPeer::pluginTabs(mainWindow());
+  ASSERT_TRUE(tabs.createTab(pluginId(), u"made"_s, u"Made"_s));
+  PJ::PlotDocker* before = tabbedWidget().currentTab();
+  presentAsTakeover();
+
+  ASSERT_TRUE(tabs.createTab(pluginId(), u"made"_s, u"Renamed"_s));
+  ASSERT_TRUE(tabs.focusTab(pluginId(), u"made"_s));
+
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
+  EXPECT_EQ(tabbedWidget().currentTab(), before);
+}
+
+// Another plugin's tab is no reason to move this plugin's panel.
+TEST_F(ToolboxPanelFoldTest, OtherPluginCreatingTabLeavesTakeoverInPlace) {
+  presentAsTakeover();
+
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::pluginTabs(mainWindow()).createTab(u"some.other.plugin"_s, u"x"_s, u"X"_s));
+
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
 }
 
 // Launching any other panel goes through dismissTakeoverPanel, which must not

@@ -115,7 +115,7 @@ QString parseAndExpand(const QString& qss, std::map<QString, QString>* tokens_ou
 }
 
 // Qt style sheets do NOT update QPalette, so widgets that paint themselves
-// outside QSS (the 3D view's GL background derives dark/light from
+// outside QSS (the 3D view's background derives dark/light from
 // palette().color(QPalette::Window) luminance) would otherwise read the
 // PLATFORM palette and guess the theme wrong (dark scene in light mode on a
 // dark desktop). Keep the application palette's Window/WindowText in lockstep

@@ -30,7 +30,7 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-// Only these suites disable GL; other runner cases must retain their canvas behavior.
+// Only these suites disable the GPU canvas; other runner cases must retain their canvas behavior.
 class PlotStateTransactionEnvironment : public ::testing::Environment {
  public:
   void SetUp() override {
@@ -40,7 +40,7 @@ class PlotStateTransactionEnvironment : public ::testing::Environment {
       const std::string_view name = suite->name();
       if (suite->should_run() &&
           (name == "PlotGestureSnapshot" || name == "PlotDockerXmlValidation" || name == "PlotDockerUndo")) {
-        PJ::PlotWidgetBase::setOpenGlDisabledOverride(true);
+        PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(true);
         return;
       }
     }

@@ -39,11 +39,13 @@
 #include "PreferencesNavRow.h"
 #include "Splashscreen.h"
 #include "Theme.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/HttpGet.h"
 #include "pj_runtime/RecordingService.h"
 #ifndef __EMSCRIPTEN__
 #include "pj_runtime/SourceCacheStore.h"
 #endif
+#include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/DualOptionsWidget.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -150,8 +152,20 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // navLayout (added in .ui) pushes the rows to the top.
   auto* nav_layout = qobject_cast<QVBoxLayout*>(ui_->navContainer->layout());
   std::vector<QString> nav_names{
-      tr("Appearance"), tr("Plotting"), tr("Scene 2D"), tr("Scene 3D"), tr("Plugins"),
+      tr("Appearance"),
+      tr("Plotting"),
+      tr("Scene 2D"),
+      tr("Scene 3D"),
   };
+#ifdef PJ_TARGET_WASM
+  // The browser loads only its built-in plugins and has no marketplace, so the
+  // page's folders and registry would govern nothing. It precedes Recording in
+  // the stack, which the browser never shows either, so row indices still
+  // match page indices.
+  ui_->pagePlugins->hide();
+#else
+  nav_names.push_back(tr("Plugins"));
+#endif
   if (RecordingService::isSupported()) {
     nav_names.push_back(tr("Recording"));
   } else {
@@ -233,7 +247,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   //  - Frameless window (Appearance): default off (the system frame);
   //    MainWindow reads the key once at construction, so it applies on the
   //    next launch. Hidden where the platform leaves no choice.
-  //  - OpenGL (Appearance): default on; PlotWidgetBase reads the key when a plot
+  //  - GPU canvas (Appearance): default on; PlotWidgetBase reads the key when a plot
   //    is constructed (applies to newly created plots). --disable-opengl can
   //    force it off for a session without touching this saved value.
   ui_->scrubberFloatPrecision->setRange(1, 6);
@@ -248,11 +262,18 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // Respect both hints so the form cannot squeeze below either size contract.
   ui_->languageCombo->setMinimumWidth(
       ui_->languageCombo->sizeHint().expandedTo(ui_->languageCombo->minimumSizeHint()).width());
+  // Derived markers (Plotting): the batch engine's mode and its automatic reload
+  // rate; MainWindow applies both at startup and on OK (derivedBatchSettingsChanged).
+  ui_->derivedBatchMode->setOptions(tr("Automatic"), tr("Manual"));
+  ui_->scrubberDerivedReloadHz->setRange(BatchEngine::kMinReloadHz, BatchEngine::kMaxReloadHz);
   {
     QSettings settings;
     ui_->languageCombo->setCurrentIndex(ui_->languageCombo->findData(AppLanguage::preferredLanguage(settings)));
     ui_->scrubberFloatPrecision->setValue(settings.value(u"Preferences::precision"_s, 3).toInt());
     ui_->curveColorMode->setSelectedIndex(settings.value(u"Preferences::curve_color_global"_s, true).toBool() ? 0 : 1);
+    const BatchEngine::Settings batch = BatchEngine::loadSettings();
+    ui_->derivedBatchMode->setSelectedIndex(batch.mode == BatchEngine::Mode::kManual ? 1 : 0);
+    ui_->scrubberDerivedReloadHz->setValue(batch.reload_hz);
     ui_->openglToggle->setChecked(
         settings.value(u"Preferences::use_opengl"_s, true).toBool(),
         /*animate=*/false);
@@ -271,6 +292,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       ui_->labelCustomTitleBar->hide();
       ui_->customTitleBarToggle->hide();
     }
+    ui_->systemFileDialogToggle->setChecked(
+        settings.value(MainWindow::kSystemFileDialogKey, false).toBool(),
+        /*animate=*/false);
+    if (!FileDialog::systemDialogSupported()) {
+      ui_->labelSystemFileDialog->hide();
+      ui_->systemFileDialogToggle->hide();
+    }
 #ifdef PJ_TARGET_WASM
     // Neither startup network call exists in the browser build (see main.cpp):
     // a tab cannot self-update, and it is a page view rather than an installed
@@ -279,6 +307,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->checkUpdatesToggle->hide();
     ui_->labelTelemetry->hide();
     ui_->telemetryToggle->hide();
+    // The browser has no raster canvas: plots always render through WebGL.
+    ui_->labelOpenGL->hide();
+    ui_->openglToggle->hide();
 #endif
   }
 
@@ -588,11 +619,18 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
     settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());
     settings.setValue(MainWindow::kCustomTitleBarKey, ui_->customTitleBarToggle->isChecked());
+    settings.setValue(MainWindow::kSystemFileDialogKey, ui_->systemFileDialogToggle->isChecked());
+    FileDialog::setUseSystemDialog(ui_->systemFileDialogToggle->isChecked());
     settings.setValue(u"Preferences::check_updates_on_startup"_s, ui_->checkUpdatesToggle->isChecked());
     settings.setValue(u"Preferences::send_anonymous_stats"_s, ui_->telemetryToggle->isChecked());
     settings.setValue(u"Preferences::curve_color_global"_s, ui_->curveColorMode->selectedIndex() == 0);
     settings.setValue(kSplashModeKey, ui_->splashMode->selectedIndex() == 1 ? kSplashModeSerious : kSplashModeMemes);
     settings.setValue(u"Preferences::auto_zoom_plots"_s, ui_->autoZoomToggle->isChecked());
+    BatchEngine::saveSettings(
+        {.mode =
+             ui_->derivedBatchMode->selectedIndex() == 1 ? BatchEngine::Mode::kManual : BatchEngine::Mode::kAutomatic,
+         .reload_hz = ui_->scrubberDerivedReloadHz->value()});
+    emit derivedBatchSettingsChanged();
   });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);

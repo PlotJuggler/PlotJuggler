@@ -153,6 +153,39 @@ TEST(TopicStorageTest, EvictAll) {
 }
 
 // ===========================================================================
+// Evicted-through chunk id: dropped chunks and the one the floor cuts into
+// ===========================================================================
+
+TEST(TopicStorageTest, EvictedThroughChunkIdCoversDroppedAndStraddlingChunks) {
+  TopicDescriptor desc;
+  desc.name = "evicted_through_topic";
+  desc.schema_id = 1;
+
+  TopicStorage storage(/*topic_id=*/50, std::move(desc));
+
+  TopicChunk first = makeTestChunk(50, 1000, 1900, 10);
+  TopicChunk second = makeTestChunk(50, 2000, 2900, 10);
+  const ChunkId first_id = first.id;
+  const ChunkId second_id = second.id;
+  ASSERT_TRUE(storage.appendSealedChunk(std::move(first)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(std::move(second)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(50, 3000, 3900, 10)).has_value());
+  EXPECT_EQ(storage.evictedThroughChunkId(), 0U);
+
+  storage.evictBefore(2000);  // drops the first chunk; the second starts at the cutoff
+  EXPECT_EQ(storage.evictedThroughChunkId(), first_id);
+
+  storage.evictBefore(2500);  // keeps the second chunk but hides its rows below 2500
+  EXPECT_EQ(storage.evictedThroughChunkId(), second_id);
+
+  storage.evictBefore(100);  // a lower cutoff changes nothing
+  EXPECT_EQ(storage.evictedThroughChunkId(), second_id);
+
+  storage.clearChunks();
+  EXPECT_EQ(storage.evictedThroughChunkId(), 0U);
+}
+
+// ===========================================================================
 // Test 6: Metadata
 // ===========================================================================
 

@@ -21,12 +21,23 @@ option(PJ_WASM_WITH_ROS "Build the official ROS1/ROS2 message parser into the wa
 option(PJ_WASM_WITH_PROTOBUF "Build the official Protobuf/Foxglove parser into the wasm app" ON)
 option(PJ_WASM_WITH_TRANSFORM_EDITOR "Build the official Transform Editor toolbox into the wasm app" ON)
 option(PJ_WASM_WITH_DUMMY_STREAM "Build the official Dummy Streamer into the wasm app" ON)
-option(PJ_WASM_WITH_SCENE2D "Build the accelerated Scene2D wasm port" OFF)
-option(PJ_WASM_WITH_SCENE3D "Build the accelerated Scene3D wasm port" OFF)
+option(PJ_WASM_WITH_PJ_BRIDGE "Build the official PlotJuggler Bridge WebSocket streamer into the wasm app" ON)
+option(PJ_WASM_WITH_JSON "Build the official JSON message parser into the wasm app" ON)
+option(PJ_WASM_WITH_DATA_TAMER "Build the official DataTamer message parser into the wasm app" ON)
+option(PJ_WASM_WITH_3D_LOADER "Build the official PCD/PLY point-cloud and mesh importer into the wasm app" ON)
+option(PJ_WASM_WITH_QUATERNION "Build the official Quaternion toolbox into the wasm app" ON)
+option(PJ_WASM_WITH_FFT "Build the official FFT toolbox into the wasm app" ON)
+option(PJ_WASM_WITH_ANOMALY_DETECTOR "Build the official Anomaly Detector toolbox into the wasm app" ON)
+option(PJ_WASM_WITH_SCENE2D "Build the accelerated Scene2D wasm port" ON)
+option(PJ_WASM_WITH_SCENE3D "Build the accelerated Scene3D wasm port" ON)
+option(PJ_WASM_WITH_VIDEO
+    "Build software video decode (cross-compiled LGPL FFmpeg + dav1d) into the Scene2D wasm port" ON)
 option(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS
     "Build Draco and Cloudini compressed point-cloud support into the Scene3D wasm port" ON)
 option(PJ_WASM_SCENE3D_CAPABILITY_PROBE "Build the standalone Scene3D QRhi capability probe" OFF)
 option(PJ_WASM_WITH_MARKETPLACE "Build marketplace support in the wasm app" OFF)
+# About 1.9 MB of Brotli download (docs/WASM_DEPLOYMENT.md); OFF drops on-demand Python from the browser.
+option(PJ_WASM_WITH_PYTHON "Build on-demand Python scripts (a static CPython 3.14) into the wasm app" ON)
 
 if(PJ_WASM_WITH_SCENE2D)
     include(${CMAKE_CURRENT_LIST_DIR}/PjWasmScene2DDependencies.cmake)
@@ -109,26 +120,19 @@ if(PJ_WASM_WITH_CSV)
 endif()
 
 if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF OR
-   PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM)
+   PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_JSON OR
+   PJ_WASM_WITH_DATA_TAMER OR PJ_WASM_WITH_3D_LOADER OR PJ_WASM_WITH_QUATERNION OR
+   PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR)
     # Source-only population shared by the narrowly-scoped static plugin
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.
     FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/7634b43677346774bd52bcaf10a13ec3b1e5bc21
-        URL_HASH SHA256=699abe70232f24bb613ccd57717242f675f6ca8e9a9f6883ea19d938ac652136
+        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/37e1bde18b8a425b9b64d7fe54c165464942b5eb
+        URL_HASH SHA256=d5fcbc1e9a5a837e36fa2c1c64fa02908d74579671f413409ca86622a3aa5e04
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists)
     FetchContent_MakeAvailable(pj_official_plugins)
     set(PJ_OFFICIAL_PLUGINS_SOURCE_DIR "${pj_official_plugins_SOURCE_DIR}" CACHE INTERNAL "")
-endif()
-
-if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF)
-    # Header-only JSON array-policy contract shared by the MCAP and ROS static
-    # plugin targets. Defined once here so neither consumer needs a guard.
-    add_library(pj_wasm_array_policy INTERFACE)
-    target_include_directories(pj_wasm_array_policy INTERFACE
-        "${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/common/array_policy/include")
-    target_link_libraries(pj_wasm_array_policy INTERFACE nlohmann_json::nlohmann_json)
 endif()
 
 if(PJ_WASM_WITH_PROTOBUF)
@@ -159,25 +163,18 @@ endif()
 
 if(PJ_WASM_WITH_ROS)
     # Match parser_ros' pinned upstream graph. rosx is the wire/schema engine;
-    # DataTamer contributes one header-only schema specialization. Neither ROS
-    # middleware nor ament is needed in the browser.
+    # neither ROS middleware nor ament is needed in the browser.
     set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
     set(ROSX_HAS_JSON OFF CACHE BOOL "" FORCE)
     set(ROSX_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
     set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(rosx_introspection
-        URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.0.zip
-        URL_HASH SHA256=cce5cba9215cbd1f285ddd3f4d0e2f738372178c45731aaa86ba3e65ee492a22
+        URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.2.zip
+        URL_HASH SHA256=0ffecc3b21e8cbe01097292e3e5f7bab67777f9fc4f943ae68006c8939dbc23b
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         OVERRIDE_FIND_PACKAGE
         SYSTEM)
-    FetchContent_Declare(data_tamer
-        URL https://github.com/PickNikRobotics/data_tamer/archive/refs/tags/1.0.3.zip
-        URL_HASH SHA256=0636b7a597be03977fcca6b070ca6190708fb9afbe5b102db12c3145e1489697
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        SOURCE_SUBDIR _pj_source_only_no_cmakelists
-        SYSTEM)
-    FetchContent_MakeAvailable(rosx_introspection data_tamer)
+    FetchContent_MakeAvailable(rosx_introspection)
     set_target_properties(rosx_introspection PROPERTIES POSITION_INDEPENDENT_CODE ON)
     get_target_property(_pj_rosx_includes rosx_introspection INTERFACE_INCLUDE_DIRECTORIES)
     if(_pj_rosx_includes)
@@ -187,11 +184,23 @@ if(PJ_WASM_WITH_ROS)
     unset(_pj_rosx_includes)
 endif()
 
-if(PJ_WASM_WITH_MCAP OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS))
+if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)
+    # Header-only DataTamer schema/snapshot parser: parser_ros embeds it for its
+    # DataTamer specialization, parser_data_tamer is built on it.
+    FetchContent_Declare(data_tamer
+        URL https://github.com/PickNikRobotics/data_tamer/archive/refs/tags/1.0.3.zip
+        URL_HASH SHA256=0636b7a597be03977fcca6b070ca6190708fb9afbe5b102db12c3145e1489697
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR _pj_source_only_no_cmakelists
+        SYSTEM)
+    FetchContent_MakeAvailable(data_tamer)
+endif()
+
+if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS))
     # Match the native Conan graph exactly. MCAP uses these libraries for chunk
-    # decompression; Cloudini uses the same pinned static targets for its second
-    # compression stage. Populate them once when either browser feature needs
-    # them.
+    # decompression, the PlotJuggler Bridge zstd for its data frames, and
+    # Cloudini the same pinned static targets for its second compression stage.
+    # Populate them once when any of these browser features needs them.
     set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
     set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(lz4
@@ -268,9 +277,15 @@ if(PJ_WASM_WITH_LUAU)
             set_target_properties(${_unused} PROPERTIES EXCLUDE_FROM_ALL ON)
         endif()
     endforeach()
+endif()
 
+if(PJ_WASM_WITH_PYTHON)
+    include(${CMAKE_CURRENT_LIST_DIR}/PjWasmPython.cmake)
+endif()
+
+if(PJ_WASM_WITH_LUAU OR PJ_WASM_WITH_FFT)
     # kissfft — pj_scripting's marker engine uses it for the bandPower primitive,
-    # so it rides the same option that gates add_subdirectory(pj_scripting). Pure C
+    # and the FFT toolbox for its spectrum. Pure C
     # with no OS calls, so it cross-compiles unchanged; it simply had no provider
     # here, because the wasm build resolves nothing through Conan or pixi.
     # Options mirror the Conan package and recipes/kissfft: static, float datatype.
@@ -279,13 +294,17 @@ if(PJ_WASM_WITH_LUAU)
     set(KISSFFT_TEST OFF CACHE BOOL "" FORCE)
     set(KISSFFT_TOOLS OFF CACHE BOOL "" FORCE)
     set(KISSFFT_PKGCONFIG OFF CACHE BOOL "" FORCE)
+    # The source tree lands in a directory named kissfft so its parent also
+    # serves the installed-package include layout (<kissfft/kiss_fftr.h>).
     FetchContent_Declare(kissfft
         GIT_REPOSITORY https://github.com/mborgerding/kissfft.git
         GIT_TAG 131.1.0
         GIT_SHALLOW TRUE
+        SOURCE_DIR "${FETCHCONTENT_BASE_DIR}/kissfft-root/kissfft"
         OVERRIDE_FIND_PACKAGE
         SYSTEM)
     FetchContent_MakeAvailable(kissfft)
+    get_filename_component(PJ_WASM_KISSFFT_PREFIXED_INCLUDE_DIR "${kissfft_SOURCE_DIR}" DIRECTORY)
     # Upstream already aliases kissfft::kissfft and kissfft::kissfft-<datatype>,
     # so pj_scripting's own non-Conan bridge finds its target and no-ops.
 endif()

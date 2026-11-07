@@ -1,0 +1,192 @@
+{
+  "schema": 1,
+  "core": [
+    {
+      "id": "open_data_file",
+      "name": "Open data files",
+      "summary": "Load recorded data from a file. The formats that open depend on the data loader extensions installed (for example CSV, MCAP, ULog or Parquet). Each loaded file becomes its own dataset, and several can be loaded side by side. Files dragged onto the window from a file manager load the same way.",
+      "entry_point": "File → Open Data File..., or Sources panel → File → Load a data file, or drag files onto the window",
+      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Open Data File...\"); pj_app/src/ui/LeftPanel.ui#Load a data file; pj_app/src/MainWindow.cpp#setAcceptDrops(true)",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Open Data File... and the Sources panel File page with its load button"
+    },
+    {
+      "id": "command_line_data",
+      "name": "Command-line data loading",
+      "summary": "Open data with repeatable -d / --datafile options or positional file paths. Files finish loading before an optional layout; explicit files replace the sources saved in that layout. --language en_US or --language zh_CN overrides the interface language for this session without changing the saved preference.",
+      "entry_point": "Desktop command line: plotjuggler4 -d first.csv -d second.csv -l shared.pj4.xml; plotjuggler4 recording.csv; session language: plotjuggler4 --language zh_CN",
+      "evidence": "pj_app/src/main.cpp#datafile_option; pj_app/src/main.cpp#language_option; pj_app/src/MainWindow.cpp#void MainWindow::loadAtStartup",
+      "verified": "MainWindowStartupTest: multi-file ordering, source replacement, failure settlement and data-only startup"
+    },
+    {
+      "id": "live_streaming",
+      "name": "Live streaming",
+      "summary": "Plot data while it arrives from a live source. The sources come from streaming extensions (for example MQTT, ZeroMQ, UDP or ROS 2). A stream can be paused, and the buffer length sets how many seconds of data are kept. With some sources a topic only starts receiving data once it is dropped into a view. Right-click a single topic or series to force streaming of its whole topic before displaying it. With multiple rows selected, the streaming menu stays hidden so right-dragging two scalar series can create an XY plot.",
+      "entry_point": "Sources panel → Stream → choose the source in the list → + (Start streaming)",
+      "evidence": "pj_app/src/ui/LeftPanel.ui#tabStream; pj_app/src/ui/LeftPanel.ui#Start streaming; pj_app/src/ui/CurveListPanel.cpp#Drop it into a view to start streaming; pj_app/src/ui/CurveListPanel.cpp#void CurveListPanel::showTopicContextMenu",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the Stream page, the source list and the + (Start streaming) button"
+    },
+    {
+      "id": "record_streams",
+      "name": "Record streams to MCAP",
+      "summary": "While streaming, record what the active streams receive into standard MCAP files, one file per stream, so the session can be opened again later. The folder is set in Preferences, on the Recording page.",
+      "entry_point": "Sources panel → Stream → record button (Record the subscribed topics of every active stream, one MCAP file per stream)",
+      "evidence": "pj_app/src/ui/LeftPanel.cpp#Record the subscribed topics of every active stream; pj_app/src/StreamingSourceManager.h#recordingTargets; pj_app/src/PreferencesDialog.cpp#tr(\"Recording\")",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the record button and its tooltip on the Stream page"
+    },
+    {
+      "id": "cloud_sources",
+      "name": "Cloud data sources",
+      "summary": "Browse and download recordings kept in a cloud service. Each service is provided by a cloud extension and appears in the Cloud tab of the Sources panel once installed.",
+      "entry_point": "Sources panel → Cloud → choose the service in the list → + (Open cloud browser)",
+      "evidence": "pj_app/src/ui/LeftPanel.ui#Open cloud browser; pj_app/src/ui/LeftPanel.cpp#kToolboxTagCloud",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the Cloud page, the service list and the + (Open cloud browser) button"
+    },
+    {
+      "id": "layouts",
+      "name": "Layouts",
+      "summary": "Save and reload the whole workspace: tabs, plots, custom topics and markers. When saving, the layout can be bound to the loaded data so that loading it opens the same files again.",
+      "entry_point": "File → Save Layout... / Load Layout...; recent layouts: Sources panel → Recent layouts & files",
+      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Load Layout...\"); pj_app/src/MainWindow.cpp#tr(\"Save Layout with Sources...\"); pj_app/src/ui/LeftPanel.ui#buttonRecentFiles",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Save Layout... / Load Layout... and Recent layouts & files"
+    },
+    {
+      "id": "extensions",
+      "name": "Extensions Marketplace",
+      "summary": "Browse, install, update, disable and remove extensions: data loaders, streaming sources, message parsers and toolboxes. An extension can also be installed from a local ZIP file. The Help menu lists the extensions installed.",
+      "entry_point": "File → Extensions Marketplace…; installed list: Help → Installed Extensions",
+      "evidence": "pj_app/src/MainWindow.ui#Extensions Marketplace; pj_app/src/MainWindow.cpp#tr(\"Installed Extensions\"); pj_marketplace/src/ui/marketplace_window.cpp#installFromLocalZip",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Extensions Marketplace… and Help → Installed Extensions"
+    },
+    {
+      "id": "datasets_tree",
+      "name": "Datasets panel",
+      "summary": "Every loaded file or stream is a dataset, listed with its topics and fields as a tree. The filter box searches by name, three buttons show or hide plot series, 2D image topics and 3D scene topics, and right-clicking a dataset offers Info, Merge, Reload, Replace and Remove.",
+      "entry_point": "Datasets panel → Filter... box; right-click a dataset for its options",
+      "evidence": "pj_app/src/ui/CurveListPanel.ui#labelTimeseries; pj_widgets/src/Search.cpp#tr(\"Filter...\"); pj_app/src/ui/CurveListPanel.cpp#tr(\"Info\")",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the Filter... box, the three show/hide buttons and the dataset right-click menu"
+    },
+    {
+      "id": "custom_series",
+      "name": "Custom Topics",
+      "summary": "Create new series and 2D/3D objects computed from existing series and object topics, with a Luau or Python function, in the Transform Editor. Custom topics are listed in their own panel and can be edited or deleted there. Built-in filters can also be applied to the curves of a plot from that plot's right-click menu (Apply Filter...).",
+      "entry_point": "Custom Topics panel → + (Add custom topic)",
+      "evidence": "pj_app/src/ui/CurveListPanel.ui#Add custom topic; pj_app/src/MainWindow.cpp#editCustomTopicRequested; pj_plotting/widget/src/PlotWidget.cpp#tr(\"Apply Filter...\")",
+      "verified": "2026-10-26 against main's CurveListPanel.ui (the panel and its + were renamed from Custom Series); not re-checked in-app"
+    },
+    {
+      "id": "viewer_2d",
+      "name": "2D viewer for images, video and depth",
+      "summary": "Show camera images, video and depth images from the data in step with the time cursor, with annotations drawn on top. Depth images are shown with a colour map. The Rectify control is available when matching camera calibration is usable; otherwise its tooltip explains why it is disabled.",
+      "entry_point": "Empty plot area: click the 2D button (image icon), then drag an image topic from the Datasets panel onto it",
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizScene2D; pj_scene2D/CLAUDE.md#depth maps",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the button and its tooltip; the drag onto it not automated"
+    },
+    {
+      "id": "scene_3d",
+      "name": "3D scene",
+      "summary": "Show 3D data in step with the time cursor: coordinate frames (TF), point clouds, occupancy grids, robot models (URDF and meshes) and markers.",
+      "entry_point": "Empty plot area: click the 3D button (cube icon), then drag 3D topics from the Datasets panel onto it; right-click the scene and choose Open Settings for its settings",
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizScene3D; pj_scene3D/CLAUDE.md#occupancy grids; pj_plotting/widget/src/DockWidget.cpp#Open Settings",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the button and its tooltip; the drag onto it not automated"
+    },
+    {
+      "id": "playback",
+      "name": "Playback",
+      "summary": "Replay loaded data over time: play and pause, loop, change the speed and step the time cursor. Plots, images and 3D views follow the cursor.",
+      "entry_point": "Bottom bar: Start/Stop player (Space), click or drag the time slider to seek, Loop, Rate (speed multiplier), Step size",
+      "evidence": "pj_app/src/ui/TimelineWidget.ui#Start/Stop player (Space)",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: Start/Stop player, Loop, Rate and Step size in the bottom bar"
+    },
+    {
+      "id": "source_timeline",
+      "name": "Source timeline: align and merge datasets",
+      "summary": "Shows each dataset as a bar on a shared time axis. Dragging a bar shifts that dataset in time, Align lines up the starts of all datasets, and merging combines the selected datasets into one.",
+      "entry_point": "Title bar → Toggle bottom panel → source timeline: drag a bar, Align, Merge the selected datasets; also Datasets panel → right-click → Merge",
+      "evidence": "pj_widgets/src/Timeline.cpp#tr(\"Align\"); pj_widgets/src/Timeline.cpp#Merge the selected datasets; pj_plotting/widget/src/TabbedPlotWidget.cpp#Toggle bottom panel; pj_app/src/ui/CurveListPanel.cpp#tr(\"Merge\")",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the bars, Align, Merge and Reset; the bar drag not automated"
+    },
+    {
+      "id": "state_transitions",
+      "name": "State Transitions",
+      "summary": "Show text, integer and true/false series as coloured strips of states over time, for example a robot's mode or a status flag.",
+      "entry_point": "Empty plot area: click the State Transitions button, then drag the series from the Datasets panel onto it",
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizStateTransitions; pj_plotting/CLAUDE.md#discrete-series state strips",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the button and its tooltip; the drag onto it not automated"
+    },
+    {
+      "id": "custom_widget",
+      "name": "Custom Widget panels",
+      "summary": "Show values in a panel provided by a widget extension, for example a gauge, a numeric indicator or a value table. Each widget declares the series it takes and its settings, which appear in the side panel. Widget extensions are installed from the Marketplace.",
+      "entry_point": "Empty plot area: click the Custom Widget button and pick a widget, then drag the series from the Datasets panel onto it",
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizCustomWidget; pj_app/src/ui/CustomWidgetPickerPanel.ui#CustomWidgetPickerPanel; pj_custom_widgets/CLAUDE.md#CustomWidgetDockWidget",
+      "verified": "not checked by hand in the app; pj_app GUI tests and the headless CustomWidgetE2E runs cover the button, the picker and the restored widget"
+    },
+    {
+      "id": "plot_tabs",
+      "name": "Plot tabs, splits and XY plots",
+      "summary": "Organise plots in tabs and split a plot area into several. Drag series from the Datasets panel onto a plot to show them. An XY plot draws one series against another.",
+      "entry_point": "+ on the tab bar adds a tab; plot area toolbar (shown when you hover the top edge of a plot): Split horizontally / Split vertically / Fullscreen; XY plot: drag two series from the Datasets panel with the right mouse button onto an empty plot",
+      "evidence": "pj_plotting/widget/src/TabbedPlotWidget.cpp#onAddTabButtonPressed; pj_plotting/widget/src/DockToolbar.ui#Split horizontally; pj_plotting/widget/src/DockWidget.cpp#onCatalogItemsXyRequested",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the + tab button and the hover toolbar; the XY right-drag not automated"
+    },
+    {
+      "id": "preferences",
+      "name": "Preferences",
+      "summary": "Settings for the appearance, plotting, the 2D and 3D scenes, extra plugin folders and the Marketplace registry, and recording. Appearance offers English and Simplified Chinese; the saved language takes effect only after restarting PlotJuggler.",
+      "entry_point": "File → Preferences... (pages: Appearance, Plotting, Scene 2D, Scene 3D, Plugins, Recording); interface language: Appearance → Language:",
+      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Preferences...\"); pj_app/src/PreferencesDialog.cpp#tr(\"Appearance\"); pj_app/src/PreferencesDialog.ui#Language changes take effect after restarting PlotJuggler.; pj_app/src/PreferencesDialog.cpp#AppLanguage::kPreferenceKey",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Preferences... and its six pages"
+    },
+    {
+      "id": "diagnostics",
+      "name": "Diagnostics",
+      "summary": "Errors and warnings from PlotJuggler and its extensions, such as a file that failed to load or a plugin that could not start, are collected in one list that can be filtered by level and source.",
+      "entry_point": "Title bar → bell button (Diagnostics)",
+      "evidence": "pj_app/src/TitleBar.cpp#tr(\"Diagnostics\"); pj_app/src/ui/DiagnosticsDialog.ui#Show only diagnostics from one source",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the bell button and its Diagnostics tooltip"
+    },
+    {
+      "id": "check_updates",
+      "name": "Check for updates",
+      "summary": "Check whether a newer PlotJuggler release is available. When installed extensions have updates, an UPDATE button appears in the title bar. The check on startup can be turned off.",
+      "entry_point": "Help → Check for Updates...; startup check: File → Preferences... → Appearance → Check for updates on startup:",
+      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Check for Updates...\"); pj_app/src/PreferencesDialog.ui#Check for updates on startup:; pj_app/src/TitleBar.ui#UPDATE; pj_app/src/main.cpp#Preferences::check_updates_on_startup",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: Help → Check for Updates... and the startup check on the Appearance page"
+    },
+    {
+      "id": "axis_wheel_zoom",
+      "name": "Axis wheel zoom",
+      "summary": "Hold X or Y while scrolling over a plot to zoom only that axis, even when keyboard focus is in another widget. Release the key to restore ordinary wheel zoom.",
+      "entry_point": "Plot canvas → hold X or Y + mouse wheel",
+      "evidence": "pj_plotting/widget/src/PlotMagnifier.cpp#class AxisZoomKeys; pj_plotting/tests/plot_magnifier_clamp_test.cpp#HeldAxisKeySurvivesTheCanvasWheelFilter",
+      "verified": "PlotMagnifierKeys: focused canvas, separate keyboard focus, release, auto-repeat and application deactivation"
+    }
+  ],
+  "limitations": [
+    {
+      "id": "publish_to_robot",
+      "summary": "PlotJuggler 4 only receives and displays data; it cannot publish messages or send commands back to a robot or device.",
+      "evidence": "CLAUDE.md#`StatePublisher` parity; pj_runtime/include/pj_runtime/PluginRuntimeCatalog.h#Toolbox and Widget families"
+    },
+    {
+      "id": "edit_loaded_data",
+      "summary": "Loaded data cannot be edited: individual values cannot be changed or deleted, and the original file is never modified. A whole dataset can only be reloaded, replaced, merged or removed.",
+      "evidence": "pj_app/src/ui/CurveListPanel.cpp#tr(\"Reload\"); pj_app/src/ui/CurveListPanel.cpp#tr(\"Remove\")"
+    },
+    {
+      "id": "extension_changes_need_restart",
+      "summary": "Enabling or disabling an extension, and adding or removing a custom plugin folder, takes effect only after PlotJuggler is restarted.",
+      "evidence": "pj_marketplace/include/pj_marketplace/extension_manager.hpp#applies on the next launch; pj_runtime/include/pj_runtime/ExtensionCatalogService.h#Changes apply on next launch"
+    },
+    {
+      "id": "record_some_streams",
+      "summary": "Not every live source can be recorded: a stream whose extension writes its data directly instead of passing the raw messages to PlotJuggler is left out of a recording.",
+      "evidence": "pj_app/src/StreamingSourceManager.h#Sources without delegated ingest"
+    },
+    {
+      "id": "merge_live_stream",
+      "summary": "A live stream cannot be merged with other datasets while it is streaming; it has to be stopped first.",
+      "evidence": "pj_app/src/DatasetMergeActions.cpp#Stop streaming the live source before merging"
+    }
+  ]
+}

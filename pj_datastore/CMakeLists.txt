@@ -18,6 +18,7 @@ option(
 )
 
 find_package(tsl-robin-map REQUIRED)
+find_package(nlohmann_json REQUIRED)  # marker_topic_metadata.cpp
 # Google Benchmark is skipped in the MemorySanitizer lane. That lane builds four
 # named test executables and no benchmarks, so requiring the package would mean
 # instrumenting a library nothing in the lane links — and google-benchmark's own
@@ -120,7 +121,7 @@ add_library(pj_datastore STATIC
   src/reader.cpp
   src/engine.cpp
   src/arrow_import.cpp
-  src/derived_engine.cpp
+  src/incremental_engine.cpp
   src/builtin_transforms.cpp
   src/plugin_data_host.cpp
   src/colormap_registry.cpp
@@ -128,9 +129,10 @@ add_library(pj_datastore STATIC
   src/sequential_uid.cpp
   src/ordered_entries.cpp
   src/object_store.cpp
+  src/marker_topic_metadata.cpp
   src/resident_payload_pool.cpp
   # Data-processor execution substrate (the DataProcessor base + ProcessorSisoAdapter
-  # that runs a processor as a DerivedEngine node — moved here from the retired pj_proc
+  # that runs a processor as an IncrementalEngine node — moved here from the retired pj_proc
   # module; lives WITH the ISISOTransform interface it adapts to).
   src/data_processor.cpp
   src/processor_siso_adapter.cpp
@@ -154,6 +156,7 @@ target_link_libraries(pj_datastore
     plotjuggler_sdk::base
   PRIVATE
     tsl::robin_map
+    nlohmann_json::nlohmann_json
     $<BUILD_INTERFACE:pj_internal_fmt>
     ${PJ_NANOARROW_TARGET}
     ${PJ_NANOARROW_IPC_TARGET}
@@ -174,18 +177,20 @@ if(PJ_BUILD_TESTS)
     tests/series_reader_test.cpp
     tests/engine_integration_test.cpp
     tests/out_of_order_ingest_test.cpp
-    tests/derived_engine_test.cpp
+    tests/incremental_engine_test.cpp
     tests/array_expansion_test.cpp
     tests/regression_test.cpp
     tests/sequential_uid_test.cpp
     tests/merge_test.cpp
     tests/ordered_entries_test.cpp
     tests/object_store_test.cpp
+    tests/marker_topic_metadata_test.cpp
     tests/resident_payload_pool_test.cpp
     tests/object_merge_test.cpp
     tests/clear_dataset_test.cpp
     tests/plugin_data_host_object_test.cpp
     tests/plugin_data_host_object_read_test.cpp
+    tests/plugin_data_host_catalog_v2_test.cpp
     tests/plugin_host_dataset_test.cpp
     tests/streaming_mirror_test.cpp
     tests/ingest_type_coercion_test.cpp

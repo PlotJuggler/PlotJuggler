@@ -1,0 +1,87 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="source" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="anymal-tab" tab_name="ANYmal GrandTour">
+      <Container>
+        <DockSplitter count="2" orientation="-" sizes="0.30000000;0.70000000">
+          <DockSplitter count="3" orientation="|" sizes="0.33333333;0.33333334;0.33333333">
+            <DockArea id="anymal-hdr_left" name="Left camera">
+              <scene2d version="1">
+                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" display_name="/hdr_left/image_raw/compressed" layer_kind="image" object_type="kImage" order="0" topic_name="/hdr_left/image_raw/compressed" visible="true">
+                  <scene2d_layer/>
+                </layer>
+              </scene2d>
+            </DockArea>
+            <DockArea id="anymal-hdr_front" name="Front camera">
+              <scene2d version="1">
+                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" display_name="/hdr_front/image_raw/compressed" layer_kind="image" object_type="kImage" order="0" topic_name="/hdr_front/image_raw/compressed" visible="true">
+                  <scene2d_layer/>
+                </layer>
+              </scene2d>
+            </DockArea>
+            <DockArea id="anymal-hdr_right" name="Right camera">
+              <scene2d version="1">
+                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" display_name="/hdr_right/image_raw/compressed" layer_kind="image" object_type="kImage" order="0" topic_name="/hdr_right/image_raw/compressed" visible="true">
+                  <scene2d_layer/>
+                </layer>
+              </scene2d>
+            </DockArea>
+          </DockSplitter>
+          <DockSplitter count="2" orientation="|" sizes="0.62000000;0.38000000">
+            <DockArea id="anymal-scene" name="Robot">
+              <scene3d camera_model="orbit" camera_state="{&quot;azimuth&quot;:2.6,&quot;elevation&quot;:0.45,&quot;focal&quot;:[0.0,0.0,0.0],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:5.0,&quot;perspective&quot;:true,&quot;radius&quot;:4.5}" fixed_frame="base" fixed_frame_mode="explicit" follow_frame="" version="1">
+                <layer dataset_id="0" display_name="ANYmal" local="true" object_type="kRobotDescription" order="0" topic_name="" visible="true">
+                  <robot_model color="#b2b2b2" display_mode="auto" frame_prefix="" ignore_collada_up_axis="false" source_type="url" source_value="https://assets.plotjuggler.io/v1/anymal_d_simple_description/urdf/anymal.urdf" visible="true"/>
+                </layer>
+                <layer dataset_id="0" display_name="GrandTour payload" local="true" object_type="kRobotDescription" order="1" topic_name="" visible="true">
+                  <robot_model color="#b2b2b2" display_mode="auto" frame_prefix="" ignore_collada_up_axis="false" source_type="url" source_value="https://assets.plotjuggler.io/v1/box_model/urdf/box/box.urdf" visible="true"/>
+                </layer>
+                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" display_name="/anymal/velodyne/points" object_type="kCompressedPointCloud" order="2" topic_name="/anymal/velodyne/points" visible="true">
+                  <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-1" shape="sphere" size_meters="0.03" size_pixels="2" solid_color="#ffffff"/>
+                </layer>
+                <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" object_type="kFrameTransforms" topic_name="/tf"/>
+                <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" object_type="kFrameTransforms" topic_name="/tf_static"/>
+                <scene_controls axes_visible="false" collision_opacity="0.40000001" collisions_visible="false" gizmo_opacity="1" gizmo_size_m="0.15000001" grid_divisions="20" grid_extent_m="20" grid_style="0" grid_visible="false" mesh_opacity="1" meshes_visible="true" tf_parent_lines="false"/>
+              </scene3d>
+            </DockArea>
+            <DockSplitter count="3" orientation="-" sizes="0.33333333;0.33333334;0.33333333">
+            <DockArea id="anymal-knees" name="Knee joints">
+              <plot id="anymal-knees-plot" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+                <curve color="#1f77b4" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="LF_KFE/position" markers_visible="false" topic="/joint_states" visible="true"/>
+                <curve color="#d62728" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="RF_KFE/position" markers_visible="false" topic="/joint_states" visible="true"/>
+                <curve color="#1ac938" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="LH_KFE/position" markers_visible="false" topic="/joint_states" visible="true"/>
+                <curve color="#ff7f0e" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="RH_KFE/position" markers_visible="false" topic="/joint_states" visible="true"/>
+              </plot>
+            </DockArea>
+            <DockArea id="anymal-gyro" name="IMU angular velocity">
+              <plot id="anymal-gyro-plot" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+                <curve color="#1f77b4" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="angular_velocity/x" markers_visible="false" topic="/anymal/imu" visible="true"/>
+                <curve color="#d62728" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="angular_velocity/y" markers_visible="false" topic="/anymal/imu" visible="true"/>
+                <curve color="#1ac938" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="angular_velocity/z" markers_visible="false" topic="/anymal/imu" visible="true"/>
+              </plot>
+            </DockArea>
+            <DockArea id="anymal-speed" name="Body speed">
+              <plot id="anymal-speed-plot" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+                <curve color="#1f77b4" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="twist/twist/linear/x" markers_visible="false" topic="/leg_odometry/odom" visible="true"/>
+                <curve color="#d62728" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" dataset_source="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" field="twist/twist/linear/y" markers_visible="false" topic="/leg_odometry/odom" visible="true"/>
+              </plot>
+            </DockArea>
+            </DockSplitter>
+          </DockSplitter>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+  <data_processors/>
+  <previouslyLoaded_Datafiles>
+    <fileInfo content_sha256="9288ebb7caccdfe60bdeda3281bc198e2399f14cd58238c648a788ff1263bafe" display_offset_ns="0" filename="https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap" prefix="" timeline_order="0">
+      <dataset display_offset_ns="0" source_index="0" source_name="anymal_grand_tour.mcap" timeline_order="0"/>
+      <plugin ID="MCAP Loader" filepath_mode="source" manifest_id="mcap-loader"><![CDATA[{"clamp_large_arrays":true,"filepath":"https://assets.plotjuggler.io/v1/grand_tour_2/anymal_grand_tour.mcap","max_array_size":500,"selected_topics":["/anymal/imu","/anymal/velodyne/points","/hdr_front/camera_info","/hdr_front/image_raw/compressed","/hdr_left/camera_info","/hdr_left/image_raw/compressed","/hdr_right/camera_info","/hdr_right/image_raw/compressed","/joint_states","/leg_odometry/odom","/tf","/tf_static"],"use_header_timestamp":false,"use_log_time":false}]]></plugin>
+    </fileInfo>
+  </previouslyLoaded_Datafiles>
+  <right_panel_state splitter_sizes="1278,0" style="0" width="1"/>
+  <left_panel_state sources_tab="file" streaming_buffer="5" streaming_source=""/>
+  <curve_list_state custom_filter="" datasets_filter="" show_topics="true" show_values="false"/>
+  <chrome_state main_splitter_sizes="400,844"/>
+</root>

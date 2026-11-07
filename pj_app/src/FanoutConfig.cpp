@@ -4,11 +4,13 @@
 #include "FanoutConfig.h"
 
 #include <QByteArray>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLoggingCategory>
+#include <functional>
 #include <optional>
 #include <utility>
 using namespace Qt::StringLiterals;
@@ -27,34 +29,60 @@ std::optional<QJsonObject> parseObject(std::string_view config) {
   return doc.isObject() ? std::optional<QJsonObject>{doc.object()} : std::nullopt;
 }
 
-QJsonObject rewriteObjectFilepaths(QJsonObject object, const QString& fresh_path) {
-  object.insert(u"filepath"_s, fresh_path);
+bool isRebasableFilepath(const QJsonValue& previous, const QString& fresh) {
+  if (!previous.isString()) {
+    return false;
+  }
+  const QString old_path = previous.toString();
+  return !old_path.isEmpty() && !old_path.contains(u"://"_s) && QDir::isAbsolutePath(old_path) &&
+         QDir::cleanPath(old_path) != QDir::cleanPath(fresh);
+}
+
+std::string compactJson(const QJsonObject& object) {
+  return QJsonDocument(object).toJson(QJsonDocument::Compact).toStdString();
+}
+
+// Applies `fn` to each `__pj_fanout` child that is a string parsing as a JSON
+// object. Other entries (malformed children, non-strings) pass through
+// untouched: extractFanout diagnoses them later, and hiding a plugin's
+// malformed child behind a different valid object would mask the fault.
+QJsonObject mapFanoutChildren(QJsonObject object, const std::function<QJsonObject(QJsonObject)>& fn) {
   const QJsonValue fanout_value = object.value(u"__pj_fanout"_s);
   if (!fanout_value.isArray()) {
     return object;
   }
-
-  QJsonArray rewritten;
-  const QJsonArray fanout = fanout_value.toArray();
-  for (const QJsonValue& entry : fanout) {
-    if (!entry.isString()) {
-      rewritten.push_back(entry);
-      continue;
+  const QJsonArray entries = fanout_value.toArray();
+  QJsonArray mapped;
+  for (const QJsonValue& entry : entries) {
+    std::optional<QJsonObject> nested_object;
+    if (entry.isString()) {
+      nested_object = parseObject(entry.toString().toStdString());
     }
-    const std::string nested = entry.toString().toStdString();
-    const std::optional<QJsonObject> nested_object = parseObject(nested);
     if (!nested_object.has_value()) {
-      // extractFanout will diagnose/reject this config later. Do not hide the
-      // plugin's malformed child by turning it into a different valid object.
-      rewritten.push_back(entry);
+      mapped.push_back(entry);
       continue;
     }
-    const QByteArray bytes =
-        QJsonDocument(rewriteObjectFilepaths(*nested_object, fresh_path)).toJson(QJsonDocument::Compact);
-    rewritten.push_back(QString::fromUtf8(bytes));
+    mapped.push_back(QString::fromUtf8(QJsonDocument(fn(std::move(*nested_object))).toJson(QJsonDocument::Compact)));
   }
-  object.insert(u"__pj_fanout"_s, rewritten);
+  object.insert(u"__pj_fanout"_s, mapped);
   return object;
+}
+
+QJsonObject rewriteObjectFilepaths(QJsonObject object, const QString& fresh_path, SavedFilepath saved) {
+  const QJsonValue previous = object.value(u"filepath"_s);
+  object.remove(kSavedFilepathKey);
+  if (saved == SavedFilepath::kRecord && isRebasableFilepath(previous, fresh_path)) {
+    object.insert(kSavedFilepathKey, previous);
+  }
+  object.insert(u"filepath"_s, fresh_path);
+  return mapFanoutChildren(std::move(object), [&](QJsonObject child) {
+    return rewriteObjectFilepaths(std::move(child), fresh_path, saved);
+  });
+}
+
+QJsonObject stripSavedFilepath(QJsonObject object) {
+  object.remove(kSavedFilepathKey);
+  return mapFanoutChildren(std::move(object), [](QJsonObject child) { return stripSavedFilepath(std::move(child)); });
 }
 }  // namespace
 
@@ -127,11 +155,28 @@ QString parseDisplayName(std::string_view cfg) {
   return v.isString() ? v.toString() : QString{};
 }
 
-std::string rewriteReplayFilepaths(std::string_view config, const QString& fresh_path) {
-  QJsonObject object = parseObject(config).value_or(QJsonObject{});
-  const QByteArray bytes =
-      QJsonDocument(rewriteObjectFilepaths(std::move(object), fresh_path)).toJson(QJsonDocument::Compact);
-  return std::string(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+std::optional<std::string> rewriteReplayFilepaths(
+    std::string_view config, const QString& fresh_path, SavedFilepath saved) {
+  QJsonObject object;
+  if (!config.empty()) {
+    std::optional<QJsonObject> parsed = parseObject(config);
+    if (!parsed.has_value()) {
+      return std::nullopt;
+    }
+    object = std::move(*parsed);
+  }
+  return compactJson(rewriteObjectFilepaths(std::move(object), fresh_path, saved));
+}
+
+std::string stripHostReplayKeys(std::string_view config) {
+  if (config.find(std::string_view(kSavedFilepathKey.data(), kSavedFilepathKey.size())) == std::string_view::npos) {
+    return std::string(config);
+  }
+  const std::optional<QJsonObject> object = parseObject(config);
+  if (!object.has_value()) {
+    return std::string(config);
+  }
+  return compactJson(stripSavedFilepath(*object));
 }
 
 }  // namespace PJ::detail

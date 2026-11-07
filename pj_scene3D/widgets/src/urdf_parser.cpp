@@ -71,7 +71,8 @@ void parseOriginInto(const QDomElement& parent, T& out) {
 // Returns false if no recognized child geometry is present.
 bool parseGeometry(
     const QDomElement& parent, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url,
-    const UrdfParseLimits* limits, GeomShape& out, std::string& error) {
+    const QMap<QString, QUrl>& package_url_roots, bool remote_only, const UrdfParseLimits* limits, GeomShape& out,
+    std::string& error) {
   const QDomElement geo = parent.firstChildElement(u"geometry"_s);
   if (geo.isNull()) {
     return false;
@@ -113,7 +114,7 @@ bool parseGeometry(
       m.scale = {sc[0], sc[1], sc[2]};
     }
     if (resolver != nullptr && !m.filename.empty()) {
-      const ResolvedMesh r = resolver->resolveUri(m.filename, urdf_dir, source_is_url);
+      const ResolvedMesh r = resolver->resolveUri(m.filename, urdf_dir, source_is_url, package_url_roots, remote_only);
       m.resolved = r.resolved;
       m.resolved_path = r.path;
       m.issue = r.issue;
@@ -176,9 +177,9 @@ void parseMaterial(
 // has no recognizable geometry.
 bool parseGeomElement(
     const QDomElement& el, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url,
-    const UrdfParseLimits* limits, const std::unordered_map<std::string, glm::vec4>& materials, LinkGeom& out,
-    std::string& error) {
-  if (!parseGeometry(el, resolver, urdf_dir, source_is_url, limits, out.shape, error)) {
+    const QMap<QString, QUrl>& package_url_roots, bool remote_only, const UrdfParseLimits* limits,
+    const std::unordered_map<std::string, glm::vec4>& materials, LinkGeom& out, std::string& error) {
+  if (!parseGeometry(el, resolver, urdf_dir, source_is_url, package_url_roots, remote_only, limits, out.shape, error)) {
     return false;
   }
   parseOriginInto(el, out);
@@ -226,7 +227,8 @@ bool looksLikeXacro(const std::string& xml, const std::string& filename) {
 
 std::pair<std::optional<RobotModel>, std::string> parseUrdf(
     const std::string& xml, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url,
-    const std::string& filename, const UrdfParseLimits* limits) {
+    const std::string& filename, const UrdfParseLimits* limits, const QMap<QString, QUrl>& package_url_roots,
+    bool remote_only) {
   if (looksLikeXacro(xml, filename)) {
     return {std::nullopt, "Unsupported format: xacro — run `xacro input.xacro > output.urdf` and load the result."};
   }
@@ -305,7 +307,8 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
     for (QDomElement v = link_el.firstChildElement(u"visual"_s); !v.isNull(); v = v.nextSiblingElement(u"visual"_s)) {
       LinkGeom g;
       std::string error;
-      if (parseGeomElement(v, resolver, urdf_dir, source_is_url, limits, materials, g, error)) {
+      if (parseGeomElement(
+              v, resolver, urdf_dir, source_is_url, package_url_roots, remote_only, limits, materials, g, error)) {
         if (limits != nullptr && limits->max_geometries != 0U && geometry_count >= limits->max_geometries) {
           return {std::nullopt, "URDF exceeds the browser geometry limit"};
         }
@@ -319,7 +322,8 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
          c = c.nextSiblingElement(u"collision"_s)) {
       LinkGeom g;
       std::string error;
-      if (parseGeomElement(c, resolver, urdf_dir, source_is_url, limits, materials, g, error)) {
+      if (parseGeomElement(
+              c, resolver, urdf_dir, source_is_url, package_url_roots, remote_only, limits, materials, g, error)) {
         if (limits != nullptr && limits->max_geometries != 0U && geometry_count >= limits->max_geometries) {
           return {std::nullopt, "URDF exceeds the browser geometry limit"};
         }

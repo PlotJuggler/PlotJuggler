@@ -55,6 +55,12 @@ class TopicDemandTracker : public QObject {
   // an identical set is a no-op (no emission).
   void setInfrastructureTopics(DatasetId dataset_id, const std::vector<QString>& topic_names);
 
+  // The derived-input tier: the raw topics a displayed derived topic reads
+  // (AppSession sets it from the demanded on-demand recipes), so they stream
+  // while only the derived topic is displayed. Replaced wholesale, like the
+  // infrastructure tier; it is not a display reference (hasAnyReference).
+  void setDerivedInputTopics(DatasetId dataset_id, const std::vector<QString>& topic_names);
+
   // User-driven "force topic streaming" tier: a forced topic streams (and keeps
   // accumulating history) regardless of display — the only way to collect data
   // for a topic BEFORE it is first shown. Forcing is a tier, never an override:
@@ -73,6 +79,10 @@ class TopicDemandTracker : public QObject {
   // sorted and de-duplicated. Empty vector for an unknown dataset.
   [[nodiscard]] std::vector<QString> activeTopics(DatasetId dataset_id) const;
 
+  // True while a widget displays any of the dataset's topics. Unlike activeTopics,
+  // the infrastructure and forced tiers do not count.
+  [[nodiscard]] bool hasAnyReference(DatasetId dataset_id) const;
+
  signals:
   // Emitted whenever a dataset's active-topic set changes. `active_topics` is
   // the complete current set (sorted, de-duplicated), not a delta. A slot may
@@ -87,17 +97,25 @@ class TopicDemandTracker : public QObject {
   // already active through a display reference — UI badging must hear about
   // that case too.
   void forcedTopicsChanged(DatasetId dataset_id);
+  // Emitted whenever hasAnyReference(dataset_id) flips. Distinct from
+  // activeTopicsChanged, which stays silent when a topic already streaming
+  // through the infrastructure or forced tier gets displayed: the batch
+  // engine's demand gate must hear about that case too.
+  void referenceDemandChanged(DatasetId dataset_id);
 
  private:
   struct DatasetState {
     std::map<QString, int> ref_counts;  // topic name -> live display references (> 0)
     std::set<QString> infra;            // always-active while streaming
+    std::set<QString> derived_inputs;   // read by a displayed derived topic
     std::set<QString> forced;           // user-forced streaming (context menu)
     std::vector<QString> last_emitted;  // last active set handed out (sorted, unique)
   };
 
   [[nodiscard]] static std::vector<QString> computeActive(const DatasetState& state);
   void recomputeAndEmit(DatasetId dataset_id, DatasetState& state);
+  // Replaces one tier (`infra`, `derived_inputs`) of the dataset's state.
+  void replaceTier(DatasetId dataset_id, std::set<QString> DatasetState::* tier, const std::vector<QString>& names);
   // Queues one (possibly overwriting) delivery per dataset and drains the
   // queue iteratively, so a mutation made by a connected slot never delivers
   // an older set after a newer one.

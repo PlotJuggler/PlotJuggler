@@ -23,9 +23,6 @@ concurrency:
   group: appimage-builder-image-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE: ghcr.io/plotjuggler/pj4-appimage-builder
-
 jobs:
   build-push:
     runs-on: depot-ubuntu-22.04-4
@@ -39,6 +36,9 @@ jobs:
           set -euo pipefail
           source ./versions.env
           echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          # Each repository owns its package; its GITHUB_TOKEN cannot publish
+          # an existing package owned by the other application repository.
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-appimage-builder" >> "${GITHUB_ENV}"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -53,6 +53,7 @@ jobs:
           set -euo pipefail
           docker build -f packaging/appimage/Dockerfile.build --target ci-base \
             --build-arg PJ_APPIMAGE_ARCH="${PJ_APPIMAGE_ARCH}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             -t "${IMAGE}:${GITHUB_SHA}" -t "${IMAGE}:latest" .
 
       - name: Smoke-test the image
@@ -62,6 +63,9 @@ jobs:
           docker run --rm "${IMAGE}:${GITHUB_SHA}" bash -c "
             set -e
             command -v conan aqt cmake ninja ccache git wget patchelf
+            cmake --version
+            printf '%s\n' 'cmake_minimum_required(VERSION 3.25)' > /tmp/pj4-cmake-smoke.cmake
+            cmake -P /tmp/pj4-cmake-smoke.cmake
             test -x /opt/linuxdeploy/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage
             test -x /opt/linuxdeploy/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage
             test -x /opt/linuxdeploy/appimagetool-${PJ_APPIMAGE_ARCH}.AppImage

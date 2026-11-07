@@ -2,7 +2,6 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 
 # Each discovered case runs in its own process, keeping widget state isolated
 # while sharing the static module and resource objects in one executable.
-# WARNINGS: all 32 merged tests carried PJ_WARNING_FLAGS before
 pj_add_test_runner(pj_widgets_tests
     MAIN gui WARNINGS
     SOURCES
@@ -47,9 +46,10 @@ pj_add_test_runner(pj_widgets_tests
         section_header_band_test.cpp
         header_divider_highlight_test.cpp
         header_resize_policy_test.cpp
+        visualization_placeholder_test.cpp
     # The layout margins/spacing + button wrap budget now resolve from the framework
     # palette (pj_widgets FrameworkTokens), so the stylesheet resource must be linked.
-    LIBS pj_widgets pj_resources Qt6::Test
+    LIBS pj_widgets pj_resources Qt6::Test Qt6::GuiPrivate
 )
 set_target_properties(pj_widgets_tests PROPERTIES AUTOMOC ON)
 

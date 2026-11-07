@@ -114,6 +114,10 @@ function(pj_add_app_language_test)
         add_test(NAME TranslationCatalog4x
             COMMAND "${Python3_EXECUTABLE}" "${app_dir}/../tests/check_translations_4x.py"
                 --lupdate $<TARGET_FILE:Qt6::lupdate>)
-        set_tests_properties(TranslationCatalog4x PROPERTIES WORKING_DIRECTORY "${app_dir}/..")
+        add_test(NAME TranslationValidator4x
+            COMMAND "${Python3_EXECUTABLE}" "${app_dir}/../tests/test_check_translations_4x.py")
+        set_tests_properties(TranslationCatalog4x TranslationValidator4x PROPERTIES
+            WORKING_DIRECTORY "${app_dir}/.."
+            TIMEOUT 120)
     endif()
 endfunction()

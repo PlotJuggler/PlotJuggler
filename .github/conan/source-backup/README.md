@@ -44,6 +44,12 @@ minizip recipe simply lacks one. An upstream PR adding the mirror to
 conan-center's minizip recipe accompanies this change — **once that merges and
 the pinned recipe revision picks it up, this directory can be retired.**
 
+`mpdecimal/2.5.0` is the second entry. The `cpython` recipe pins it on macOS only (newer
+versions break `_decimal` there), and bytereef.org no longer serves the 2.5.0 tarball:
+it answers 404. The ConanCenter mirror answers 401 to anonymous requests. A cold macOS
+`conan install` therefore cannot fetch it, and this copy is the only source. Retire it
+when the `cpython` recipe moves macOS off 2.5.0.
+
 ## Contract
 
 - Each backed-up source is stored as **two files**, exactly as Conan's source
@@ -71,6 +77,7 @@ the pinned recipe revision picks it up, this directory can be retired.**
 | File (sha256) | What it is | Consumed by |
 |---|---|---|
 | `b3a24de97a8fdb…` | `zlib-1.2.13.tar.gz` (byte-identical to the official release; also mirrored at `github.com/madler/zlib/releases/download/v1.2.13/`) | `minizip/1.2.13` ← `assimp` |
+| `15417edc8e12a5…` | `mpdecimal-2.5.0.tar.gz` (sha256 pinned by the recipe; recovered from the Internet Archive's copy of the bytereef.org release) | `mpdecimal/2.5.0` ← `cpython`, macOS only |
 
 ## Adding a new file
 

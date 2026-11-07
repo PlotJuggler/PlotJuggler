@@ -46,6 +46,7 @@
 #include "dataset_test_helpers.h"
 #include "pj_datastore/reader.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/XmlCdata.h"
 #include "support/layout_import_gui_support.h"
 #include "support/loader_test_support.h"
 
@@ -104,7 +105,7 @@ void appendMaterializeFileInfo(QDomDocument& doc, const QString& path, const QSt
   QDomElement materialize = doc.createElement(QStringLiteral("materialize"));
   materialize.setAttribute(QStringLiteral("provider"), QString::fromUtf8(fake::kProviderId));
   materialize.setAttribute(QStringLiteral("identity"), QStringLiteral("id-2"));
-  PJ::layout_xml::appendJsonAsCdata(doc, materialize, descriptor);
+  PJ::appendJsonAsCdata(doc, materialize, descriptor);
   file_info.appendChild(materialize);
   wrapper.appendChild(file_info);
 }

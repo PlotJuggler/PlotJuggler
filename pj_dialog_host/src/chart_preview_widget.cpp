@@ -7,7 +7,6 @@
 #include <qwt_plot_curve.h>
 #include <qwt_plot_grid.h>
 #include <qwt_plot_item.h>
-#include <qwt_plot_panner.h>
 #include <qwt_plot_zoomer.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_draw.h>
@@ -20,6 +19,7 @@
 #include <QFrame>
 #include <QGuiApplication>
 #include <QLocale>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QPen>
@@ -29,6 +29,7 @@
 #include <QVector>
 #include <QWheelEvent>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
 
@@ -170,19 +171,13 @@ ChartPreviewWidget::ChartPreviewWidget(QWidget* parent) : QwtPlot(parent) {
   // until setZoomEnabled(true); wheel zoom is handled in eventFilter().
   zoomer_ = new QwtPlotZoomer(canvas());
   zoomer_->setEnabled(false);
+  // The middle button pans here; Qwt binds it to "zoom back one step" on release, which
+  // would undo a rubber-band zoom at the end of every middle-drag pan.
+  zoomer_->setMousePattern(QwtEventPattern::MouseSelect3, Qt::NoButton);
   QObject::connect(zoomer_, &QwtPlotZoomer::zoomed, this, [this](const QRectF&) { emitViewChanged(); });
 
-  // Pan: middle-drag, plus Ctrl+left-drag (so it coexists with the left-drag zoomer) —
-  // the same two-panner scheme as PlotWidgetBase. Disabled until setZoomEnabled(true).
-  panner_ = new QwtPlotPanner(canvas());
-  panner_->setMouseButton(Qt::MiddleButton);
-  panner_->setEnabled(false);
-  panner_ctrl_ = new QwtPlotPanner(canvas());
-  panner_ctrl_->setMouseButton(Qt::LeftButton, Qt::ControlModifier);
-  panner_ctrl_->setEnabled(false);
-  QObject::connect(panner_, &QwtPlotPanner::panned, this, [this](int, int) { emitViewChanged(); });
-  QObject::connect(panner_ctrl_, &QwtPlotPanner::panned, this, [this](int, int) { emitViewChanged(); });
-
+  // Pan (middle-drag, plus Ctrl+left-drag so it coexists with the left-drag zoomer) and
+  // wheel zoom live in eventFilter().
   canvas()->installEventFilter(this);
 }
 
@@ -228,14 +223,16 @@ void ChartPreviewWidget::setSeries(const std::vector<Series>& series) {
     curve->attach(this);
   }
 
-  if (x_min < x_max) {
-    setAxisScale(QwtPlot::xBottom, x_min, x_max);
+  // A constant or single-point axis gets a padded interval: skipping it would leave the
+  // previous data's range in place and record that as the zoom-out limit. The pad scales
+  // with the value so it stays above double resolution (e.g. nanosecond timestamps).
+  const auto constant_pad = [](double v) { return std::max(1.0, std::abs(v) * 0.05); };
+  if (x_min <= x_max) {
+    const double pad = x_min == x_max ? constant_pad(x_min) : 0.0;
+    setAxisScale(QwtPlot::xBottom, x_min - pad, x_max + pad);
   }
-  if (y_min < y_max) {
-    double margin = (y_max - y_min) * 0.05;
-    if (margin == 0.0) {
-      margin = 1.0;
-    }
+  if (y_min <= y_max) {
+    const double margin = y_min == y_max ? constant_pad(y_min) : (y_max - y_min) * 0.05;
     setAxisScale(QwtPlot::yLeft, y_min - margin, y_max + margin);
   }
 
@@ -279,32 +276,108 @@ void ChartPreviewWidget::setZoomEnabled(bool enabled) {
     return;  // idempotent: the panel re-declares this every tick
   }
   zoom_enabled_ = enabled;
+  endPan();
   zoomer_->setEnabled(enabled);
-  panner_->setEnabled(enabled);
-  panner_ctrl_->setEnabled(enabled);
   grid_->setVisible(enabled);
   replot();
 }
 
 bool ChartPreviewWidget::eventFilter(QObject* obj, QEvent* event) {
-  if (zoom_enabled_ && obj == canvas() && event->type() == QEvent::Wheel) {
-    const auto* wheel = static_cast<QWheelEvent*>(event);
-    const int delta = wheel->angleDelta().y();
-    if (delta != 0) {
-      const double scale = delta > 0 ? 0.8 : 1.25;  // wheel up zooms in (shrinks the interval)
-      const int axes[2] = {QwtPlot::xBottom, QwtPlot::yLeft};
-      for (int axis : axes) {
-        const QwtScaleDiv& div = axisScaleDiv(axis);
-        const double center = (div.lowerBound() + div.upperBound()) / 2.0;
-        const double half = (div.upperBound() - div.lowerBound()) / 2.0 * scale;
-        setAxisScale(axis, center - half, center + half);
+  if (!zoom_enabled_ || obj != canvas()) {
+    return QwtPlot::eventFilter(obj, event);
+  }
+  switch (event->type()) {
+    case QEvent::Wheel: {
+      const auto* wheel = static_cast<QWheelEvent*>(event);
+      const int delta = wheel->angleDelta().y();
+      if (delta != 0) {
+        const double scale = delta > 0 ? 0.8 : 1.25;  // wheel up zooms in (shrinks the interval)
+        // Zooming out stops at the fitted view (the rubber-band zoom base); zooming in never
+        // clamps, so a panned view keeps its place.
+        const QRectF base = zoomer_->zoomBase();
+        const int axes[2] = {QwtPlot::xBottom, QwtPlot::yLeft};
+        for (int axis : axes) {
+          const QwtScaleDiv& div = axisScaleDiv(axis);
+          const double center = (div.lowerBound() + div.upperBound()) / 2.0;
+          const double half = (div.upperBound() - div.lowerBound()) / 2.0 * scale;
+          const double base_lo = axis == QwtPlot::xBottom ? base.left() : base.top();
+          const double base_hi = axis == QwtPlot::xBottom ? base.right() : base.bottom();
+          double lo = center - half;
+          double hi = center + half;
+          if (scale > 1.0 && base_hi > base_lo) {
+            if (hi - lo >= base_hi - base_lo) {
+              lo = base_lo;
+              hi = base_hi;
+            } else if (lo < base_lo) {
+              hi += base_lo - lo;
+              lo = base_lo;
+            } else if (hi > base_hi) {
+              lo -= hi - base_hi;
+              hi = base_hi;
+            }
+          }
+          setAxisScale(axis, lo, hi);
+        }
+        replot();
+        emitViewChanged();
       }
-      replot();
-      emitViewChanged();
+      return true;
     }
-    return true;
+    case QEvent::MouseButtonPress: {
+      const auto* mouse = static_cast<QMouseEvent*>(event);
+      const bool middle = mouse->button() == Qt::MiddleButton;
+      const bool ctrl_left = mouse->button() == Qt::LeftButton && (mouse->modifiers() & Qt::ControlModifier);
+      if (middle || ctrl_left) {
+        panning_ = true;
+        pan_last_pos_ = mouse->position().toPoint();
+        canvas()->setCursor(Qt::ClosedHandCursor);
+        return true;
+      }
+      break;
+    }
+    case QEvent::MouseMove: {
+      if (panning_) {
+        const QPoint pos = static_cast<QMouseEvent*>(event)->position().toPoint();
+        panBy(pos.x() - pan_last_pos_.x(), pos.y() - pan_last_pos_.y());
+        pan_last_pos_ = pos;
+        return true;
+      }
+      break;
+    }
+    case QEvent::MouseButtonRelease: {
+      if (panning_) {
+        endPan();
+        emitViewChanged();
+        return true;
+      }
+      break;
+    }
+    default:
+      break;
   }
   return QwtPlot::eventFilter(obj, event);
+}
+
+void ChartPreviewWidget::endPan() {
+  if (panning_) {
+    panning_ = false;
+    canvas()->unsetCursor();
+  }
+}
+
+void ChartPreviewWidget::panBy(int dx, int dy) {
+  if (dx == 0 && dy == 0) {
+    return;
+  }
+  const int axes[2] = {QwtPlot::xBottom, QwtPlot::yLeft};
+  for (int axis : axes) {
+    const QwtScaleMap map = canvasMap(axis);
+    const int shift = axis == QwtPlot::xBottom ? dx : dy;
+    const double lo = map.invTransform(map.transform(axisScaleDiv(axis).lowerBound()) - shift);
+    const double hi = map.invTransform(map.transform(axisScaleDiv(axis).upperBound()) - shift);
+    setAxisScale(axis, lo, hi);
+  }
+  replot();
 }
 
 void ChartPreviewWidget::emitViewChanged() {

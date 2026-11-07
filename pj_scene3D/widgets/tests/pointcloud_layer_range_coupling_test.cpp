@@ -15,8 +15,8 @@
 #include <memory>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
-#include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_widgets/DoubleScrubber.h"
 using namespace Qt::StringLiterals;
 

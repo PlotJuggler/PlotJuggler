@@ -5,7 +5,7 @@
   # Include the pinned ADS submodule in local and remote Git flake sources.
   inputs.self.submodules = true;
   # This revision supplies the Qt release required by versions.env.
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/991eb3e01305e9549d0fc5504d034359ae0897a3";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
 
   outputs =
     { self, nixpkgs }:

@@ -7,9 +7,11 @@
 #include <QComboBox>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QPointF>
 #include <QSet>
+#include <QThread>
 #include <QWheelEvent>
 #include <QtGlobal>
 #include <atomic>
@@ -17,17 +19,22 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "pj_base/builtin/camera_info_codec.hpp"
 #include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_annotations_codec.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
 #include "pj_scene2d_widgets/layers/image_layer.h"
+#include "pj_scene2d_widgets/layers/scene2d_layer.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/ToggleSwitch.h"
 
@@ -68,9 +75,9 @@ std::vector<uint32_t> layerIds(const std::vector<PJ::SceneLayerInfo>& layers) {
 
 // Serialize a canonical sdk::Image — the bytes a no-parser image topic stores.
 std::vector<uint8_t> makeImageBytes(
-    uint32_t width, uint32_t height, const std::string& encoding, std::vector<uint8_t> pixels) {
+    uint32_t width, uint32_t height, const std::string& encoding, std::vector<uint8_t> pixels, int64_t stamp = 100) {
   PJ::sdk::Image img;
-  img.timestamp_ns = 100;
+  img.timestamp_ns = stamp;
   img.width = width;
   img.height = height;
   img.encoding = encoding;
@@ -452,6 +459,42 @@ TEST(Scene2DDockWidget, GenericLayoutRejectsAmbiguousCompatibleTopicsWithoutRepl
   EXPECT_EQ(dock.layerFor(second_match), nullptr);
 }
 
+// Generic (unqualified) layers get their live dataset written in before the shared restore runs,
+// but the layout never named a dataset for them: they must not join the saved-dataset order and
+// wait behind a qualified layer whose dataset has not loaded.
+TEST(Scene2DDockWidget, GenericLayersAreNotHeldBehindAnUnresolvedQualifiedDataset) {
+  static const std::string kImageMetadata = R"({"builtin_object_type":"kImage"})";
+
+  PJ::SessionManager session;
+  const auto unqualified = registerTopic(session, 2, "/camera/unqualified", kImageMetadata);
+  const auto zero_id = registerTopic(session, 2, "/camera/zero_id", kImageMetadata);
+
+  QDomDocument doc;
+  QDomElement layout = doc.createElement(u"scene2d"_s);
+  const auto append_layer = [&doc, &layout](const QString& topic) {
+    QDomElement layer = doc.createElement(u"layer"_s);
+    layer.setAttribute(u"topic_name"_s, topic);
+    layer.setAttribute(u"object_type"_s, u"kImage"_s);
+    layer.setAttribute(u"layer_kind"_s, u"image"_s);
+    layout.appendChild(layer);
+    return layer;
+  };
+  QDomElement ghost = append_layer(u"/camera/ghost"_s);
+  ghost.setAttribute(u"dataset_id"_s, u"7"_s);
+  ghost.setAttribute(u"dataset_source"_s, u"ghost.mcap"_s);
+  append_layer(u"/camera/unqualified"_s);
+  append_layer(u"/camera/zero_id"_s).setAttribute(u"dataset_id"_s, u"0"_s);
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.xmlLoadState(layout));
+
+  EXPECT_NE(dock.layerFor(unqualified), nullptr);
+  EXPECT_NE(dock.layerFor(zero_id), nullptr);
+  EXPECT_EQ(dock.unresolvedBlockingPendingRestores().join(u',').toStdString(), "/camera/ghost");
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+}
+
 TEST(Scene2DDockWidget, CommittedViewerInteractionNotifiesWorkspaceExactlyOnce) {
   QDomDocument doc;
   QDomElement root = doc.createElement(u"scene2d"_s);
@@ -490,6 +533,24 @@ TEST(DepthImageLayer, XmlRoundTripPreservesColormapInvertAndRange) {
   EXPECT_FLOAT_EQ(out.attribute(u"far_m"_s).toFloat(), 7.0f);
 }
 
+TEST(DepthImageLayer, XmlColormapFallbacks) {
+  PJ::DepthImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s);
+  QDomDocument doc;
+  QDomElement plasma = doc.createElement(u"scene2d_layer"_s);
+  plasma.setAttribute(u"colormap"_s, u"plasma"_s);
+  ASSERT_TRUE(layer.xmlLoadState(plasma));
+
+  // A missing attribute keeps the current colormap.
+  ASSERT_TRUE(layer.xmlLoadState(doc.createElement(u"scene2d_layer"_s)));
+  EXPECT_EQ(layer.xmlSaveState(doc).attribute(u"colormap"_s), u"plasma"_s);
+
+  // An unknown token (e.g. a legacy "jet" layout) loads as turbo instead of failing.
+  QDomElement jet = doc.createElement(u"scene2d_layer"_s);
+  jet.setAttribute(u"colormap"_s, u"jet"_s);
+  ASSERT_TRUE(layer.xmlLoadState(jet));
+  EXPECT_EQ(layer.xmlSaveState(doc).attribute(u"colormap"_s), u"turbo"_s);
+}
+
 TEST(ImageLayer, XmlRoundTripPreservesRectifyEnabled) {
   // The rectify override is the user-facing half of the feature: turn it off, save the
   // layout, reopen -> the override must survive. Pin the save/load symmetry so a
@@ -503,6 +564,60 @@ TEST(ImageLayer, XmlRoundTripPreservesRectifyEnabled) {
 
   const QDomElement out = layer.xmlSaveState(doc);
   EXPECT_EQ(out.attribute(u"rectify_enabled"_s), u"false"_s);
+}
+
+TEST(ImageLayer, RectifyControlIsDisabledWithAnExplanationWithoutCalibration) {
+  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"image"_s);
+  std::unique_ptr<QWidget> config(layer.createConfigWidget(nullptr));
+  auto* rectify = config->findChild<PJ::ToggleSwitch*>();
+  ASSERT_NE(rectify, nullptr);
+  EXPECT_FALSE(rectify->isEnabled());
+  EXPECT_FALSE(rectify->toolTip().isEmpty());
+}
+
+TEST(ImageLayer, RectifyControlRequiresUsableCalibrationInTheImagesDatasetAndFrame) {
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    PJ::SessionManager session;
+    const auto image =
+        registerTopic(session, 1, "/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})");
+    const auto calibration = registerTopic(
+        session, scenario == 2 ? 2 : 1, "/unconventional/calibration", R"({"builtin_object_type":"kCameraInfo"})");
+    PJ::sdk::CameraInfo camera;
+    camera.frame_id = scenario == 1 ? "another_camera" : "cam";
+    camera.width = 2;
+    camera.height = 2;
+    camera.K = {2.0, 0.0, 1.0, 0.0, scenario == 3 ? 0.0 : 2.0, 1.0, 0.0, 0.0, 1.0};
+    ASSERT_TRUE(session.objectStore().pushOwned(calibration, 100, PJ::serializeCameraInfo(camera)));
+    std::vector<uint8_t> pixels(12, 128);
+    PJ::sdk::Image frame;
+    frame.width = 2;
+    frame.height = 2;
+    frame.row_step = 6;
+    frame.encoding = "rgb8";
+    frame.frame_id = "cam";
+    frame.data = PJ::Span<const uint8_t>(pixels.data(), pixels.size());
+    ASSERT_TRUE(session.objectStore().pushOwned(image, 100, PJ::serializeImage(frame)));
+    PJ::ImageLayer layer(image, PJ::sdk::BuiltinObjectType::kImage, u"image"_s);
+    PJ::SceneLayerContext context;
+    context.session = &session;
+    ASSERT_TRUE(layer.attach(context));
+    std::unique_ptr<QWidget> config(layer.createConfigWidget(nullptr));
+    auto* toggle = config->findChild<PJ::ToggleSwitch*>();
+    ASSERT_NE(toggle, nullptr);
+    int repaints = 0;
+    QObject::connect(&layer, &PJ::ImageLayer::repaintRequested, [&]() { ++repaints; });
+    layer.setTrackerTime(PJ::fromRaw(100));
+    QElapsedTimer wait;
+    wait.start();
+    while (repaints == 0 && wait.elapsed() < 3000) {
+      QApplication::processEvents();
+      QThread::msleep(1);
+    }
+    ASSERT_GT(repaints, 0);
+    EXPECT_EQ(toggle->isEnabled(), scenario == 0) << scenario;
+    EXPECT_FALSE(toggle->toolTip().isEmpty());
+    layer.detach();
+  }
 }
 
 TEST(ImageLayer, XmlLoadDefaultsRectifyOnWhenAttributeAbsent) {
@@ -888,6 +1003,203 @@ TEST(Scene2DDockWidget, RevalidateWithoutSessionKeepsNeverPopulatedDock) {
   // must still be kept, not reported empty and wiped to the placeholder.
   PJ::Scene2DDockWidget dock;
   EXPECT_TRUE(dock.revalidateObjects());
+}
+
+namespace {
+
+/// Counts what a layer asks of its source.
+class CountingSource final : public PJ::MediaSource {
+ public:
+  void setTimestamp(int64_t ts_ns) override {
+    stamps.push_back(ts_ns);
+  }
+  std::optional<PJ::MediaFrame> takeFrame() override {
+    return std::nullopt;
+  }
+  void invalidate() override {
+    ++invalidations;
+  }
+  std::vector<int64_t> stamps;
+  int invalidations = 0;
+};
+
+class CountingLayer final : public PJ::Scene2DLayer {
+ public:
+  explicit CountingLayer(PJ::ObjectTopicId topic)
+      : Scene2DLayer(topic, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"overlay"_s, u"Annotations"_s) {}
+  CountingSource* source = nullptr;
+
+ protected:
+  std::unique_ptr<PJ::MediaSource> createMediaSource(const PJ::SceneLayerContext&) override {
+    auto created = std::make_unique<CountingSource>();
+    source = created.get();
+    return created;
+  }
+};
+
+}  // namespace
+
+// A derived result landing at the dock's unchanged time: the source drops its per-timestamp memo, decodes the same
+// time again and the layer asks for a repaint (an annotation source prepares its frame synchronously). A
+// publication that leaves the shown entry unchanged decodes nothing.
+TEST(Scene2DLayer, RefreshAtRedecodesOnlyANewEntryAndRepaints) {
+  PJ::SessionManager session;
+  const auto topic = session.objectStore().registerTopic({1, "overlay", "{}"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*topic, 100, std::vector<uint8_t>{1}).has_value());
+  CountingLayer layer(*topic);
+  PJ::SceneLayerContext context;
+  context.session = &session;
+  ASSERT_TRUE(layer.attach(context));
+  ASSERT_NE(layer.source, nullptr);
+  int repaints = 0;
+  QObject::connect(&layer, &PJ::ISceneLayer::repaintRequested, [&repaints] { ++repaints; });
+  layer.setTrackerTime(PJ::fromRaw(100));
+
+  EXPECT_FALSE(layer.refreshAt(PJ::fromRaw(100))) << "the shown entry is unchanged";
+  EXPECT_EQ(layer.source->invalidations, 0);
+  EXPECT_EQ(repaints, 0);
+
+  ASSERT_TRUE(session.objectStore().pushOwned(*topic, 100, std::vector<uint8_t>{2}).has_value());
+  EXPECT_TRUE(layer.refreshAt(PJ::fromRaw(100)));
+  EXPECT_EQ(layer.source->invalidations, 1);
+  EXPECT_EQ(layer.source->stamps, (std::vector<int64_t>{100, 100}));
+  EXPECT_EQ(repaints, 1);
+  layer.detach();
+}
+
+namespace {
+
+/// Moves `dock` to `seconds` and polls its composite until it delivers the image's pixels, then lets the queued row
+/// warning arrive.
+std::optional<PJ::MediaFrame> pixelsAt(PJ::Scene2DDockWidget& dock, double seconds) {
+  dock.onTrackerTime(seconds);
+  std::optional<PJ::MediaFrame> pixels;
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < 5000) {
+    auto frame = dock.takeCompositeFrameForTesting();
+    QApplication::processEvents();
+    if (frame && frame->base) {
+      pixels = std::move(frame);
+      break;
+    }
+    QThread::msleep(1);
+  }
+  QApplication::processEvents();
+  return pixels;
+}
+
+}  // namespace
+
+// MED-24: the same canonical decoder and compositor that feed the GPU, with the image decoded asynchronously; no
+// rendering backend needed. A derived annotations topic is a store topic like this one, so the same pairing applies to
+// it. The image's own stamp (16 s) differs from its store entry's (18 s): annotations made from it carry the former,
+// as a script stamps them.
+TEST(Scene2DDockWidget, CanonicalAnnotationsArePairedWithDeliveredImage) {
+  PJ::SessionManager session;
+  const auto image =
+      registerTopic(session, 1, "/cam", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})");
+  const auto annotations = registerTopic(
+      session, 1, "/derived/annotations",
+      R"({"builtin_object_type":"kImageAnnotations","pj_snapshot":"true","pj_derived":"on_demand"})");
+  ASSERT_TRUE(session.objectStore().pushOwned(
+      image, 18'000'000'000, makeImageBytes(2, 2, "rgb8", std::vector<uint8_t>(12, 127), 16'000'000'000)));
+  PJ::sdk::ImageAnnotations paired;
+  paired.timestamp = 16'000'000'000;
+  paired.image_topic = "/cam";
+  paired.circles.push_back(PJ::sdk::CircleAnnotation{});
+  ASSERT_TRUE(session.objectStore().pushOwned(annotations, paired.timestamp, PJ::serializeImageAnnotations(paired)));
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"camera"_s));
+  ASSERT_TRUE(dock.addTopic(annotations, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"annotations"_s));
+  std::optional<bool> warned;
+  QObject::connect(
+      &dock, &PJ::SceneDockWidget::layerWarningChanged, &dock, [&](PJ::ObjectTopicId topic, bool warn, const QString&) {
+        if (topic == annotations) {
+          warned = warn;
+        }
+      });
+  auto pixels = pixelsAt(dock, 18.0);
+  ASSERT_TRUE(pixels);
+  ASSERT_EQ(pixels->overlays.size(), 1u);
+  ASSERT_EQ(pixels->overlays[0].annotations.size(), 1u);
+  EXPECT_EQ(pixels->overlays[0].annotations[0].circles.size(), 1u);
+  EXPECT_NE(warned, std::optional<bool>(true));
+
+  // A newer snapshot for another time, or for another camera, is hidden over the image still shown, with a reason.
+  for (const bool wrong_topic : {false, true}) {
+    SCOPED_TRACE(wrong_topic);
+    PJ::sdk::ImageAnnotations stale = paired;
+    stale.timestamp = wrong_topic ? 16'000'000'000 : 18'000'000'000;  // the entry's stamp is not the image's
+    stale.image_topic = wrong_topic ? "/other_camera" : "/cam";
+    const int64_t entry = wrong_topic ? 18'200'000'000 : 18'100'000'000;
+    ASSERT_TRUE(session.objectStore().pushOwned(annotations, entry, PJ::serializeImageAnnotations(stale)));
+    dock.onTrackerTime(static_cast<double>(entry) / 1e9);
+    std::optional<PJ::MediaFrame> frame;
+    QElapsedTimer timer;
+    timer.start();
+    while (!frame && timer.elapsed() < 5000) {
+      frame = dock.takeCompositeFrameForTesting();
+      QApplication::processEvents();
+    }
+    ASSERT_TRUE(frame);
+    EXPECT_TRUE(frame->overlays.empty());
+    EXPECT_EQ(warned, std::optional<bool>(true));
+  }
+
+  // Hiding the layer takes its annotations out of the composite, and the reason they were hidden with them, even a
+  // reason the last poll posted that the event loop has not delivered yet.
+  PJ::sdk::ImageAnnotations later = paired;
+  later.timestamp = 18'000'000'000;
+  ASSERT_TRUE(session.objectStore().pushOwned(annotations, 18'300'000'000, PJ::serializeImageAnnotations(later)));
+  dock.onTrackerTime(18.3);
+  std::optional<PJ::MediaFrame> polled;
+  QElapsedTimer timer;
+  timer.start();
+  while (!polled && timer.elapsed() < 5000) {
+    polled = dock.takeCompositeFrameForTesting();
+    QThread::msleep(1);
+  }
+  ASSERT_TRUE(polled);
+  dock.setLayerVisible(annotations, false);
+  QApplication::processEvents();
+  EXPECT_EQ(warned, std::optional<bool>(false));
+}
+
+// A parser's annotations (here a topic not marked derived) name their image only for information: they are shown over
+// whatever image is shown, and say nothing.
+TEST(Scene2DDockWidget, AnnotationsOfAnUnmarkedTopicAreShownWhateverImageTheyName) {
+  PJ::SessionManager session;
+  const auto image =
+      registerTopic(session, 1, "/cam", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})");
+  const auto annotations =
+      registerTopic(session, 1, "/yolo", R"({"builtin_object_type":"kImageAnnotations","pj_snapshot":"true"})");
+  ASSERT_TRUE(session.objectStore().pushOwned(
+      image, 18'000'000'000, makeImageBytes(2, 2, "rgb8", std::vector<uint8_t>(12, 127), 18'000'000'000)));
+  PJ::sdk::ImageAnnotations detections;
+  detections.timestamp = 1'000'000'000;
+  detections.image_topic = "frame_7";  // a header frame_id, not a store topic
+  detections.circles.push_back(PJ::sdk::CircleAnnotation{});
+  ASSERT_TRUE(
+      session.objectStore().pushOwned(annotations, detections.timestamp, PJ::serializeImageAnnotations(detections)));
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"camera"_s));
+  ASSERT_TRUE(dock.addTopic(annotations, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"detections"_s));
+  std::optional<bool> warned;
+  QObject::connect(
+      &dock, &PJ::SceneDockWidget::layerWarningChanged, &dock, [&](PJ::ObjectTopicId topic, bool warn, const QString&) {
+        if (topic == annotations) {
+          warned = warn;
+        }
+      });
+  const auto pixels = pixelsAt(dock, 18.0);
+  ASSERT_TRUE(pixels);
+  ASSERT_EQ(pixels->overlays.size(), 1u);
+  EXPECT_EQ(pixels->overlays[0].annotations.size(), 1u);
+  EXPECT_NE(warned, std::optional<bool>(true));
 }
 
 int main(int argc, char** argv) {

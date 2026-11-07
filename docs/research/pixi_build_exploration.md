@@ -1,23 +1,26 @@
 # Building PJ4 with pixi instead of Conan — exploration findings
 
-**Status: exploration** (branch `feat/pixi-build`). The Conan path (`./build.sh`)
-remains the canonical build. This documents what a pixi/conda-forge build looks
-like, what it buys us, and what it costs.
+**Status: exploration, live in the tree.** `pixi.toml`, `recipes/` and
+`.github/workflows/pixi-ci.yml` implement it and point here; the Conan path
+(`./build.sh`) remains the canonical build. This documents what a
+pixi/conda-forge build looks like, what it buys us, and what it costs. The pins
+quoted below illustrate the mapping; `pixi.toml`, `recipes/*/recipe.yaml`,
+`conanfile.txt` and `versions.env` are authoritative.
 
-Context: this is Phase 2 territory of the Conan→pixi migration whose Phase 1
-(SDK conda packaging, published to prefix.dev) already shipped in
-`plotjuggler_sdk`.
+Context: the SDK's conda packaging (published to prefix.dev) already ships in
+`plotjuggler_sdk`; this is the app-side half of a possible Conan→pixi move.
 
 ## TL;DR
 
 A full PJ4 build driven by `pixi run build` works, with:
 
-- **all but 4 dependencies** taken prebuilt from conda-forge — including
-  **Qt 6.11.1 exactly** (`qt6-main`), which also replaces the manual ~1GB
+- **all but 5 dependencies** taken prebuilt from conda-forge — including
+  **Qt at the `PJ_QT_VERSION` pinned in `versions.env`** (`qt6-main`, whose pin
+  in `pixi.toml` must track it), which also replaces the manual ~1GB
   `scripts/install_qt6.sh` step. One command bootstraps the entire toolchain
   (compiler included).
-- the 4 gaps (**luau, mcap C++, cloudini, nanoarrow C**) packaged as local
-  `rattler-build` recipes under `recipes/`, built into `local-channel/`. In a
+- the 5 gaps (**luau, mcap C++, cloudini, nanoarrow C, kissfft**) packaged as
+  local `rattler-build` recipes under `recipes/`, built into `local-channel/`. In a
   real migration these would be published once to the existing prefix.dev
   channel (same pipeline as `plotjuggler_sdk`).
 - **3 small CMake portability fixes** (all no-ops under Conan — see below).
@@ -27,7 +30,9 @@ A full PJ4 build driven by `pixi run build` works, with:
 
 | conanfile.txt | conda-forge | note |
 |---|---|---|
-| (scripts/install_qt6.sh 6.11.1) | `qt6-main 6.11.1` | exact version; all needed components (Svg, SvgWidgets, OpenGLWidgets, UiTools, Concurrent, Test, GuiPrivate headers) |
+| (scripts/install_qt6.sh, `PJ_QT_VERSION`) | `qt6-main` at the same version | exact version; all needed components (Svg, SvgWidgets, OpenGLWidgets, UiTools, Concurrent, Test, GuiPrivate headers) |
+| (Qwt, FetchContent of the pinned release) | none | conda-forge's prebuilt `qwt` is pinned to an older `qt6-main` minor and cannot co-solve, so the pixi build FetchContent-builds Qwt like the Conan path; `-DPJ_SYSTEM_QWT=ON` (Linux only) can return once a matching build exists (see the comment in `pixi.toml`) |
+| plotjuggler_sdk (Conan package) | none | not in the env: like every non-Conan path, CMake fetches the pinned SDK release tag and builds it in-tree |
 | fmt/12.2.0 | `fmt 12.2` | compiled lib instead of header-only — same `fmt::fmt` target |
 | tsl-robin-map/1.4.0 | `tsl_robin_map 1.4.0` | underscore package name; installs the standard `tsl-robin-map` CMake config |
 | gtest/1.18.0 | `gtest 1.17.0` | |
@@ -44,9 +49,9 @@ A full PJ4 build driven by `pixi run build` works, with:
 | OpenGL headers (system) | `libgl-devel`, `libopengl-devel`, `libegl-devel` | replaces the system mesa dev packages |
 | (system libva/libdrm for VAAPI) | pulled in transitively by conda ffmpeg | no more `apt-get install libva-dev libdrm-dev` |
 
-## The local recipes (`recipes/`): 4 gaps + the LGPL-lean ffmpeg
+## The local recipes (`recipes/`): 5 gaps + the LGPL-lean ffmpeg
 
-The first four don't exist on conda-forge; each recipe replicates the exact
+The first five don't exist on conda-forge; each recipe replicates the exact
 imported targets the Conan packages provided (verified against the
 Conan-generated configs in the main checkout's `build/`). `ffmpeg` is
 different — it *does* exist upstream, but the local rebuild is a licensing/
@@ -56,9 +61,10 @@ surface-control decision (see the row note and "Semantic deltas" below):
 |---|---|---|
 | `luau` 0.700 | upstream has no CMake install → build static libs, hand-install, hand-written `LuauConfig.cmake` | `Luau::VM`(→Common,m), `Luau::Compiler`(→Ast), `Luau::Ast`(→Common), `Luau::CodeGen`(→VM) |
 | `libmcap` 2.1.1 | header-only copy + hand-written `mcap-config.cmake` (conda-forge `mcap` is the *Python* wrapper) | `mcap::mcap` INTERFACE carrying lz4+zstd |
-| `cloudini` 1.2.2 | standalone static build (vendored-deps path, tools/benchmarks/tests off) + hand-written config | `cloudini::cloudini` carrying lz4, zstd, m, pthread |
+| `cloudini` 1.4.1 | standalone static build (vendored-deps path, tools/benchmarks/tests off) + hand-written config | `cloudini::cloudini` carrying lz4, zstd, m, pthread |
 | `libnanoarrow` 0.7.0 | upstream CMake with `-DNANOARROW_IPC=ON`; upstream installs its own config; ships `libflatccrt.a` alongside (pj_datastore links it by name) | `nanoarrow::nanoarrow_static`, `nanoarrow::nanoarrow_ipc_static` |
-| `ffmpeg` 8.1 (linux-64 + win-64) | decode-only LGPL-only rebuild of conanfile.txt's trimmed option block (`--disable-autodetect`, VAAPI+libdrm, dav1d); distinctive `pj_lgpl_lean_*` build string; embedded package test compiles against it and asserts `avcodec_license()` says LGPL and the configure line has no `--enable-gpl`/`--enable-nonfree` | standard `libav{codec,format,util}.pc` + `libswscale.pc` for `PjScene2DFfmpeg.cmake`'s pkg-config fallback (no CMake config shim needed) |
+| `kissfft` 131.1.0 | static build with `datatype=float` (mirrors the Conan options) + hand-written config | `kissfft::kissfft` (FFT for `pj_scripting`'s marker `bandPower`) |
+| `ffmpeg` 9.0.1 (linux-64 + win-64) | decode-only LGPL-only rebuild of conanfile.txt's trimmed option block (`--disable-autodetect`, VAAPI+libdrm, dav1d); distinctive `pj_lgpl_lean_*` build string; embedded package test compiles against it and asserts `avcodec_license()` says LGPL and the configure line has no `--enable-gpl`/`--enable-nonfree` | standard `libav{codec,format,util}.pc` + `libswscale.pc` for `PjScene2DFfmpeg.cmake`'s pkg-config fallback (no CMake config shim needed) |
 
 Each gap recipe ships a committed, platform-neutral `*Config.cmake` (using
 `find_library`, so one config body resolves both `libFoo.a` on Linux and
@@ -81,7 +87,7 @@ Long-term these belong on the PlotJuggler prefix.dev channel next to
 `plotjuggler_sdk` — then `local-channel/` disappears and `pixi.toml` points at
 the hosted channel.
 
-## CMake changes required (all backward-compatible with Conan)
+## CMake portability fixes (in the tree, all no-ops under Conan)
 
 1. **`pj_datastore/CMakeLists.txt`** — the flatccrt link-injection used
    `target_link_libraries` on the found nanoarrow IPC target; upstream's config
@@ -118,10 +124,10 @@ Conan source build":
   it with all importers enabled (bigger lib, wider parse surface on untrusted
   mesh files) where Conan builds only the four PJ4 uses. If that matters we'd
   pin/patch a leaner build on our own channel.
-- **Embedded Python is shared** (`libpython3.12.so`) instead of Conan's static
-  libpython: `pj_app` now needs the env (or bundled lib) at runtime.
-  `PJ_PYTHON_HOME` bakes to the pixi env prefix, which is correct for dev;
-  packaging would bundle a python runtime explicitly.
+- **Embedded Python** is the env's shared `libpython` (the Conan path links
+  CPython shared too, see `pj_scripting/CLAUDE.md`), so `pj_app` needs the env
+  (or a bundled lib) at runtime. `PJ_PYTHON_HOME` bakes to the pixi env prefix,
+  which is correct for dev; packaging would bundle a python runtime explicitly.
 - **fmt** is a compiled lib, not header-only. Same API; negligible practical
   difference.
 - **Toolchain**: the build uses conda's `cxx-compiler` (GCC 14.3 with conda
@@ -132,7 +138,7 @@ Conan source build":
 ## How to build
 
 ```bash
-cd .worktrees/pixi-build           # or wherever this branch is checked out
+# From the repository root:
 # 1. Build the local-channel packages (once; re-run only when a recipe changes):
 pixi exec --spec "rattler-build>=0.66" \
   rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml \
@@ -144,25 +150,18 @@ pixi run test                      # ctest over build-pixi
 
 Step 1 uses `pixi exec` (not `pixi run`) so it runs before the default env can
 be solved — the local channel it produces is exactly what lets that solve
-succeed (the default env pulls luau / mcap / cloudini / nanoarrow from there).
+succeed (the default env pulls the gap packages from there).
 
-## Results (linux-64, verified)
+## Results
 
 - Environment solve + install: minutes on first run (~2.1 GB env, cached in `.pixi/`).
-- Local channel: all 4 gap packages build via `rattler-build` and their archives
-  are verified free of `__isoc23_*` refs (see the sysroot gotcha below).
+- Local channel: every gap package builds via `rattler-build` and its archives
+  are free of `__isoc23_*` refs (see the sysroot gotcha below).
 - Configure: clean; FFmpeg found via the existing pkg-config fallback path.
-- Build: **1144/1144 targets, `pj_app` binary produced.**
-- Tests: **245/246 pass.** The single failure — `extension_manager_test`
-  (`ConstructionReflectsStagedUpdateInOnePass`) — is a **pre-existing
-  environmental host failure** (a `/tmp` backup-rename step that fails
-  deterministically on this machine regardless of the build system; it fails
-  the same way under the Conan build). So this is **parity with Conan.**
-
-**win-64 (verified in CI): the whole app compiles and 243/246 tests pass** —
-further than the Conan Windows CI, whose Build step fails. See the CI section for
-the 3 Windows-specific test failures and why the leg is a `continue-on-error`
-tracker.
+- Build: the whole app, `pj_app` included, on linux-64 and win-64.
+- Tests: during the exploration the linux-64 suite matched the Conan build
+  (its one failure was an environmental host failure that fails the same way
+  under Conan). CI's current coverage is in the CI section below.
 
 ## The glibc sysroot gotcha (rattler-build)
 
@@ -200,11 +199,10 @@ dangling symlink. Fix: `unset SUBDIR` at the top of the recipe's build script
 
 ## win-64 ffmpeg (shipped target) — MSVC notes and follow-ups
 
-Windows became a **required shipped target** (2026-07-15), which makes the
-GPL-only conda-forge win-64 ffmpeg unshippable — the local recipe now builds
-both platforms. The MSVC leg (validated only on the pixi-ci win-64 runner; a
-Linux box cannot build it) carries three non-obvious fixes, all flagged in a
-pre-implementation Codex review:
+Windows is a **required shipped target**, which makes the GPL-only
+conda-forge win-64 ffmpeg unshippable, so the local recipe builds both
+platforms. The MSVC leg (validated only on the pixi-ci win-64 runner; a Linux
+box cannot build it) carries three non-obvious fixes:
 
 - **Dynamic CRT**: `-MD` passed explicitly via `--extra-cflags` (MSVC defaults
   to the static CRT; `--enable-shared` does not select it), with a
@@ -220,13 +218,13 @@ pre-implementation Codex review:
   satisfying the explicit dependency checks.
 
 Hardware decode swaps VAAPI/libdrm for `--enable-d3d11va --enable-dxva2`
-(header-only Windows SDK backends, no host deps). `FfmpegDecoder` gained an
-explicit D3D11VA preference: FFmpeg's device enum orders DXVA2 first, so the
-plain `av_hwdevice_iterate_types()` walk would pick the legacy backend. The
+(header-only Windows SDK backends, no host deps). `FfmpegDecoder` prefers
+D3D11VA explicitly: FFmpeg's device enum orders DXVA2 first, so the plain
+`av_hwdevice_iterate_types()` walk would pick the legacy backend. The
 package's consumer test asserts D3D11VA hwaccel configs exist for
 h264/hevc/av1 (GPU-independent, catches Windows-SDK regressions).
 
-### Follow-ups before a shipped Windows artifact (Codex review, 2026-07-15)
+### Follow-ups before a shipped pixi-built Windows artifact
 
 1. **Hosted immutable channel + multi-platform lock.** `local-channel/` +
    the CI platforms-sed is bootstrap-only: a shipped state needs the
@@ -244,32 +242,35 @@ h264/hevc/av1 (GPU-independent, catches Windows-SDK regressions).
 3. **Patent posture** (H.264/HEVC decode) is jurisdiction-dependent and not
    resolved by LGPL-only builds — a release/legal review item, not a build
    item.
-4. **Flip the win-64 leg to blocking** (`continue-on-error: false` + required
-   branch-protection check) once green; separate any environment-sensitive
-   tests from the blocking suite first if stragglers remain.
+4. **Make the win-64 leg a required check.** The job is no longer
+   `continue-on-error`, so a failure fails the workflow; making it a required
+   branch-protection check is the remaining step.
 
 ## CI (`.github/workflows/pixi-ci.yml`)
 
-A matrix job (`ubuntu-22.04` + `windows-latest`):
+A matrix job (`linux-64` on Ubuntu 22.04, `win-64` on Windows Server 2022; Depot
+runners):
 
-1. `setup-pixi` (binary only — `run-install: false`, no cache: there is no
-   committed lockfile to key on, and setup-pixi's cache requires an install).
+1. `setup-pixi` (binary only — `run-install: false`, no setup-pixi cache: there
+   is no committed lockfile to key on, and setup-pixi's cache requires an
+   install). Instead, the pixi package downloads are cached keyed on `pixi.toml`
+   + `recipes/`, and the built `local-channel/` keyed on `recipes/`.
 2. Build the gap-package channel with **`pixi exec`** (not `pixi run` — `pixi
    run` would first try to solve the default env, which needs the channel this
-   step produces).
+   step produces); skipped on a channel-cache hit.
 3. Windows only: set up MSVC (`ilammy/msvc-dev-cmd`) **after** the channel build
    (rattler-build runs its own `vcvars` internally; stacking a second one
    overflows cmd.exe's line limit), then `sed` the manifest's single platform to
    `win-64` (the committed manifest is linux-64-only — a Linux box cannot build
    the win-64 gap packages, so no valid win-64 lock can be committed).
-4. `pixi run build`; then tests — on Linux the Qt-free **core** suite (`ctest`
-   scoped to the core module dirs, see below), on Windows the full `pixi run
-   test`.
+4. `pixi run build` (ccache on Linux, sccache on Windows); then tests — on
+   Linux the Qt-free **core** suite (`ctest` scoped to the core module dirs,
+   see below), on Windows the full `pixi run test`.
 
 ### CI results
 
-- **linux-64: green** — full build + the **Qt-free core test suite** (~155
-  tests, `ctest` scoped to the core module dirs, all passing in seconds).
+- **linux-64** — full build + the **Qt-free core test suite** (`ctest` scoped
+  to the core module dirs, passing in seconds).
   The widget/GL test families (`pj_scene3D/widgets`, `pj_scene2D/widgets`,
   `pj_widgets`, plotting-GL) are *not* run on this leg: conda's Qt cannot bring
   up a hardware-less GL context on the GPU-less runner — instead of falling back
@@ -279,30 +280,23 @@ A matrix job (`ubuntu-22.04` + `windows-latest`):
   whether the build works. Rather than a fragile GL denylist (the widget tests
   create contexts in ways that are hard to enumerate by name), the leg scopes
   ctest to the modules that *structurally* never link `Qt6::Widgets`/OpenGL and
-  so cannot hang: `pj_datastore`, `pj_runtime`, `pj_scripting`,
-  `plotjuggler_sdk` (base + plugins), `pj_scene3D/core`, `pj_scene2D/core`,
-  `pj_scene_common` — the columnar store, runtime services, the Luau/Python
-  scripting engine, the SDK, and the scene *core* logic (tf, pointcloud/occupancy
-  /voxel codecs, media decode). The GUI/GL tests are verified locally (with a
+  so cannot hang: `pj_datastore`, `pj_runtime`, `pj_scripting`, `pj_tf`,
+  `pj_scene3D/core`, `pj_scene2D/core`, `pj_scene_common` — the columnar store,
+  runtime services, the Luau/Python scripting engine, the TF tree, and the scene
+  *core* logic (pointcloud/occupancy/voxel codecs, media decode). The GUI/GL tests are verified locally (with a
   GPU), by the Conan Linux CI, and by the pixi **win-64** leg. The local
   `pixi run test` still runs the full suite.
-- **win-64: the whole app compiles, and 243/246 tests pass.** This is notably
-  *further than the canonical Conan `windows-ci.yml`, whose Build step fails* —
-  the pixi/conda toolchain builds all of PJ4 on Windows. The 3 remaining test
-  failures are Windows-specific, not pixi-build-system issues: `python_engine_test`
-  and `DataProcessorTransformTest` (the embedded-Python `PYTHONHOME` layout under
-  conda differs from Conan's, which the current `pj_scripting` bake targets), and
-  `PlotCanvasContextRecreationGlTest` (GL-context recreation). The win-64 leg is
-  marked **`continue-on-error`**, matching the Conan `windows-ci.yml` convention:
-  PJ4 v1 is Linux-only (a CLAUDE.md non-goal), so Windows is a portability
-  tracker, not a release gate. It proves the *build system* works on Windows.
+- **win-64** — the whole app compiles and the full suite runs (`pixi run
+  test`, headless, no wrapper). The job is not `continue-on-error`. Watch the
+  embedded-Python home: under conda the `PYTHONHOME` layout differs from
+  Conan's, which `pj_scripting`'s `PJ_PYTHON_HOME` bake has to cover.
 
 ## Assessment
 
 What pixi buys:
 
 - **One-command bootstrap** — `pixi run build` on a fresh machine installs
-  compiler, CMake, Ninja, Qt 6.11.1, and every library. No `scripts/install_qt6.sh`,
+  compiler, CMake, Ninja, Qt, and every library. No `scripts/install_qt6.sh`,
   no `apt-get install libva-dev libdrm-dev`, no Conan profile quirks (the
   private-remote / gdbm C23 class of breakage disappears).
 - **Minutes instead of ~an hour of cold Conan source builds** (ffmpeg+cpython
@@ -324,11 +318,10 @@ What Conan still does better here:
 
 Suggested next steps if we pursue this:
 
-1. Publish `luau` / `libmcap` / `cloudini` / `libnanoarrow` to the PlotJuggler
-   prefix.dev channel (recipes are ready; same release pipeline as the SDK).
-2. Land the 3 CMake portability fixes on `main` regardless — they're
-   package-manager-neutral and one fixes a latent bug.
-3. Decide the split: pixi as the *developer/CI* environment (fast bootstrap,
+1. Publish `luau` / `libmcap` / `cloudini` / `libnanoarrow` / `kissfft` to the
+   PlotJuggler prefix.dev channel (recipes are ready; same release pipeline as
+   the SDK).
+2. Decide the split: pixi as the *developer/CI* environment (fast bootstrap,
    hermetic), Conan retained only for the *release packaging* build (tuned
    static deps) — or commit fully to pixi and accept shared feature-complete
    deps in the AppImage.

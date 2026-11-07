@@ -7,7 +7,7 @@
 // the WHOLE series at once (random access: size/at/atTime), can look back AND
 // forward, and emits PlotMarkers (events, regions, value bands) instead of a
 // derived sample per input. This is what the Anomaly Detector needs and what the
-// per-sample DerivedEngine model cannot express (FFT, regions, lookahead).
+// per-sample IncrementalEngine model cannot express (FFT, regions, lookahead).
 //
 // The engine is host-agnostic: the caller supplies a SeriesProvider over its own
 // data (the GUI toolbox's live series, or the headless runner's loaded file), and
@@ -56,6 +56,9 @@ struct SeriesProvider {
   std::function<const SeriesView*(const std::string&)> get;  ///< name -> series or nullptr
 };
 
+/// The default ceiling of a rule's native marker output (`runMarkerScript`'s `max_output_bytes`).
+inline constexpr std::size_t kMaxMarkerOutputBytes = std::size_t{16} << 20;
+
 /// Run a Luau detection rule once over `provider`, returning the emitted markers.
 /// The script environment is the sandboxed Luau VM (memory cap + instruction-budget
 /// watchdog from `limits`) plus these bound primitives:
@@ -69,10 +72,18 @@ struct SeriesProvider {
 ///   bandPower(series, fLo, fHi)       -- summed FFT power in [fLo,fHi] Hz, DC-removed
 ///   GetSeriesNames()                  -- list of available series names
 /// `opts` is an optional table: {label, color="#rrggbb", severity, status, category, description}.
+/// Native marker storage (the markers and their strings) is bounded by `max_output_bytes`,
+/// independently of the VM's memory cap; a script that exceeds it fails the run. A success
+/// sets `output_bytes`, when given, to what its markers count against that ceiling.
+/// `cancelled`, when set, is polled from the VM's interrupt (every safepoint, on the
+/// calling thread, so it must be cheap and thread-safe): once it returns true the script
+/// stops with a "script cancelled" error, even inside a loop that makes no native call.
 /// On a compile/runtime error (or watchdog trip) returns an empty vector and, if
 /// `error` is non-null, sets it to the message (cleared on success).
 [[nodiscard]] std::vector<PJ::sdk::PlotMarker> runMarkerScript(
-    const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits = {});
+    const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits = {},
+    const std::function<bool()>& cancelled = {}, std::size_t max_output_bytes = kMaxMarkerOutputBytes,
+    std::size_t* output_bytes = nullptr);
 
 /// Compile + module-load ONLY (no execution, no inputs, no side effects): the cheap
 /// syntax gate behind the `validate_data_processor_script` service slot. Returns true if the script

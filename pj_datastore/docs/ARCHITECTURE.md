@@ -1,7 +1,7 @@
 # pj_datastore Architecture
 
 > **Scope:** this document covers the **scalar `DataEngine` path** — the columnar
-> store, encoding, queries, and `DerivedEngine`. The library also compiles three
+> store, encoding, queries, and `IncrementalEngine`. The library also compiles three
 > first-class components documented elsewhere or summarized below: the opaque-blob
 > **`ObjectStore`** (its own doc, [`OBJECT_STORE_DESIGN.md`](./OBJECT_STORE_DESIGN.md)),
 > the **`ColorMapRegistry`** + its C-ABI host (§3 *Color Map Layer*), and the
@@ -80,7 +80,7 @@ Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant
 
 ### Reader Layer
 
-**`DataReader`** — Read-only facade over committed `DataEngine` storage. Provides `listDatasets()`, `listTopics()`, `getTypeTree()`, `getMetadata()`, `rangeQuery()`, `latestAt()`, and `series(topic_id, column_index)`.
+**`DataReader`** — Read-only facade over committed `DataEngine` storage. Provides `listDatasets()`, `listTopics()`, `getTypeTree()`, `getMetadata()`, `rangeQuery()`, `latestAt()`, `columnType(topic_id, column_index)` (the schema's logical type, before any row is stored), and `series(topic_id, column_index)`.
 
 ### Query Layer
 
@@ -136,7 +136,7 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 
 ### Derived Layer
 
-**`DerivedEngine`** — Manages a transform DAG. Uses pimpl (`DerivedEngineImpl`). Key operations:
+**`IncrementalEngine`** — Manages a transform DAG. Uses pimpl (`IncrementalEngineImpl`). Key operations:
 
 - `addSisoTransform()` — registers a single-input/single-output node. Input must be a single-column topic. Creates an output scalar topic. Returns `NodeId`.
 - `addMimoTransform()` — registers a multi-input/multi-output node. All inputs must be single-column. Creates N output topics.
@@ -144,6 +144,7 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 - `onSourceCommitted(changed_topics)` — marks directly dependent nodes dirty.
 - `scheduleAll()` — processes all dirty nodes in topological order (incremental path).
 - `scheduleActive(active_nodes)` — processes only specified nodes and their transitive upstream dependencies.
+- `materializeStep(node_id, budget)` — time-sliced catch-up: advances one node over its unprocessed input for about `budget` of wall time, commits the rows, and returns whether it caught up. It shares the per-node step (`runNodeLocked`) with the scheduling passes. A node a step leaves behind is *deferred* — it has a `resume_chunk_id`/`resume_row` inside a chunk; `deferredNodes()` lists them in creation order, and the scheduling passes skip them until a step (or a remove/replace/recompute, or a failure) ends the replay. SISO over time-ordered input resumes mid-chunk; per-chunk feeding then equals the merge cursor's order, so the output matches the synchronous replay. MIMO nodes, overlapping input and nodes flagged `needs_full_recompute` finish in one step. `nodeError(node_id)` is the error of the node's last run by any pass, step or recompute (empty once one succeeds). A whole-series snapshot reader (the toolbox `read_series_arrow` bridge, the shell's marker-generator resolver) first calls `DataEngine::awaitCompleteSeries(topic)`, a main-thread barrier the owner of the replays installs (`setCompleteReadBarrier`) to finish a replay still growing that topic.
 - `recomputeBatch(node_id)` — resets the transform and replays the node plus its downstream graph. Per node, the current output is detached aside (not cleared) before replay; a successful replay discards the detached data, while any other exit — an error Status *or* an exception out of the transform — restores it from an RAII guard. A failed recompute (including a sticky-failing processor) therefore never leaves a node's output emptier than it was going in.
 - `recomputeBatch(root_node_ids)` — performs one topological replay over the union of several roots' downstream graphs, so a converging node runs once against one generation of its inputs.
 - `inputBindingState()` / `resolvedInputBindingState()` / `restoreInputBindingState()` — capture, validate against the current input schemas, and restore input-column metadata for a host-managed reload transaction without reminting node or output topic ids.
@@ -157,9 +158,13 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 
 Incremental scheduling: each node tracks a `last_processed_chunk_id` watermark. `scheduleAll()` iterates only chunks with id > watermark, reads each row, calls `calculate()`, writes output via `beginRow`/`set`/`finishRow`, then flushes and commits.
 
+Idle nodes cost nothing: a streaming tick marks every node dirty, so before reading anything a run asks whether the node's inputs hold a chunk numbered above its watermark (evicted ones included, so a retention gap is still seen). If none does it returns at once, in time linear in the number of inputs rather than in the retained chunks, and leaves its downstream alone. Chunk ids come from one process-wide counter and input becomes new to a node only as a committed chunk (an append, a late write, a refilled topic), so a new chunk is always above the watermark. A MIMO node keeps one newest-id per input (`mimo_input_chunk_ids`) and compares each input with its own, because its node-wide `mimo_last_chunk_id` is the maximum across inputs and a chunk sealed earlier than another input's can be committed after it. A node with `needs_full_recompute`, an unfinished time-sliced replay or an unreported error is never skipped.
+
 Rolled-back nodes never go incremental: a recompute rewinds the watermarks before replaying, so a replay that fails (and rolls the output back) leaves watermarks that no longer describe the retained rows. Because the incremental path APPENDS, running it then would replay history on top of the restored rows and double them. Such a node carries `needs_full_recompute` until a replay succeeds, and both scheduling passes route it through the full detach-replay recompute, which rewrites the output wholesale. `restoreInputBindingState()` sets the same flag for the same reason (it rewinds watermarks without touching the output). Note the flag is *not* what schedules the node — a processed node is always left non-dirty, failure included, so a permanently failing processor still runs only when new input re-dirties it.
 
 Out-of-order input: transforms have a strict ascending-timestamp contract, so before running a node the scheduler checks whether any not-yet-processed input chunk lands at or before the node's timestamp watermarks (`siso_last_ts` for SISO; `mimo_last_chunk_id` + `mimo_last_ts` for MIMO). Such late input triggers `recomputeBatch` — reset transform state, detach outputs aside, fully replay over the time-merged input (the SISO replay feeds rows through the `RangeCursor` heap merge), restoring the detached output on failure — instead of incremental work.
+
+Retention gaps: when retention evicts input chunks a node never consumed, the node resets and replays what is still retained (the same path as out-of-order input) and records the gap `[feed watermark, first retained timestamp)` (`IncrementalEngine::gaps()`, the last 16; the watermark is `Timestamp::min` for a node that had fed nothing). The event is detected where it happens: `TopicStorage::evictBefore` records the highest chunk id it dropped, or cut rows from by raising the retention floor into a straddling chunk (`evictedThroughChunkId()`), and a node has a gap iff that id exceeds its chunk watermark (`last_processed_chunk_id` for SISO, `mimo_last_chunk_id` for MIMO, the largest chunk id seen across all inputs, so a newer chunk on one input can mask an eviction on another: a gap may be missed, never invented). Timestamps are not compared: the feed watermarks move only on a non-null row (SISO) or an exact-timestamp join (MIMO), so a node over an all-null column, an input with no rows or sparse inputs would otherwise look permanently behind. A never-run node (watermark 0) has nothing to fall behind, unless a time-sliced step already stopped inside its first chunk, and a replay raises the watermark past the evicted ids so a fully evicted input is one gap, not one per pass. A node stopped inside a chunk (its resume cursor) has consumed that chunk only up to its resume row: the chunk dropped, or the floor reaching the first unfed row, is a gap, while a floor cutting only the fed prefix is not. A failed node consumes nothing, but chunks arriving for it count as consumed (as a failed single-input node's already did), so retention passing its frozen watermark is no gap. The check runs only when neither `needs_full_recompute` nor a regression already forces the replay, since those reset the very watermark the gap reports. A node over a file dataset never gaps: nothing evicts a file topic. `DataEngine::flushTo` (the resume of a paused stream) hands the paused tail's retention floor and evicted-through id to the primary topic (`max` of both, the tail left with none): a pause longer than the window ends as one gap for a node that had not seen the trimmed rows, which then replays the retained window, and a straddling chunk's sub-floor rows stay hidden. `DataProcessorService::transformRecipeJson` exposes the list as `gaps` in a transform's config (`from_ns` is null for a node that had fed nothing).
 
 ### Color Map Layer
 
@@ -195,7 +200,7 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 4. `finishRow()` pads unset columns with null, updates per-column stats
 5. If builder is full (`rowCount >= max_chunk_rows`): `autoSeal()` seals builder, moves `TopicChunk` to `pending_chunks_`
 6. Host calls `flushPending()` -> `DataWriter::flushAll()` seals remaining builders -> `DataEngine::commitChunks()` appends to `TopicStorage`
-7. Chunks are now visible to readers and derived engine
+7. Chunks are now visible to readers and incremental engine
 
 ### Bulk Ingest
 
@@ -222,8 +227,8 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 ### Derived Scheduling
 
 1. `engine.commitChunks()` returns changed topic IDs
-2. Caller invokes `derivedEngine.onSourceCommitted(changed_topics)` -> marks dependent nodes dirty
-3. `derivedEngine.scheduleAll()` processes dirty nodes in topological order
+2. Caller invokes `incrementalEngine.onSourceCommitted(changed_topics)` -> marks dependent nodes dirty
+3. `incrementalEngine.scheduleAll()` processes dirty nodes in topological order
 4. For each dirty SISO node: iterate new input chunks (id > `last_processed_chunk_id`), read each row, call `transform.calculate()`, write output via `beginRow`/`set`/`finishRow`, flush + commit
 5. For each dirty MIMO node: iterate primary input's new chunks, for each timestamp check all other inputs via `latestAt()`, call `transform.calculate()` only when all inputs have matching timestamps
 
@@ -241,9 +246,12 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 ## 6. Threading Model
 
 `DataEngine` is guarded by one `std::recursive_mutex` (`Impl::mutex_`). The store
-has exactly one reader thread (the Qt GUI: plot/catalog reads + `DerivedEngine`
+has exactly one reader thread (the Qt GUI: plot/catalog reads + `IncrementalEngine`
 recompute) and one-or-more ingest worker threads, so an exclusive lock is
-equivalent to a reader-writer lock here and simpler. EVERY engine access — read or
+equivalent to a reader-writer lock here and simpler.
+The derived engines' pool workers (`BatchEngine`, `OnDemandService`) keep the one-reader-thread rule by never
+touching the `DataEngine`: they work only on copies the GUI thread staged before the run
+(`docs/derived_objects/ARCHITECTURE.md` §11). EVERY engine access — read or
 write, on any thread — holds the lock via `lockEngine()`. `DataWriter` accumulates
 in-memory and is not itself shared; `TopicChunkBuilder::next_chunk_id_` remains a
 `std::atomic`.
@@ -276,7 +284,7 @@ Coordinated mechanisms:
    builder mutations serialize against GUI reads. (`TopicStorage` has no internal
    lock; the engine lock is its mutual exclusion.) `TypeRegistry` likewise has no
    internal lock and is covered by the engine lock — every `lookup`/`registerOrGet`
-   site (`DerivedEngine::addSisoTransform`/`addMimoTransform`, the write host, the
+   site (`IncrementalEngine::addSisoTransform`/`addMimoTransform`, the write host, the
    reader) holds `lockEngine()`. The GUI bypass readers
    `CatalogModel::rebuildFromDatastore` / `PointSeriesXY` take it too.
 4. **Append vs. free/move asymmetry.** `commitChunks` only `push_back`s, so a
@@ -306,7 +314,7 @@ mutex this is an efficiency detail, not a deadlock guard.
 | `latestAt` | GUI | `lockEngine()`; value materialized before release |
 | `getTopicStorage` (raw ptr) | any | none — caller must hold `lockEngine()` for the pointer's lifetime |
 | `clearDatasetChunks`/`retireTopic`/`flushTo`/`replaceDatasetFrom`/`enforceRetention` | GUI only | `lockEngine()` + drop-cached-pointers drain first |
-| `DerivedEngine` recompute / `addSisoTransform`/`addMimoTransform` | GUI | `lockEngine()` across the read-modify-write |
+| `IncrementalEngine` recompute / `addSisoTransform`/`addMimoTransform` | GUI | `lockEngine()` across the read-modify-write |
 
 The `ObjectStore` half has its own independent `std::shared_mutex` (see
 `docs/OBJECT_STORE_DESIGN.md`); the two stores' locks are independent and must
@@ -331,39 +339,24 @@ ThreadSanitizer (`./build.sh --tsan`, and the Linux CI `tsan` job).
 
 ## 7. Testing
 
-24 core test executables covering all layers (the authoritative live set is the
-`PJ_DATASTORE_TESTS` list plus the explicitly-added targets in `CMakeLists.txt`):
+The tests in `tests/` are built into these runners (the authoritative live set is in `CMakeLists.txt`):
 
-| Test | Coverage |
-|---|---|
-| `buffer_test` | `RawBuffer`, `BitVector` |
-| `column_buffer_test` | `TypedColumnBuffer` per-type append/read, validity |
-| `type_registry_test` | Schema registration, lookup, evolution |
-| `encoding_test` | All 5 encoding types: constant, FOR, dictionary, packed bool, raw |
-| `chunk_test` | `TopicChunkBuilder` row/bulk paths, seal, read-back |
-| `topic_storage_test` | Commit ordering, eviction, metadata |
-| `out_of_order_ingest_test` | out-of-order ingest (overlapping chunks, retention floor) |
-| `query_test` | `RangeCursor`, `latestAt`, edge cases |
-| `series_reader_test` | `SeriesReader`, `SeriesCursor`, series sample bounds/lookups |
-| `engine_integration_test` | Full `DataEngine` + `DataWriter` + `DataReader` round-trip |
-| `derived_engine_test` | SISO/MIMO transforms, topological order, incremental + batch recompute |
-| `array_expansion_test` | `expandArray`, clamping, cross-builder expansion |
-| `regression_test` | Bug-specific regression cases |
-| `sequential_uid_test` | `SequentialUID` allocation |
-| `object_store_test` | `ObjectStore` owned/lazy push, latest-at, retention, `flushTo` |
-| `plugin_data_host_object_test` | Object-write host bridges (`pj.source_object_write` / `pj.parser_object_write`) onto `ObjectStore` |
-| `plugin_data_host_object_read_test` | Toolbox object-read host (`pj.toolbox_object_read`) queries |
-| `plugin_parser_object_write_test` | Parser plugin writing canonical builtin objects through the object-write host |
-| `streaming_mirror_test` | streaming two-engine `flushTo`/`setTarget` mirror |
-| `sample_test` | `Sample` value type |
-| `data_processor_test` | `PJ::proc::DataProcessor` base |
-| `processor_siso_adapter_test` | `ProcessorSisoAdapter` (processor as DerivedEngine node) |
-| `arrow_import_test` | Arrow IPC schema parsing and batch import |
-| `arrow_stream_round_trip_test` | v4 Arrow C Data Interface round-trip (Phase 1b) |
+- `pj_datastore_tests`: one gtest runner for the whole module, registered with `gtest_discover_tests`, so ctest
+  names are `<runner>.<Suite>.<Case>` and each case runs in its own process. Filter one suite with
+  `ctest --test-dir build -R '^pj_datastore_tests\.ObjectStoreTest\.'`.
+- `chunk_test`: a separate executable, because it holds death tests.
+- `engine_concurrency_test`, `engine_thread_safety_test`: separate executables with a 90-second timeout; they are the
+  ThreadSanitizer entry points used by `build.sh` and CI.
 
-Disabled pending the Phase 1b v4-ABI rewrite (commented out in `CMakeLists.txt`,
-`.cpp` files still on disk): `plugin_host_write_test` (v3 `appendArrowIpc`/`readSeries`
-write path) and `plugin_host_read_test` (v3 toolbox read path; rewrite for
-`read_series_arrow`).
+Sanitizer self-tests (`sanitizer_selftest` and the MSan and TSan variants) are registered only in their lane.
 
-Build and run from the PJ4 repo root: `./build.sh`, then `ctest --test-dir build` (e.g. `ctest --test-dir build -R object_store_test`).
+The suites are grouped by layer: buffers and encoding, schema evolution and topic storage, queries and series
+readers, the engine round-trip and out-of-order ingest, `IncrementalEngine` and the data-processor substrate,
+`ObjectStore` (owned and lazy payloads, retention, bundles, merge), the plugin host bridges, and the Arrow import
+and round-trip.
+
+`plugin_host_write_test.cpp` and `plugin_host_read_test.cpp` exercise the removed v3 write and read ABI. They are not
+built (commented out in `CMakeLists.txt`) and have not been rewritten against the v4 Arrow-stream path
+(`read_series_arrow`); `arrow_stream_round_trip_test` covers that path.
+
+Build and run from the PJ4 repo root: `./build.sh`, then `ctest --test-dir build -R '^pj_datastore_tests\.'` (the separate executables run by their own names, e.g. `-R chunk_test`).

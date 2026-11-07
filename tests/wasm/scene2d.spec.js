@@ -7,6 +7,7 @@ const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { openFileChooser } = require('./support/pickers');
 const { requestMultiPlotState } = require('./support/plot_probes');
+const { requestScene2DState } = require('./support/scene2d');
 
 function ros2CompressedImageFixture() {
   return base64Fixture('ros2_compressed_image.mcap.b64');
@@ -14,6 +15,10 @@ function ros2CompressedImageFixture() {
 
 function foxgloveScene2DFixture() {
   return base64Fixture('foxglove_scene2d.mcap.b64');
+}
+
+function foxgloveVideoFixture() {
+  return base64Fixture('foxglove_video.mcap.b64');
 }
 
 async function dragTimelineSlider(page, screen, slider, fromRatio, toRatio) {
@@ -48,80 +53,6 @@ async function splitDockHorizontally(page, screen, consoleMessages, center) {
   const actionCenter = menuMessage.match(/center=(\d+),(\d+)/);
   expect(actionCenter, `unparseable split action: ${menuMessage}`).not.toBeNull();
   await page.mouse.click(screen.x + Number(actionCenter[1]), screen.y + Number(actionCenter[2]));
-}
-
-async function requestScene2DState(page, consoleMessages, previousCount) {
-  await page.evaluate(() => window.pjWasmReportScene2DStateProbe());
-  await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_WASM_SCENE2D_SUMMARY')).length,
-    { timeout: 10000 },
-  ).toBeGreaterThan(previousCount);
-  const summaryMessage = consoleMessages.filter(
-    message => message.includes('PJ_WASM_SCENE2D_SUMMARY'),
-  ).at(-1) || '';
-  const summary = summaryMessage.match(
-    /sequence=(\d+) docks=(\d+) slider=(-?\d+),(-?\d+),(\d+)x(\d+) value=([^ ]+) range=([^,]+),([^ ]+) enabled=(\d+)/,
-  );
-  expect(summary, `unparseable Scene2D summary: ${summaryMessage}`).not.toBeNull();
-  const sequence = Number(summary[1]);
-  const dockCount = Number(summary[2]);
-  const forSequence = marker => consoleMessages.filter(
-    message => message.includes(marker) && message.includes(`sequence=${sequence} `),
-  );
-  await expect.poll(() => forSequence('PJ_WASM_SCENE2D_DOCK').length).toBe(dockCount);
-  await expect.poll(() => forSequence('PJ_WASM_SCENE2D_READBACK').length).toBe(dockCount);
-
-  const readbacks = new Map(forSequence('PJ_WASM_SCENE2D_READBACK').map((message) => {
-    const match = message.match(
-      /index=(\d+) red=(\d+) blue=(\d+) green=(\d+) magenta=(\d+) yellow=(\d+) cyan=(\d+) white=(\d+) framebuffer=(\d+)x(\d+)/,
-    );
-    expect(match, `unparseable Scene2D readback: ${message}`).not.toBeNull();
-    return [Number(match[1]), {
-      red: Number(match[2]),
-      blue: Number(match[3]),
-      green: Number(match[4]),
-      magenta: Number(match[5]),
-      yellow: Number(match[6]),
-      cyan: Number(match[7]),
-      white: Number(match[8]),
-      framebuffer: { width: Number(match[9]), height: Number(match[10]) },
-    }];
-  }));
-  const docks = forSequence('PJ_WASM_SCENE2D_DOCK').map((message) => {
-    const match = message.match(
-      /index=(\d+) identity=(\d+) layers=(\d+) viewer=(-?\d+),(-?\d+),(\d+)x(\d+) visible=(\d+) view=([^,]+),([^,]+),([^ ]+)/,
-    );
-    expect(match, `unparseable Scene2D dock: ${message}`).not.toBeNull();
-    return {
-      index: Number(match[1]),
-      identity: Number(match[2]),
-      layers: Number(match[3]),
-      viewer: {
-        x: Number(match[4]),
-        y: Number(match[5]),
-        width: Number(match[6]),
-        height: Number(match[7]),
-      },
-      visible: match[8] === '1',
-      view: { zoom: Number(match[9]), panX: Number(match[10]), panY: Number(match[11]) },
-      readback: readbacks.get(Number(match[1])),
-    };
-  }).sort((left, right) => left.index - right.index);
-
-  return {
-    sequence,
-    docks,
-    slider: {
-      x: Number(summary[3]),
-      y: Number(summary[4]),
-      width: Number(summary[5]),
-      height: Number(summary[6]),
-      value: Number(summary[7]),
-      min: Number(summary[8]),
-      max: Number(summary[9]),
-      enabled: summary[10] === '1',
-    },
-  };
 }
 
 test('official ROS2 compressed images render and seek in Scene2D', async ({ page }) => {
@@ -383,5 +314,82 @@ test('Foxglove JPEG, annotations, split Scene2D docks, and recreation render', a
   expect(consoleMessages.some(message => message.includes('Wrong JPEG library version'))).toBe(false);
   expect(consoleMessages.some(message => /JPEG (header|decode) failed|MediaViewerWidget: failed/.test(message))).toBe(false);
   expect(consoleMessages.some(message => message.includes('PJ_WASM_SCENE2D_FAILED'))).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('Foxglove H.264 video decodes, renders and seeks in Scene2D', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = [];
+  const consoleMessages = [];
+  await page.addInitScript(() => { delete window.showOpenFilePicker; });
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('console', message => consoleMessages.push(message.text()));
+
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  const screen = await page.locator('#screen').boundingBox();
+  expect(screen).not.toBeNull();
+
+  // 60 Annex B access units of pj_scene2D/testdata/test_h264_bframes.mp4
+  // (128x128, B-frames), one foxglove.CompressedVideo message every 100 ms.
+  const fixture = foxgloveVideoFixture();
+  expect(crypto.createHash('sha256').update(fixture).digest('hex')).toBe(
+    '7b12d7a1b0cff39abefccbca6e8dceffa88cb7fd41262182971a301ef1d342c6',
+  );
+  const chooser = await openFileChooser(page, screen);
+  await chooser.setFiles({
+    name: 'foxglove-video.mcap',
+    mimeType: 'application/octet-stream',
+    buffer: fixture,
+  });
+  await page.waitForTimeout(1000);
+  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+
+  await expect.poll(
+    () => consoleMessages.find(
+      message => message.includes('PJ_WASM_PROTOBUF_OBJECT_OK topic=/foxglove/video'),
+    ) || '',
+    { timeout: 30000 },
+  ).toContain('entries=60 type=kVideoFrame');
+
+  await page.mouse.click(screen.x + 10, screen.y + 192);
+  await dragQtCanvas(
+    page,
+    { x: screen.x + 95, y: screen.y + 212 },
+    { x: screen.x + 820, y: screen.y + 390 },
+  );
+
+  // The first frame arrives once the software decoder has produced it; poll
+  // rather than sleep so a slow decode worker does not make the check flaky.
+  let stateMessages = consoleMessages.filter(message => message.includes('PJ_WASM_SCENE2D_SUMMARY')).length;
+  let first;
+  await expect.poll(async () => {
+    first = await requestScene2DState(page, consoleMessages, stateMessages);
+    stateMessages += 1;
+    return first.docks.length === 1 ? first.docks[0].readback.yellow : 0;
+  }, { timeout: 30000 }).toBeGreaterThan(5000);
+  expect(first.docks[0]).toMatchObject({ layers: 1, visible: true });
+  expect(first.docks[0].readback.white).toBeGreaterThan(5000);
+  expect(first.slider.enabled).toBe(true);
+  expect(first.slider.max).toBeGreaterThan(5.8);
+
+  // Seek past the middle: decoding forward from the preceding keyframe must
+  // still land on a real picture.
+  await dragTimelineSlider(page, screen, first.slider, 0, 0.6);
+  let middle;
+  await expect.poll(async () => {
+    middle = await requestScene2DState(page, consoleMessages, stateMessages);
+    stateMessages += 1;
+    return middle.slider.value;
+  }, { timeout: 15000 }).toBeGreaterThan(3);
+  await expect.poll(async () => {
+    middle = await requestScene2DState(page, consoleMessages, stateMessages);
+    stateMessages += 1;
+    return middle.docks[0].readback.yellow;
+  }, { timeout: 15000 }).toBeGreaterThan(5000);
+
+  expect(consoleMessages.some(message => message.includes('QRhiWidget: No QRhi'))).toBe(false);
+  expect(consoleMessages.some(message => /MediaViewerWidget: failed|PJ_WASM_SCENE2D_FAILED/.test(message))).toBe(false);
+  expect(consoleMessages.some(message => message.includes('PJ_WASM_PROTOBUF_OBJECT_FAILED'))).toBe(false);
   expect(errors).toEqual([]);
 });

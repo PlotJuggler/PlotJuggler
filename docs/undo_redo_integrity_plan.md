@@ -17,7 +17,7 @@ onto the first. Root cause: a workspace snapshot identifies each curve by a
 dataset-agnostic `(topic, field)` pair (`SeriesPath`,
 `pj_app/src/LayoutXml.h`), and every restore re-resolves that pair against the
 loaded datasets taking the **first match in load order**
-(`resolveSeriesPath`, `pj_app/src/PendingDisplayBinder.cpp`). The curve then
+(then `resolveSeriesPath`, now `CatalogModel::resolveCurveKey`). The curve then
 renders the other dataset's samples at the other dataset's display offset — a
 jump in time that presents as "timeline alignment broke after undo".
 
@@ -200,7 +200,7 @@ different:
   whole restore transaction. Curves re-resolve afterwards via
   `rebindCurveKeys`, so freshly minted output TopicIds are harmless here.
 - **Data reloads (RefillGuard path)**: branch B's in-place machinery is kept —
-  `rebindAndRecomputeForReplacedSources` + DerivedEngine
+  `rebindAndRecomputeForReplacedSources` + IncrementalEngine
   `inputBindingState` / `resolvedInputBindingState` /
   `restoreInputBindingState`. Catalog curve keys embed TopicIds, so
   recreate-on-reload would mint new output ids and silently delete every
@@ -322,9 +322,9 @@ Kickoff notes accumulated while delivering PRs 1–2:
 (`rebindAndRecomputeForReplacedSources` + engine binding-state primitives);
 `recomputeBatch`; replace-transform rollback; TopicId-exact cascades;
 `RefillGuard::recomputeProcessors` ordering (replay before prune). Donor map:
-`pj_datastore/derived_engine.*`, `pj_runtime/DataProcessorService.*`,
+`pj_datastore/incremental_engine.*`, `pj_runtime/DataProcessorService.*`,
 `SessionManager` RefillGuard hunks. Tests: donor
-`data_processor_service_transform_test`, `derived_engine_test` changes,
+`data_processor_service_transform_test`, `incremental_engine_test` changes,
 RefillGuard cases of `session_manager_test`. Runtime-layer work — expect
 rebase friction (not correctness conflicts) with PR 3 in `MainWindow.cpp`.
 

@@ -6,14 +6,18 @@
 #include <QDir>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QHash>
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
+
+#include "pj_runtime/SavedSeriesPath.h"
 
 namespace PJ::layout_xml {
 
@@ -84,6 +88,10 @@ struct DataSourceRef {
   // canonical lower-case SHA-256 is accepted on read; native layouts omit it.
   // Browser replay consults it when two logical sources share a basename.
   QString content_sha256;
+  // The layout gave a content_sha256 that is not canonical, so content_sha256
+  // stayed empty. A downloaded layout refuses such a source: it promised a
+  // fingerprint that nothing can be checked against.
+  bool content_sha256_malformed = false;
   QString plugin_id;           // Empty when the layout had no <plugin> child.
   QString plugin_config_json;  // Empty when the layout had no <plugin> child.
   // Stable plugin identity from <plugin manifest_id="...">. New layouts write
@@ -91,12 +99,6 @@ struct DataSourceRef {
   // id; the loader matches by manifest id first, falling back to the display
   // name. Empty for layouts written before the attribute existed.
   QString plugin_manifest_id;
-  // Browser-authored source layouts persist a logical filename in plugin JSON
-  // because their staged backing path expires with the page. On desktop replay,
-  // this additive opt-in asks FileLoader to replace that logical filepath with
-  // resolved_path immediately before loadConfig(). Older/native layouts omit the
-  // marker and therefore retain their existing pass-through behavior.
-  bool rewrite_plugin_filepath = false;
   // Provider-generic source record from an optional <materialize> child of
   // <fileInfo> (a sibling of <plugin>): the provider plugin able to re-obtain
   // this source (provider attribute), that provider's durable identity for it
@@ -140,20 +142,6 @@ struct DataSourceRef {
          !ref.materialize_descriptor_json.isEmpty();
 }
 
-// CDATA sections cannot contain "]]>"; QDomDocument::createCDATASection
-// does not escape it. Splits the payload across adjacent CDATA sections
-// at each "]]>" boundary so QDomElement::text() concatenates them back
-// transparently on read.
-void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& json);
-
-// Concatenates ONLY the direct CDATA/text child nodes of `element`, skipping any
-// nested child *elements*. QDomElement::text() recurses the entire subtree, so an
-// element that holds its own CDATA payload alongside a child element with its own
-// CDATA (e.g. a <processor> carrying params-CDATA plus a <source_fallback> child
-// holding the filter's Luau source) cannot read its own payload via text()
-// without the child's leaking in. This reads the element's own payload only.
-[[nodiscard]] QString directCdataText(const QDomElement& element);
-
 // Reads every <previouslyLoaded_Datafiles>/<fileInfo> and its optional
 // <plugin> child, one DataSourceRef per file in document order. Each
 // serialized_path is the raw filename attribute. resolved_path is absolute for
@@ -163,6 +151,61 @@ void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& js
 // the wrapper element is absent or holds no usable fileInfo. Multiple entries
 // support multi-file sessions; single-file layouts yield a one-element list.
 [[nodiscard]] QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir);
+
+// Where a downloaded layout's <fileInfo filename> lives: `filename` (a raw
+// serialized_path) resolved against `layout_url`, the http(s) URL the layout
+// was fetched from. A relative filename is a path, never URL syntax ('#', '?'
+// and '%' stay part of the name); an absolute http(s) URL is used as is.
+// Returns an empty URL, describing why in `*error` (may be null), for an empty
+// filename, a local machine path (absolute POSIX, drive letter, UNC, any
+// backslash), another scheme (file:, pj-upload:, ...), a reference that names
+// a directory, or a `layout_url` that is not http(s): a web-hosted layout never
+// points the app at local files. Browser caveat: a WASM fetch reports the
+// REQUESTED URL even after a redirect, so a layout served through a redirect to
+// another directory resolves against the requested one.
+[[nodiscard]] QUrl resolveFileSourceUrl(const QString& filename, const QUrl& layout_url, QString* error);
+
+// The pj4_version of a layout carrying <previouslyLoaded_StreamingSources>, and the newest version this build
+// reads. writeStreamingSources stamps it on the root; every other layout keeps the version below it, so an older
+// build warns about exactly the layouts whose stream records it would drop.
+inline constexpr int kStreamingLayoutSchemaVersion = 5;
+
+// `pj-stream://<id>`: the *_dataset_path qualifier of everything bound to the stream record `stream_id`. It names
+// the record, not a session: each replay starts fresh sessions under fresh DatasetIds and maps them back through
+// it. Opaque, like a pj-upload:// identity: never resolved as a path, compared literally by isSamePath.
+[[nodiscard]] QString streamSourceIdentity(const QString& stream_id);
+
+// One <previouslyLoaded_StreamingSources>/<streamInfo>: a streaming plugin started with a saved configuration.
+// `id` is unique within the layout and exists only to bind qualifiers to the right record when several streams
+// share a plugin; it is not a connection-reuse key. plugin_config_json is the saved TEMPLATE, byte-exact: it may
+// name deployment variables (pj_runtime's expandSourceConfigVariables), and a re-save must write it back
+// unexpanded. Plugin identity follows <fileInfo>/<plugin>: manifest id first, display name as the fallback.
+struct StreamingSourceRef {
+  QString id;
+  QString source_name;  // display name of the stream; may be empty
+  QString plugin_id;
+  QString plugin_manifest_id;
+  QString plugin_config_json;
+  // Source Timeline state from an optional <dataset> child; defaults (no offset, order -1) when absent.
+  DataSourceDatasetRef dataset;
+};
+
+// Reads every <streamInfo>, in document order; an absent block is an empty list without error. One invalid record
+// (no id, a repeated id, no <plugin> or a second one, a plugin with neither ID nor manifest_id, an empty
+// configuration) or a second block rejects everything: the result is empty and `*error` (may be null) describes the
+// first problem, so a layout never replays part of its stream set. A record's <dataset> offset is never read under
+// the pre-v4 basis, whatever the root's pj4_version (hand-written presets often omit it).
+[[nodiscard]] QList<StreamingSourceRef> extractStreamingSources(const QDomDocument& doc, QString* error);
+
+// Appends <previouslyLoaded_StreamingSources> to the root and stamps kStreamingLayoutSchemaVersion; an empty list
+// writes nothing and leaves the version alone. Each configuration is written as given (keep the template). Returns
+// false, writing nothing and describing the first problem in `*error` (may be null), for anything
+// extractStreamingSources would reject: an invalid record, or a document that already carries a block.
+[[nodiscard]] bool writeStreamingSources(QDomDocument& doc, const QList<StreamingSourceRef>& sources, QString* error);
+
+// True when the layout is source-bound (its binding is not "generic") and records a file or a streaming source.
+// Such a layout carries plugin configuration, so the browser never retains it as a durable recipe.
+[[nodiscard]] bool isSourceBoundLayout(const QDomDocument& doc);
 
 // Source Timeline view chrome persisted as the <source_timeline> element: pure
 // view state, independent of the per-source offsets/order (those round-trip via
@@ -186,7 +229,7 @@ struct SourceTimelineViewState {
 [[nodiscard]] SourceTimelineViewState readSourceTimelineViewState(const QDomElement& element);
 
 // True iff both inputs identify the same source. Filesystem paths compare as
-// the same on-disk file; pj-upload:// identities compare literally. Used by the
+// the same on-disk file; pj-upload:// and pj-stream:// identities compare literally. Used by the
 // layout-load data-source replay to decide whether the currently
 // loaded source is the one the layout references (and re-load is a
 // no-op) or a different file (and the user should be prompted).
@@ -205,34 +248,14 @@ struct SourceTimelineViewState {
 // (CurveDescriptor::name); topic and field stay separate because PJ4 field
 // paths can themselves contain '/'. The explicit constructor keeps existing
 // two-argument brace-initializations compiling.
-struct SeriesPath {
+struct SeriesPath : SavedSeriesPath {
   SeriesPath(
       QString topic_in = {}, QString field_in = {}, std::uint32_t dataset_id_in = 0, QString dataset_source_in = {},
       QString dataset_path_in = {})
-      : topic(std::move(topic_in)),
-        field(std::move(field_in)),
-        dataset_id(dataset_id_in),
-        dataset_source(std::move(dataset_source_in)),
-        dataset_path(std::move(dataset_path_in)) {}
+      : SavedSeriesPath{
+            std::move(topic_in), std::move(field_in), dataset_id_in, std::move(dataset_source_in),
+            std::move(dataset_path_in)} {}
 
-  QString topic;
-  QString field;
-  // Exact in-session hint for undo/redo (0 = unqualified). A resolver must
-  // reject ambiguity rather than silently pick the first dataset exposing the
-  // same topic/field.
-  std::uint32_t dataset_id = 0;
-  // Portable raw source label (DatasetInfo::source_name), usable for layout
-  // reload after ids are reminted.
-  QString dataset_source;
-  // Full file identity stamped by FileLoader at layout-file save. Unlike
-  // dataset_source (often a basename/display label), it distinguishes same-named
-  // files in different directories and guards a coincidentally reminted id.
-  QString dataset_path;
-
-  [[nodiscard]] bool operator==(const SeriesPath& other) const {
-    return topic == other.topic && field == other.field && dataset_id == other.dataset_id &&
-           dataset_source == other.dataset_source && dataset_path == other.dataset_path;
-  }
   // Human-readable form for missing-curve lists: "topic/field".
   [[nodiscard]] QString display() const;
 };
@@ -267,11 +290,15 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // Converts a saved workspace document into a portable generic layout by removing
 // the exact dataset hints: dataset_id / dataset_source / dataset_path (and their
 // x_/y_ XY variants) from plotted TS/XY curves, input_dataset_* from
-// data-processor <processor> inputs, dataset_* from scene-dock <layer> /
-// <config_topic> elements, and source_dataset_* from <robot_model> / <trail>. The
-// topic+field (or topic+type) identity remains and binds at apply time only when
-// unique in the loaded data — the scene loaders implement the same unique-only
-// fallback as plots and processors. Undo snapshots and source-bound layouts keep
+// data-processor <processor> inputs, dataset_* from <transform> inputs, marker
+// <generator>s, hidden <marker_scope> rows and scene-dock <layer> /
+// <config_topic> elements, source_dataset_* from <robot_model> / <trail>, and
+// dataset_* from <state_transitions> <series> rows. The
+// topic+field (or topic+type; a generator's input series) identity remains and
+// binds at apply time only when unique in the loaded data — the scene loaders
+// implement the same unique-only fallback as plots and processors. An on-demand
+// <input> name keeps its qualifier, the alias its script reads; its `topic` or
+// `upstream` says what it binds. Undo snapshots and source-bound layouts keep
 // their qualifiers.
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
 
@@ -281,9 +308,11 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
 using DatasetPathLookup = std::function<QString(std::uint32_t)>;
 
 // Adds the FileLoader-known full-path companion (`*_dataset_path`) next to every
-// persisted `*_dataset_id` on plotted TS/XY curves and data-processor <processor>
-// inputs. Scene docks are NOT visited — their xmlSaveState stamps the dataset_path
-// companion itself when the dataset has a source path. A dataset
+// persisted `*_dataset_id` on plotted TS/XY curves, data-processor <processor> and
+// <transform> inputs, marker <generator>s and hidden <marker_scope> rows. A path the
+// element already carries is overwritten. Scene docks and State Transitions rows
+// are NOT visited: they serialize the session's absolute path themselves, and a
+// file save makes it layout-relative with relativizeDatasetSourcePaths. A dataset
 // the lookup can't place keeps its id/source qualifier unchanged.
 void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup);
 
@@ -292,14 +321,14 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
 // so a later session cannot accept a coincidentally reminted id merely because a
 // basename-like source label also matches. Path-qualified ids and zero-valued
 // local-scene ids are left intact; the retained source label may still rebind
-// when unique. Scoped to plot curves and <processor> inputs (same reason as
-// stampDatasetSourcePaths); scene ids survive so restored scene layers keep binding.
+// when unique. Scoped to the elements stampDatasetSourcePaths stamps; scene ids
+// survive so restored scene layers keep binding.
 void removeUnvalidatedDatasetIds(QDomDocument& doc);
 
 // Resolves relative `*_dataset_path` qualifiers against the layout file's
 // directory before any plot/processor/scene restore consumes them, so a
-// source-bound layout moves together with its data. Undo snapshots carry no such
-// portable path attributes and are unchanged.
+// source-bound layout moves together with its data. Absolute qualifiers (every
+// undo snapshot's, and a file's paths outside its folder) are only cleaned.
 void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
 
 // Rewrites every non-empty dataset source-path qualifier in place. Covers the
@@ -310,6 +339,32 @@ void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
 // pure XML pass: it performs no filesystem access and changes no schema.
 using DatasetPathRemapper = std::function<QString(const QString&)>;
 void remapDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& remap);
+
+// Save-side inverse of resolveDatasetSourcePaths: hands every ABSOLUTE filesystem
+// qualifier of the five shapes remapDatasetSourcePaths visits to `relocate` and stores
+// its result. Relative values and opaque identities (containing "://") are skipped, so
+// a non-idempotent relocator is safe. Works by value, not by DatasetId, so it also
+// reaches the qualifiers widgets serialize themselves (scene docks, <robot_model> /
+// <trail>, <state_transitions> rows).
+void relativizeDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& relocate);
+
+// Sets `<prefix>dataset_path` to identity_for_dataset[id] on every element of the
+// document whose `<prefix>dataset_id` is a key of the map, for all five qualifier
+// shapes — scene layers, config topics and robot models included, which
+// stampDatasetSourcePaths skips. How a save names data that has no file, such as a
+// live stream (`pj-stream://<id>`).
+void stampDatasetIdentities(QDomDocument& doc, const QHash<std::uint32_t, QString>& identity_for_dataset);
+
+// The load-side inverse for streams: every qualifier whose `<prefix>dataset_path`
+// is a key of the map becomes the exact live DatasetId (its source and path
+// attributes dropped), and each <curve>, <layer> and <config_topic> so bound
+// becomes a pending intent, because a stream's topics arrive only after the
+// layout applied. A bound payload of a <layer> (a robot model, a trail) makes
+// that layer the pending intent, and gives a layer with no qualifier of its own
+// the payload's `dataset_id`, which its pending demand names. Other qualifiers
+// are left untouched. Run it after
+// removeUnvalidatedDatasetIds, which would strip the path-less ids it writes.
+void bindStreamQualifiers(QDomDocument& doc, const QHash<QString, std::uint32_t>& dataset_for_identity);
 
 // Rewrites each <previouslyLoaded_Datafiles>/<fileInfo> filename attribute
 // through `remap`, visiting exactly the elements extractDataSource yields

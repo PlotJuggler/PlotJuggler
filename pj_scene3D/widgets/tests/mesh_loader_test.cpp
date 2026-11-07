@@ -5,18 +5,27 @@
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QFuture>
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 #include <array>
 #include <cmath>
 #include <glm/glm.hpp>
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#include "mesh_import.h"
+#include "mock_parser_support.h"
 using namespace Qt::StringLiterals;
+using pj::scene3d::test::readFixtureBytes;
 
 namespace pj::scene3d {
 namespace {
@@ -27,12 +36,6 @@ namespace {
 
 QString fixturePath(const char* name) {
   return QString(PJ_SCENE3D_FIXTURES_DIR) + "/meshes/" + QLatin1String(name);
-}
-
-QByteArray readFixtureBytes(const char* name) {
-  QFile f(fixturePath(name));
-  EXPECT_TRUE(f.open(QIODevice::ReadOnly)) << "missing fixture: " << name;
-  return f.readAll();
 }
 
 // Every emitted normal must be unit length (GenSmoothNormals guarantees them).
@@ -113,6 +116,31 @@ TEST(MeshLoaderTest, LoadsStlFromPath) {
 // Proves the assimp Conan `with_collada=True` option name is correct: a wrong
 // name silently disables the importer and this would return empty geometry.
 
+// MeshLoader caches a path's future and hands it to every caller: taking the
+// result for one import must leave it intact for the next.
+TEST(MeshLoaderTest, CachedLoadServesEveryImport) {
+  MeshLoader loader;
+  QObject context;
+  const QString path = fixturePath("cube.stl");
+  const auto import_once = [&]() -> MeshData {
+    bool done = false;
+    MeshImport job(loader.load(path), &context, [&done] { done = true; });
+    // processEvents() returns at once when idle: bound the wait by time, since
+    // the import runs on a worker (slow under the sanitizers).
+    QElapsedTimer timer;
+    timer.start();
+    while (!done && timer.elapsed() < 10000) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+      QThread::msleep(1);
+    }
+    EXPECT_TRUE(done);
+    return job.take();
+  };
+  EXPECT_TRUE(import_once().ok);
+  ASSERT_TRUE(loader.load(path).isValid()) << "the first import consumed the cached result";
+  EXPECT_TRUE(import_once().ok);
+}
+
 TEST(MeshLoaderTest, LoadsColladaFromPath) {
   MeshLoader loader;
   QFuture<MeshData> future = loader.load(fixturePath("cube.dae"));
@@ -183,6 +211,38 @@ TEST(MeshLoaderTest, ColladaExtractsUvsAndResolvesTexturePath) {
   EXPECT_TRUE(texture_info.isAbsolute()) << texture_path.toStdString();
   EXPECT_TRUE(texture_path.endsWith(QLatin1String("red_4x4.png"))) << texture_path.toStdString();
   EXPECT_TRUE(texture_info.isFile()) << texture_path.toStdString();
+}
+
+// In memory there is no directory to resolve the texture against: the reference
+// is kept for a caller that knows where the mesh came from.
+TEST(MeshLoaderTest, ColladaFromMemoryKeepsTheUnresolvedTextureReference) {
+  MeshLoader loader;
+  const MeshData mesh = loader.loadFromMemory(readFixtureBytes("textured_quad.dae"), u"dae"_s).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+  const TextureSource& base = mesh.submeshes.front().material->base_color;
+  EXPECT_TRUE(base.empty()) << "no pixels until the reference is fetched";
+  EXPECT_EQ(base.unresolved_ref.toStdString(), "red_4x4.png");
+}
+
+// An in-memory import never turns a reference into a local file path, absolute
+// ones included: the bytes may come from a remote host.
+TEST(MeshLoaderTest, ColladaFromMemoryNeverResolvesAbsoluteTextureRefToLocalFile) {
+  const QString absolute_texture = fixturePath("red_4x4.png");
+  ASSERT_TRUE(QFileInfo(absolute_texture).isFile());
+  for (const QString& ref : {absolute_texture, u"file://"_s + absolute_texture}) {
+    SCOPED_TRACE(ref.toStdString());
+    QByteArray bytes = readFixtureBytes("textured_quad.dae");
+    bytes.replace("red_4x4.png", ref.toUtf8());
+    MeshLoader loader;
+    const MeshData mesh = loader.loadFromMemory(bytes, u"dae"_s).result();
+    ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+    ASSERT_FALSE(mesh.submeshes.empty());
+    const TextureSource& base = mesh.submeshes.front().material->base_color;
+    EXPECT_TRUE(base.path.isEmpty()) << base.path.toStdString();
+    EXPECT_TRUE(base.empty());
+    EXPECT_EQ(base.unresolved_ref.toStdString(), absolute_texture.toStdString());
+  }
 }
 
 // --- In-memory load (embedded path) -----------------------------------------
@@ -268,8 +328,8 @@ TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
 
 // The W19i fixture carries all five glTF metallic-roughness material maps in
 // one GLB. Each must remain an inline encoded capability with a stable content
-// key so both the native and QRhi renderers can apply their slot-specific color
-// space without reopening a path.
+// key so the renderer can apply its slot-specific color space without reopening
+// a path.
 TEST(MeshLoaderTest, EmbeddedPbrGlbExtractsAllFiveMaterialMaps) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_pbr.glb");
@@ -334,7 +394,7 @@ TEST(MeshLoaderTest, EmbeddedNeutralGlbIsAMapFreeOpaqueControl) {
 
 // The embedded-texture cache key is a content hash, so re-loading the same bytes
 // yields the same key — this is what lets the renderer's per-context texture
-// cache survive GL-context recreation and dedup identical embedded images.
+// cache survive a QRhi recreation and dedup identical embedded images.
 TEST(MeshLoaderTest, EmbeddedTextureKeyIsStableAcrossLoads) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");

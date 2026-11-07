@@ -37,7 +37,9 @@
 #include "mock_parser_support.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
+#include "pj_base/builtin/compressed_point_cloud_codec.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_datastore/merge_result.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -96,10 +98,13 @@ std::shared_ptr<std::vector<uint8_t>> encodeValidCloudini() {
 // vtableWithCreate), so it reaches these through file scope.
 std::shared_ptr<std::vector<uint8_t>> g_valid_blob;
 
+// Valid samples at this stamp are in another frame than the rest ("lidar").
+constexpr PJ::Timestamp kOtherFrameStamp = 700;
+
 PJ::sdk::CompressedPointCloud wrapValid(PJ::Timestamp ts) {
   PJ::sdk::CompressedPointCloud cloud;
   cloud.timestamp_ns = ts;
-  cloud.frame_id = "lidar";
+  cloud.frame_id = ts == kOtherFrameStamp ? "lidar_b" : "lidar";
   cloud.format = "cloudini";
   cloud.data = PJ::Span<const uint8_t>(g_valid_blob->data(), g_valid_blob->size());
   cloud.anchor = g_valid_blob;  // keep the bytes alive on the decode worker
@@ -153,6 +158,29 @@ struct Harness {
 void drainDecode(pj::scene3d::PointCloudLayer& layer) {
   const bool settled = pumpUntil([&layer] { return !layer.decodeInFlightForTest(); }, std::chrono::seconds(10));
   ASSERT_TRUE(settled) << "compressed decode chain never settled";
+}
+
+// TF R6: attach() starts decoding a time-shifted merge's first compressed cloud, and
+// its own renderAt finds that decode running. The decoded cloud must still carry its
+// stamp on the dataset clock, as a raw cloud does (pointcloud_layer_cache_test).
+TEST(PointCloudLayerCoalescing, BootstrapDecodeCarriesTheMergeShiftedStamp) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  (void)registerObjectTopic(session, "/anchor", /*dataset_id=*/1);
+  const PJ::ObjectTopicId topic_id = registerObjectTopic(session, "/cloud", /*dataset_id=*/2);
+  ASSERT_TRUE(
+      store.pushOwned(topic_id, /*logged=*/1000, PJ::serializeCompressedPointCloud(wrapValid(960))).has_value());
+  constexpr PJ::Timestamp kShift = 5000;
+  ASSERT_TRUE(store.mergeDatasets(/*anchor_id=*/1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = kShift}})
+                  .has_value());
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+  drainDecode(layer);
+  ASSERT_EQ(layer.renderFrameId(), "lidar");
+  EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(960 + kShift));
 }
 
 // (a) Three rapid requests A,B,C while A is inflight collapse B: pending_ holds
@@ -224,6 +252,42 @@ TEST(PointCloudLayerCoalescing, LateDecodeDoesNotRepaintAfterScrubBack) {
       << "a late, scrubbed-away decode repainted a stale frame";
 }
 
+// The retained geometry keeps its own frame while another sample, in another
+// frame, decodes: the view places what it draws, not what it waits for. Scrubbing
+// back to the drawn sample, and the stale decode landing, leave it in its frame;
+// the other sample takes its frame only once it is drawn.
+TEST(PointCloudLayerCoalescing, PendingDecodeKeepsTheDrawnCloudInItsFrame) {
+  g_parser_calls.store(0);
+  Harness harness({100, kOtherFrameStamp});
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &harness.session;
+  pj::scene3d::PointCloudLayer layer(harness.topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+  drainDecode(layer);
+  layer.renderAtForTest(100);
+  drainDecode(layer);
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  ASSERT_EQ(layer.renderFrameId(), "lidar");
+
+  layer.renderAtForTest(kOtherFrameStamp);
+  ASSERT_TRUE(layer.decodeInFlightForTest());
+  EXPECT_EQ(layer.renderFrameId(), "lidar") << "the drawn cloud took the pending sample's frame";
+
+  layer.renderAtForTest(100);
+  EXPECT_EQ(layer.renderFrameId(), "lidar") << "scrubbing back left the drawn cloud in the pending frame";
+  EXPECT_EQ(layer.sourceFrame(), u"lidar"_s);
+
+  drainDecode(layer);
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  EXPECT_EQ(layer.renderFrameId(), "lidar") << "the stale decode moved the drawn cloud";
+
+  layer.renderAtForTest(kOtherFrameStamp);  // served from the decode cache
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{kOtherFrameStamp});
+  EXPECT_EQ(layer.renderFrameId(), "lidar_b");
+  EXPECT_EQ(layer.sourceFrame(), u"lidar_b"_s);
+}
+
 // (c) An undecodable sample is memoized in failed_id_; a second renderAt at that
 // time issues NO new decode (the startDecode counter stays put).
 TEST(PointCloudLayerCoalescing, FailedSampleIsMemoizedAndNotRedecoded) {
@@ -250,6 +314,46 @@ TEST(PointCloudLayerCoalescing, FailedSampleIsMemoizedAndNotRedecoded) {
   EXPECT_FALSE(layer.decodeInFlightForTest()) << "a known-failed sample was re-requested";
   EXPECT_EQ(layer.startDecodeCountForTest(), decodes_after_failure)
       << "a known-failed sample triggered a redundant re-decode at tracker rate";
+}
+
+// An evicted compressed cloud re-derives from the decode cache on the UI thread
+// (the conversion alone); when the cache holds another sample, it decodes again
+// off the UI thread and draws nothing until that lands.
+TEST(PointCloudLayerCoalescing, EvictedCloudRederivesFromTheCacheElseDecodesAsync) {
+  g_parser_calls.store(0);
+  Harness harness({100, 500});
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &harness.session;
+  pj::scene3d::PointCloudLayer layer(harness.topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+  drainDecode(layer);
+  layer.renderAtForTest(100);
+  drainDecode(layer);
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  const QByteArray uploaded = layer.vertexBytes();
+  const std::uint64_t revision = layer.geometryRevision();
+
+  layer.onVerticesUploaded(revision);
+  ASSERT_TRUE(layer.verticesEvictedForTest());
+  const int decodes = layer.startDecodeCountForTest();
+  ASSERT_TRUE(layer.ensureVertexBytes());
+  EXPECT_EQ(layer.startDecodeCountForTest(), decodes) << "a cached sample ran the codec";
+  EXPECT_EQ(layer.vertexBytes(), uploaded);
+  EXPECT_EQ(layer.geometryRevision(), revision);
+
+  // A stale decode of 500 lands in the cache while 100 stays on screen.
+  layer.renderAtForTest(500);
+  layer.renderAtForTest(100);
+  drainDecode(layer);
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  layer.onVerticesUploaded(layer.geometryRevision());
+  ASSERT_TRUE(layer.verticesEvictedForTest());
+  EXPECT_FALSE(layer.ensureVertexBytes()) << "the codec ran on the UI thread";
+  EXPECT_EQ(layer.pointCount(), 0U);
+  EXPECT_TRUE(layer.decodeInFlightForTest());
+  drainDecode(layer);
+  EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  EXPECT_EQ(layer.vertexBytes(), uploaded);
 }
 
 }  // namespace

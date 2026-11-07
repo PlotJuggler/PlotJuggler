@@ -9,14 +9,15 @@
 #include <QStringList>
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <glm/glm.hpp>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "pj_scene3d_core/camera/camera.h"  // AABB
 #include "pj_scene_common/scene_layer.h"
+#include "pj_widgets/Fnv1a.h"
 
 class QWidget;
 
@@ -24,25 +25,65 @@ namespace PJ {
 class SessionManager;
 }  // namespace PJ
 
+namespace pj::tf {
+class TransformBuffer;
+}  // namespace pj::tf
+
 namespace pj::scene3d {
 
-class TransformBuffer;
-struct ViewParams;
-struct FrameContext;
+using pj::tf::TransformBuffer;
+struct PlacementHold;
+class PointRenderable;
+class ModelRenderable;
+class PosesInFrameLayer;
+class OccupancyGridLayer;
+class VoxelGridLayer;
+class SceneEntitiesLayer;
+class GridMapLayer;
+class TrailLayer;
 
-// Fold a transform's 16 float bit patterns into a renderKey (FNV-1a style). The
-// TF is a zero-order hold, so keys only change when the pose actually moves —
-// what lets a 60 Hz playhead coalesce repaints down to the TF update rate.
-[[nodiscard]] inline uint64_t foldTransformIntoKey(uint64_t key, const glm::mat4& transform) {
+// What one layer draws, family by family, each through the family's typed
+// interface: the layer's registration with the view (Scene3DLayer::
+// sceneContributions()), read once per SceneViewWidget::setLayers(), never per
+// frame. A layer may contribute to several families (a SceneEntities layer draws
+// markers and models; a pose layer its triads and the trail it owns, which comes
+// and goes between frames without a new registration); all its
+// draws keep its logical (dock) slot, and within the slot the families submit in
+// the view's fixed family order. A layer with no contribution draws nothing.
+struct SceneContributions {
+  PointRenderable* points = nullptr;
+  TrailLayer* trail = nullptr;         ///< a standalone trail
+  PosesInFrameLayer* poses = nullptr;  ///< its triads, and the trail it owns (poses->trail())
+  OccupancyGridLayer* occupancy = nullptr;
+  VoxelGridLayer* voxels = nullptr;
+  SceneEntitiesLayer* markers = nullptr;
+  ModelRenderable* models = nullptr;
+  GridMapLayer* grid_map = nullptr;
+};
+
+// Fold a transform's 16 bit patterns (float or double) into an in-process key
+// (FNV-1a style). The TF is a zero-order hold, so keys only change when the pose
+// actually moves — what lets a 60 Hz playhead coalesce repaints down to the TF
+// update rate.
+template <typename T>
+[[nodiscard]] uint64_t foldTransformIntoKey(uint64_t key, const glm::mat<4, 4, T>& transform) {
   for (int col = 0; col < 4; ++col) {
     for (int row = 0; row < 4; ++row) {
-      uint32_t bits = 0;
-      std::memcpy(&bits, &transform[col][row], sizeof(bits));
-      key = (key ^ bits) * 0x100000001b3ULL;
+      key = PJ::fnv1aMixBits(key, transform[col][row]);
     }
   }
   return key;
 }
+
+// Folds the fixed<-source transform the view places the layer with (placeObject():
+// the object's own stamp, else the cursor `time`, with the layer's `hold`) into a
+// sample key, the second half of every frame-placed layer's renderKey (sample
+// identity + transform). An unresolved lookup folds nothing, so resolving or losing
+// the transform changes the key too. Without it a static sample in a moving frame
+// never repaints.
+[[nodiscard]] uint64_t foldFrameTransformIntoKey(
+    uint64_t key, const TransformBuffer* tf_buffer, const std::string& fixed_frame, const std::string& source_frame,
+    std::optional<PJ::Timepoint> object_stamp, PJ::Timepoint time, PlacementHold* hold);
 
 // Widget-global services every 3D layer needs at attach time. Scene3DDockWidget
 // always passes this concrete context to Scene3DLayer instances; concrete layers
@@ -54,8 +95,9 @@ struct Scene3DLayerContext : PJ::SceneLayerContext {
 
 // Abstract base for everything the 3D scene renders on behalf of a user-added
 // topic. Generic identity/lifecycle/config/XML/visibility/repaint behavior is
-// inherited from PJ::ISceneLayer; this type adds only 3D-specific frame and GL
-// hooks consumed by Scene3DDockWidget and SceneViewWidget.
+// inherited from PJ::ISceneLayer; this type adds only 3D-specific frame hooks
+// consumed by Scene3DDockWidget and SceneViewWidget. Layers own no GPU resource:
+// the view owns all GPU state.
 //
 // Concrete subclasses live under
 // `pj_scene3D/widgets/include/pj_scene3d_widgets/layers/`.
@@ -83,25 +125,35 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // treats that as "not warning, pending data" rather than "broken".
   [[nodiscard]] virtual QString sourceFrame() const = 0;
 
-  // GL. initializeGL() is called by the SceneViewWidget at the top of
-  // every paintGL with a current GL context. Subclasses are expected to
-  // guard against double-init internally (`if (initialized_) return;`)
-  // — mirroring the idiom each IRenderPass already uses. The
-  // per-frame call is what lets layers added *after* the widget has
-  // been realised initialise their GL state on the first paint they
-  // see, without requiring the dock to hold a current context at
-  // attach time. render() is called every paintGL frame; the layer
-  // internally sequences its one or more IRenderPass instances. frame_ctx
-  // (TF buffer + fixed frame + time) is borrowed for the call's duration —
-  // layers must not store it.
-  virtual void initializeGL() = 0;
-  virtual void render(const ViewParams& view_params, const FrameContext& frame_ctx) = 0;
+  // The scene families this layer draws through (see SceneContributions);
+  // constant for the layer's lifetime.
+  [[nodiscard]] virtual SceneContributions sceneContributions() = 0;
 
-  // Drop the GL resources owned by this layer's render pass(es), returning
-  // them to their pre-initializeGL state. Called by SceneViewWidget when the
-  // GL context is about to be destroyed (see IRenderPass::releaseGL); the
-  // layer re-initializes lazily on the next paintGL.
-  virtual void releaseGL() = 0;
+  // The frame the view places this layer's geometry from; empty before data
+  // arrives, and for a trail (its points are already in the fixed frame). One
+  // override also implements PointRenderable's and ModelRenderable's.
+  [[nodiscard]] virtual const std::string& renderFrameId() const;
+
+  // The rendered object's own stamp on the TF header clock (objectStamp()), or
+  // nullopt when it has none: the view then places the layer at the cursor in the
+  // entry clock (placeObject()). Overridden by layers that draw one stamped
+  // object; one override also implements PointRenderable's.
+  [[nodiscard]] virtual std::optional<PJ::Timepoint> renderStamp() const {
+    return std::nullopt;
+  }
+
+  // What placeObject() keeps for this layer's stamped object, so a TF sample evicted
+  // under it does not move it. The view, the dock's scene bounds and renderKey()
+  // all place the layer with it, so they agree. Virtual only so that a layer that is
+  // also a PointRenderable overrides both with one function; it returns this one.
+  [[nodiscard]] virtual PlacementHold* placementHold() const {
+    return placement_hold_.get();
+  }
+  // The hold that places this layer's geometry in `frame`: placementHold() for a layer drawn in one frame. A layer
+  // drawn in several (a SceneEntities finding) keeps one per frame, or placing one frame would overwrite another's.
+  [[nodiscard]] virtual PlacementHold* placementHoldFor(const std::string& /*frame*/) const {
+    return placementHold();
+  }
 
   // Source-frame extent of this layer's geometry, or nullopt when
   // the layer reports no bounds (no data decoded yet, or a bounds-less layer
@@ -112,35 +164,20 @@ class Scene3DLayer : public PJ::ISceneLayer {
     return std::nullopt;
   }
 
-  // World-space AABB of this layer's shadow-CASTER geometry at the current frame, or
-  // nullopt for layers that cast nothing. DISTINCT from worldBounds() on purpose:
-  // worldBounds() drives camera framing (and RobotModelLayer deliberately reports
-  // none so a moving robot can't yank the camera), whereas the shadow frustum MUST
-  // enclose the robot mesh. Only mesh-bearing layers (RobotModelLayer,
-  // SceneEntitiesLayer model primitives) override this; everything else casts no
-  // shadow. Non-const and FrameContext-taking because the bounds depend on the
-  // current TF poses (the layer rebuilds its draw list to compute them).
-  [[nodiscard]] virtual std::optional<AABB> meshShadowBounds(const FrameContext& /*frame_ctx*/) {
-    return std::nullopt;
-  }
-
-  // Depth-only render of this layer's shadow casters from the light's point of view,
-  // into the shadow map currently bound by the SceneViewWidget pre-pass.
-  // `light_view_proj` is the world->light-clip matrix from fitDirectionalShadowCamera.
-  // Default no-op: only mesh layers cast (they forward their visual draws to their
-  // MeshRenderPass, which owns the per-context depth-only program). REQUIRES a current
-  // GL context (called from the pre-pass, before renderScene).
-  virtual void renderShadowCasters(const glm::mat4& /*light_view_proj*/, const FrameContext& /*frame_ctx*/) {}
-
-  // A layer-specific warning to surface on the layer's row (icon + tooltip),
-  // distinct from the dock's frame-orphan check — e.g. a model that failed to
-  // fetch or import. Empty means "nothing to warn about". The dock OR-combines
-  // this with the orphan state so neither clobbers the other (see
-  // Scene3DDockWidget::recomputeOrphanStates). Default: no layer warning.
-  // Emit statusWarningChanged() whenever the returned value changes.
+  // The layer's own row warning (icon + tooltip), distinct from the dock's
+  // frame-orphan check: its warning() parts (decode/admission/budget, renderer,
+  // derived topic), one per line. Empty means nothing to warn about. The dock
+  // combines it with the orphan state (Scene3DDockWidget::updateLayerWarning).
+  // statusWarningChanged() fires whenever the value changes.
   [[nodiscard]] virtual QString statusWarning() const {
-    return {};
+    return warning();
   }
+
+  // Renderer part of statusWarning(): a GPU-side failure (texture limit,
+  // allocation, per-view budget) reported by the QRhi view. A later success
+  // clears only this part.
+  void noteRenderFailure(QString warning);
+  void noteRenderSuccess();
 
  signals:
   // Layer noticed new source-frame candidates — the dock unions these
@@ -157,6 +194,24 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // polling. (Routed through recomputeOrphanStates, NOT the base relay, so it
   // merges with the orphan state instead of overwriting it.)
   void statusWarningChanged();
+
+ protected:
+  // Data part of statusWarning().
+  void setDataWarning(QString warning) {
+    setWarningPart(PJ::SceneWarningParts::Part::kData, std::move(warning));
+  }
+  [[nodiscard]] const QString& dataWarning() const;
+  [[nodiscard]] const QString& renderWarning() const;
+  // Called after the renderer part changed (a layer that mirrors it elsewhere,
+  // e.g. in a status line, refreshes there).
+  virtual void renderWarningChanged() {}
+  // The dock merges the warning with the orphan state (statusWarningChanged), never the base relay.
+  void onWarningChanged() override {
+    emit statusWarningChanged();
+  }
+
+ private:
+  std::unique_ptr<PlacementHold> placement_hold_;  // never null
 };
 
 }  // namespace pj::scene3d

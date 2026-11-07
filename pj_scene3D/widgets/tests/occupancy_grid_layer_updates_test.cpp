@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Layer-level coverage for OccupancyGridLayer's two-topic '<base>_updates'
-// wiring (review M.63): the UID-based store-window traversal that feeds
+// wiring: the UID-based store-window traversal that feeds
 // OccupancyGridReconstructor is cross-checked against an independent
 // cell-by-cell replay at several scrub targets (forward, backward, across
-// epochs). Also regression-covers the retroactive-ingest invalidate path
-// (review H.13: an update ingested behind the already-consumed live edge must
-// still appear on the next forward render) and the base-keyframe parse memo
-// (review M.47: re-rendering an unchanged keyframe must not re-parse it).
+// epochs). Also covers the retroactive-ingest invalidate path (an update
+// ingested behind the already-consumed live edge must still appear on the next
+// forward render) and the base-keyframe parse memo (re-rendering an unchanged
+// keyframe must not re-parse it).
 
 #include <gtest/gtest.h>
 
@@ -16,7 +16,10 @@
 #include <QString>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -26,11 +29,14 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/occupancy_grid.hpp"
 #include "pj_base/builtin/occupancy_grid_update.hpp"
+#include "pj_base/time.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -135,6 +141,17 @@ std::optional<RefGrid> refReplay(const std::vector<RefBase>& bases, std::vector<
     }
   }
   return grid;
+}
+
+// Pushes world<-map as a pure +x translation at `stamp_ns`.
+void pushWorldFromMap(pj::tf::TransformBuffer& buffer, int64_t stamp_ns, double x) {
+  pj::tf::StampedTransform st;
+  st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(stamp_ns)};
+  st.parent_frame = "world";
+  st.child_frame = "map";
+  st.transform.t = glm::dvec3{x, 0.0, 0.0};
+  st.transform.q = glm::dquat{1.0, 0.0, 0.0, 0.0};
+  ASSERT_TRUE(buffer.setTransform(st).has_value());
 }
 
 class OccupancyGridLayerUpdatesTest : public ::testing::Test {
@@ -437,6 +454,27 @@ TEST_F(OccupancyGridLayerUpdatesTest, SameTimestampReplacementBaseStartsNewEpoch
   renderAndExpectRef(layer, 100);
   EXPECT_EQ(layer.reconstructedGridForTest().cells[0], static_cast<int8_t>(33))
       << "same-timestamp replacement keyframe did not reset the epoch";
+}
+
+// A static map in a moving frame must re-key when world<-map moves (and when it
+// first resolves), or the dock's repaint gate freezes it at its first placement.
+TEST_F(OccupancyGridLayerUpdatesTest, RenderKeyFollowsSourceFrameTransform) {
+  pushBase(100, 4, 4, 0);
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setFixedFrame(u"world"_s);
+  layer.renderAtForTest(100);
+
+  const uint64_t unresolved = layer.renderKey(PJ::fromRaw(250));
+  pushWorldFromMap(*ctx.tf_buffer, 200, 1.0);
+  pushWorldFromMap(*ctx.tf_buffer, 300, 2.0);
+  const uint64_t at_first = layer.renderKey(PJ::fromRaw(200));
+  const uint64_t at_second = layer.renderKey(PJ::fromRaw(300));
+  EXPECT_NE(unresolved, at_first) << "resolving world<-map did not change the key";
+  EXPECT_NE(at_first, at_second) << "moving world<-map did not change the key";
 }
 
 }  // namespace

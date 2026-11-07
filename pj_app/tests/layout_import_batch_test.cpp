@@ -47,7 +47,9 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/SourceCacheStore.h"
 #include "pj_runtime/SourceCaptureService.h"
+#include "pj_runtime/XmlCdata.h"
 #include "support/fake_import_provider.h"
+#include "support/filepath_echo_source.h"
 #include "support/loader_test_support.h"
 using namespace Qt::StringLiterals;
 
@@ -70,8 +72,8 @@ constexpr const char* kMockManifestId = "mock-file-source";
 // A statically registered file source claiming ".mcap", so a host-cache
 // artifact can be loaded through the real FileLoader in-process (the real
 // MCAP loader is an external plugin). Content-agnostic: writes one record.
-constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
-constexpr const char* kStaticMcapManifestId = "static-mcap-source";
+[[maybe_unused]] constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
+[[maybe_unused]] constexpr const char* kStaticMcapManifestId = "static-mcap-source";
 
 // Test knob: a true makes every StaticMcapSource import fail, modelling a
 // cached artifact the stock loader cannot ingest (the quarantine trigger).
@@ -131,6 +133,7 @@ struct SourceSpec {
   // at the static ".mcap" source below).
   QString plugin_name = QString::fromUtf8(kMockPluginName);
   QString plugin_manifest = QString::fromUtf8(kMockManifestId);
+  QString plugin_config = u"{}"_s;
 };
 
 [[nodiscard]] QDomDocument makeLayoutDoc(const QList<SourceSpec>& specs) {
@@ -147,13 +150,13 @@ struct SourceSpec {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, spec.plugin_name);
     plugin.setAttribute(u"manifest_id"_s, spec.plugin_manifest);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, u"{}"_s);
+    PJ::appendJsonAsCdata(doc, plugin, spec.plugin_config);
     file_info.appendChild(plugin);
     if (!spec.descriptor.isEmpty()) {
       QDomElement materialize = doc.createElement(u"materialize"_s);
       materialize.setAttribute(u"provider"_s, spec.provider);
       materialize.setAttribute(u"identity"_s, spec.identity);
-      PJ::layout_xml::appendJsonAsCdata(doc, materialize, spec.descriptor);
+      PJ::appendJsonAsCdata(doc, materialize, spec.descriptor);
       file_info.appendChild(materialize);
     }
     wrapper.appendChild(file_info);
@@ -309,6 +312,16 @@ class LayoutImportBatchTest : public ::testing::Test {
       }
     }
     return 0;
+  }
+
+  // The plugin config the session recorded for the source loaded from `path`.
+  [[nodiscard]] QJsonObject recordedConfig(const QString& path) const {
+    for (const auto& src : app_session_->sessionManager().loadedSources()) {
+      if (PJ::layout_xml::isSamePath(src.path, path)) {
+        return pj_app_test::parseJsonObject(src.plugin_config_json);
+      }
+    }
+    return {};
   }
 
   [[nodiscard]] bool sourceLoaded(const QString& path) const {
@@ -608,6 +621,65 @@ TEST_F(LayoutImportBatchTest, ProviderAbsentFallsBackToStockLoadPerSavedPath) {
   EXPECT_EQ(batch.result().sources[1].outcome, Outcome::kFailed);
   EXPECT_GE(diagnosticCount("layout-import-source-missing"), 1);
   EXPECT_TRUE(g_log.snapshot().empty()) << "no provider -> no import jobs";
+}
+
+TEST_F(LayoutImportBatchTest, ProviderFallbackRewritesThePresetFilepathToTheSavedPath) {
+  const QString exists_path = makeMockFile(u"cached.mock"_s);
+  const QString stale_path = QDir::cleanPath(data_dir_.filePath(u"moved-away/cached.mock"_s));
+  SourceSpec spec{
+      exists_path, makeDescriptor(u"s1"_s, u"trusted"_s, u"/other/effective.mock"_s), u"no-such-provider"_s};
+  spec.plugin_config = pj_app_test::compactJson({{u"filepath"_s, stale_path}, {u"keep"_s, 1}});
+  QDomDocument doc = makeLayoutDoc({spec});
+
+  PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+  ASSERT_TRUE(runToFinish(batch));
+  ASSERT_EQ(batch.result().sources.size(), 1);
+
+  const QJsonObject config = recordedConfig(exists_path);
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(config.value(u"filepath"_s).toString(), exists_path));
+  EXPECT_EQ(config.value(u"keep"_s).toInt(), 1);
+  EXPECT_FALSE(config.contains(u"__pj_saved_filepath"_s)) << "the transient key must not be recorded";
+}
+
+// The saved path means "the data that used to sit beside this file" only for a
+// fallback, which loads the layout's own path. A provider-resolved hit replaced
+// it with a materialized cache path, so there is nothing to rebase from.
+TEST_F(LayoutImportBatchTest, OnlyAProviderFallbackHandsThePluginTheSavedFilepath) {
+  ASSERT_TRUE(pj_app_test::registerFilepathEcho(app_session_->extensionCatalog().pluginCatalog()));
+  const QString hit_path = pj_app_test::writeEchoFile(data_dir_.filePath(u"hit.echo"_s), {u"1"_s});
+  const QString fallback_path = pj_app_test::writeEchoFile(data_dir_.filePath(u"fallback.echo"_s), {u"1"_s});
+  const QString saved_hit = QDir::cleanPath(data_dir_.filePath(u"elsewhere/hit.echo"_s));
+  const QString saved_fallback = QDir::cleanPath(data_dir_.filePath(u"elsewhere/fallback.echo"_s));
+
+  const auto echo_spec = [](const QString& filename, const QString& descriptor, const QString& saved) {
+    SourceSpec spec{filename, descriptor};
+    spec.plugin_name = u"Filepath Echo Source"_s;
+    spec.plugin_manifest = u"filepath-echo-source"_s;
+    spec.plugin_config = pj_app_test::compactJson({{u"filepath"_s, saved}});
+    return spec;
+  };
+  SourceSpec fallback =
+      echo_spec(fallback_path, makeDescriptor(u"s2"_s, u"trusted"_s, u"/other/x.echo"_s), saved_fallback);
+  fallback.provider = u"no-such-provider"_s;
+  QDomDocument doc = makeLayoutDoc(
+      {echo_spec(u"/saved/hit.echo"_s, makeDescriptor(u"s1"_s, u"trusted"_s, hit_path), saved_hit), fallback});
+
+  PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+  ASSERT_TRUE(runToFinish(batch));
+  ASSERT_EQ(batch.result().sources.size(), 2);
+  ASSERT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedCacheHit);
+
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_EQ(probe.configs.size(), 2u);
+  for (const std::string& received : probe.configs) {
+    const QJsonObject config = pj_app_test::parseJsonObject(received);
+    if (PJ::layout_xml::isSamePath(config.value(u"filepath"_s).toString(), hit_path)) {
+      EXPECT_FALSE(config.contains(u"__pj_saved_filepath"_s)) << "a provider-resolved hit has no path to rebase from";
+    } else {
+      EXPECT_TRUE(PJ::layout_xml::isSamePath(config.value(u"filepath"_s).toString(), fallback_path));
+      EXPECT_EQ(config.value(u"__pj_saved_filepath"_s).toString(), saved_fallback);
+    }
+  }
 }
 
 TEST_F(LayoutImportBatchTest, InvalidDescriptorFallsBackToStockLoad) {
@@ -1129,6 +1201,24 @@ TEST_F(LayoutImportBatchTest, HostCacheHitRestoresWithoutProviderAndPinsTheArtif
   EXPECT_FALSE(cache_store_->quarantine(identity, &reason)) << "pinned artifact must not be evictable: " << reason;
   app_session_->sessionManager().removeDataset(dataset);
   EXPECT_TRUE(cache_store_->quarantine(identity, &reason)) << reason;
+}
+
+// Characterization guard: a host-cache hit ignores the layout's own preset
+// (it may name a non-MCAP provider format) and loads with a minimal config.
+TEST_F(LayoutImportBatchTest, HostCacheHitKeepsItsOwnMinimalConfig) {
+  const QString provider = u"absent.cloud.provider"_s;
+  const QString descriptor = uR"({"kind":"k","request":{},"v":1})"_s;
+  publishArtifact(provider, descriptor);
+
+  SourceSpec spec{u"/saved/cached.mcap"_s, descriptor, provider, u"any-identity"_s};
+  spec.plugin_config = uR"({"filepath":"/saved/cached.mcap","keep":1})"_s;
+  QDomDocument doc = makeLayoutDoc({spec});
+  PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+  ASSERT_TRUE(runToFinish(batch));
+
+  const QJsonObject config = recordedConfig(published_artifact_path_);
+  EXPECT_EQ(config.size(), 1);
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(config.value(u"filepath"_s).toString(), published_artifact_path_));
 }
 
 // A cached artifact whose stock load genuinely fails is quarantined and the

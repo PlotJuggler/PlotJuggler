@@ -8,6 +8,7 @@
 #include <qwt_scale_map.h>
 
 #include <QApplication>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -21,15 +22,22 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QSettings>
+#include <QShowEvent>
 #include <QTimer>
 #include <QWidget>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <pj_base/sdk/version.hpp>
 #include <pj_plugins/host/dialog_handle.hpp>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
 #include <pj_plugins/host_qt/panel_engine.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "mock_panel_plugin.hpp"
 using namespace Qt::StringLiterals;
@@ -186,6 +194,285 @@ class PanelEngineTest : public ::testing::Test {
     resetMockPanelState();
   }
 };
+
+/// An EmbeddedViewHost whose views are bare QWidgets: it refuses the topics in
+/// `refused` and records, at every attach, how many scene_view_error events the
+/// plugin had received by then.
+struct RefusingEmbeddedViews {
+  std::vector<std::string> refused;
+  std::vector<size_t> errors_seen_at_attach;
+  std::vector<QPointer<QWidget>> views;  // every view created, null once deleted
+  [[nodiscard]] std::ptrdiff_t liveViews() const {
+    return std::count_if(views.begin(), views.end(), [](const QPointer<QWidget>& view) { return !view.isNull(); });
+  }
+  PJ::EmbeddedViewHost host() {
+    PJ::EmbeddedViewHost host;
+    host.create = [this](const QString&, QWidget* parent) -> QWidget* {
+      views.emplace_back(new QWidget(parent));
+      return views.back();
+    };
+    host.attach = [this](QWidget*, const QString& topic, const QString&, std::string* error) {
+      errors_seen_at_attach.push_back(mockPanelState().scene_view_errors.size());
+      if (std::find(refused.begin(), refused.end(), topic.toStdString()) == refused.end()) {
+        return true;
+      }
+      *error = "refused " + topic.toStdString();
+      return false;
+    };
+    host.detach = [](QWidget*, const QString&, const QString&) {};
+    return host;
+  }
+};
+
+// ABI-42: the engine announces itself once, right after construction: the scene-view
+// capability bit is set exactly when an EmbeddedViewHost is installed.
+TEST_F(PanelEngineTest, HostInfoAnnouncesSceneViewsOnlyWithAnEmbeddedViewHost) {
+  {
+    PJ::PanelEngine engine(makeMockHandle());
+    std::unique_ptr<QWidget> panel(engine.openPanel());
+    ASSERT_NE(panel, nullptr);
+    EXPECT_TRUE(mockPanelState().host_info.seen);
+    EXPECT_EQ(mockPanelState().host_info.capabilities, 0U);
+    EXPECT_EQ(mockPanelState().host_info.sdk_version, std::string(PJ::sdkVersion()));
+  }
+  resetMockPanelState();
+  {
+    RefusingEmbeddedViews views;
+    PJ::PanelEngineConfig config;
+    config.embedded_views = views.host();
+    PJ::PanelEngine engine(makeMockHandle(), config);
+    std::unique_ptr<QWidget> panel(engine.openPanel());
+    ASSERT_NE(panel, nullptr);
+    EXPECT_TRUE(mockPanelState().host_info.seen);
+    EXPECT_EQ(mockPanelState().host_info.capabilities, static_cast<uint64_t>(PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS));
+  }
+}
+
+// GAP-45: a topic the host cannot attach reaches the plugin as a scene_view_error,
+// after the whole update was applied, once until the requested set changes.
+TEST_F(PanelEngineTest, SceneViewAttachFailureReachesPlugin) {
+  RefusingEmbeddedViews views;
+  views.refused = {"/bad", "/worse"};
+  PJ::PanelEngineConfig config;
+  config.tick_interval_ms = 10;
+  config.enable_file_picker = false;
+  config.embedded_views = views.host();
+  mockPanelState().scene_view = {"3d", {{"/bad", "ds"}, {"/good", ""}, {"/worse", ""}}};
+
+  PJ::PanelEngine engine(makeMockHandle(), config);
+  std::unique_ptr<QWidget> panel(engine.openPanel());
+  ASSERT_NE(panel, nullptr);
+  EXPECT_EQ(
+      mockPanelState().scene_view_errors,
+      (std::vector<std::string>{"scenePreview|3d|/bad|ds|refused /bad", "scenePreview|3d|/worse||refused /worse"}));
+  EXPECT_EQ(views.errors_seen_at_attach, (std::vector<size_t>{0, 0, 0})) << "no error is delivered mid-apply";
+
+  panel->show();  // hidden panels tick at 1/10 rate
+  mockPanelState().label = "changed";
+  pumpEventLoop(50);
+  EXPECT_EQ(mockPanelState().scene_view_errors.size(), 2U) << "an unchanged request is not reported again";
+
+  mockPanelState().scene_view.topics = {{"/good", ""}, {"/worse", ""}, {"/new", ""}};
+  pumpEventLoop(50);
+  ASSERT_EQ(mockPanelState().scene_view_errors.size(), 3U);
+  EXPECT_EQ(mockPanelState().scene_view_errors.back(), "scenePreview|3d|/worse||refused /worse");
+}
+
+/// A sub-panel or sub-dialog with its own `scenePreview` frame, so the same
+/// `scene_view` request reaches it.
+constexpr char kSceneSubUi[] = R"(<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SceneSub</class>
+ <widget class="QWidget" name="sceneSub">
+  <layout class="QVBoxLayout">
+   <item><widget class="QFrame" name="scenePreview"/></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+)";
+
+/// A panel engine over the mock plugin that ticks every 10 ms, with `views` as its EmbeddedViewHost.
+std::unique_ptr<PJ::PanelEngine> makeSceneEngine(RefusingEmbeddedViews& views) {
+  PJ::PanelEngineConfig config;
+  config.tick_interval_ms = 10;
+  config.enable_file_picker = false;
+  config.embedded_views = views.host();
+  return std::make_unique<PJ::PanelEngine>(makeMockHandle(), config);
+}
+
+// A sub-panel the user dismisses is deleted, and the scene views it embeds with it.
+TEST_F(PanelEngineTest, DismissedSubPanelDeletesItsSceneViews) {
+  RefusingEmbeddedViews views;
+  mockPanelState().scene_view = {"3d", {{"/good", ""}}};
+  auto engine = makeSceneEngine(views);
+  std::unique_ptr<QWidget> panel(engine->openPanel());
+  ASSERT_NE(panel, nullptr);
+  panel->show();
+  mockPanelState().sub_panel_ui = kSceneSubUi;
+  mockPanelState().sub_panel_on_next_tick = true;
+  pumpEventLoop(50);
+  auto* sub_panel = panel->findChild<PJ::Dialog*>();
+  ASSERT_NE(sub_panel, nullptr);
+  ASSERT_EQ(views.liveViews(), 2) << "the panel's view and the sub-panel's";
+
+  sub_panel->reject();
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(panel->findChild<PJ::Dialog*>(), nullptr);
+  EXPECT_EQ(views.liveViews(), 1) << "the dismissed sub-panel's view must die with it";
+}
+
+// The plugin's one-shot answer to an error of the first application reaches the next tick.
+TEST_F(PanelEngineTest, AnswerToAnInitialSceneViewErrorIsApplied) {
+  RefusingEmbeddedViews views;
+  views.refused = {"/bad"};
+  mockPanelState().scene_view = {"3d", {{"/bad", ""}}};
+  mockPanelState().close_on_scene_error = true;
+  auto engine = makeSceneEngine(views);
+  std::string reason;
+  engine->onCloseRequested([&reason](std::string requested) {
+    reason = std::move(requested);
+    return false;
+  });
+  std::unique_ptr<QWidget> panel(engine->openPanel());
+  ASSERT_NE(panel, nullptr);
+  ASSERT_EQ(mockPanelState().scene_view_errors.size(), 1U);
+  panel->show();
+  pumpEventLoop(50);
+  EXPECT_EQ(reason, "scene error");
+}
+
+// The panel keeps ticking while an interactive sub-panel is open, so the plugin's
+// answer to the sub-panel's scene_view_error is applied.
+TEST_F(PanelEngineTest, TicksRunWhileAnInteractiveSubPanelIsOpen) {
+  RefusingEmbeddedViews views;
+  views.refused = {"/bad"};
+  mockPanelState().scene_view = {"3d", {{"/bad", ""}}};
+  mockPanelState().label_counts_scene_errors = true;
+  auto engine = makeSceneEngine(views);
+  std::unique_ptr<QWidget> panel(engine->openPanel());
+  ASSERT_NE(panel, nullptr);
+  auto* label = panel->findChild<QLabel*>(u"labelHello"_s);
+  ASSERT_NE(label, nullptr);
+  panel->show();
+  pumpEventLoop(50);
+  ASSERT_EQ(label->text(), u"errors:1"_s);
+
+  mockPanelState().sub_panel_ui = kSceneSubUi;
+  mockPanelState().sub_panel_on_next_tick = true;
+  pumpEventLoop(50);
+  ASSERT_NE(panel->findChild<PJ::Dialog*>(), nullptr);
+  ASSERT_EQ(mockPanelState().scene_view_errors.size(), 2U) << "the sub-panel's frame is refused too";
+  pumpEventLoop(50);
+  EXPECT_EQ(label->text(), u"errors:2"_s);
+}
+
+// The preview's own controls stay the view's: changing its camera model sends the
+// plugin no event (a reply recreating the view would delete the emitting combo).
+TEST_F(PanelEngineTest, EmbeddedViewControlsSendThePluginNoEvent) {
+  QPointer<QComboBox> camera_model;
+  PJ::PanelEngineConfig config;
+  config.tick_interval_ms = 100000;
+  config.enable_file_picker = false;
+  RefusingEmbeddedViews views;
+  config.embedded_views = views.host();
+  config.embedded_views.create = [&camera_model](const QString&, QWidget* parent) -> QWidget* {
+    auto* view = new QWidget(parent);
+    camera_model = new QComboBox(view);
+    camera_model->setObjectName(u"cameraModelCombo"_s);
+    camera_model->addItems({u"Orbit"_s, u"Free"_s});
+    return view;
+  };
+  mockPanelState().scene_view = {"3d", {}};
+  PJ::PanelEngine engine(makeMockHandle(), config);
+  std::unique_ptr<QWidget> panel(engine.openPanel());
+  ASSERT_NE(panel, nullptr);
+  ASSERT_NE(camera_model, nullptr);
+  const int events_before = engine.stats().event_count;
+  camera_model->setCurrentIndex(1);
+  EXPECT_EQ(engine.stats().event_count, events_before);
+}
+
+// A modal sub-dialog embeds no scene view: the capability is the panels' only.
+TEST_F(PanelEngineTest, ModalSubDialogEmbedsNoSceneView) {
+  RefusingEmbeddedViews views;
+  mockPanelState().scene_view = {"3d", {{"/good", ""}}};
+  PJ::PanelEngineConfig config;
+  config.tick_interval_ms = 100000;  // drive the sub-dialog through the event path
+  config.enable_file_picker = false;
+  config.embedded_views = views.host();
+  PJ::PanelEngine engine(makeMockHandle(), config);
+  std::unique_ptr<QWidget> panel(engine.openPanel());
+  ASSERT_NE(panel, nullptr);
+  ASSERT_EQ(views.views.size(), 1U);
+
+  mockPanelState().sub_dialog_ui = kSceneSubUi;
+  mockPanelState().sub_dialog_on_next_tick = true;
+  bool opened = false;
+  qsizetype frame_views = -1;
+  QTimer::singleShot(0, panel.get(), [&] {
+    if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
+      opened = true;
+      if (auto* frame = modal->findChild<QFrame*>(u"scenePreview"_s)) {
+        frame_views = frame->findChildren<QWidget*>().size();
+      }
+      modal->reject();
+    }
+  });
+  panel->findChild<QLineEdit*>(u"textBox"_s)->setText(u"open"_s);
+  ASSERT_TRUE(opened);
+  EXPECT_EQ(frame_views, 0);
+  EXPECT_EQ(views.views.size(), 1U) << "no view is created for the modal sub-dialog";
+}
+
+// A Show catch-up tick queued while a modal sub-dialog runs its nested loop waits:
+// the outer apply that opened the dialog is still suspended.
+TEST_F(PanelEngineTest, ModalSubDialogHoldsTheShowCatchUpTick) {
+  PJ::PanelEngineConfig config;
+  config.tick_interval_ms = 100000;  // only the catch-up path ticks
+  config.enable_file_picker = false;
+  PJ::PanelEngine engine(makeMockHandle(), config);
+  std::unique_ptr<QWidget> panel(engine.openPanel());
+  ASSERT_NE(panel, nullptr);
+  panel->show();
+  pumpEventLoop(20);  // the first Show's catch-up tick
+
+  mockPanelState().sub_dialog_ui = kSceneSubUi;
+  mockPanelState().sub_dialog_on_next_tick = true;
+  int ticks_before = -1;
+  int ticks_in_modal = -1;
+  QTimer::singleShot(0, panel.get(), [&] {
+    auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (modal == nullptr) {
+      return;
+    }
+    ticks_before = engine.stats().tick_count;
+    // A reveal, as a tab switch back to the panel delivers it, queues a catch-up
+    // tick that the modal's own loop dispatches.
+    QShowEvent reveal;
+    QCoreApplication::sendEvent(panel.get(), &reveal);
+    QTimer::singleShot(20, modal, [&, modal] {
+      ticks_in_modal = engine.stats().tick_count;
+      modal->reject();
+    });
+  });
+  panel->findChild<QLineEdit*>(u"textBox"_s)->setText(u"open"_s);
+  ASSERT_GE(ticks_before, 0) << "the sub-dialog did not open";
+  EXPECT_EQ(ticks_in_modal, ticks_before);
+}
+
+// A panel without an EmbeddedViewHost leaves a scene_view frame empty and reports nothing.
+TEST_F(PanelEngineTest, SceneViewWithoutAnEmbeddedViewHostIsIgnored) {
+  mockPanelState().scene_view = {"3d", {{"/bad", "ds"}}};
+  PJ::PanelEngine engine(makeMockHandle());
+  std::unique_ptr<QWidget> panel(engine.openPanel());
+  ASSERT_NE(panel, nullptr);
+  EXPECT_TRUE(mockPanelState().scene_view_errors.empty());
+  auto* frame = panel->findChild<QFrame*>(u"scenePreview"_s);
+  ASSERT_NE(frame, nullptr);
+  EXPECT_TRUE(frame->children().isEmpty());
+}
 
 TEST_F(PanelEngineTest, OpenPanelReturnsConstructedWidget) {
   PJ::PanelEngine engine(makeMockHandle());

@@ -11,6 +11,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "pj_base/types.hpp"
@@ -78,6 +79,15 @@ struct MaterializedSample {
   /// Numeric value of each column at that row, read as double (NaN-free: nulls
   /// read as 0.0, matching readNumericAsDouble).
   std::vector<double> values;
+};
+
+/// One string cell, its row's time and its row (`DataReader::latestStringAt`). A sealed chunk never changes and its id
+/// is never reused, so `chunk_id` and `row_index` name the cell's content for as long as it is retained.
+struct StringSample {
+  PJ::Timestamp timestamp = 0;
+  std::optional<std::string> value;  ///< nullopt: the cell is null
+  ChunkId chunk_id = 0;
+  std::size_t row_index = 0;
 };
 
 /// Contiguous row interval inside one chunk.
@@ -222,7 +232,9 @@ class SeriesReader {
   /// True when the virtual series contains no samples.
   [[nodiscard]] bool empty() const;
 
-  /// Return the sample at a virtual series index.
+  /// Return the sample at a virtual series index. O(n) per call: it scans rows from
+  /// the first chunk, so never call it in a loop over indices (O(n^2)); iterate with
+  /// samples(range) instead.
   [[nodiscard]] std::optional<SeriesSample> sampleAt(std::size_t index) const;
 
   /// Return the virtual series index of the latest sample at or before `t`.

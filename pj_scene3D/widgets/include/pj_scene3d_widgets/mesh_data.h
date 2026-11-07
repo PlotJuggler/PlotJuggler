@@ -3,10 +3,11 @@
 #pragma once
 
 // CPU-side mesh + material data model produced by the mesh loader
-// (src/mesh_loader.h) and consumed by MeshRenderPass. Pure data, no GL:
-// buffer/texture upload lives in the render pass.
+// (src/mesh_loader.h) and consumed by the view's model pass. Pure data, no GPU:
+// buffer/texture upload lives in the pass.
 
 #include <QString>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -37,22 +38,30 @@ struct Vertex {
 // encoded PNG/JPEG form). `key` is a stable cache key used by the renderer's
 // per-context texture cache: the absolute path for external maps, a content hash
 // for embedded ones (so identical embedded textures dedup and the key survives
-// GL-context recreation). Empty when the material lacks this map.
+// a QRhi recreation). Empty when the material lacks this map.
 // The source only describes content; the renderer owns upload policy and infers
-// each slot's color space (see textureColorSpaceForSlot in mesh_render_pass.h):
+// each slot's color space (ModelRhiPass):
 // base-color/emissive are color data, metallic-roughness/normal/occlusion are
 // linear data.
 // Embedded `bytes` stay resident on the owning MeshData for the mesh's lifetime
 // (copied once per distinct Material and shared by its SubMeshes) so the renderer can
-// re-decode them after a GL-context loss — memory traded for context-recreation
+// re-decode them for a new QRhi — memory traded for QRhi-recreation
 // robustness, fine for the usual handful of textured submeshes.
 struct TextureSource {
   QString path;
   std::vector<std::uint8_t> bytes;
   std::string key;
+  // An external reference an in-memory import had no directory to resolve (never
+  // a local path), relative to the mesh's own location: MeshLoadQueue fetches it
+  // beside a URL mesh into `bytes`. Not a pixel source: empty() ignores it.
+  QString unresolved_ref;
 
   [[nodiscard]] bool empty() const {
     return path.isEmpty() && bytes.empty();
+  }
+  /// Whether the slot names a texture, loaded or still to fetch.
+  [[nodiscard]] bool named() const {
+    return !empty() || !unresolved_ref.isEmpty();
   }
 };
 
@@ -86,6 +95,15 @@ struct Material {
   TextureSource normal;
   TextureSource occlusion;
   TextureSource emissive;
+
+  /// The five maps in the renderer's slot order: base colour, metallic-roughness,
+  /// normal, occlusion, emissive. ModelRhiPass::textureIsSrgb() keys off this order.
+  [[nodiscard]] std::array<const TextureSource*, 5> textureSlots() const {
+    return {&base_color, &metallic_roughness, &normal, &occlusion, &emissive};
+  }
+  [[nodiscard]] std::array<TextureSource*, 5> textureSlots() {
+    return {&base_color, &metallic_roughness, &normal, &occlusion, &emissive};
+  }
 };
 
 struct SubMesh {

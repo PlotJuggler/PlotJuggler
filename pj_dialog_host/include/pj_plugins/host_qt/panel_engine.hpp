@@ -4,9 +4,11 @@
 
 #include <QObject>
 #include <QWidget>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <pj_plugins/host/dialog_handle.hpp>
+#include <pj_plugins/host_qt/embedded_view_host.hpp>
 #include <string>
 
 // Forward declarations so callers can pass session/catalog without a hard link.
@@ -23,11 +25,15 @@ struct PanelEngineConfig {
   bool enable_diff = true;
 
   /// Optional resolver from a dragged catalog key (e.g.
-  /// "dataset:1/topic:1/column:2") to a human field name (e.g. "topic/field")
+  /// "dataset:1/topic:1/column:2") to a topic or series name (e.g. "topic/field")
   /// before the drop is delivered to the plugin's onItemsDropped. The PJ4 curve
   /// tree drags opaque catalog keys; plugins (Quaternion, FFT, …) expect names.
   /// If unset, or if it returns empty for a key, that key is delivered verbatim.
   std::function<std::string(const std::string& catalog_key)> catalog_key_resolver = {};
+
+  /// Optional resolver from a dragged catalog key to its data source id, delivered beside the name
+  /// (DroppedItem::data_source_id). Same-named series of two datasets differ only here.
+  std::function<uint32_t(const std::string& catalog_key)> catalog_key_data_source = {};
 
   /// Optional session + catalog. When both are non-null, QFrame chart containers
   /// use a full PlotWidget (zoom/tracker/legend) instead of ChartPreviewWidget,
@@ -49,6 +55,13 @@ struct PanelEngineConfig {
   // restart_tick_timer_on_event for the same reason that member is late in the
   // struct: positional initializers predating it stay valid.
   bool enable_file_picker = true;
+
+  /// Builds the views a `scene_view` frame embeds. Set: the engine announces
+  /// PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS and delivers each refused request to the
+  /// plugin as a `scene_view_error` event after the update that carried it.
+  /// The panel and its interactive sub-panel embed views; a modal sub-dialog
+  /// never does. Unset: such frames stay empty. Last for the reason above.
+  EmbeddedViewHost embedded_views = {};
 };
 
 /// Hosts a long-lived interactive panel built from a plugin's typed-dialog UI.
@@ -64,6 +77,8 @@ struct PanelEngineConfig {
 ///     central tab) ticks are throttled to 1/10 rate — the plugin's periodic
 ///     logic keeps advancing, the UI poll+diff mostly pauses — and a
 ///     catch-up tick fires the moment the root is shown again.
+///   * An interactive sub-panel (requestSubPanel) does not pause the ticks,
+///     which update it too, and is deleted once dismissed.
 ///
 /// Typical usage from pj_app:
 ///   auto* engine = new PJ::PanelEngine(std::move(dialog_handle), {}, this);

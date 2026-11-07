@@ -53,6 +53,8 @@ class PlotDocker : public ads::CDockManager {
   }
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
+  /// Supply the sidebar visibility query to existing and newly created docks.
+  void setConfigurationPanelVisibilityQuery(std::function<bool()> query);
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
   /// A history-exempt tab persists in layout files but is omitted from undo and
@@ -106,6 +108,8 @@ class PlotDocker : public ads::CDockManager {
   bool eventFilter(QObject* watched, QEvent* event) override;
 
  signals:
+  /// Forward a dock's request to toggle its settings sidebar.
+  void settingsPanelToggleRequested(DockWidget* dock);
   void dockAdded(DockWidget* dock);
   void plotWidgetAdded(PlotWidget* plot);
   // Re-emit of ads::CDockManager::focusedDockWidgetChanged narrowed to
@@ -118,12 +122,14 @@ class PlotDocker : public ads::CDockManager {
   // scene-kind-aware module) can build + adopt an empty object widget when a
   // placeholder 2D/3D icon is clicked.
   void objectFamilyRequested(DockWidget* dock, VisualizationKind family);
-  // Re-emit of DockWidget::firstObjectTopicAdded — an empty click-created object
-  // dock received its first topic, so the shell can seed streaming playback.
-  void firstObjectTopicAdded();
+  // Re-emit of DockWidget::firstObjectTopicAdded, with the dock — an empty click-created object
+  // dock received its first topic, so the shell can seed streaming playback and frame the view.
+  void firstObjectTopicAdded(DockWidget* dock);
   // Re-emit of DockWidget::placeholderTopicDropped — see that signal's doc.
   void placeholderTopicDropped(
       DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
+  // Re-emit of DockWidget::topicRefused — see that signal's doc.
+  void topicRefused(const QString& reason);
 
  private:
   void ensureAtLeastOneWidget();
@@ -147,6 +153,7 @@ class PlotDocker : public ads::CDockManager {
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
+  std::function<bool()> configuration_panel_visible_;
   bool restoring_state_ = false;
   // Coalesces per-mouse-move splitterMoved events into one history snapshot
   // after the drag goes quiet.

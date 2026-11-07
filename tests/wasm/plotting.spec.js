@@ -2,11 +2,12 @@
 const { test, expect } = require('@playwright/test');
 const crypto = require('crypto');
 const { waitForQtApp } = require('./support/app');
+const { devicePixelRatioOptions } = require('./support/browser');
 const { dragQtCanvas } = require('./support/canvas');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { openFileChooser } = require('./support/pickers');
-const { requestPlotState, requestMultiPlotState } = require('./support/plot_probes');
+const { requestPlotState, requestMultiPlotState, requestPlotHover } = require('./support/plot_probes');
 const { curveRowCenter, placeholderIconCenter } = require('./support/geometry');
 
 function unchunkedMcapFixture() {
@@ -226,46 +227,6 @@ async function requestPlotTextPixels(consoleMessages, previousCount) {
       maxY: Number(match[5]),
     },
     framebuffer: { width: Number(match[6]), height: Number(match[7]) },
-  };
-}
-
-async function requestPlotHover(page, consoleMessages, previousStateCount, previousPixelCount) {
-  await page.evaluate(() => window.pjWasmReportPlotStateProbe());
-  await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER enabled=')).length,
-    { timeout: 10000 },
-  ).toBeGreaterThan(previousStateCount);
-  await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER_PIXELS')).length,
-    { timeout: 10000 },
-  ).toBeGreaterThan(previousPixelCount);
-  const stateMessage =
-    consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER enabled=')).at(-1) || '';
-  const stateMatch = stateMessage.match(
-    /enabled=(\d+) visible=(\d+) point=([^,]+),([^ ]+) label=([^\s]*)/,
-  );
-  expect(stateMatch, `unparseable plot-hover state: ${stateMessage}`).not.toBeNull();
-  const pixelMessage = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER_PIXELS')).at(-1) || '';
-  const pixelMatch = pixelMessage.match(
-    /yellow_pixels=(\d+) yellow_bounds=(-?\d+),(-?\d+)\.\.(-?\d+),(-?\d+) border_pixels=(\d+) framebuffer=(\d+)x(\d+)/,
-  );
-  expect(pixelMatch, `unparseable plot-hover pixels: ${pixelMessage}`).not.toBeNull();
-  return {
-    enabled: stateMatch[1] === '1',
-    visible: stateMatch[2] === '1',
-    point: { x: Number(stateMatch[3]), y: Number(stateMatch[4]) },
-    label: decodeURIComponent(stateMatch[5]),
-    pixels: {
-      yellow: Number(pixelMatch[1]),
-      bounds: {
-        minX: Number(pixelMatch[2]),
-        minY: Number(pixelMatch[3]),
-        maxX: Number(pixelMatch[4]),
-        maxY: Number(pixelMatch[5]),
-      },
-      border: Number(pixelMatch[6]),
-      framebuffer: { width: Number(pixelMatch[7]), height: Number(pixelMatch[8]) },
-    },
   };
 }
 
@@ -694,7 +655,7 @@ test('real curve-style and width controls render every app-exposed QRhi variant'
   expect(errors).toEqual([]);
 });
 
-test('dense dotted curves reduce transactionally without committing a front-loaded prefix', async ({ page }) => {
+test('dense dotted curves draw complete without a budget retry', async ({ page }) => {
   test.setTimeout(150000);
   const errors = [];
   const consoleMessages = [];
@@ -747,12 +708,12 @@ test('dense dotted curves reduce transactionally without committing a front-load
     /budget_limited_curves=(\d+) budget_reduced_curves=(\d+) budget_reduction_retries=(\d+) budget_discarded_trial_vertices=(\d+) budget_dropped_samples=(\d+) budget_omitted_curves=(\d+)/,
   );
   expect(telemetry, `unparseable budget telemetry: ${frame}`).not.toBeNull();
-  expect(Number(telemetry[1])).toBe(0);
-  expect(Number(telemetry[2])).toBe(1);
-  expect(Number(telemetry[3])).toBeGreaterThan(0);
-  expect(Number(telemetry[4])).toBeGreaterThan(0);
-  expect(Number(telemetry[5])).toBeGreaterThan(0);
-  expect(Number(telemetry[6])).toBe(0);
+  // The shader cuts the dots, so a dotted curve costs a solid curve's vertices
+  // (one quad and one bevel per segment) and fits its budget first time: no
+  // reduction retry, no rolled-back prefix.
+  for (let field = 1; field <= 6; ++field) {
+    expect(Number(telemetry[field])).toBe(0);
+  }
   expect(frame).toContain('truncated=0');
 
   const styleMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STYLE_PIXELS')).length;
@@ -1062,13 +1023,15 @@ test('real rectangle/wheel zoom, Ctrl-drag pan, and reset navigate the QRhi plot
   const initialWidth = initial.view.right - initial.view.left;
   const initialHeight = initial.view.top - initial.view.bottom;
 
+  // Integer CSS pixels: Playwright's Firefox backend truncates fractional mouse
+  // coordinates, which would shift the drag corner inside the snapshot clip.
   const rectangleStart = {
-    x: screen.x + initial.canvas.x + (0.20 * initial.canvas.width),
-    y: screen.y + initial.canvas.y + (0.20 * initial.canvas.height),
+    x: Math.round(screen.x + initial.canvas.x + (0.20 * initial.canvas.width)),
+    y: Math.round(screen.y + initial.canvas.y + (0.20 * initial.canvas.height)),
   };
   const rectangleEnd = {
-    x: screen.x + initial.canvas.x + (0.75 * initial.canvas.width),
-    y: screen.y + initial.canvas.y + (0.75 * initial.canvas.height),
+    x: Math.round(screen.x + initial.canvas.x + (0.75 * initial.canvas.width)),
+    y: Math.round(screen.y + initial.canvas.y + (0.75 * initial.canvas.height)),
   };
   await page.mouse.move(rectangleStart.x, rectangleStart.y);
   await page.mouse.down({ button: 'left' });
@@ -1082,8 +1045,8 @@ test('real rectangle/wheel zoom, Ctrl-drag pan, and reset navigate the QRhi plot
   )));
   const rectangleCorner = await page.screenshot({
     clip: {
-      x: Math.round(rectangleStart.x) - 24,
-      y: Math.round(rectangleStart.y) - 24,
+      x: rectangleStart.x - 24,
+      y: rectangleStart.y - 24,
       width: 48,
       height: 48,
     },
@@ -1279,10 +1242,13 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   expect(valueNameText.markerLabels).toBe(1);
   expect(valueNameText.vertices).toBe(12);
   expect(valueNamePixels.pixels).toBeGreaterThan(0);
+  // Z order across the three buffers: the curve layer, the tracker line
+  // (overlay), its label, the tracker's point markers, the legend, and the
+  // canvas frame over everything.
   await expect.poll(
     () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_DRAW_BATCHES')).at(-1) || '',
     { timeout: 10000 },
-  ).toMatch(/sequence=GTG/);
+  ).toMatch(/sequence=GGTGTG\b/);
   await page.screenshot();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(
     () => requestAnimationFrame(resolve),
@@ -1434,7 +1400,7 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
 });
 
 test.describe('HiDPI QRhi text', () => {
-  test.use({ deviceScaleFactor: 2 });
+  test.use(devicePixelRatioOptions(2));
 
   test('rasterizes legend and tracker text at the render target pixel ratio', async ({ page }) => {
     test.setTimeout(120000);
@@ -1516,7 +1482,7 @@ test.describe('HiDPI QRhi text', () => {
 });
 
 test.describe('sub-1 DPR QRhi cosmetics', () => {
-  test.use({ deviceScaleFactor: 0.75 });
+  test.use(devicePixelRatioOptions(0.75));
 
   test('keeps zero-width grid pens one physical pixel with standard dash cadence', async ({ page }) => {
     test.setTimeout(120000);
@@ -1592,7 +1558,8 @@ test.describe('sub-1 DPR QRhi cosmetics', () => {
   });
 });
 
-test('mouse hover selects a curve point and renders its QRhi inspector', async ({ page }) => {
+// @serial: the hover probe misses its point on a loaded runner (playwright.config.js).
+test('mouse hover selects a curve point and renders its QRhi inspector', { tag: '@serial' }, async ({ page }) => {
   test.setTimeout(120000);
   const errors = [];
   const consoleMessages = [];
@@ -1643,16 +1610,11 @@ test('mouse hover selects a curve point and renders its QRhi inspector', async (
     x: canvas.x + (((sample.x - state.view.left) / (state.view.right - state.view.left)) * canvas.width),
     y: canvas.y + (((state.view.top - sample.y) / (state.view.top - state.view.bottom)) * canvas.height),
   };
-  let hoverMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER enabled=')).length;
-  let hoverPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER_PIXELS')).length;
-
   await page.mouse.move(samplePixel.x, samplePixel.y);
   await page.waitForTimeout(150);
   let hovered;
   await expect.poll(async () => {
-    hovered = await requestPlotHover(page, consoleMessages, hoverMessages, hoverPixelMessages);
-    hoverMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER enabled=')).length;
-    hoverPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER_PIXELS')).length;
+    hovered = await requestPlotHover(page, consoleMessages);
     return hovered.pixels.yellow > 0 && hovered.pixels.border > 0;
   }, { timeout: 10000 }).toBe(true);
   const xTolerance = (2 * (state.view.right - state.view.left)) / canvas.width;
@@ -1684,9 +1646,7 @@ test('mouse hover selects a curve point and renders its QRhi inspector', async (
 
   await page.mouse.move(screen.x + 20, screen.y + 120);
   await page.waitForTimeout(150);
-  const left = await requestPlotHover(page, consoleMessages, hoverMessages, hoverPixelMessages);
-  hoverMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER enabled=')).length;
-  hoverPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER_PIXELS')).length;
+  const left = await requestPlotHover(page, consoleMessages);
   expect(left.enabled).toBe(true);
   expect(left.visible).toBe(false);
   expect(left.point).toEqual({ x: 0, y: 0 });
@@ -1697,9 +1657,7 @@ test('mouse hover selects a curve point and renders its QRhi inspector', async (
   await page.mouse.move(samplePixel.x, samplePixel.y);
   await page.waitForTimeout(150);
   await page.evaluate(() => window.pjWasmToggleShowPointProbe());
-  const disabled = await requestPlotHover(page, consoleMessages, hoverMessages, hoverPixelMessages);
-  hoverMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER enabled=')).length;
-  hoverPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_HOVER_PIXELS')).length;
+  const disabled = await requestPlotHover(page, consoleMessages);
   expect(disabled.enabled).toBe(false);
   expect(disabled.visible).toBe(false);
   expect(disabled.point).toEqual({ x: 0, y: 0 });
@@ -1711,7 +1669,7 @@ test('mouse hover selects a curve point and renders its QRhi inspector', async (
   await page.mouse.move(screen.x + 20, screen.y + 120);
   await page.mouse.move(samplePixel.x, samplePixel.y);
   await page.waitForTimeout(150);
-  const restored = await requestPlotHover(page, consoleMessages, hoverMessages, hoverPixelMessages);
+  const restored = await requestPlotHover(page, consoleMessages);
   expect(restored.enabled).toBe(true);
   expect(restored.visible).toBe(true);
   expect(restored.pixels.yellow).toBeGreaterThan(0);

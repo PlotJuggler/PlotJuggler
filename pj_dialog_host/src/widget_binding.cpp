@@ -40,10 +40,12 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QListWidget>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPair>
 #include <QPersistentModelIndex>
 #include <QPixmap>
 #include <QPlainTextEdit>
@@ -51,6 +53,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollBar>
+#include <QSet>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -168,6 +171,18 @@ QString resolveNamedIconPath(std::string_view icon_name) {
     return u":/resources/svg/add.svg"_s;
   }
   return {};
+}
+
+FilePickerStart filePickerStart(const WidgetDataView& view, std::string_view name) {
+  std::string error;
+  const auto options = view.filePickerOptions(name, &error);
+  if (!options) {
+    if (!error.empty()) {
+      qWarning("WidgetBinding: ignoring the file picker options of '%s': %s", std::string(name).c_str(), error.c_str());
+    }
+    return {};
+  }
+  return {QString::fromStdString(options->initial_directory), QString::fromStdString(options->suggested_name)};
 }
 
 namespace {
@@ -1449,9 +1464,162 @@ static void applyMarkdownText(QTextBrowser* browser, const QString& new_text, bo
   ensureTailFollowOverlay(browser);
 }
 
+// --- Embedded scene view (scene_view on a QFrame) ---
+//
+// The application builds the view through EmbeddedViewHost; this file keeps only
+// the frame's bookkeeping, in dynamic properties so it survives across applies:
+//   _pj_scene_kind     kind of the last applied request (QString)
+//   _pj_scene_desired  its (dataset, topic) entries, in request order, deduplicated
+//   _pj_scene_attached the subset that attached
+//   _pj_scene_malformed the last malformed request, as JSON text, until a valid one
+namespace {
+
+constexpr const char* kEmbeddedViewName = "pjEmbeddedView";
+constexpr const char* kSceneKindProp = "_pj_scene_kind";
+constexpr const char* kSceneDesiredProp = "_pj_scene_desired";
+constexpr const char* kSceneAttachedProp = "_pj_scene_attached";
+constexpr const char* kSceneMalformedProp = "_pj_scene_malformed";
+
+/// True for an embedded view and everything inside it: the view's own controls are not
+/// the plugin's widgets, so no event or declarative rule is wired to them.
+bool insideEmbeddedView(const QWidget* widget) {
+  for (; widget != nullptr; widget = widget->parentWidget()) {
+    if (widget->objectName() == QLatin1String(kEmbeddedViewName)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+using SceneTopicKey = QPair<QString, QString>;  // (dataset, topic), as the plugin sent it
+using SceneTopicKeys = QList<SceneTopicKey>;
+
+SceneTopicKeys sceneKeys(const QFrame* frame, const char* prop) {
+  return frame->property(prop).value<SceneTopicKeys>();
+}
+
+void setSceneKeys(QFrame* frame, const char* prop, const SceneTopicKeys& keys) {
+  frame->setProperty(prop, QVariant::fromValue(keys));
+}
+
+/// The frame's layout, created flush (zero margins) when it has none: embedded
+/// content fills the whole frame so the darker panel backdrop never shows around it.
+QLayout* ensureFlushFrameLayout(QFrame* frame) {
+  auto* layout = frame->layout();
+  if (layout == nullptr) {
+    layout = new QVBoxLayout(frame);
+    const int none = theme::space(theme::Space::None);
+    layout->setContentsMargins(none, none, none, none);
+  }
+  return layout;
+}
+
+/// Detaches what the view holds and deletes it.
+void dropEmbeddedView(QFrame* frame, QWidget* embedded, const PJ::EmbeddedViewHost& host) {
+  for (const auto& [dataset, topic] : sceneKeys(frame, kSceneAttachedProp)) {
+    host.detach(embedded, topic, dataset);
+  }
+  setSceneKeys(frame, kSceneAttachedProp, {});
+  delete embedded;
+}
+
+/// Applies the frame's `scene_view` request: creates the view once, recreates it on
+/// a kind change, and reconciles topics by difference. An unchanged request (same
+/// kind, same set in any order) is a no-op, so a refused topic is neither retried
+/// nor reported again until the request changes; a changed one retries every topic
+/// that is not attached. A malformed request leaves the view as it was and, like a
+/// refused topic, is reported again only once the request changes.
+void applyEmbeddedView(
+    QFrame* frame, std::string_view name, const PJ::WidgetDataView& view, const PJ::EmbeddedViewHost& host,
+    std::vector<PJ::EmbeddedViewFailure>& failures) {
+  const auto request = view.sceneView(name);
+  if (!request) {
+    return;
+  }
+  const auto fail = [&failures, name](std::string kind, std::string topic, std::string dataset, std::string reason) {
+    failures.push_back({std::string(name), {std::move(kind), std::move(topic), std::move(dataset), std::move(reason)}});
+  };
+  if (!*request) {
+    const QString malformed = QString::fromStdString(view.raw().at(std::string(name)).at("scene_view").dump());
+    if (frame->property(kSceneMalformedProp).toString() != malformed) {
+      frame->setProperty(kSceneMalformedProp, malformed);
+      fail({}, {}, {}, request->error());
+    }
+    return;
+  }
+  frame->setProperty(kSceneMalformedProp, QVariant());
+  QWidget* embedded = frame->findChild<QWidget*>(kEmbeddedViewName, Qt::FindDirectChildrenOnly);
+  const PJ::SceneView& wanted = **request;
+  if (wanted.kind.empty()) {  // clearSceneView
+    if (embedded != nullptr) {
+      dropEmbeddedView(frame, embedded, host);
+    }
+    frame->setProperty(kSceneKindProp, QVariant());
+    setSceneKeys(frame, kSceneDesiredProp, {});
+    return;
+  }
+
+  const QString kind = QString::fromStdString(wanted.kind);
+  SceneTopicKeys desired;
+  for (const PJ::SceneTopic& entry : wanted.topics) {
+    const SceneTopicKey key{QString::fromStdString(entry.dataset), QString::fromStdString(entry.topic)};
+    if (!desired.contains(key)) {
+      desired << key;
+    }
+  }
+  const bool same_kind = frame->property(kSceneKindProp).toString() == kind;
+  const SceneTopicKeys previous = sceneKeys(frame, kSceneDesiredProp);
+  if (same_kind &&
+      QSet<SceneTopicKey>(desired.begin(), desired.end()) == QSet<SceneTopicKey>(previous.begin(), previous.end())) {
+    return;
+  }
+  frame->setProperty(kSceneKindProp, kind);
+  setSceneKeys(frame, kSceneDesiredProp, desired);
+
+  if (embedded != nullptr && !same_kind) {
+    dropEmbeddedView(frame, embedded, host);
+    embedded = nullptr;
+  }
+  if (embedded == nullptr) {
+    embedded = host.create(kind, frame);
+    if (embedded == nullptr) {
+      fail(wanted.kind, {}, {}, "scene view kind '" + wanted.kind + "' is not available");
+      return;
+    }
+    embedded->setObjectName(QLatin1String(kEmbeddedViewName));
+    ensureFlushFrameLayout(frame)->addWidget(embedded);
+  }
+
+  SceneTopicKeys attached = sceneKeys(frame, kSceneAttachedProp);
+  for (const auto& [dataset, topic] : attached) {
+    if (!desired.contains({dataset, topic})) {
+      host.detach(embedded, topic, dataset);
+    }
+  }
+  attached.removeIf([&desired](const SceneTopicKey& key) { return !desired.contains(key); });
+  for (const SceneTopicKey& key : desired) {
+    if (attached.contains(key)) {
+      continue;
+    }
+    const auto& [dataset, topic] = key;
+    std::string error;
+    if (host.attach(embedded, topic, dataset, &error)) {
+      attached << key;
+    } else {
+      fail(
+          wanted.kind, topic.toStdString(), dataset.toStdString(),
+          error.empty() ? "could not attach topic '" + topic.toStdString() + "'" : error);
+    }
+  }
+  setSceneKeys(frame, kSceneAttachedProp, attached);
+}
+
+}  // namespace
+
 static void applyToWidget(
-    QWidget* w, std::string_view name, const PJ::WidgetDataView& view, PJ::AppSession* session = nullptr,
-    PJ::CatalogModel* catalog = nullptr) {
+    QWidget* w, std::string_view name, const PJ::WidgetDataView& view, PJ::AppSession* session,
+    PJ::CatalogModel* catalog, const PJ::EmbeddedViewHost* embedded_views,
+    std::vector<PJ::EmbeddedViewFailure>& failures) {
   const QSignalBlocker blocker(w);
 
   // --- Generic properties (any widget) ---
@@ -2236,6 +2404,9 @@ static void applyToWidget(
 
   // --- QFrame with chart_series / chart_markers / chart_zoom_enabled → PlotWidget or ChartPreviewWidget ---
   if (auto* frame = qobject_cast<QFrame*>(w)) {
+    if (embedded_views != nullptr && *embedded_views) {
+      applyEmbeddedView(frame, name, view, *embedded_views, failures);
+    }
     auto series_data = view.chartSeries(name);
     auto markers_data = view.chartMarkers(name);
     auto zoom_enabled = view.chartZoomEnabled(name);
@@ -2260,17 +2431,10 @@ static void applyToWidget(
         // should have the right click menu disabled").
         auto* plot = frame->findChild<PJ::PlotWidget*>();
         if (!plot) {
-          auto* layout = frame->layout();
-          if (!layout) {
-            layout = new QVBoxLayout(frame);
-            // Flush: the chart fills the whole frame so the darker panel
-            // backdrop never shows around it. Breathing room comes from
-            // padding INSIDE the chart (contentsMargins below), which the
-            // plot paints in its own Data-surface background.
-            layout->setContentsMargins(
-                theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
-                theme::space(theme::Space::None));
-          }
+          // Flush: breathing room comes from padding INSIDE the chart
+          // (contentsMargins below), which the plot paints in its own
+          // Data-surface background.
+          auto* layout = ensureFlushFrameLayout(frame);
           plot = new PJ::PlotWidget(&session->sessionManager(), catalog, frame);
           plot->setContextMenuEnabled(false);
           // PlotWidgetBase starts with the grid disabled; show it so embedded chart
@@ -2394,15 +2558,9 @@ static void applyToWidget(
         // has_chart_data so a placeholder-only payload never constructs a chart.
         auto* chart = existing_chart;
         if (!chart) {
-          auto* layout = frame->layout();
-          if (!layout) {
-            layout = new QVBoxLayout(frame);
-            // Flush frame + Data-toned internal padding — same scheme as the
-            // PlotWidget branch above.
-            layout->setContentsMargins(
-                theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
-                theme::space(theme::Space::None));
-          }
+          // Flush frame + Data-toned internal padding — same scheme as the
+          // PlotWidget branch above.
+          auto* layout = ensureFlushFrameLayout(frame);
           chart = new PJ::ChartPreviewWidget(frame);
           chart->setContentsMargins(
               theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable),
@@ -2472,15 +2630,17 @@ static void applyToWidget(
   }
 }
 
-void applyWidgetData(
-    QWidget* root, const PJ::WidgetDataView& view, PJ::AppSession* session, PJ::CatalogModel* catalog) {
+std::vector<EmbeddedViewFailure> applyWidgetData(
+    QWidget* root, const PJ::WidgetDataView& view, PJ::AppSession* session, PJ::CatalogModel* catalog,
+    const EmbeddedViewHost* embedded_views) {
+  std::vector<EmbeddedViewFailure> failures;
   const std::vector<std::string> names = view.widgetNames();
   for (const auto& name : names) {
     auto* w = findNamedIn<QWidget*>(root, QString::fromStdString(name));
     if (!w) {
       continue;
     }
-    applyToWidget(w, name, view, session, catalog);
+    applyToWidget(w, name, view, session, catalog, embedded_views, failures);
   }
   syncColumnSelectorTables(root, names);
   // Re-assert "pj_enable_when"/"pj_visible_when" rules: applyToWidget wraps
@@ -2494,6 +2654,7 @@ void applyWidgetData(
   // call adaptStyledWidgets once after loading the .ui (see widget_adapters),
   // and applyToWidget adapts reactively per widget via tryAdaptStyledWidget for
   // controls that only become adaptable after their first data arrives.
+  return failures;
 }
 
 // ---------------------------------------------------------------------------
@@ -2538,7 +2699,7 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
 
   for (auto* w : findAllIn<QWidget*>(root)) {
     QString qname = w->objectName();
-    if (qname.isEmpty() || isInternalWidgetName(qname)) {
+    if (qname.isEmpty() || isInternalWidgetName(qname) || insideEmbeddedView(w)) {
       continue;
     }
     std::string name = qname.toStdString();
@@ -2956,6 +3117,9 @@ bool comboRulesHold(const std::vector<ComboRule>& rules) {
 void installComboRules(QWidget* root, InstalledRules& installed, const char* property, void (*apply)(QWidget*, bool)) {
   // findAllIn yields descendants only; a rule authored on the loaded root counts too.
   for (QWidget* w : QList<QWidget*>{root} + findAllIn<QWidget*>(root)) {
+    if (insideEmbeddedView(w)) {
+      continue;
+    }
     const auto rules = parseComboRules(root, w, property);
     if (rules.empty()) {
       continue;

@@ -14,8 +14,8 @@
 #include "HeadlessDescriptorProviderSession.h"
 #include "LayoutReplayHints.h"
 #include "LoadInput.h"
-#include "ToolboxHostWiring.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/SessionManager.h"
 #ifndef __EMSCRIPTEN__
 #include "pj_runtime/SourceCaptureService.h"
@@ -558,9 +558,8 @@ LayoutImportBatch::StartResult LayoutImportBatch::start() {
 
 void LayoutImportBatch::startHitLoad(std::size_t index) {
   PlannedSource& planned = planned_[index];
-  // §6.4 fallback hits mirror today's replay hints exactly (the saved
-  // preset already names the saved path); provider-resolved hits ask the
-  // loader to rewrite the preset's filepath to the effective path.
+  // Fallback and provider-resolved hits both point the preset's filepath at
+  // the effective path.
   // Host-cache hits get their OWN hints: a capture artifact is always a
   // standard MCAP, so the layout's original plugin identity/preset (which
   // may name a non-MCAP provider format) must not be required — a hint
@@ -571,8 +570,10 @@ void LayoutImportBatch::startHitLoad(std::size_t index) {
     hints.dialog_policy = DialogPolicy::kNever;
     hints.prefer_reuse = true;
   } else {
-    const bool rewrite = planned.provider_fallback ? planned.ref.rewrite_plugin_filepath : true;
-    hints = layoutReplayHints(planned.ref, /*prefer_reuse=*/true, rewrite);
+    hints = layoutReplayHints(planned.ref, /*prefer_reuse=*/true);
+    // Only a fallback loads the layout's own saved path. A provider-resolved hit
+    // replaced it with a materialized cache path: nothing sits beside the old one.
+    hints.record_saved_filepath = planned.provider_fallback;
   }
   const quint64 ticket = loader_.loadFileTicketed(LoadInput::fromNativePath(planned.effective_path), nullptr, hints);
   if (ticket == 0) {

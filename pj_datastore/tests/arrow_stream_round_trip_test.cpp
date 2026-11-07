@@ -33,6 +33,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_datastore/topic_storage.hpp"
+#include "pj_datastore/writer.hpp"
 
 namespace PJ {
 namespace {
@@ -409,6 +410,43 @@ TEST(ArrowStreamRoundTripTest, NativeTimestampColumnIsSelectableByName) {
   const auto& chunks = engine.getTopicStorage(topic->id)->sealedChunks();
   ASSERT_EQ(chunks.size(), 1U);
   EXPECT_EQ(chunks.front().timestamps, (std::vector<Timestamp>{5'000'000, 6'000'000}));  // ms scaled to ns
+}
+
+// A topic whose chunks were committed out of time order (an on-demand series' backfill lands after its forward range)
+// reads back through read_series_arrow in time order: the export merges the chunks, each value at its own timestamp.
+TEST(ArrowStreamRoundTripTest, ReadSeriesArrowMergesChunksCommittedOutOfOrder) {
+  DataEngine engine;
+  ObjectStore object_store;
+  DatastoreToolboxHost toolbox_impl(engine, object_store);
+  sdk::ToolboxHostView toolbox(toolbox_impl.raw());
+  const auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "src"});
+  ASSERT_TRUE(dataset.has_value());
+  DataWriter writer = engine.createWriter();
+  const auto handle = writer.registerScalarSeries(*dataset, "data", NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value());
+  const auto commit = [&](int first, int last) {
+    for (int t = first; t <= last; ++t) {
+      writer.appendScalar(*handle, t, double(t) * 0.1);
+    }
+    ASSERT_FALSE(engine.commitChunks(writer.flushAll()).empty());
+  };
+  commit(100, 199);
+  commit(0, 99);
+  commit(200, 249);
+
+  auto snapshot = toolbox.catalogSnapshot();
+  ASSERT_TRUE(snapshot.has_value());
+  ASSERT_EQ(snapshot->topics().size(), 1u);
+  auto series = toolbox.readSeries(snapshot->fields()[snapshot->topics()[0].first_field].handle);
+  ASSERT_TRUE(series.has_value()) << series.error();
+  const auto timestamps = series->timestamps();
+  ASSERT_EQ(timestamps.size(), 250u);
+  const double* values = series->valuesAsFloat64();
+  ASSERT_NE(values, nullptr);
+  for (std::size_t row = 0; row < timestamps.size(); ++row) {
+    ASSERT_EQ(timestamps[row], static_cast<int64_t>(row));
+    ASSERT_DOUBLE_EQ(values[row], double(row) * 0.1);
+  }
 }
 
 }  // namespace

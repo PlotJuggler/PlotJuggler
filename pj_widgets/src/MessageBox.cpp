@@ -187,7 +187,9 @@ void MessageBox::setShowDontShowAgain(bool show, const QString& label) {
 }
 
 bool MessageBox::dontShowAgainChecked() const {
-  return dont_show_again_->isVisible() && dont_show_again_->isChecked();
+  // isHidden(), not isVisible(): callers read this after the dialog closed,
+  // when every child reports invisible.
+  return !dont_show_again_->isHidden() && dont_show_again_->isChecked();
 }
 
 QPushButton* MessageBox::addButton(const QString& label, ButtonRole role) {
@@ -320,28 +322,39 @@ void MessageBox::rewrapButtonLabels() {
 
 // --- Static helpers ----------------------------------------------------------
 
-void MessageBox::information(QWidget* parent, const QString& title, const QString& text) {
+namespace {
+
+// Shows a single-OK notice. Desktop keeps the modal exec(); the browser cannot
+// nest an event loop, so the dialog owns itself and opens non-blocking.
+void showNotice(QWidget* parent, const QString& title, const QString& text) {
+#ifdef PJ_TARGET_WASM
+  auto* dlg = new MessageBox(parent);
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
+  dlg->setTitle(title);
+  dlg->setText(text);
+  dlg->addButton(MessageBox::tr("OK"), MessageBox::kPrimaryRole);
+  dlg->open();
+#else
   MessageBox dlg(parent);
   dlg.setTitle(title);
   dlg.setText(text);
-  dlg.addButton(tr("OK"), kPrimaryRole);
+  dlg.addButton(MessageBox::tr("OK"), MessageBox::kPrimaryRole);
   dlg.exec();
+#endif
+}
+
+}  // namespace
+
+void MessageBox::information(QWidget* parent, const QString& title, const QString& text) {
+  showNotice(parent, title, text);
 }
 
 void MessageBox::warning(QWidget* parent, const QString& title, const QString& text) {
-  MessageBox dlg(parent);
-  dlg.setTitle(title);
-  dlg.setText(text);
-  dlg.addButton(tr("OK"), kPrimaryRole);
-  dlg.exec();
+  showNotice(parent, title, text);
 }
 
 void MessageBox::critical(QWidget* parent, const QString& title, const QString& text) {
-  MessageBox dlg(parent);
-  dlg.setTitle(title);
-  dlg.setText(text);
-  dlg.addButton(tr("OK"), kPrimaryRole);
-  dlg.exec();
+  showNotice(parent, title, text);
 }
 
 int MessageBox::question(
@@ -361,6 +374,29 @@ int MessageBox::question(
     *dont_show_again = dlg.dontShowAgainChecked();
   }
   return dlg.clickedIndex();
+}
+
+void MessageBox::questionAsync(
+    QWidget* parent, const QString& title, const QString& text, std::vector<ButtonSpec> buttons,
+    std::function<void(int choice, bool dont_show_again)> on_done, bool show_dont_show_again) {
+  auto* dlg = new MessageBox(parent);
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
+  dlg->setTitle(title);
+  dlg->setText(text);
+  dlg->setShowDontShowAgain(show_dont_show_again);
+  for (const auto& spec : buttons) {
+    dlg->addButton(spec.label, spec.role);
+  }
+  connect(dlg, &QDialog::finished, dlg, [dlg, on_done = std::move(on_done)](int) {
+    if (on_done) {
+      on_done(dlg->clickedIndex(), dlg->dontShowAgainChecked());
+    }
+  });
+#ifdef PJ_TARGET_WASM
+  dlg->open();
+#else
+  dlg->exec();
+#endif
 }
 
 }  // namespace PJ

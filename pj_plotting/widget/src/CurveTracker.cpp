@@ -10,7 +10,6 @@
 #include <qwt_text.h>
 
 #include <QFontDatabase>
-#include <QOpenGLContext>
 #include <QPalette>
 #include <QPen>
 #include <QSettings>
@@ -34,17 +33,13 @@ namespace {
 // Opt-in companion to the legend diagnostics (PJ_PLOT_TEXT_DEBUG=1): report the
 // tracker readout's content/visibility/colour whenever it changes, so we can
 // tell whether a vanished "time: ..." box is empty/hidden (logic) or fully
-// populated yet unpainted (a GL text-rendering failure shared with the legend).
+// populated yet unpainted (a canvas text-rendering failure shared with the legend).
 void logTrackerText(const void* plot, bool visible, const QString& html, const QColor& text_color) {
   if (!qEnvironmentVariableIsSet("PJ_PLOT_TEXT_DEBUG")) {
     return;
   }
-  const auto* gl_ctx = QOpenGLContext::currentContext();
-  const char* gl_state = (gl_ctx == nullptr) ? "none" : (gl_ctx->isValid() ? "valid" : "INVALID");
-  const QString sig = u"visible=%1 empty=%2 len=%3 text=%4 gl=%5"_s.arg(visible)
-                          .arg(html.isEmpty())
-                          .arg(html.size())
-                          .arg(text_color.name(), QString::fromLatin1(gl_state));
+  const QString sig =
+      u"visible=%1 empty=%2 len=%3 text=%4"_s.arg(visible).arg(html.isEmpty()).arg(html.size()).arg(text_color.name());
   static std::map<const void*, QString> last_sig;
   auto it = last_sig.find(plot);
   if (it != last_sig.end() && it->second == sig) {

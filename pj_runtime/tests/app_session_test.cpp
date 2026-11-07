@@ -6,23 +6,33 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <algorithm>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "event_pump_test_utils.h"
+#include "marker_test_utils.h"
+#include "pj_base/builtin/plot_markers.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/marker_topic_metadata.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
+#include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TopicDemandTracker.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -116,6 +126,44 @@ TEST(AppSessionTest, SeedPlaybackUsesScalarAndObjectTimeBounds) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 900.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 100.0e-9);
+}
+
+TEST(AppSessionTest, ZeroTimeReferenceCloudDoesNotStretchRecordingPlaybackOrOrigin) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  auto& manager = session.sessionManager();
+  const auto cloud_dataset = manager.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "map.ply"});
+  ASSERT_TRUE(cloud_dataset);
+  const auto cloud =
+      manager.objectStore().registerTopic({*cloud_dataset, "/map", R"({"builtin_object_type":"kPointCloud"})"});
+  ASSERT_TRUE(cloud);
+  ASSERT_TRUE(manager.objectStore().pushOwned(*cloud, 0, std::vector<uint8_t>{1}));
+  addScalarSamples(session, *cloud_dataset, "/point_count", {0});
+  session.catalogModel().rebuildFromDatastore();
+  EXPECT_FALSE(session.seedPlaybackFromSession());
+
+  const auto recording = manager.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(recording);
+  addScalarSamples(session, *recording, "/signal", {100'000'000'000LL, 110'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 110.0);
+  EXPECT_FALSE(session.datasetRawTimeRange(*cloud_dataset).has_value());
+  EXPECT_EQ(manager.objectStore().entryCount(*cloud), 1U);
+
+  manager.setUseTimeOffset(true);
+  session.recomputeRange();
+  EXPECT_EQ(manager.globalTimeReference(), 100'000'000'000LL);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 10.0);
+
+  manager.removeDataset(*recording);
+  session.catalogModel().rebuildFromDatastore();
+  session.recomputeRange();
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 0.0);
 }
 
 TEST(AppSessionTest, SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset) {
@@ -557,6 +605,37 @@ TEST(AppSessionTest, FocusPlaybackPrefersScalarBoundsOverObjectStamps) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 42'000.0e-9);
 }
 
+// A finding's entry sits at kFindingTimestamp, off the data clock: it never stretches the focused range.
+TEST(AppSessionTest, FocusPlaybackSkipsDerivedFindings) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  auto& store = session.sessionManager().objectStore();
+
+  auto dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "cloud-3d.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto cloud = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/points",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  auto finding = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "owner/pin/cropped",
+          .metadata_json = PJ::derivedTopicMetadata(PJ::sdk::BuiltinObjectType::kPointCloud),
+      });
+  ASSERT_TRUE(cloud.has_value() && finding.has_value());
+  ASSERT_TRUE(store.pushOwned(*cloud, 42'000, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(store.pushOwned(*finding, PJ::kFindingTimestamp, std::vector<uint8_t>{2}).has_value());
+
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*dataset}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 42'000.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 42'000.0e-9);
+}
+
 TEST(AppSessionMergeTest, CollapsesSelectionIntoMergedAnchor) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -894,6 +973,37 @@ TEST(AppSessionMergeTest, DetectsConflictOnSharedNameDifferentType) {
   EXPECT_EQ(conflicts[0].source_type, PJ::sdk::BuiltinObjectType::kPointCloud);
 }
 
+// Merging concatenates same-named marker topics under the anchor's description, so two
+// that describe different sets (another target or owner) are a conflict; equal ones merge.
+TEST(AppSessionMergeTest, DetectsConflictBetweenSameNamedMarkerTopicsWithDifferentDescriptions) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  const PJ::DatasetId c = makeShiftedDataset(session, "C", 0, "/s", {4'000'000'000LL, 5'000'000'000LL});
+  auto& object_store = session.sessionManager().objectStore();
+  const std::string name = PJ::sdk::markerObjectTopicName("x");
+  const auto register_marker_topic = [&](PJ::DatasetId dataset, const PJ::MarkerTopicInfo& info) {
+    EXPECT_TRUE(object_store
+                    .registerTopic(
+                        {.dataset_id = dataset, .topic_name = name, .metadata_json = PJ::markerTopicMetadataJson(info)})
+                    .has_value());
+  };
+  register_marker_topic(a, {PJ::MarkerScopeKind::kSeries, "x", "plug/g"});
+  register_marker_topic(b, {PJ::MarkerScopeKind::kSeries, "y", "plug/g"});
+  register_marker_topic(c, {PJ::MarkerScopeKind::kSeries, "x", "plug/g"});
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto conflicts = session.objectMergeConflicts({a, b});
+  ASSERT_EQ(conflicts.size(), 1U);
+  EXPECT_EQ(conflicts[0].topic_name, name);
+  EXPECT_EQ(conflicts[0].source_dataset_id, b);
+  EXPECT_TRUE(conflicts[0].marker_description_differs);
+  EXPECT_TRUE(session.objectMergeConflicts({a, c}).empty());
+}
+
 TEST(AppSessionMergeTest, SingleSelectionIsNoOp) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -979,6 +1089,132 @@ TEST(AppSessionTest, RecomputeRangeMovesRangeButNeverCurrentTime) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, -2.0);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 8.0);
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 4.0);  // unchanged: no snap
+}
+
+// Automatic marker runs follow demand: a generator on a demand-capable streaming
+// dataset stays stale while nothing displays that dataset, and runs as soon as a
+// display reference arrives, with no further ingest.
+TEST(AppSessionTest, MarkerRulesRunWhenTheirStreamingDatasetBecomesDemanded) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  constexpr PJ::DatasetId kStream = 7;
+  session.catalogModel().setPerTopicPauseCapable(kStream, true);
+  PJ::BatchEngine& engine = session.sessionManager().batchEngine();
+  engine.setResolver(
+      [](PJ::DatasetId, const std::string& key,
+         const PJ::BatchEngine::Window&) -> std::optional<PJ::BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        return PJ::BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {1.0}};
+      });
+  engine.setReloadHz(20.0);  // 50 ms period
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "plug/gen";
+  recipe.dataset_id = kStream;
+  recipe.inputs = {"in"};
+  recipe.outputs = {"in"};
+  recipe.script = "createMarker(0.0)\n";
+  ASSERT_TRUE(engine.upsertGenerator(recipe).has_value());
+  ASSERT_EQ(engine.recomputeForChangedInputs({"in"}, kStream).size(), 1u);
+
+  PJ::test::pumpFor(200);
+  EXPECT_TRUE(engine.isStale("plug/gen")) << "nothing displays the stream";
+
+  session.topicDemandTracker().addReference(kStream, u"in"_s);
+  PJ::test::pumpUntil([&engine] { return !engine.isStale("plug/gen"); });
+  EXPECT_FALSE(engine.isStale("plug/gen")) << "a display reference arrived";
+}
+
+// A display reference on a topic that already streams (forced, or infrastructure)
+// leaves the active set unchanged, yet it is what makes the dataset demanded: the
+// stale rule must wake on it.
+TEST(AppSessionTest, MarkerRulesWakeWhenAnAlreadyActiveTopicGetsDisplayed) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  constexpr PJ::DatasetId kStream = 7;
+  session.catalogModel().setPerTopicPauseCapable(kStream, true);
+  PJ::BatchEngine& engine = session.sessionManager().batchEngine();
+  engine.setResolver(
+      [](PJ::DatasetId, const std::string& key,
+         const PJ::BatchEngine::Window&) -> std::optional<PJ::BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        return PJ::BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {1.0}};
+      });
+  engine.setReloadHz(20.0);  // 50 ms period
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "plug/gen";
+  recipe.dataset_id = kStream;
+  recipe.inputs = {"in"};
+  recipe.outputs = {"in"};
+  recipe.script = "createMarker(0.0)\n";
+  ASSERT_TRUE(engine.upsertGenerator(recipe).has_value());
+  session.topicDemandTracker().setTopicForced(kStream, u"in"_s, true);
+  ASSERT_EQ(engine.recomputeForChangedInputs({"in"}, kStream).size(), 1u);
+  PJ::test::pumpFor(200);
+  ASSERT_TRUE(engine.isStale("plug/gen")) << "forced streaming is not a display";
+
+  session.topicDemandTracker().addReference(kStream, u"in"_s);
+  PJ::test::pumpUntil([&engine] { return !engine.isStale("plug/gen"); });
+  EXPECT_FALSE(engine.isStale("plug/gen")) << "the topic is displayed now";
+}
+
+// The marker-input resolver AppSession installs reads a series across its chunks in
+// time order, as the plots do, and only the recipe's window when it has one.
+TEST(AppSessionTest, MarkerResolverReadsAMultiChunkSeriesAndItsWindow) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::SessionManager& manager = session.sessionManager();
+  const auto dataset = manager.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  PJ::DataWriter writer = manager.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/sig", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  constexpr int kChunks = 3;
+  constexpr int kRowsPerChunk = 10;
+  for (int chunk = 0; chunk < kChunks; ++chunk) {
+    for (int row = 0; row < kRowsPerChunk; ++row) {
+      const int sample = chunk * kRowsPerChunk + row;
+      writer.appendScalar(*handle, sample, sample * 0.5);
+    }
+    ASSERT_FALSE(manager.commitChunks(writer.flushAll()).empty());
+  }
+  session.catalogModel().rebuildFromDatastore();
+
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "plug/every";
+  recipe.dataset_id = *dataset;
+  recipe.inputs = {PJ::sdk::markerSeriesKey("/sig", "value")};
+  recipe.outputs = {"marks"};
+  recipe.script = R"(
+    local s = series("/sig/value")
+    for i = 0, s:size() - 1 do
+      local p = s:at(i)
+      createMarker(p.t, p.v)
+    end
+  )";
+  const auto expect_samples = [&](int first, int last) {
+    const auto markers = PJ::test::readMarkerUnion(manager.objectStore(), *dataset, "marks").markers;
+    ASSERT_EQ(markers.size(), static_cast<std::size_t>(last - first + 1));
+    for (int sample = first; sample <= last; ++sample) {
+      EXPECT_EQ(markers[sample - first].t_start, sample);
+      EXPECT_DOUBLE_EQ(markers[sample - first].value_low, sample * 0.5);
+    }
+  };
+
+  const auto whole = manager.batchEngine().upsertGenerator(recipe);
+  ASSERT_TRUE(whole.has_value()) << whole.error();
+  expect_samples(0, kChunks * kRowsPerChunk - 1);
+
+  recipe.window = std::pair<PJ::Timestamp, PJ::Timestamp>{5, 24};  // spans all three chunks
+  const auto windowed = manager.batchEngine().upsertGenerator(recipe);
+  ASSERT_TRUE(windowed.has_value()) << windowed.error();
+  expect_samples(5, 24);
 }
 
 }  // namespace

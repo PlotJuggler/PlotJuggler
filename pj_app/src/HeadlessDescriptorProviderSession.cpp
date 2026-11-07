@@ -18,7 +18,8 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_plugins/host/toolbox_handle.hpp"
 #include "pj_runtime/CatalogModel.h"
-#include "pj_runtime/DataProcessorsRuntimeHost.h"
+#include "pj_runtime/DerivedRuntimeHosts.h"
+#include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
@@ -68,7 +69,7 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
   // MainWindow-owned surfaces this session has no business reaching:
   // 3D-scene TF bridging (transform_service_), playback focus/seeding
   // (AppSession::focusPlaybackOnDatasets / seedPlaybackFromSession), and the
-  // Custom Series panel rows. MainWindow (the batch owner) supplies that
+  // Custom Topics panel rows. MainWindow (the batch owner) supplies that
   // presentation from outside: its batch-scoped SessionManager observers
   // (installLayoutBatchObservers) drive the title-bar ingest strip
   // mid-import, and the progressive-restore drain settles the rest.
@@ -128,8 +129,8 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
     return unexpected("failed to publish toolbox services for '" + wanted + "': " + status.error());
   }
 
-  session->dp_host_ = std::make_unique<DataProcessorsRuntimeHost>(session_manager.dataProcessorService(), wanted);
-  if (auto status = session->dp_host_->registerServices(*session->builder_); !status) {
+  session->derived_hosts_ = std::make_unique<DerivedRuntimeHosts>(session_manager, catalog, wanted);
+  if (auto status = session->derived_hosts_->registerServices(*session->builder_); !status) {
     return unexpected("failed to publish data-processor services for '" + wanted + "': " + status.error());
   }
 
@@ -206,7 +207,7 @@ HeadlessDescriptorProviderSession::~HeadlessDescriptorProviderSession() {
   // (4) Service views into the hosts, then the hosts, then the backend —
   // the same relative order as MainWindow's ~ToolboxPanelSession.
   builder_.reset();
-  dp_host_.reset();
+  derived_hosts_.reset();
   host_.reset();
   settings_.reset();
 }

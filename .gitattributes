@@ -1,2 +1,6 @@
 versions.env text eol=lf
 *.bat text eol=crlf
+# Sample presets deploy byte for byte (layouts pin each data file's content_sha256).
+resources/wasm-presets/** -text
+resources/wasm-presets/*/data.* -diff
+resources/wasm-presets/**/*.png -diff

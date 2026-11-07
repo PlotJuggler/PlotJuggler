@@ -201,9 +201,10 @@ async function requestToolboxTransformResult(page, consoleMessages) {
   const summaryMessage = consoleMessages.filter(
     entry => entry.includes('PJ_WASM_TOOLBOX_TRANSFORMS count='),
   ).at(-1) || '';
-  const summary = summaryMessage.match(/count=(\d+)/);
+  const summary = summaryMessage.match(/count=(\d+) materializing=(\d)/);
   expect(summary, `unparseable toolbox transform summary: ${summaryMessage}`).not.toBeNull();
   const count = Number(summary[1]);
+  const materializing = summary[2] === '1';
   await expect.poll(
     () => consoleMessages.filter(message => message.includes('PJ_WASM_TOOLBOX_TRANSFORM key_b64=')).length,
     { timeout: 10000 },
@@ -230,7 +231,7 @@ async function requestToolboxTransformResult(page, consoleMessages) {
         custom: { x: Number(recipe[8]), y: Number(recipe[9]) },
       };
     });
-  return { count, recipes };
+  return { count, materializing, recipes };
 }
 
 test('Luau Filter Editor applies and restores an exact source-bound processor through real browser UI', async ({ page }) => {
@@ -411,7 +412,10 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
   expect(errors).toEqual([]);
 });
 
-test('Transform Editor creates a large exact Luau series while the browser main thread stays responsive', async ({ page }) => {
+// @serial: its heartbeat bound fails on a loaded runner (playwright.config.js).
+test('Transform Editor creates a large exact Luau series while the browser main thread stays responsive', {
+  tag: '@serial',
+}, async ({ page }) => {
   test.setTimeout(240000);
   const errors = [];
   const consoleMessages = [];
@@ -475,18 +479,16 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     return editor.sourceRows;
   }, { timeout: 60000 }).toBe(1);
 
-  // Name and program the transform through the actual Qt text editors.
-  await page.mouse.click(screen.x + editor.name.x, screen.y + editor.name.y);
-  await page.keyboard.type('toolbox-square');
+  // Program the transform through the actual Qt text editor; its name is asked by Create.
   await page.mouse.click(screen.x + editor.function.x, screen.y + editor.function.y);
   await page.keyboard.press('Control+A');
   await page.keyboard.type('return value * value + 3');
 
-  // The report function crosses synchronously from the browser main thread to
-  // Qt's application worker. Give the production 20 Hz panel timer an
-  // observation-free window to rebuild the 30k-row preview; repeatedly queueing
-  // synchronous reports while that worker is busy can itself starve the timer
-  // this observation is waiting for.
+  // Qt runs on the page's main thread (the build has no PROXY_TO_PTHREAD), so
+  // each report call runs synchronously inside Qt's event loop. Give the
+  // production 20 Hz panel timer an observation-free window to rebuild the
+  // 30k-row preview; repeatedly queueing reports while that loop is busy can
+  // itself starve the timer this observation is waiting for.
   await page.waitForTimeout(10000);
   const observedEditorStates = [];
   for (let attempt = 0; attempt < 6; ++attempt) {
@@ -516,18 +518,31 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     `Transform Editor never became ready: ${JSON.stringify(observedEditorStates)}`,
   ).toBe(true);
   const ghost = editor.previews.find(preview => preview.title === 'toolbox-values/temp');
-  const transformed = editor.previews.find(preview => preview.title === 'toolbox-square');
+  // The transformed preview is named after the output the trial inferred, not yet the recipe.
+  const transformed = editor.previews.find(preview => preview.title !== 'toolbox-values/temp');
+  // The input "ghost" and the transformed preview are told apart by colour,
+  // not dash style, so only their data is asserted here.
   expect(ghost).toBeDefined();
-  expect(ghost.dashed).toBe(true);
   expect(ghost.samples).toBe(2000);
   expect(transformed).toBeDefined();
-  expect(transformed.dashed).toBe(false);
   expect(transformed.samples).toBe(2000);
   expect(transformed.first).toBe(12);
 
-  // The Qt app and its eager Luau replay run in the threaded-WASM application
-  // worker. A page-main-thread heartbeat must continue across the physical
-  // Create click and exact production completion notification.
+  // Create asks for the name in the editor's prompt; its OK installs the recipe.
+  await page.mouse.click(screen.x + editor.create.x, screen.y + editor.create.y);
+  await expect.poll(async () => {
+    editor = await requestTransformEditorState(page, consoleMessages);
+    return editor.name.x >= 0 && editor.name.y >= 0;
+  }, { timeout: 15000 }).toBe(true);
+  await page.mouse.click(screen.x + editor.name.x, screen.y + editor.name.y);
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('toolbox-square');
+
+  // The Qt app and its Luau replay share the page's main thread. A page
+  // heartbeat must keep ticking from the physical OK click until the replay
+  // has materialized every row: no single slice of that work may hold the
+  // thread for 100 ms. Production announces the transform after the first
+  // slice; the series then grows until complete.
   await page.evaluate(() => {
     const heartbeat = { started: performance.now(), ticks: [], timer: 0 };
     heartbeat.timer = setInterval(() => heartbeat.ticks.push(performance.now()), 4);
@@ -536,13 +551,17 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   const readyMessages = consoleMessages.filter(
     message => message.includes('PJ_WASM_TOOLBOX_TRANSFORM_READY plugin=toolbox-transform-editor'),
   ).length;
-  await page.mouse.click(screen.x + editor.create.x, screen.y + editor.create.y);
+  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
     () => consoleMessages.filter(
       message => message.includes('PJ_WASM_TOOLBOX_TRANSFORM_READY plugin=toolbox-transform-editor'),
     ).length,
     { timeout: 60000 },
   ).toBeGreaterThan(readyMessages);
+  await expect.poll(
+    async () => (await requestToolboxTransformResult(page, consoleMessages)).materializing,
+    { timeout: 60000 },
+  ).toBe(false);
   const heartbeat = await page.evaluate(() => {
     const state = globalThis.__pjWasmTransformHeartbeat;
     clearInterval(state.timer);
@@ -587,8 +606,11 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_RHI_READY')).length,
     { timeout: 15000 },
   ).toBeGreaterThan(rhiReadyMessages);
-  await page.waitForTimeout(250);
-  const plotted = await requestFilterResult(page, consoleMessages);
+  let plotted;
+  await expect.poll(async () => {
+    plotted = await requestFilterResult(page, consoleMessages);
+    return plotted.curves[0]?.samples;
+  }, { timeout: 30000 }).toBe(sampleCount);
   expect(plotted.recipeCount).toBe(0);
   expect(plotted.visiblePlots).toBe(1);
   expect(plotted.visibleCurves).toBe(1);

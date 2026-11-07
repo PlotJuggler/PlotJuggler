@@ -4,6 +4,8 @@
 #include "pj_scene2d_core/composite_media_source.h"
 
 #include <algorithm>
+#include <cmath>
+#include <string>
 #include <utility>
 
 namespace PJ {
@@ -25,6 +27,20 @@ void CompositeMediaSource::addLayer(std::unique_ptr<MediaSource> layer, float op
   entry.opacity = std::clamp(opacity, 0.0f, 1.0f);
   entry.identity = identity;
   layers_.push_back(std::move(entry));
+}
+
+void CompositeMediaSource::setLayerPairing(
+    const void* identity, std::string image_topic, bool pairs_annotations, std::function<int64_t(int64_t)> cadence,
+    std::function<void(const std::string&)> warning) {
+  for (auto& layer : layers_) {
+    if (layer.identity == identity) {
+      layer.image_topic = std::move(image_topic);
+      layer.pairs_annotations = pairs_annotations;
+      layer.cadence = std::move(cadence);
+      layer.warning = std::move(warning);
+      return;
+    }
+  }
 }
 
 void CompositeMediaSource::adoptContributions(const CompositeMediaSource& previous) {
@@ -108,15 +124,53 @@ std::optional<MediaFrame> CompositeMediaSource::takeFrame() {
   // Reassemble the full stack from every layer's retained contribution so a
   // layer that did not update this tick is still present in the composite.
   MediaFrame composite;
+  const Layer* base_layer = nullptr;
   for (const auto& layer : layers_) {
     for (const auto& pixel_layer : layer.pixel_layers) {
       if (!composite.base.has_value()) {
         composite.base = pixel_layer.frame;
+        base_layer = &layer;
       }
       composite.pixel_layers.push_back(pixel_layer);
     }
+  }
+  constexpr int64_t kDefaultCadence = 100'000'000;
+  // Annotations carry the image's own stamp; the cadence is looked up around its store entry.
+  const int64_t shown_pts = composite.base.has_value() ? composite.base->pts : -1;
+  const int64_t shown_stamp = composite.base.has_value() ? composite.base->stamp.value_or(shown_pts) : -1;
+  const int64_t shown_entry_ts = composite.base.has_value() ? composite.base->entry_ts.value_or(shown_pts) : -1;
+  std::optional<int64_t> cadence;  // looked up once, by the first annotation that names its image
+  const auto pairingCadence = [&] {
+    if (!cadence) {
+      cadence = base_layer != nullptr && base_layer->cadence ? base_layer->cadence(shown_entry_ts) : kDefaultCadence;
+    }
+    return *cadence;
+  };
+  for (const auto& layer : layers_) {
+    std::string warning;
     for (const auto& overlay : layer.overlays) {
-      composite.overlays.push_back(overlay);
+      SceneFrame shown = overlay;
+      std::erase_if(shown.annotations, [&](const ImageAnnotation& annotation) {
+        if (!layer.pairs_annotations || annotation.image_topic.empty()) {
+          return false;
+        }
+        const bool paired =
+            base_layer != nullptr && annotation.image_topic == base_layer->image_topic &&
+            std::abs(static_cast<long double>(annotation.timestamp) - static_cast<long double>(shown_stamp)) <=
+                static_cast<long double>(pairingCadence());
+        if (!paired) {
+          warning = "annotations for " + annotation.image_topic + " at " + std::to_string(annotation.timestamp) +
+                    " ns are not paired with the shown image";
+        }
+        return !paired;
+      });
+      // An overlay that was empty (a cleared result) still clears; one emptied by the check is not drawn.
+      if (overlay.annotations.empty() || !shown.annotations.empty()) {
+        composite.overlays.push_back(std::move(shown));
+      }
+    }
+    if (layer.warning) {
+      layer.warning(warning);
     }
   }
   return composite;

@@ -2,525 +2,621 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#ifdef PJ_TARGET_WASM
-
-#include "pj_scene3d_widgets/scene_view_widget_rhi.h"
-
-#else
-
 #include <QElapsedTimer>
+#include <QImage>
 #include <QList>
-#include <QOpenGLWidget>
 #include <QPoint>
-#include <chrono>
+#include <QRhiWidget>
+#include <array>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "pj_base/time.hpp"  // PJ::Timepoint
+#include "pj_base/time.hpp"
 #include "pj_scene3d_core/camera/camera.h"
-#include "pj_scene3d_core/tf/frame_picking.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_widgets/gl/gpu_profiler.h"
-#include "pj_scene3d_widgets/gl/program.h"
-#include "pj_scene3d_widgets/gl/vertex_array.h"
+#include "pj_scene3d_core/poses_in_frame_render.h"
+#include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/moving_average.h"
-#include "pj_scene3d_widgets/passes/axis_overlay_pass.h"
-#include "pj_scene3d_widgets/passes/axis_render_pass.h"
-#include "pj_scene3d_widgets/passes/edl_pass.h"
-#include "pj_scene3d_widgets/passes/grid_render_pass.h"
-#include "pj_scene3d_widgets/passes/shadow_map_pass.h"
-#include "pj_scene3d_widgets/passes/ssao_pass.h"
-#include "pj_scene3d_widgets/passes/tf_connections_render_pass.h"
-#include "pj_scene3d_widgets/scene_hdr_fbo.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_widgets/GraphicsApi.h"
 
 class QEvent;
+class QContextMenuEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QWheelEvent;
+class QRhi;
+class QRhiBuffer;
+class QRhiCommandBuffer;
+class QRhiGraphicsPipeline;
+class QRhiRenderBuffer;
+class QRhiSampler;
+class QRhiShaderResourceBindings;
+class QRhiTexture;
+class QRhiTextureRenderTarget;
+class QRhiRenderPassDescriptor;
+class QRhiRenderTarget;
+class QRhiResourceUpdateBatch;
 
 namespace pj::scene3d {
 
-class Scene3DLayer;
+using pj::tf::FrameRow;
+using pj::tf::Transform;
+using pj::tf::TransformBuffer;
 
-// Standalone Qt widget that renders the 3D scene: a grid at the fixed-frame
-// origin, an XYZ axis triad per TF frame, and zero or more user layers
-// (PointCloud topics, future URDF robots, etc.). Layers are non-owning
-// — SceneDockWidget owns them and Scene3DDockWidget pushes the base-owned
-// render order into this view whenever it changes.
-class SceneViewWidget : public QOpenGLWidget {
+class Scene3DLayer;
+class OccupancyRhiPass;
+class MarkerRhiPass;
+class ModelRhiPass;
+class GridMapRhiPass;
+class TrailRhiPass;
+class GridRhiPass;
+class OverlayRhiPass;
+class PoseRhiPass;
+class VoxelRhiPass;
+class PointRhiPass;
+class ScenePipelineRegistry;
+class SceneViewTestAccess;
+struct EdlResources;
+struct HdrResources;
+struct PlacementHold;
+struct QualityStageState;
+struct RhiPassSetup;
+struct RhiSharedGeometry;
+struct SceneContributions;
+struct ShadowResources;
+struct SsaoResources;
+enum class ScenePass;
+
+// The Scene3D view, a QRhiWidget on the desktop and in the browser. It owns
+// every GPU resource of the scene (the layers own none); camera and TF semantics come from pj_scene3d_core. The frame
+// contract and pass vocabulary live in rhi/rhi_scene_pass.h.
+//
+// Failure state: when the base pipeline set (every scene family, the shared
+// geometry and uniforms) cannot be built on the current QRhi, the view submits
+// no scene draw. It clears to the backdrop, shows the reason through
+// renderingWarningChanged(), emits renderFailed() once, and retries on the next
+// initialize() (a new QRhi, or a new output size, format or sample count).
+// Optional stages (HDR and its pipeline variants, SSAO, EDL, shadows, overlays)
+// drop on their own, each with a one-time warning.
+class SceneViewWidget : public QRhiWidget {
   Q_OBJECT
 
  public:
-  using GridStyle = GridRenderPass::Style;
+  using GridStyle = pj::scene3d::GridStyle;
+  enum class CameraModel { kOrbit, kXyOrbit, kFly, kTopDownOrtho };
 
   explicit SceneViewWidget(QWidget* parent = nullptr);
   ~SceneViewWidget() override;
 
   void setTransformBuffer(std::shared_ptr<TransformBuffer> tf);
-  void setTrackerTime(PJ::Timepoint t);
+  void setTrackerTime(PJ::Timepoint time);
   void setFixedFrame(const std::string& frame);
+  [[nodiscard]] const std::string& fixedFrame() const {
+    return fixed_frame_;
+  }
 
-  // Camera "follow a frame" (RViz / Foxglove style). Position-only for now: each
-  // tracker tick the active camera's anchor tracks `frame`'s origin in the fixed
-  // frame, so the view pans to keep the frame in place while orbit/zoom stay
-  // world-referenced. Empty `frame` = off. The followed pose is resolved against
-  // the fixed frame, so changing EITHER the fixed frame or the follow frame
-  // re-seeds (the next tick applies no shift → no jump). The FollowMode enum is
-  // kept for future Heading/Pose modes; today a non-empty frame implies kPosition.
-  enum class FollowMode { kOff, kPosition };
   void setFollowFrame(const std::string& frame);
   [[nodiscard]] const std::string& followFrame() const {
     return follow_frame_;
   }
-  // Repaint-gate fingerprint of the followed frame's pose at `time` — 0 when not
-  // following or unresolvable. Folded into the dock's viewRenderKey so a moving
-  // follow target forces a repaint even when the TF overlay is hidden (the camera
-  // moves but no layer's renderKey changed). GUI-thread only; no allocation.
   [[nodiscard]] uint64_t followRenderKey(PJ::Timepoint time) const;
-  // Recenter the camera on the followed frame: move the camera's anchor to that
-  // frame's current origin (resolved in the fixed frame at render_time_), keeping
-  // orbit angle / zoom. The on-demand counterpart to the no-jump-on-enable follow
-  // policy — the "Follow frame" recenter button drives it. No-op when not following
-  // or the frame can't be resolved.
   void recenterOnFollowFrame();
 
-  // Replace the render order: index 0 renders first (behind), the last on top.
-  // For coplanar overlays (costmaps) this is what decides the overlap winner.
-  void setLayers(const std::vector<Scene3DLayer*>& ordered);
-
-  [[nodiscard]] const std::vector<Scene3DLayer*>& layers() const {
-    return layers_;
-  }
-
-  AxisRenderPass& axisPass() {
-    return axes_;
-  }
-  GridRenderPass& gridPass() {
-    return grid_;
-  }
-  SsaoPass& ssaoPass() {
-    return ssao_;
-  }
-  EdlPass& edlPass() {
-    return edl_;
-  }
-
-  // Composite/look knobs (read in paintGL; call update() after changing).
-  // Defaults are the User's 2026-06-10 look-dev pick (mesh_viewer demo).
-  struct CompositeParams {
-    int tonemap_mode = look::kTonemapMode;  // 0 None, 1 ACES, 2 AgX, 3 Khronos PBR Neutral
-    float exposure = look::kExposure;
-    float saturation = look::kSaturation;  // post-tonemap; data pixels only
-    float ao_strength = look::kAoStrength;
-    bool ssao_enabled = true;
-    bool edl_enabled = true;
-    float edl_floor = look::kEdlFloor;  // EDL darkens toward floor*color (0 = old black; 1 = off)
-  };
-  [[nodiscard]] CompositeParams& compositeParams() {
-    return composite_params_;
-  }
-
-  // This view's mesh/collision look knobs (read in paintGL into ViewParams::shading;
-  // call update() after changing). Per-view, so two 3D docks diverge independently —
-  // the scene-controls panel drives only its bound view's copy.
-  [[nodiscard]] MeshShadingParams& meshShadingParams() {
-    return shading_params_;
-  }
-  void setMeshShadingParams(const MeshShadingParams& params);
   [[nodiscard]] ICamera& camera() {
     return *camera_;
   }
-
-  // Selectable camera controllers. Enumerator order matches the combo-box order
-  // in Scene3DDockWidget, so a combo index casts directly to a CameraModel.
-  enum class CameraModel { kOrbit, kXyOrbit, kFly, kTopDownOrtho };
-  // Switch the active controller, carrying the current pose across so the view
-  // doesn't jump (capture state → construct → adoptState → swap → repaint).
+  [[nodiscard]] const ICamera& camera() const {
+    return *camera_;
+  }
   void setCameraModel(CameraModel model);
   [[nodiscard]] CameraModel cameraModel() const {
     return camera_model_;
   }
   void resetCamera();
   // Latest fixed-frame scene extent; forwarded to the active camera for adaptive
-  // near/far and framing.
+  // near/far and framing. The dock owns it (Scene3DDockWidget::updateSceneBounds);
+  // the camera is never fitted to it automatically.
   void setSceneBounds(const AABB& bounds);
-#ifdef PJ_SCENE3D_TEST_HOOKS
-  [[nodiscard]] const AABB& sceneBoundsForTest() const {
-    return scene_bounds_;
-  }
-#endif
-
-  // Re-poll the TransformBuffer for the current frame set; emits
-  // framesChanged if the set differs from the previous poll.
-  void refreshAvailableFrames();
-
-  // Repaint-gate fingerprint of the TF overlay (axis triads + parent-connection
-  // lines) at `time`. These render the WHOLE frame forest posed at the tracker
-  // time independently of any layer, so without this the dock's per-tick gate
-  // would freeze a moving TF tree whenever every visible layer's own renderKey is
-  // unchanged (a static/fixed-frame cloud, or a TF-only dock). Returns 0 when the
-  // overlay is not drawn (no buffer, or both axes and connections hidden) so it
-  // adds no cost and forgoes no coalescing then. Hashes exactly the transforms the
-  // next render() would draw, so the key changes iff the rendered TF would — for a
-  // moving tree during playback AND for new frames/edges arriving mid-load. Cheap
-  // (O(frames), no decode); GUI-thread only (reads the shared TransformBuffer).
-  [[nodiscard]] uint64_t tfRenderKey(PJ::Timepoint time) const;
-
-  const std::string& fixedFrame() const {
-    return fixed_frame_;
+  void setLayers(const std::vector<Scene3DLayer*>& ordered_layers);
+  // The layers of the last setLayers(), in logical order.
+  [[nodiscard]] const std::vector<Scene3DLayer*>& layers() const {
+    return layers_;
   }
 
-  // Part C scene-controls fan-out (call update() after changing).
-  void setGridStyle(GridRenderPass::Style style) {
-    const auto before = grid_.style();
-    grid_.setStyle(style);
-    if (grid_.style() != before) {
-      emit presentationChanged();
-    }
+  void setGridStyle(GridStyle style);
+  [[nodiscard]] GridStyle gridStyle() const {
+    return grid_style_;
   }
-  void setGridDivisions(int divisions) {
-    const int before = grid_.divisions();
-    grid_.setDivisions(divisions);
-    if (grid_.divisions() != before) {
-      emit presentationChanged();
-    }
+  void setGridDivisions(int divisions);
+  [[nodiscard]] int gridDivisions() const {
+    return grid_divisions_;
   }
-  void setGridExtentMetres(float extent_m) {
-    const float before = grid_.extentMetres();
-    grid_.setExtentMetres(extent_m);
-    if (grid_.extentMetres() != before) {
-      emit presentationChanged();
-    }
+  void setGridExtentMetres(float extent_m);
+  [[nodiscard]] float gridExtentMetres() const {
+    return grid_extent_m_;
   }
-  void setGizmoSize(float length_m) {
-    const float before = axes_.axisLength();
-    axes_.setAxisLength(length_m);
-    if (axes_.axisLength() != before) {
-      emit presentationChanged();
-    }
-  }
-  void setGizmoOpacity(float opacity) {
-    const float before = axes_.opacity();
-    axes_.setOpacity(opacity);
-    if (axes_.opacity() != before) {
-      emit presentationChanged();
-    }
-  }
-  void setGridVisible(bool visible) {
-    if (grid_visible_ == visible) {
-      return;
-    }
-    grid_visible_ = visible;
-    emit presentationChanged();
-  }
-
-  // Per-view scene-control readback (the inverse of the setters above) so the
-  // config panel can REFLECT the focused dock's own look on bind, and the dock
-  // can persist it per-dock in xmlSaveState — each 3D view keeps independent
-  // grid/frame/mesh settings rather than sharing one global look.
+  void setGridVisible(bool visible);
   [[nodiscard]] bool gridVisible() const {
     return grid_visible_;
   }
-  [[nodiscard]] GridRenderPass::Style gridStyle() const {
-    return grid_.style();
-  }
-  [[nodiscard]] int gridDivisions() const {
-    return grid_.divisions();
-  }
-  [[nodiscard]] float gridExtentMetres() const {
-    return grid_.extentMetres();
-  }
-  [[nodiscard]] float gizmoSize() const {
-    return axes_.axisLength();
-  }
-  [[nodiscard]] float gizmoOpacity() const {
-    return axes_.opacity();
-  }
 
-  // Show/hide the per-frame TF axis triads. The TF buffer is still used to
-  // transform layers regardless — this only gates drawing the axes. Default
-  // visible (TF is a first-class always-on display; see docs/REQUIREMENTS.md §4).
   void setAxesVisible(bool visible);
   [[nodiscard]] bool axesVisible() const {
     return axes_visible_;
   }
-
-  // Show/hide the magenta lines connecting each TF frame to its parent (rviz2 /
-  // Foxglove "show parent connections"). Independent of axesVisible — the lines
-  // can show with the triads hidden and vice versa. Default visible.
+  void setGizmoSize(float length_m);
+  [[nodiscard]] float gizmoSize() const {
+    return gizmo_size_m_;
+  }
+  void setGizmoOpacity(float opacity);
+  [[nodiscard]] float gizmoOpacity() const {
+    return gizmo_opacity_;
+  }
   void setTfConnectionsVisible(bool visible);
   [[nodiscard]] bool tfConnectionsVisible() const {
     return tf_connections_visible_;
   }
 
-  // ---- Performance instrumentation & anti-aliasing benchmark hooks ----------
-  // These exist to MEASURE rendering cost (GPU/CPU ms per frame) and to sweep
-  // anti-aliasing settings; none change the default app look. The HUD is an
-  // off-by-default overlay; render scale and the explicit sample override are
-  // driven only by the mesh_viewer --benchmark sweep.
+  [[nodiscard]] MeshShadingParams& meshShadingParams() {
+    return shading_params_;
+  }
+  [[nodiscard]] const MeshShadingParams& meshShadingParams() const {
+    return shading_params_;
+  }
+  void setMeshShadingParams(const MeshShadingParams& params);
 
-  // Toggle the on-screen GPU/CPU timing overlay (drawn over the scene each
-  // frame). Also bound to the 'P' key. Off by default.
+  // Present-pass look knobs (tonemap, exposure, saturation, AO/EDL): read every
+  // frame, call invalidateContent() after changing.
+  using CompositeParams = pj::scene3d::CompositeParams;
+  [[nodiscard]] CompositeParams& compositeParams() {
+    return composite_params_;
+  }
+
+  // The GPU/CPU timing overlay (bottom-left), also toggled with 'P'. Off by default.
   void setShowPerfHud(bool on);
   [[nodiscard]] bool showPerfHud() const {
     return show_perf_hud_;
   }
 
-  // Supersampling factor: the off-screen HDR chain renders at device_px * scale
-  // and the present pass downsamples it to device resolution (true SSAA — it
-  // anti-aliases both silhouettes and in-triangle shading). 1.0 = off (no
-  // behavior change). Benchmark/measurement knob; not wired into the app UI.
+  // Supersampling factor, clamped to [1, 4]: the HDR chain renders at scale x
+  // output pixels and the present pass downsamples it. Screen-space sizes (point
+  // pixels, EDL radius) scale with it; the HDR byte budgets apply to the scaled
+  // size. Ignored on the direct fallback. Not wired into the app UI.
   void setRenderScale(float scale);
   [[nodiscard]] float renderScale() const {
     return render_scale_;
   }
 
-  // Override the off-screen MSAA sample count (1 disables MSAA; 2/4/8 typical).
-  // The scene FBO is independent of the window's backing FBO, so this can be
-  // swept at runtime without recreating the context. Reconfigures immediately
-  // when a context is current. Benchmark knob; not wired into the app UI.
-  void setSceneSamples(int samples);
-  // The sample count the chain is actually allocated at (after driver clamping);
-  // 1 when single-sampled.
-  [[nodiscard]] int achievedSceneSamples() const;
-
-  // Whole-scene-render GPU time (ms), measured non-stalling via a GL_TIME_ELAPSED
-  // query and smoothed by a moving average. 0 until enough frames elapse.
-  [[nodiscard]] double gpuFrameMillis() const {
-    return scene_profiler_.averageMillis();
-  }
-  [[nodiscard]] bool hasGpuResult() const {
-    return scene_profiler_.hasResult();
+  // Frame picking, the one owner for the hover label and the frame context menu:
+  // the TF frame whose origin projects within 20 logical pixels of `logical_pos`
+  // (widget coordinates, independent of DPR and render scale), nearest first;
+  // nullopt when the frame triads are hidden, there is no TF buffer or nothing
+  // is close enough. Projects with the last painted frame's camera, so a pick
+  // matches the image on screen even after the camera moved; before the first
+  // frame that is the identity projection.
+  [[nodiscard]] std::optional<std::string> frameAt(const QPointF& logical_pos) const;
+  // The frame under the cursor, tracked while no mouse button is held; see
+  // hoveredFrameChanged.
+  [[nodiscard]] const std::optional<std::string>& hoveredFrame() const {
+    return hovered_frame_;
   }
 
-  // Test seam: the shadow-map texture id the LAST paintGL handed to shadow
-  // receivers. Non-zero only when the shadow pre-pass actually ran AND fit a valid
-  // light frustum to a caster; 0 when shadows are off, nothing cast, or — the
-  // regression this guards — the scene has no TransformBuffer (so no layer may pose
-  // a caster). Lets the persistence test assert "deleting the data clears the floor
-  // shadow" without fragile shadow-pixel thresholds under software GL.
-  [[nodiscard]] unsigned lastShadowMapIdForTest() const {
-    return last_shadow_map_id_;
+  void refreshAvailableFrames();
+  [[nodiscard]] uint64_t tfRenderKey(PJ::Timepoint time) const;
+
+  // Delivers the current scene as an image to `done`; use it instead of
+  // grabFramebuffer(). A shown view first presents one real frame (asynchronously,
+  // up to 2 s): Qt 6.11.1's OpenGL QRhi advances its frame number only in
+  // swapchain frames, so across grab-only frames a pipeline sharing an SRB keeps
+  // stale uniforms (an old camera). The image is null when that frame never comes
+  // (occluded window). A never-shown view is grabbed at once, and in Qt 6.11.1
+  // only ONCE: each such grab creates a new QRhi without re-running initialize().
+  // `done` runs once on the GUI thread, or never if the view is destroyed first.
+  // Never blocks: no nested event loop, which Qt for WebAssembly cannot run.
+  void grabPresentedFrame(std::function<void(const QImage&)> done);
+  // QRhi::backendName() of the last initialize() ("OpenGL", "Vulkan", ...):
+  // the backend actually used, which can differ from api() after a fallback.
+  // Kept after releaseResources(), so it survives an offscreen grab.
+  [[nodiscard]] const QString& rhiBackendName() const {
+    return rhi_backend_name_;
   }
-  // CPU wall-time submitting the scene in paintGL (ms), smoothed with the same
-  // moving average as the GPU readout. Should stay ~flat across MSAA settings —
-  // the AA cost is the GPU's, not the CPU's. Excludes the HUD draw.
-  [[nodiscard]] double cpuFrameMillis() const {
-    return cpu_avg_.average();
+
+  // Marks what the view draws as changed and requests a frame. Every change to
+  // the scene goes through here (the view's setters and camera moves, the dock's
+  // refresh, async completions, a capture): a plain update() or an expose only
+  // repaints, and a repaint of an unchanged view on an unchanged target presents
+  // the retained frame without rendering one (paintEvent()). A hidden view
+  // renders what changed on its next Show. Target changes (size, format, sample
+  // count, DPR) render on their own, without an invalidation.
+  void invalidateContent();
+
+  // The reason the view currently draws less than it should (a failed stage,
+  // family or overlay), or empty; renderingWarningChanged() reports each change.
+  [[nodiscard]] const QString& renderingWarning() const {
+    return rendering_warning_;
+  }
+  // The last setSceneBounds().
+  [[nodiscard]] const AABB& sceneBounds() const {
+    return scene_bounds_;
   }
 
  signals:
   void framesChanged(const QList<FrameRow>& frames);
   void presentationChanged();
-  // Right-click landed on a TF frame gizmo (hover-pick radius). The dock builds
-  // and shows the menu; the view stays menu-free. Empty-space right-clicks are
-  // NOT emitted — contextMenuEvent ignore()s them so the host dock's standard
-  // Split/Clear menu still appears.
+  void renderingWarningChanged(const QString& warning);
+  // The hovered TF frame changed (see frameAt); empty when the cursor left every frame.
+  void hoveredFrameChanged(const QString& frame);
+  // Right-click landed on a TF frame (frameAt). The dock builds and shows the
+  // menu; the view stays menu-free. Empty-space right-clicks are not emitted.
   void frameContextMenuRequested(const QString& frame, const QPoint& global_pos);
 
  protected:
-  void initializeGL() override;
-  void resizeGL(int w, int h) override;
-  void paintGL() override;
-
+  void initialize(QRhiCommandBuffer* command_buffer) override;
+  void render(QRhiCommandBuffer* command_buffer) override;
+  void releaseResources() override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
-  // Clears any TF frame hover label when the cursor leaves the view, so a stale
-  // name doesn't linger after the mouse moves off the widget.
-  void leaveEvent(QEvent* event) override;
-  // Accepts ONLY when a frame gizmo is under the cursor (emits
-  // frameContextMenuRequested); otherwise ignore()s so the event falls through
-  // to the host dock's standard context menu.
-  void contextMenuEvent(QContextMenuEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void changeEvent(QEvent* event) override;
+  // Marks the Show scope for paintEvent() (QRhiWidget paints synchronously inside it).
+  bool event(QEvent* event) override;
+  // Skips a paint, offscreen frame included, while the target holds the last
+  // full frame (on the same live QRhi, at the size and format the paint would
+  // render) and either nothing changed since (invalidateContent()) or the paint is the one
+  // QRhiWidget sends synchronously inside a Show; that one queues the frame when
+  // something changed while hidden. So a hidden tab shown again composites its
+  // last frame at once and renders only what changed. A paint after a release,
+  // a resize or a target change always renders.
+  void paintEvent(QPaintEvent* event) override;
+  // Clears the hover label when the cursor leaves the view.
+  void leaveEvent(QEvent* event) override;
+  // 'P' toggles the perf HUD.
   void keyPressEvent(QKeyEvent* event) override;
+  // Accepts only on a TF frame (emits frameContextMenuRequested); otherwise
+  // ignore()s so the event reaches the host dock's standard context menu.
+  void contextMenuEvent(QContextMenuEvent* event) override;
 
  private:
-  // Clears the active-gesture latch (and commits a pending camera change via
-  // presentationChanged, same as a normal matching release). Shared by
-  // mouseReleaseEvent and mouseMoveEvent's defensive check for a lost release.
-  void endActiveGesture();
+  // Test-only access to the view's internals (pj_scene3d_widgets_testing): the
+  // tests, the benchmarks and the browser acceptance probes read the last
+  // frame's counters and force stage fallbacks through it, never the app.
+  friend class SceneViewTestAccess;
 
-  // Per-tick "follow a frame" application (called from setTrackerTime). Resolves
-  // the follow target's origin in the fixed frame at render_time_ and shifts the
-  // active camera by the delta vs the previous tick's origin (camera_->followShift),
-  // so the user's orbit/zoom/pan is preserved and only the frame's motion is added.
-  // Seeds (applies no shift) on the first tick after enabling / a fixed-frame change
-  // / a lookup gap. No-op when follow is off or the lookup fails (camera holds).
+  // The optional quality stages, for SceneViewTestAccess::forceStageFallback().
+  enum class QualityStage { kHdr, kSsao, kEdl, kShadow };
+  // Holds `stage` down (releasing its resources) as if it had failed, with a
+  // capability error naming the override, or lets it build again.
+  void forceStageFallback(QualityStage stage, bool force);
+  // The bookkeeping of `stage`, held by its resource owner.
+  [[nodiscard]] QualityStageState& stageState(QualityStage stage) const;
+
+#ifdef PJ_RHI_TEST_HOOKS
+  /// Stage stamps of the last render() and the cost of every initialize() that
+  /// built the base resources, for the frame benchmarks' stage split (read
+  /// through SceneViewTestAccess). Stamps are std::chrono::steady_clock
+  /// nanoseconds, 0 until set. On OpenGL the recorded commands and their buffer
+  /// uploads execute after render_end_ns, in the top-level's QRhi::endFrame().
+  struct StageTimes {
+    std::int64_t render_begin_ns = 0;
+    std::int64_t targets_ready_ns = 0;  // the HDR chain's targets and pipelines exist (built on a resize or new QRhi)
+    std::int64_t admitted_ns = 0;       // admitFrame(): layer prepareForRender() (sync decode and pack), placement
+    std::int64_t prepared_ns = 0;       // prepareFrame() and the overlays: CPU streams, upload enqueue, uniforms
+    std::int64_t render_end_ns = 0;     // every pass recorded (Vulkan copies uploads to staging here)
+    // GPU time of the last completed frame of this widget's command buffer, ms;
+    // 0 unless the QRhi has timestamps (QSG_RHI_PROFILE=1 for a QRhiWidget).
+    double last_gpu_ms = 0.0;
+    int base_builds = 0;              // initialize() calls that built the base resources (a new QRhi or target)
+    double last_base_build_ms = 0.0;  // uniforms, shared meshes and every family's pipelines
+    // Cumulative upload work, as of render_end_ns: point-cloud uploads and their
+    // bytes, marker layer rebuilds (expansion and upload), model mesh builds.
+    std::uint64_t point_uploads = 0;
+    std::uint64_t point_upload_bytes = 0;
+    std::uint64_t marker_rebuilds = 0;
+    std::uint64_t model_mesh_builds = 0;
+    // Cumulative callbacks, so a lifecycle operation (float, redock, show, tab
+    // switch) counts every one it ran, not just the last: paint events received,
+    // the paints skipped (no offscreen frame, paintEvent()), render() calls and
+    // those that drew a full frame.
+    std::uint64_t paint_events = 0;
+    std::uint64_t paints_skipped = 0;
+    std::uint64_t render_calls = 0;
+    std::uint64_t full_renders = 0;
+    // Shadowed frames that rendered the shadow map, and those that kept it.
+    std::uint64_t shadow_passes = 0;
+    std::uint64_t shadow_passes_reused = 0;
+    // Frames withheld because a pipeline could not be created (keepLastFrameOrClear()).
+    std::uint64_t frames_withheld = 0;
+    // Cumulative ns of the full renders' stages (the spans between the stamps
+    // above) and of every base build.
+    std::int64_t targets_ns = 0;
+    std::int64_t admit_ns = 0;
+    std::int64_t prepare_ns = 0;
+    std::int64_t submit_ns = 0;
+    std::int64_t base_build_ns = 0;
+  };
+#endif
+
+  // Per-frame state of the frame contract (rhi/rhi_scene_pass.h): what admission
+  // decided (here, so SceneViewTestAccess can run admission without a QRhi), and,
+  // defined in the .cpp, the frame's camera matrices and the prepared draws every
+  // pass replays.
+  // The effective fixed frame, resolved once per frame. Filled once by
+  // admitFrame(); prepareFrame() reads it and no later step re-admits a layer.
+  struct FrameAdmission {
+    std::string fixed_frame;
+  };
+  struct FrameView;
+  struct PreparedFrame;
+
+  // Shared placement step of the per-family render loops; see the definition.
+  [[nodiscard]] std::optional<Transform> resolveFixedFromSource(
+      const std::string& source_frame, const std::string& fixed_frame, std::optional<PJ::Timepoint> object_stamp,
+      PlacementHold* hold) const;
+  // The follow frame in the effective fixed frame at `time`; nullopt when there
+  // is no follow frame, no TF or no transform.
+  [[nodiscard]] std::optional<Transform> followTransform(PJ::Timepoint time) const;
+  // Where the fixed-frame `point` lands in logical widget pixels through the last
+  // painted frame's camera; nullopt when behind it.
+  [[nodiscard]] std::optional<glm::vec2> projectToWidget(const glm::dvec3& point) const;
+  // What every family's initialize() binds from this view on `rhi`.
+  [[nodiscard]] RhiPassSetup passSetup(QRhi* rhi) const;
+  // The resources every frame binds exist: the uniforms, the shared meshes, and
+  // the families that draw without a layer (the grid, the TF triads' pose pass).
+  [[nodiscard]] bool baseResourcesReady() const;
+  // Every family that has a layer in the view is built. The others are not: a
+  // family's pipelines cost a program each (tens of ms per new QRhi on OpenGL)
+  // and most scenes use two or three families.
+  [[nodiscard]] bool familiesReady(QRhi& rhi) const;
+  template <typename Visitor>
+  void forEachLazyFamily(QRhi& rhi, Visitor&& visitor) const;
+  // The render target holds this view's last full frame, on the live QRhi it was
+  // drawn with, at the size and format the next paint would render.
+  [[nodiscard]] bool retainsLastFrame() const;
+  // The target QRhiWidget's next paint builds (its format, size and samples),
+  // and the logical size and DPR the overlays are laid out for: a fixed
+  // colour-buffer size keeps the target across a resize, not the overlays.
+  struct TargetRequest {
+    TextureFormat format = TextureFormat::RGBA8;
+    QSize pixel_size;
+    int samples = 1;
+    QSize logical_size;
+    qreal dpr = 1.0;
+    bool operator==(const TargetRequest&) const = default;
+  };
+  [[nodiscard]] TargetRequest requestedTarget() const;
+  // Creates what is missing on `rhi`: the base resources, then each family with
+  // a layer, registering its pipelines. Their constant uploads are submitted on
+  // `command_buffer` when every part was built, discarded otherwise. The name of
+  // the part that failed, or nullptr; a failure leaves them partly built:
+  // failScene() next. Runs in initialize(), and in render() for a family whose
+  // first layer came later.
+  [[nodiscard]] const char* createSceneResources(QRhi* rhi, QRhiCommandBuffer* command_buffer);
+  // createSceneResources() minus the submission: records the constant uploads
+  // into `constants` (RhiPassSetup::updates).
+  [[nodiscard]] const char* createMissingResources(QRhi* rhi, QRhiResourceUpdateBatch* constants);
+  // releaseResources() and the failure state for `failed_part`: only the
+  // backdrop draws until the next initialize() (a new target or QRhi) retries.
+  void failScene(const char* failed_part);
+  // A frame that lost a pipeline is not presented: the target keeps the last
+  // full frame where it holds one, else it is cleared to the backdrop.
+  void keepLastFrameOrClear(QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target);
+  // An empty pass cleared to the theme backdrop: a frame that draws nothing.
+  void clearToBackdrop(QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target);
+  // Enters (non-empty `reason`) or leaves the failure state; see the class
+  // comment. `emit_failed` false when echoing QRhiWidget's own renderFailed().
+  void setRenderFailure(QString reason, bool emit_failed = true);
+
+  // Frame contract steps, once per render() in this order.
+  void admitFrame(QRhi* rhi, FrameAdmission& admission);
+  [[nodiscard]] FrameView frameView(QRhi* rhi) const;
+  QRhiResourceUpdateBatch* prepareFrame(
+      QRhi* rhi, const QSize& render_size, const FrameView& view, const FrameAdmission& admission,
+      PreparedFrame& frame);
+  void submitShadowPass(QRhiCommandBuffer* command_buffer, QRhiResourceUpdateBatch* updates);
+  void submitScenePass(
+      QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target, ScenePass pass, const QColor& clear,
+      QRhiResourceUpdateBatch* updates, const PreparedFrame& frame);
+  void submitEdlMeshMask(QRhiCommandBuffer* command_buffer, const PreparedFrame& frame);
+
+  // Calls `visitor` with each scene family (the passes with per-layer draws), in
+  // the order one layer's draws submit.
+  template <typename Visitor>
+  void forEachFamily(Visitor&& visitor) const;
   void applyFollow();
-
-  // Draw the GPU/CPU timing overlay with QPainter on top of the rendered scene.
-  // Called at the end of paintGL when show_perf_hud_; uses the latest harvested
-  // profiler result (a few frames stale, which is imperceptible for a HUD).
-  void drawPerfHud();
-  // Hover hit-test: project every resolvable TF frame origin with the last
-  // painted proj*view and pick the one under `pos_logical` (logical widget
-  // pixels). Updates hovered_frame_ and repaints only when the result changes.
-  // A no-op (and clears any hover) when axes are hidden or there is no TF buffer.
-  void updateHoverFrame(const QPointF& pos_logical);
-  // The pick core shared by hover and the context menu: projects every
-  // resolvable frame origin through the cached last_view_proj_ and returns the
-  // frame within kHoverRadiusPx of the cursor, if any. Const with mutable
-  // scratch (hover_all_frames_/hover_points_) so both call sites stay
-  // allocation-free.
-  [[nodiscard]] std::optional<std::string> pickFrameAt(const QPointF& pos_logical) const;
-  // Draw the hovered TF frame's name in a small HUD box anchored at the frame's
-  // CURRENT projected position (re-projected from frame_ctx so it tracks the
-  // frame as the scene streams / camera moves). QPainter over the presented FBO,
-  // same 2D-over-3D path as drawPerfHud. No-op when nothing is hovered or the
-  // frame no longer resolves. Call last in paintGL, after all GL submission.
-  void drawHoverLabel(const FrameContext& frame_ctx);
-  // Close the GPU timer, record the CPU submission time, and draw the HUD — the
-  // shared tail of both paintGL exits. Gated on show_perf_hud_.
-  void finishFrameInstrumentation();
-  // Release every pass's and layer's GL resources, returning them to their
-  // pre-initializeGL state. Connected to the current QOpenGLContext's
-  // aboutToBeDestroyed (rewired per context in initializeGL) and also called
-  // from the destructor. QOpenGLWidget recreates its context on every reparent
-  // (ADS dock/float/split) and destroys it on teardown; VAOs/FBOs aren't shared
-  // across contexts, so stale handles must be dropped and rebuilt.
-  void releaseGlResources();
-  // Compile the fullscreen passthrough used to present the resolved HDR color
-  // into the backing FBO. Per-context; rebuilt by initializeGL after recreation.
-  void initializePresentProgram();
-  // Clear + draw the full pass/layer sequence into the currently bound target.
-  // mask_alpha_writes applies the legacy Wayland alpha guard (direct-to-backing
-  // fallback only; the off-screen path forces alpha=1.0 in the present shader).
-  void renderScene(const ViewParams& view_params, const FrameContext& frame_ctx, bool mask_alpha_writes);
-
-  // Owned passes that don't depend on the layer count.
-  AxisRenderPass axes_;
-  GridRenderPass grid_;
-  TfConnectionsRenderPass tf_connections_;
-  AxisOverlayPass overlay_;
-  // Off-screen HDR render chain (Phase 0A): geometry renders into an RGBA16F +
-  // DEPTH32F FBO at the backing FBO's achieved MSAA count, is resolved to
-  // single-sample, and is presented to the backing FBO by the passthrough below.
-  // Per-context, like every pass: released in releaseGlResources, rebuilt lazily.
-  SceneHdrFbo scene_fbo_;
-  // Fullscreen passthrough (empty-VAO triangle) presenting the resolved color
-  // into the backing FBO; forces alpha=1.0 (the Wayland opaque-surface guard).
-  std::optional<gl::Program> present_program_;
-  gl::VertexArray present_vao_;
-  // Screen-space AO over the resolved depth (Phase D); composite multiplies its
-  // output into the HDR color. Degrades to no-AO when unavailable (u_has_ao=0).
-  SsaoPass ssao_;
-  // Eye-dome lighting over the resolved depth (Phase B); composite multiplies
-  // its shade factor into the HDR color. Same degrade rule as SSAO.
-  EdlPass edl_;
-  // Mesh-shadow depth-map target (geometry PRE-pass, before renderScene — unlike the
-  // post-pass ssao_/edl_). Per-context; released in releaseGlResources(). Active only
-  // when shading_params_.shadows_enabled and the light-frustum fit is valid.
-  ShadowMapPass shadow_pass_;
-  CompositeParams composite_params_;
-  // Per-view mesh/collision look knobs, copied into ViewParams::shading each paintGL.
-  MeshShadingParams shading_params_;
-
-  // Non-owning layer registry, in the order supplied by SceneDockWidget.
-  std::vector<Scene3DLayer*> layers_;
-
-  // Active camera controller (one of the CameraModel kinds). Owned; swapped by
-  // setCameraModel(). Defaults to the improved Orbit.
-  std::unique_ptr<ICamera> camera_{std::make_unique<OrbitCamera>()};
-  CameraModel camera_model_{CameraModel::kOrbit};
-
-  // Latest scene extent, retained so a camera-model swap can re-apply it to the
-  // freshly constructed controller (bounds are not part of CameraState).
-  AABB scene_bounds_{};
+  [[nodiscard]] std::string effectiveFixedFrame() const;
+  // Rebuilds the TF frame triads (drawn right after the grid prelude) when
+  // their inputs changed since the last frame.
+  void buildTfTriads(const glm::dvec3& render_origin, const std::string& fixed_frame);
+  bool ensureShadowResources(QRhi* owner);
+  void releaseShadowResources(bool restore_model_bindings);
+  // The next shadowed frame renders the shadow map again instead of keeping it.
+  void discardShadowMap();
+  bool ensureHdrResources(QRhi* owner, const QSize& size);
+  // Why `rhi` can never run the HDR chain; empty when it can (the chain may still
+  // be refused at runtime: size, budget, a missing pipeline variant).
+  [[nodiscard]] static QString hdrUnsupportedReason(QRhi& rhi);
+  // The per-size HDR part, after SSAO's and EDL's targets that reference it.
+  void releaseHdrTargetResources();
+  void releaseHdrResources();
+  // Drops the HDR chain for output `size` (a resize re-probes) with `reason` as
+  // its warning, logged when it changes. Always false.
+  bool rejectHdr(const QSize& size, QString reason);
+  bool ensureSsaoResources(QRhi* owner, const QSize& size);
+  bool ensureEdlResources(QRhi* owner, const QSize& size);
+  // EDL's target, after the model pass's mask pipelines that target its render pass.
+  void releaseEdlResources();
+  void updateRenderingWarning();
+  void setHoveredFrame(std::optional<std::string> frame);
+  // Uploads the corner gizmo, oriented by `view` (the render-origin-relative
+  // view matrix), and this frame's HUD / hover-label images.
+  void prepareOverlays(
+      QRhiResourceUpdateBatch* updates, const QSize& output_size, const glm::mat4& view,
+      const std::string& fixed_frame);
+  void emitPresentationIfChanged(const CameraState& before);
 
   std::shared_ptr<TransformBuffer> tf_;
-  // The time the scene renders at. Distinct from the global playhead: the dock
-  // pushes a clamped time via setTrackerTime, and paint is async from ticks, so
-  // this is render state, not the clock. Fed to the per-frame FrameContext.
+  // The cursor, in the entry clock (Clock::kEntry); a layer's object is placed at its own stamp instead
+  // (resolveFixedFromSource()).
   PJ::Timepoint render_time_{};
   std::string fixed_frame_;
-  // "Follow a frame" state. follow_frame_ empty = not following (today a non-empty
-  // frame implies FollowMode::kPosition; the enum reserves the slot for future
-  // Heading/Pose modes). The camera tracks this frame's origin (resolved in
-  // fixed_frame_) each tick. follow_prev_origin_ is that origin at the previous
-  // APPLIED tick; the delta to it is what gets fed to camera_->followShift.
-  // follow_seeded_ is false until the first lookup seeds follow_prev_origin_, so
-  // enabling follow or changing the fixed frame applies no shift on its seeding
-  // tick (no jump).
   std::string follow_frame_;
-  glm::dvec3 follow_prev_origin_{0.0};
+  glm::dvec3 follow_previous_origin_{0.0};
   bool follow_seeded_ = false;
-  // Scratch frame list reused by tfRenderKey() each gate check to avoid a per-tick
-  // heap allocation (mirrors how the render passes reuse getAllFrames(out)).
+
+  std::unique_ptr<ICamera> camera_{std::make_unique<OrbitCamera>()};
+  CameraModel camera_model_ = CameraModel::kOrbit;
+  AABB scene_bounds_{};
+  // proj * view of the last painted frame, relative to last_render_origin_: what
+  // frame picking projects with, so a pick matches the image on screen. Identity
+  // and the world origin until the first frame.
+  glm::mat4 last_view_projection_{1.0F};
+  glm::dvec3 last_render_origin_{0.0};
+  // The pair above as it was before the frame in flight: a withheld frame
+  // (keepLastFrameOrClear) restores it, since its image never reaches the screen.
+  glm::mat4 shown_view_projection_{1.0F};
+  glm::dvec3 shown_render_origin_{0.0};
+
+  GridStyle grid_style_ = GridStyle::kLines;
+  float grid_extent_m_ = 10.0F;
+  int grid_divisions_ = 10;
+  bool grid_visible_ = true;
+  bool axes_visible_ = true;
+  float gizmo_size_m_ = 0.15F;
+  float gizmo_opacity_ = 1.0F;
+  bool tf_connections_visible_ = true;
+  MeshShadingParams shading_params_;
+
+  uint64_t last_frames_revision_ = ~uint64_t{0};
+  QList<FrameRow> last_frame_list_;
   mutable std::vector<std::string> tf_render_key_frames_;
 
-  QList<FrameRow> last_frame_list_;
+  QRhi* resource_rhi_ = nullptr;
+  QString rhi_backend_name_;
+  // The widget target the passes were built for. setSampleCount() or
+  // setColorBufferFormat() recreate it on the same QRhi, and initialize() then
+  // rebuilds every resource bound to the old one.
+  PJ::RhiTargetKey built_target_;
+  QRhiBuffer* uniform_buffer_ = nullptr;
+  QRhiBuffer* render_mode_uniform_buffer_ = nullptr;
+  QRhiBuffer* annotation_render_mode_uniform_buffer_ = nullptr;
+  int render_mode_hdr_written_ = -1;  // the hdr flag both render-mode blocks hold; -1: unwritten
+  // The owner of every scene pipeline: the direct ones and their HDR-colour and depth-replay variants.
+  std::unique_ptr<ScenePipelineRegistry> pipelines_;
+  // Unit meshes shared by the families (cube, cube fan, arrow).
+  std::unique_ptr<RhiSharedGeometry> shared_geometry_;
+  // Camera/lighting/shadow parameters: binding 6 of the model materials,
+  // binding 1 of the grid shadow receiver.
+  QRhiBuffer* model_uniform_buffer_ = nullptr;
+  bool force_depth_replay_for_test_ = false;
+  // The quality stages' resources, one owner each
+  // (rhi/scene_view_widget_rhi_quality_p.h), released in the order
+  // releaseResources() documents.
+  std::unique_ptr<ShadowResources> shadow_;
+  std::unique_ptr<HdrResources> hdr_;
+  std::unique_ptr<SsaoResources> ssao_;
+  std::unique_ptr<EdlResources> edl_;
+  QRhiBuffer* ssao_uniform_buffer_ = nullptr;  // a base resource: its kernel is a constant upload
+  int last_line_vertex_count_ = 0;
+  int last_triangle_vertex_count_ = 0;
+  int last_resolved_frame_count_ = 0;
+  // The layers in logical (dock) order, and each one's registration
+  // (Scene3DLayer::sceneContributions()), read once in setLayers().
+  std::vector<Scene3DLayer*> layers_;
+  std::vector<SceneContributions> layer_contributions_;
+  std::vector<std::uint32_t> last_submitted_layer_ids_;
+  // Reused across frames: the prepared frame and the per-slot "submitted" marks.
+  std::unique_ptr<PreparedFrame> frame_;
+  std::vector<char> submitted_slots_;
 
-  // Whether the TF axis triads are drawn (see setAxesVisible). Does not affect
-  // layer frame resolution, only the axes pass.
-  bool axes_visible_ = true;
-  // Whether the TF parent-connection lines draw (see setTfConnectionsVisible).
-  bool tf_connections_visible_ = true;
-  // Whether the ground grid draws (Part C "Grid" eye toggle).
-  bool grid_visible_ = true;
-  // One warning per context when the HDR chain is unavailable and paintGL falls
-  // back to direct-to-backing rendering; re-armed by initializeGL.
-  bool scene_fbo_fallback_logged_ = false;
+  std::unique_ptr<PointRhiPass> point_pass_;
 
-  // ---- Performance instrumentation state (see the benchmark-hooks block) -----
-  // Non-stalling GPU timer over the scene passes; per-context, released in
-  // releaseGlResources() and rebuilt lazily.
-  gl::GpuProfiler scene_profiler_;
-  // CPU stopwatch over the paintGL submission span (excludes the HUD draw).
-  QElapsedTimer cpu_timer_;
-  // Smoothed CPU submission time (same moving average as the GPU readout).
-  MovingAverage cpu_avg_;
-  // Supersampling factor for the off-screen chain (1.0 = off; see setRenderScale).
-  float render_scale_ = 1.0f;
-  // Explicit MSAA override (-1 = follow the context's achieved sample count, the
-  // default; >= 0 = forced by setSceneSamples for the benchmark sweep).
-  int scene_samples_override_ = -1;
-  // Whether the on-screen GPU/CPU timing overlay draws (toggle: 'P').
+  // Pose triads plus the TF "Frames" gizmos, drawn as solid instanced arrow
+  // triads (the desktop look) with the pose pipeline and arrow mesh.
+  std::unique_ptr<PoseRhiPass> pose_pass_;
+  // TF triad arms of the current frame, each frame's fixed-frame transform
+  // (relative to the render origin) baked into its instance model.
+  std::vector<PoseTriadInstance> tf_triad_instances_;
+  std::vector<std::string> tf_triad_frames_;
+  // What tf_triad_instances_ were built from; the revision moves on each rebuild.
+  struct TfTriadKey {
+    const TransformBuffer* tf = nullptr;
+    uint64_t tf_revision = 0;
+    PJ::Timepoint time{};
+    std::string fixed_frame;
+    glm::dvec3 render_origin{0.0};
+    bool axes_visible = false;
+    float size = 0.0F;
+    float opacity = 0.0F;
+    std::optional<std::string> hovered_frame;
+
+    bool operator==(const TfTriadKey&) const = default;
+  };
+  std::optional<TfTriadKey> tf_triad_key_;
+  std::uint64_t tf_triad_revision_ = 0;
+
+  std::unique_ptr<OccupancyRhiPass> occupancy_pass_;
+  // Grid + TF connection lines, drawn first in every scene pass.
+  std::unique_ptr<GridRhiPass> grid_pass_;
+  std::unique_ptr<GridMapRhiPass> gridmap_pass_;
+  // Standalone and pose-embedded trails.
+  std::unique_ptr<TrailRhiPass> trail_pass_;
+
+  std::unique_ptr<VoxelRhiPass> voxel_pass_;
+  int max_3d_texture_size_ = 0;
+
+  std::unique_ptr<MarkerRhiPass> marker_pass_;
+  std::unique_ptr<ModelRhiPass> model_pass_;
+  bool show_paint_pending_ = false;  // inside a Show event (event()), nested paint included
+  bool content_changed_ = true;      // invalidateContent() since the last full frame
+  // requestedTarget() when the last full frame drew; empty: none on this target.
+  std::optional<TargetRequest> last_frame_request_;
+  bool last_shadow_fit_valid_ = false;
+  AABB last_shadow_bounds_;
+  // Last shadow failure already forwarded to the caster layers, so a persistent
+  // error is noted once instead of re-marked every frame.
+  QString noted_shadow_failure_;
+  QString rendering_warning_;
+  // Why the base resources could not be built; set only in the failure state.
+  PJ::RhiFailureLatch render_failure_;
+  // Why the overlays (corner gizmo, HUD, hover label) are off; empty while they draw.
+  QString overlay_failure_;
+
+  std::unique_ptr<OverlayRhiPass> overlay_pass_;
+  CompositeParams composite_params_;
+  float render_scale_ = 1.0F;
   bool show_perf_hud_ = false;
-
-  QPoint last_mouse_pos_;
-  Qt::MouseButton active_button_{Qt::NoButton};
-  bool camera_gesture_changed_ = false;
-
-  // ---- TF frame hover-label state ------------------------------------------
-  // proj*view from the most recent paintGL, so the hover hit-test (a mouse-move
-  // event, async from paint) projects frame origins with the exact matrices the
-  // scene was last drawn with. Identity until the first paint. NOTE: this is the
-  // CAMERA-RELATIVE matrix (built against render_origin_), so the hover hit-test
-  // must project origins that have had render_origin_ subtracted — which it gets
-  // for free because it resolves them through a FrameContext seeded with the same
-  // render_origin_ (see updateHoverFrame / camera-relative rendering below).
-  glm::mat4 last_view_proj_{1.0f};
-  // World point subtracted from every transform when rendering this frame, so a
-  // camera at large world coordinates (following a far frame, e.g. a UTM/GPS map)
-  // doesn't lose geometry/view deltas to float32 cancellation. Set each paintGL to
-  // the camera focal; the async hover hit-test reuses it to stay consistent with
-  // last_view_proj_. {0,0,0} until the first paint = absolute world.
-  glm::dvec3 render_origin_{0.0};
-  // Shadow-map id the last paintGL passed to receivers (see lastShadowMapIdForTest).
-  unsigned last_shadow_map_id_ = 0U;
-  // The TF frame currently under the cursor, or empty when none. Holds only the
-  // name; the label re-projects the live origin each paint so it stays glued.
+  QElapsedTimer cpu_timer_;
+#ifdef PJ_RHI_TEST_HOOKS
+  StageTimes stage_times_;
+#endif
+  MovingAverage cpu_average_;
+  MovingAverage gpu_average_;
+  // Overlay images are re-rasterised only when their content changes, so the
+  // pass keeps their textures (keyed by QImage::cacheKey()).
+  QStringList hud_lines_;
+  QImage hud_image_;
+  // Paces the HUD text refresh; invalid while the HUD is hidden, so the first
+  // frame after showing it refreshes at once.
+  QElapsedTimer hud_refresh_timer_;
+  std::string hover_label_frame_;
+  QImage hover_label_image_;
+  QImage hover_ring_image_;
+  qreal overlay_image_dpr_ = 0.0;
+  std::array<QRect, 3> last_overlay_rects_{};
   std::optional<std::string> hovered_frame_;
-  // Reused across hover hit-tests to avoid per-event heap churn (the cursor can
-  // emit many move events per second). hover_points_ is INDEX-ALIGNED with
-  // hover_all_frames_ — a frame that doesn't project gets an off-screen sentinel
-  // — so the winning pick index maps straight back to a frame name.
-  mutable std::vector<std::string> hover_all_frames_;
-  mutable std::vector<glm::vec2> hover_points_;
+  mutable std::vector<std::string> pick_frames_;
+  mutable std::vector<glm::vec2> pick_points_;
 
-  // Connection to the current GL context's aboutToBeDestroyed signal. Rewired to
-  // each new context in initializeGL and disconnected in the destructor so the
-  // teardown hook never fires on a half-destroyed widget.
-  QMetaObject::Connection context_cleanup_connection_;
+  QPoint last_mouse_position_;
+  Qt::MouseButton active_button_ = Qt::NoButton;
+  bool camera_gesture_changed_ = false;
 };
 
 }  // namespace pj::scene3d
-
-#endif  // PJ_TARGET_WASM

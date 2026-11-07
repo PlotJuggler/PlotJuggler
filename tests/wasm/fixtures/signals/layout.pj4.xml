@@ -1,0 +1,38 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="source" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="signals-tab" tab_name="Signals">
+      <Container>
+        <DockSplitter count="2" orientation="-" sizes="0.50000000;0.50000000">
+          <DockArea id="signals-periodic" name="Periodic">
+            <plot id="signals-plot-1" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <curve color="#1f77b4" dataset_id="1" dataset_path="data.csv" dataset_source="data.csv" field="sine" markers_visible="true" topic="data" visible="true"/>
+              <curve color="#d62728" dataset_id="1" dataset_path="data.csv" dataset_source="data.csv" field="cosine" markers_visible="true" topic="data" visible="true"/>
+              <curve color="#1ac938" dataset_id="1" dataset_path="data.csv" dataset_source="data.csv" field="square" markers_visible="true" topic="data" visible="true"/>
+            </plot>
+          </DockArea>
+          <DockArea id="signals-transient" name="Transient">
+            <plot id="signals-plot-2" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <curve color="#1f77b4" dataset_id="1" dataset_path="data.csv" dataset_source="data.csv" field="sawtooth" markers_visible="true" topic="data" visible="true"/>
+              <curve color="#d62728" dataset_id="1" dataset_path="data.csv" dataset_source="data.csv" field="chirp" markers_visible="true" topic="data" visible="true"/>
+              <curve color="#1ac938" dataset_id="1" dataset_path="data.csv" dataset_source="data.csv" field="damped" markers_visible="true" topic="data" visible="true"/>
+            </plot>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+  <data_processors/>
+  <previouslyLoaded_Datafiles>
+    <fileInfo content_sha256="99c697e781c7a420941a166fb917c30793649298e7121a113cb941bbd0c6c555" display_offset_ns="0" filename="data.csv" prefix="" timeline_order="0">
+      <dataset display_offset_ns="0" source_index="0" source_name="data.csv" timeline_order="0"/>
+      <plugin ID="CSV Loader" filepath_mode="source" manifest_id="csv-loader"><![CDATA[{"column_history":["time"],"combined_date_index":-1,"combined_time_index":-1,"custom_time_format":"","delimiter":",","detect_delimiter":true,"filepath":"data.csv","time_column_index":0,"time_mode":"column","use_custom_format":false}]]></plugin>
+    </fileInfo>
+  </previouslyLoaded_Datafiles>
+  <right_panel_state splitter_sizes="1278,0" style="0" width="1"/>
+  <left_panel_state sources_tab="file" streaming_buffer="5" streaming_source=""/>
+  <curve_list_state custom_filter="" datasets_filter="" show_topics="true" show_values="false"/>
+  <chrome_state main_splitter_sizes="400,844"/>
+  <source_timeline name_column_width="49" scroll_left_ns="0" scroll_top_px="0" snap="true" zoom="9.9999999999999995e-08"/>
+</root>

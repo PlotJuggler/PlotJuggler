@@ -22,6 +22,7 @@
 #include <QMimeData>
 #include <QPushButton>
 #include <QScopedValueRollback>
+#include <algorithm>
 #ifdef PJ_TARGET_WASM
 #include <QPointer>
 #include <QTimer>
@@ -71,6 +72,13 @@ QDomElement clipboardWidgetElement(QDomDocument& doc) {
 
 bool objectElementSeedsWidget(const QDomElement& element) {
   return !element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull();
+}
+
+bool isPanelOnlyItem(const CatalogItem& item) {
+  const auto* object = asObjectTopic(item);
+  const auto* advertised = asAdvertisedTopic(item);
+  return (object != nullptr && isPanelOnlyObjectType(object->object_type)) ||
+         (advertised != nullptr && isPanelOnlyObjectType(advertised->classification));
 }
 
 }  // namespace
@@ -341,6 +349,27 @@ bool DockWidget::eventFilter(QObject* watched, QEvent* event) {
       case QEvent::DragMove: {
         auto* drag = static_cast<QDropEvent*>(event);
         if (drag->mimeData() != nullptr && drag->mimeData()->hasFormat(CurveTreeView::catalogItemsMimeType())) {
+          if (object_widget_ != nullptr && catalog_ != nullptr) {
+            const QStringList keys = CurveTreeView::decodeCatalogKeys(drag->mimeData());
+            const bool compatible = std::any_of(keys.begin(), keys.end(), [this](const QString& key) {
+              const auto item = catalog_->itemDescriptor(key);
+              if (!item) {
+                return false;
+              }
+              if (const auto* object = asObjectTopic(*item)) {
+                return object_widget_->canAcceptObjectTopic(object->object_topic_id, object->object_type);
+              }
+              if (const auto* advertised = asAdvertisedTopic(*item);
+                  advertised != nullptr && advertised->classification != sdk::BuiltinObjectType::kNone) {
+                return object_widget_->canAcceptObjectTopic({}, advertised->classification);
+              }
+              return true;
+            });
+            if (!compatible) {
+              drag->ignore();
+              return true;
+            }
+          }
           drag->acceptProposedAction();
           return true;
         }
@@ -386,14 +415,20 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   }
   auto* new_widget = new DockWidget(plot, session_, catalog_, parent_docker, nullptr, false);
   new_widget->setObjectWidgetFactory(object_widget_factory_);
+  new_widget->setConfigurationPanelVisibilityQuery(configuration_panel_visible_);
   auto* area = parent_docker->addDockWidget(dock_area, new_widget, dockAreaWidget());
   area->setAllowedAreas(ads::OuterDockAreas);
 
   connect(new_widget, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
+  connect(
+      new_widget, &DockWidget::settingsPanelToggleRequested, parent_docker, &PlotDocker::settingsPanelToggleRequested);
   connect(new_widget, &DockWidget::plotWidgetCreated, parent_docker, &PlotDocker::plotWidgetAdded);
   connect(new_widget, &DockWidget::objectFamilyRequested, parent_docker, &PlotDocker::objectFamilyRequested);
-  connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, &PlotDocker::firstObjectTopicAdded);
+  connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, [parent_docker, new_widget] {
+    emit parent_docker->firstObjectTopicAdded(new_widget);
+  });
   connect(new_widget, &DockWidget::placeholderTopicDropped, parent_docker, &PlotDocker::placeholderTopicDropped);
+  connect(new_widget, &DockWidget::topicRefused, parent_docker, &PlotDocker::topicRefused);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
   if (new_widget->plotWidget() != nullptr) {
@@ -410,8 +445,30 @@ PlotWidget* DockWidget::ensurePlotWidget() {
   return plot_widget_;
 }
 
-void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
-  if (catalog_ == nullptr || keys.empty()) {
+void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
+  if (catalog_ == nullptr) {
+    return;
+  }
+
+  // Before anything else: the first key picks the branch below, and an object row sorts ahead of scalars.
+  QStringList keys;
+  QStringList left_out;
+  for (const QString& key : dropped_keys) {
+    const auto item = catalog_->itemDescriptor(key);
+    if (item.has_value() && isPanelOnlyItem(*item)) {
+      left_out.append(item->topic_name);
+    } else {
+      keys.append(key);
+    }
+  }
+  if (left_out.size() == 1) {
+    emit topicRefused(tr("\"%1\" cannot be displayed on its own, but a plugin panel can read it.")
+                          .arg(left_out.front().toHtmlEscaped()));
+  } else if (!left_out.isEmpty()) {
+    emit topicRefused(
+        tr("%1 topics cannot be displayed on their own, but a plugin panel can read them.").arg(left_out.size()));
+  }
+  if (keys.empty()) {
     return;
   }
 
@@ -755,6 +812,7 @@ void DockWidget::pasteObjectWidgetFromClipboard() {
       object_widget_awaiting_first_topic_ &&
       (!element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull());
   if (object_widget_->xmlLoadState(element)) {
+    object_widget_->finishRestore();
     if (seeds_empty_click_created_widget) {
       object_widget_awaiting_first_topic_ = false;
       emit firstObjectTopicAdded();
@@ -803,6 +861,7 @@ void DockWidget::pastePlaceholderWidgetFromClipboard() {
     setPlaceholderWidget();
     return;
   }
+  object_widget_->finishRestore();
   object_widget_awaiting_first_topic_ = !seeded;
   if (seeded) {
     emit firstObjectTopicAdded();
@@ -840,6 +899,9 @@ void DockWidget::clearCurrentContent(bool delete_content) {
     removeObjectContextMenuFilter(content_widget_);
     takeWidget();
     if (delete_content) {
+      if (object_widget_ != nullptr) {
+        object_widget_->aboutToBeDiscarded();
+      }
       content_widget_->deleteLater();
     }
   }
@@ -878,6 +940,10 @@ void DockWidget::removeObjectContextMenuFilter(QWidget* root) {
   }
 }
 
+void DockWidget::setConfigurationPanelVisibilityQuery(std::function<bool()> query) {
+  configuration_panel_visible_ = std::move(query);
+}
+
 void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
   const QString theme = currentTheme();
 #ifdef PJ_TARGET_WASM
@@ -892,6 +958,12 @@ void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
 #endif
   menu.setObjectName(u"PJMenu"_s);
   menu.setProperty("categorySeparators", true);
+  const bool settings_open = configuration_panel_visible_ && configuration_panel_visible_();
+  menu.addAction(settings_open ? tr("Close Settings") : tr("Open Settings"), this, [this]() {
+    focusSelf();
+    emit settingsPanelToggleRequested(this);
+  });
+  addActionCategorySeparator(menu);
   QAction* copy_action = menu.addAction(
       QIcon(loadSvg(":/resources/svg/copy.svg", theme)), tr("Copy"), this, [this]() { copyObjectWidgetToClipboard(); });
   copy_action->setEnabled(!objectWidgetClipboardTag().isEmpty());

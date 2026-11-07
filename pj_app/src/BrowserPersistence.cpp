@@ -20,6 +20,8 @@
 #include <array>
 #include <utility>
 
+#include "LoadInput.h"
+
 #if defined(PJ_TARGET_WASM) && defined(PJ_WASM_ENABLE_INGRESS_PROBE)
 #include <emscripten/emscripten.h>
 #endif
@@ -43,9 +45,9 @@ EM_JS(void, pj_wasm_install_persistence_test_probes, (), {
 // clang-format on
 #endif
 
-constexpr auto kSessionSettingsRoot = "/tmp/plotjuggler4-settings";
-constexpr auto kPreferencesKey = "BrowserPersistence/preferences_v1";
-constexpr auto kRecentLayoutsKey = "BrowserPersistence/recent_generic_layouts_v1";
+[[maybe_unused]] constexpr auto kSessionSettingsRoot = "/tmp/plotjuggler4-settings";
+[[maybe_unused]] constexpr auto kPreferencesKey = "BrowserPersistence/preferences_v1";
+[[maybe_unused]] constexpr auto kRecentLayoutsKey = "BrowserPersistence/recent_generic_layouts_v1";
 constexpr int kPreferencesVersion = 1;
 constexpr int kRecentLayoutsVersion = 1;
 constexpr int kMaxRecentLayouts = 5;
@@ -162,7 +164,8 @@ bool exactInt(const QVariant& value, int minimum, int maximum, int& result) {
 
 bool safeShortIdentifier(const QString& value) {
   if (value.size() > kMaxIdentifierLength || value.contains(u'/') || value.contains(u'\\') ||
-      value.contains(u"pj-upload://"_s, Qt::CaseInsensitive) || value.contains(u"/pj_uploads"_s)) {
+      value.contains(QLatin1StringView(kBrowserUploadScheme), Qt::CaseInsensitive) ||
+      value.contains(u"/pj_uploads"_s)) {
     return false;
   }
   for (const QChar character : value) {
@@ -516,7 +519,8 @@ std::optional<QVariant> BrowserPersistence::sanitizePreference(const QString& ke
 }
 
 bool BrowserPersistence::isSafeGenericLayoutRecipe(const QByteArray& xml) {
-  if (xml.isEmpty() || xml.size() > kMaxLayoutBytes || xml.contains("pj-upload://") || xml.contains("/pj_uploads")) {
+  if (xml.isEmpty() || xml.size() > kMaxLayoutBytes || xml.contains(kBrowserUploadScheme) ||
+      xml.contains("/pj_uploads") || xml.contains(kStreamIdentityScheme)) {
     return false;
   }
   QDomDocument document;
@@ -524,29 +528,33 @@ bool BrowserPersistence::isSafeGenericLayoutRecipe(const QByteArray& xml) {
     return false;
   }
   const QDomElement root = document.documentElement();
-  // <materialize> (a cloud-provider source record) is source-bound by
-  // definition; in a well-formed layout it only ever appears under
-  // <previouslyLoaded_Datafiles>, but reject it anywhere so a hand-crafted
-  // document cannot smuggle one into durable browser storage.
+  // <materialize> (a cloud-provider source record) and a stream record are
+  // source-bound by definition; in a well-formed layout they only appear under
+  // their <previouslyLoaded_*> wrappers, but reject them anywhere so a
+  // hand-crafted document cannot smuggle one into durable browser storage.
   if (root.tagName() != "root"_L1 || root.attribute(u"binding"_s) != "generic"_L1 ||
       !root.firstChildElement(u"previouslyLoaded_Datafiles"_s).isNull() ||
       !document.elementsByTagName(u"plugin"_s).isEmpty() || !document.elementsByTagName(u"transform"_s).isEmpty() ||
-      !document.elementsByTagName(u"materialize"_s).isEmpty()) {
+      !document.elementsByTagName(u"materialize"_s).isEmpty() ||
+      !document.elementsByTagName(u"previouslyLoaded_StreamingSources"_s).isEmpty() ||
+      !document.elementsByTagName(u"streamInfo"_s).isEmpty()) {
     return false;
   }
   // Scan the decoded DOM as well as the original bytes so XML entities cannot
-  // disguise an upload identity or MEMFS backing path.
-  const auto contains_ephemeral = [](const QString& value) {
-    return value.contains(u"pj-upload://"_s, Qt::CaseInsensitive) || value.contains(u"/pj_uploads"_s);
+  // disguise an upload identity, a MEMFS backing path or a stream identity.
+  const auto contains_source_identity = [](const QString& value) {
+    return value.contains(QLatin1StringView(kBrowserUploadScheme), Qt::CaseInsensitive) ||
+           value.contains(u"/pj_uploads"_s) ||
+           value.contains(QLatin1StringView(kStreamIdentityScheme), Qt::CaseInsensitive);
   };
   for (QDomElement element = root; !element.isNull();) {
     const QDomNamedNodeMap attributes = element.attributes();
     for (int index = 0; index < attributes.size(); ++index) {
-      if (contains_ephemeral(attributes.item(index).nodeValue())) {
+      if (contains_source_identity(attributes.item(index).nodeValue())) {
         return false;
       }
     }
-    if (contains_ephemeral(element.text())) {
+    if (contains_source_identity(element.text())) {
       return false;
     }
     QDomElement next = element.firstChildElement();

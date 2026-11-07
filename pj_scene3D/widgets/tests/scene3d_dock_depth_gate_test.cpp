@@ -9,10 +9,10 @@
 // "committed object dock refused the topic" path fires instead of a broken layer).
 //
 // The dock is exercised through its public IObjectViewer surface against a real
-// SessionManager/ObjectStore. The GL view is created lazily (a queued singleShot
-// in the base ctor) and never realized here, so no OpenGL context is required —
-// addTopic only touches the view behind a `view_ != nullptr` guard, and building
-// a DepthCloudLayer is pure CPU until initializeGL().
+// SessionManager/ObjectStore. The view is created lazily (a queued singleShot
+// in the base ctor) and never shown here, so no GPU is required — addTopic only
+// touches the view behind a `view_ != nullptr` guard, and building a
+// DepthCloudLayer is pure CPU.
 
 #include <gtest/gtest.h>
 
@@ -28,8 +28,8 @@
 #include "pj_base/builtin/image.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
-#include "pj_scene3d_widgets/transform_service.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -72,7 +72,7 @@ PJ::ObjectTopicId registerImageTopic(PJ::ObjectStore& store, const std::string& 
 
 TEST(Scene3DDockDepthGate, AcceptsDepthEncodedImageAsDepthCloud) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   const PJ::ObjectTopicId depth = registerImageTopic(store, "/cam/depth/image");
@@ -87,13 +87,15 @@ TEST(Scene3DDockDepthGate, AcceptsDepthEncodedImageAsDepthCloud) {
 
   // kImage is handled at the type level; the dock then peeks the encoding.
   EXPECT_TRUE(PJ::Scene3DDockWidget::handlesObjectType(PJ::sdk::BuiltinObjectType::kImage));
+  EXPECT_TRUE(dock.canAcceptObjectTopic(depth, PJ::sdk::BuiltinObjectType::kImage));
+  EXPECT_TRUE(dock.layers().empty()) << "hover must not create a layer";
   ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s));
   EXPECT_EQ(dock.layers().size(), 1U) << "a depth image must create a DepthCloud layer";
 }
 
 TEST(Scene3DDockDepthGate, RefusesColorImage) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   const PJ::ObjectTopicId color = registerImageTopic(store, "/cam/color/image");
@@ -107,6 +109,7 @@ TEST(Scene3DDockDepthGate, RefusesColorImage) {
   dock.setTransformService(&transform_service);
 
   // The encoding gate refuses a color image even though kImage is "handled".
+  EXPECT_FALSE(dock.canAcceptObjectTopic(color, PJ::sdk::BuiltinObjectType::kImage));
   EXPECT_FALSE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, u"color"_s));
   EXPECT_TRUE(dock.layers().empty()) << "a color image must NOT become a 3D layer";
 }

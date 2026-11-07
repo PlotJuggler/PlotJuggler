@@ -19,23 +19,29 @@ class QEvent;
 class QObject;
 class QPaintEvent;
 class QPoint;
+class QResizeEvent;
 class QToolButton;
 
 namespace PJ {
 
 // Neutral dock content shown before the user chooses a visualization family.
-// The Plot / 2D / 3D icons are clickable: a click emits visualizationRequested
-// so the host can convert the dock into an *empty* widget of that family. A
-// catalog drop still creates-and-populates the matching widget directly.
+// The Plot / State Transitions / 2D / 3D / Custom Widget icons are clickable: a
+// click emits visualizationRequested so the host can convert the dock into an
+// *empty* widget of that family (for Custom Widget the host first asks which
+// widget). A catalog drop still creates-and-populates the matching widget directly.
 class VisualizationPlaceholderWidget : public QWidget {
   Q_OBJECT
  public:
   explicit VisualizationPlaceholderWidget(QWidget* parent = nullptr);
+  // The icon row at full size, and at its narrowest: the dock's scroll area reads the minimum, so a
+  // narrow dock shrinks the icons instead of scrolling them.
+  [[nodiscard]] QSize sizeHint() const override;
+  [[nodiscard]] QSize minimumSizeHint() const override;
   // Enables Paste when the host sees compatible widget XML in the clipboard.
   void setPasteActionEnabled(bool enabled);
 
  public slots:
-  // Re-tints the Plot / 2D / 3D icons through LoadSvg so they pick up
+  // Re-tints the family icons through renderSvgPixmap so they pick up
   // the active theme's ink (light => #3D3D3D, dark => #E0E0E0) the same
   // way every other chrome icon in the app does. DockWidget routes
   // MainWindow's stylesheetChanged signal here.
@@ -68,8 +74,15 @@ class VisualizationPlaceholderWidget : public QWidget {
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dragMoveEvent(QDragMoveEvent* event) override;
   void dropEvent(QDropEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
 
  private:
+  // Renders every family icon for theme_ at its button's current icon size.
+  void renderIcons();
+  // Sizes every button so the row stays on one line within width(). No-op when unchanged.
+  void fitButtonsToWidth();
+  // The row's size for buttons of `side` px.
+  [[nodiscard]] QSize rowSize(int side) const;
   void showSplitContextMenu(const QPoint& global_pos);
   void updateSplitActionIcons(const QString& theme);
 
@@ -83,6 +96,8 @@ class VisualizationPlaceholderWidget : public QWidget {
   std::vector<IconButton> icon_buttons_;
   // Data Backdrop fill, refreshed per theme by onStylesheetChanged.
   QColor backdrop_color_;
+  // Theme of the last onStylesheetChanged, to re-render the icons when the buttons resize.
+  QString theme_;
 };
 
 }  // namespace PJ

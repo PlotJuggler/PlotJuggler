@@ -105,7 +105,7 @@ inline std::vector<uint8_t> makeRgbPng(int width, int height, bool with_alpha) {
   }
 
   const int channels = with_alpha ? 4 : 3;
-  std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * channels);
+  std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels));
   for (size_t i = 0; i < pixels.size(); i += static_cast<size_t>(channels)) {
     pixels[i + 0] = 0;
     pixels[i + 1] = 255;

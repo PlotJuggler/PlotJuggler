@@ -8,6 +8,7 @@
 #include <QDropEvent>
 #include <QMimeData>
 #include <QWidget>
+#include <cstdint>
 #include <functional>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
@@ -35,10 +36,17 @@ class DropEventFilter : public QObject {
     targets_.insert(widget_name);
   }
 
-  /// Optional: map each dragged catalog key to a human field name before it is
+  /// Optional: map each dragged catalog key to a topic or series name before it is
   /// delivered to the plugin. Keys that resolve to empty are kept verbatim.
   void setKeyResolver(std::function<std::string(const std::string&)> resolver) {
     key_resolver_ = std::move(resolver);
+  }
+
+  /// Optional: map each dragged catalog key to its data source id, which the plugin
+  /// reads as DroppedItem::data_source_id (0 = unknown). Names alone cannot tell two
+  /// datasets' same-named series apart.
+  void setKeyDataSourceResolver(std::function<uint32_t(const std::string&)> resolver) {
+    key_data_source_resolver_ = std::move(resolver);
   }
 
  protected:
@@ -65,8 +73,15 @@ class DropEventFilter : public QObject {
       auto* target_name = findTargetAt(e->position().toPoint());
       if (target_name && e->mimeData()->hasFormat(kCatalogItemsMime)) {
         auto labels = parseMime(e->mimeData()->data(kCatalogItemsMime));
-        // The PJ4 curve tree drags opaque catalog keys; resolve each to a field
-        // name the plugin can interpret. Unresolved keys pass through verbatim.
+        std::vector<uint32_t> data_sources;
+        if (key_data_source_resolver_) {
+          data_sources.reserve(labels.size());
+          for (const auto& label : labels) {
+            data_sources.push_back(key_data_source_resolver_(label));
+          }
+        }
+        // The PJ4 curve tree drags opaque catalog keys; resolve each to a name
+        // the plugin can interpret. Unresolved keys pass through verbatim.
         if (key_resolver_) {
           for (auto& label : labels) {
             if (std::string name = key_resolver_(label); !name.empty()) {
@@ -75,7 +90,9 @@ class DropEventFilter : public QObject {
           }
         }
         if (!labels.empty()) {
-          callback_(*target_name, WidgetEventBuilder::itemsDropped(labels));
+          callback_(
+              *target_name, key_data_source_resolver_ ? WidgetEventBuilder::itemsDropped(labels, data_sources)
+                                                      : WidgetEventBuilder::itemsDropped(labels));
           e->acceptProposedAction();
           return true;
         }
@@ -94,6 +111,7 @@ class DropEventFilter : public QObject {
   WidgetEventCallback callback_;
   std::set<std::string> targets_;
   std::function<std::string(const std::string&)> key_resolver_;
+  std::function<uint32_t(const std::string&)> key_data_source_resolver_;
 
   /// Walk up from the widget at pos to find a registered drop target.
   const std::string* findTargetAt(QPoint pos) const {

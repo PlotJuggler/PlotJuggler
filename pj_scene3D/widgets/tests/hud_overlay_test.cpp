@@ -1,15 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Unit tests for renderHudPanel — the CPU-rasterized HUD panel used by the perf
-// HUD and the TF hover label. These exist because the previous GL-glyph-cache
-// path corrupted text (doubled/garbled glyphs) after a Scene3D dock's GL context
-// was recreated on layout restore; that corruption itself is only reproducible
-// in the live GL app, but moving text rendering to this pure, CPU-side function
-// both fixes the bug (no glyph atlas involved) and makes the rendering testable.
-// The properties locked in here — a correctly sized image, DPR-independent
-// logical layout, and actually-rasterized glyphs — are exactly what the GL path
-// failed to guarantee across a context recreation.
+// Unit tests for renderHudPanel, the CPU-rasterized HUD panel behind the perf
+// HUD and the TF hover label. The view only uploads the finished image, so the
+// text survives any GPU resource rebuild (a dock reparent, a new QRhi); what is
+// locked in here is the image itself: correctly sized, DPR-independent logical
+// layout, actually-rasterized glyphs, multi-line growth and the empty->null contract.
 
 #include "pj_scene3d_widgets/hud_overlay.h"
 
@@ -47,8 +43,8 @@ TEST(HudOverlay, SingleLineProducesSizedImage) {
 }
 
 // The logical (device-independent) layout must be identical regardless of the
-// device-pixel ratio: only the backing resolution scales. The violation of this
-// property is precisely what produced doubled/overlapping glyphs on the GL path.
+// device-pixel ratio: only the backing resolution scales. Violating it draws
+// doubled/overlapping glyphs.
 TEST(HudOverlay, LayoutIsDevicePixelRatioIndependent) {
   const QStringList lines{u"soccer_left_leg9_link"_s};
   const QImage at1 = renderHudPanel(lines, hudFont(), 1.0, kPad, kAlpha, kTextColor);

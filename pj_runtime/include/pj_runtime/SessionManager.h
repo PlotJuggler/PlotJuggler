@@ -3,14 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QVector>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -27,12 +31,24 @@
 #include "pj_runtime/ObjectIngestTap.h"
 #include "pj_runtime/Time.h"
 
+namespace pj::tf {
+class TransformSnapshot;
+}  // namespace pj::tf
+
 namespace PJ {
 
 class MessageParserPluginBase;
 class DataProcessorService;
-class MarkerService;
+class BatchEngine;
+class EnginePool;
+class InFlightBudget;
+class OnDemandService;
 class RefillGuard;
+class TransformService;
+namespace scripting {
+class IImageDecoder;
+class IVideoFrameSource;
+}  // namespace scripting
 
 /// Result of resolving a persisted dataset identity against the live session.
 /// `ambiguous` distinguishes "not loaded yet" from multiple equally valid
@@ -144,10 +160,24 @@ class SessionManager : public QObject {
   void notifyMarkersChanged() {
     emit markersChanged();
   }
-  // A dataset just became listed (the catalog published it): re-run every
-  // all-datasets marker rule, since the newcomer may contribute. Wired by
-  // CatalogModel; the commit recompute runs before the catalog rebuild, so it can
-  // never see a new dataset itself.
+  /// Announces object topics registered or retired outside an ingest (a layout restore's on-demand step, the Custom
+  /// Topics delete); the catalog relists on it.
+  void notifyObjectTopicsChanged() {
+    emit objectTopicsChanged();
+  }
+  // Ends the previews among `transform_keys` (ephemeral transforms), `generator_ids`
+  // (ephemeral marker rules) and `on_demand_keys` (on-demand previews), repainting the
+  // overlays once if a marker preview went and announcing `objectTopicsChanged` once if
+  // an on-demand preview's topics retired; a gone or persistent one is skipped. A preview belongs to the plugin
+  // instance that made it: `DerivedRuntimeHosts` passes the ones its bridges created
+  // and still hold when that instance ends. Persistent recipes are the user's data.
+  void removeEphemerals(
+      const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids,
+      const std::unordered_set<std::string>& on_demand_keys);
+  // A dataset just became listed (the catalog published it): mark every
+  // all-datasets marker rule stale for the batch engine's brake, since the newcomer
+  // may contribute. Wired by CatalogModel; the commit recompute runs before the
+  // catalog rebuild, so it can never see a new dataset itself.
   void publishSharedMarkersToNewDatasets();
 
   // The session-wide budget for ingest-seeded object payload residency (see
@@ -167,22 +197,71 @@ class SessionManager : public QObject {
   }
 
   // The session's data-processor service (filters/transforms run as eager
-  // DerivedEngine nodes over this session's DataEngine). Plot widgets reach it
+  // IncrementalEngine nodes over this session's DataEngine). Plot widgets reach it
   // through the SessionManager pointer they already hold — the same "not threaded
   // through widget constructors" access pattern as curveColorRegistry above.
   [[nodiscard]] DataProcessorService& dataProcessorService() noexcept {
     return *processor_service_;
   }
 
-  // The session's whole-series marker service (host-driven PlotMarkers generators
+  // The session's whole-series batch engine (host-driven PlotMarkers generators
   // run via pj_scripting and published to the ObjectStore). The marker sibling of
-  // dataProcessorService; the shell injects its series resolver after the catalog
+  // dataProcessorService; AppSession injects its series resolver once the catalog
   // exists (see setResolver).
-  [[nodiscard]] MarkerService& markerService() noexcept {
-    return *marker_service_;
+  [[nodiscard]] BatchEngine& batchEngine() noexcept {
+    return *batch_engine_;
+  }
+
+  // The session's on-demand engine (docs/derived_objects/ARCHITECTURE.md §8): recipes are installed and removed
+  // through it, AppSession requests them from the playhead and the demand tracker, and the dataset life cycle
+  // (reload, rollback, merge, removal, eviction) suspends and re-binds them here.
+  [[nodiscard]] OnDemandService& onDemandService() noexcept {
+    return *on_demand_;
+  }
+
+  /// The DataEngine topics the host derives (processor outputs and on-demand series), only the previews' when
+  /// `ephemeral_only`: what a reload must not treat as the file's, an undo snapshot as raw data, and the catalog list
+  /// when they are previews.
+  [[nodiscard]] std::unordered_set<TopicId> derivedScalarTopics(bool ephemeral_only) const;
+  // The workers the derived-data engines run on; `waitIdle` publishes everything submitted.
+  [[nodiscard]] EnginePool& enginePool() noexcept {
+    return *engine_pool_;
+  }
+  [[nodiscard]] const InFlightBudget& inFlightBudget() const noexcept {
+    return *in_flight_budget_;
+  }
+
+  /// (topic, column) of the scalar series `name` (bare, the catalog's series naming) in a dataset.
+  using ScalarSeriesLookup =
+      std::function<std::optional<std::pair<TopicId, std::size_t>>(DatasetId dataset, const std::string& name)>;
+  /// How on-demand recipes resolve and sample scalar series (with a scalar topic's own name, `scalarInput`):
+  /// AppSession injects the catalog's lookup; until then no scalar input resolves. GUI thread.
+  void setScalarSeriesLookup(ScalarSeriesLookup lookup);
+  /// Where on-demand runs read the TF state from (the shell owns the service and may destroy it first: the
+  /// session watches it). Without one, runs see no TF. GUI thread.
+  void setTransformService(TransformService* service);
+  /// Replaces the clock the TF snapshot brake reads; for tests.
+  void setTfClock(std::function<std::chrono::steady_clock::time_point()> clock);
+  /// What on-demand scripts decode images through (`scripting::RunOptions::image_decoder`): the shell owns the codec
+  /// (pj_app's `SceneImageDecoder`, where Scene2D is built), so the runtime links none. A run keeps the decoder it was
+  /// submitted with; without one, a script's `decode` reports "no image decoder". GUI thread.
+  void setImageDecoder(std::shared_ptr<const scripting::IImageDecoder> decoder) {
+    image_decoder_ = std::move(decoder);
+  }
+  /// What on-demand scripts' `video:frame_at` decodes through (`scripting::RunOptions::video_source`; pj_app's
+  /// `SceneVideoFrameSource`, where Scene2D is built). The session retires a dataset's topics in it before their
+  /// storage changes (`suspendOnDemand`). Without one, `frame_at` reports "no video frame source". GUI thread.
+  void setVideoFrameSource(std::shared_ptr<scripting::IVideoFrameSource> source) {
+    video_source_ = std::move(source);
   }
 
   [[nodiscard]] DataReader createReader() const;
+
+  /// The clock range a derived topic covers (docs/derived_objects/ARCHITECTURE.md §9, the declared range): the
+  /// envelope of its node's raw inputs' ranges, upstream nodes followed to their raw leaves, never what has been
+  /// computed. Inverted (`{max, min}`) for a finding, which covers no clock range, and when no input has data;
+  /// nullopt for a topic that is no on-demand output. GUI thread.
+  [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> derivedTopicInputRange(ObjectTopicId topic) const;
 
   /// Associates a file-backed dataset with the normalized full path from which
   /// FileLoader created it. DatasetInfo::source_name is intentionally only a
@@ -246,9 +325,9 @@ class SessionManager : public QObject {
 
   /// The physical-path normalization every stored source path goes through
   /// (setDatasetSourcePath, recordLoadedSource): canonicalFilePath when the
-  /// file exists (resolving symlink/relative aliases), cleaned absolute path
-  /// otherwise. Exposed so callers and tests can compare against the stored
-  /// form — on Windows even an absolute Unix-style input gains a drive prefix.
+  /// file exists (resolving symlink/relative aliases); for a missing file, its
+  /// canonical folder plus the file name, else the cleaned absolute path. Exposed so callers and tests can compare
+  /// against the stored form — on Windows even an absolute Unix-style input gains a drive prefix.
   [[nodiscard]] static QString normalizedSourcePath(const QString& path);
 
   /// Resolves a persisted identity without guessing. Resolution order:
@@ -312,13 +391,17 @@ class SessionManager : public QObject {
   [[nodiscard]] DisplayOffset sourceDisplayOffset(DatasetId dataset_id) const;
 
   /// The single global origin (raw ns) subtracted from ALL displayed times when
-  /// "Use time offset" is on: the earliest raw sample across every loaded
-  /// dataset, applied UNIFORMLY so cross-dataset time gaps are preserved (unlike
+  /// "Use time offset" is on: the earliest raw sample across loaded time-bearing
+  /// datasets (excluding static reference geometry), applied UNIFORMLY so cross-dataset time gaps are preserved (unlike
   /// a per-source rebase, which collapses every dataset to zero). Zero when the
   /// toggle is off. Memoized; invalidated on every commit/ingest. The host (the
   /// Source Timeline controller) reads it to bridge the playback frame
   /// (raw - source - global) and the Timeline frame (raw - source).
   [[nodiscard]] Timestamp globalTimeReference() const;
+
+  /// A zero-time geometry dataset is a static reference, not part of the playback clock.
+  /// Its point cloud/mesh and optional scalar summaries all have timestamp zero.
+  [[nodiscard]] bool isStaticReferenceDataset(DatasetId dataset_id) const;
 
   /// Write a source's display shift (display_time = raw_time - offset) and
   /// notify consumers via displayOffsetChanged(DatasetId). Resolves dataset ->
@@ -327,6 +410,10 @@ class SessionManager : public QObject {
   /// seam; it composes with the global "Use time offset" frame below (the offset
   /// it writes is the latent TimeDomain shift displayOffset() reads).
   void setDisplayOffset(DatasetId dataset_id, DisplayOffset offset);
+
+  /// Where the plots showing `dataset_id`'s on-demand series start their view, on the display axis: a series whose
+  /// rows stop before it computes from there to the end first, then backfills (`SeriesRunner::setVisibleStart`).
+  void setSeriesVisibleStart(DatasetId dataset_id, DisplaySeconds start);
 
   /// Time bounds of ONE dataset's data — scalar topics (DataEngine) and object
   /// topics (ObjectStore) unioned — in DISPLAY-relative seconds (display_time =
@@ -365,7 +452,15 @@ class SessionManager : public QObject {
   // it, plot adapter caches never invalidate on the ingested data. `live`
   // propagates to samplesIngested; follow-live consumers (PlotWidget auto-fit,
   // Scene2DDockWidget frame advance) act only when it is true.
-  void notifyIngest(QVector<PJ::TopicId> ids, bool live = false);
+  // A live announcement first requests the on-demand recipes of its datasets at
+  // their live edge (OnDemandService::followLiveEdge): the datasets of `ids`, and
+  // `dataset`, which a streaming tick names so that a tick of object topics only
+  // (no scalar ids) still reaches them.
+  void notifyIngest(QVector<PJ::TopicId> ids, bool live = false, std::optional<DatasetId> dataset = std::nullopt);
+  /// `dataset_id`'s stream ended: its on-demand series compute the tail past their live edge (`SeriesRunner::endLive`).
+  void notifyStreamEnded(DatasetId dataset_id);
+  /// The dataset had a live announcement within the TF brake period (`setTfClock`'s clock): it streams now.
+  [[nodiscard]] bool isLive(DatasetId dataset_id) const;
 
   // --- Progressive bulk-import lifecycle (hoisted from MainWindow, #470). The
   // session owns WHICH datasets are actively receiving a progressive import so
@@ -488,10 +583,13 @@ class SessionManager : public QObject {
   // commit(). Runs NO event loop until commit/rollback.
   [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
 
-  /// Re-run the marker generators whose inputs are among `changed` and repaint
-  /// overlays if any set was republished. The shared hook for every path that
-  /// commits new samples to existing inputs (file commit, streaming tick). Cheap
-  /// no-op when no generators exist. `changed` are TopicIds resolved to names here.
+  /// Mark stale the marker generators whose inputs are among `changed`; the batch
+  /// engine re-runs them off the GUI thread behind its brake, and each published
+  /// burst repaints the overlays (`markersChanged`). The shared hook for every path
+  /// that commits new samples to existing inputs (file commit, streaming tick). Cheap
+  /// no-op when no generators exist. `changed` are TopicIds resolved to names here;
+  /// one whose (last timestamp, row count) has not moved since the last call is
+  /// dropped, since a streaming tick reports every topic of its dataset.
   /// `scope` is the dataset whose data actually moved; it bounds an `all_datasets`
   /// generator to that dataset instead of re-running it over every loaded one. Pass 0
   /// only when the change cannot be attributed to a single dataset.
@@ -671,6 +769,18 @@ class SessionManager : public QObject {
   void ingestProgressed(PJ::IngestToken token, quint64 current, quint64 total);
   void ingestEnded(PJ::IngestToken token, PJ::IngestOutcome outcome);
 
+  // The on-demand engine's reports, on the GUI thread; `topics` are the node's output topics.
+  /// The ring took a result of `key`: what its topics show may have changed.
+  void derivedEntriesPublished(QString key, std::vector<PJ::ObjectTopicId> topics);
+  /// The node's state (status, detail, lag) changed.
+  void derivedStateChanged(QString key, std::vector<PJ::ObjectTopicId> topics);
+  /// A new revision of the recipe was installed (a create, an edit, a merge re-binding it).
+  void onDemandRecipeInstalled(QString key);
+  /// `key`'s series state (`SeriesRunner::state`) changed, or the series is gone.
+  void seriesStateChanged(QString key);
+  /// Object topics were retired (an on-demand install or removal): the catalog re-lists them.
+  void objectTopicsChanged();
+
  private:
   // RefillGuard drives the transactional reload through this class's public
   // detach/reattach + notify surface; it needs the private signal-emit helper
@@ -698,7 +808,8 @@ class SessionManager : public QObject {
   [[nodiscard]] Timestamp datasetMinTimestamp(DatasetId dataset_id) const;
   [[nodiscard]] Timestamp datasetDomainDisplayOffset(DatasetId dataset_id) const;
   [[nodiscard]] Timestamp rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const;
-  void refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
+  /// Returns the datasets of `ids`.
+  std::unordered_set<DatasetId> refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
   void invalidateDatasetMinTimestamp(DatasetId dataset_id) const;
   // Emits the no-arg displayOffsetChanged signal exactly when the numerical
   // global reference moved since consumers were last notified. Transactional
@@ -772,6 +883,33 @@ class SessionManager : public QObject {
   // requestCancel all ask here rather than re-deriving it.
   [[nodiscard]] ActiveIngestEntry* liveEntry(IngestToken token);
 
+  /// Before a meaning-changing change of the dataset's storage: a new epoch (a run in flight is never published), and
+  /// the on-demand nodes suspended (results dropped, runs cancelled, requests held) and the dataset retired in the
+  /// video source. Pair each with `resumeOnDemandLater`.
+  void suspendOnDemand(DatasetId dataset_id);
+  /// Ends one `suspendOnDemand` from the event loop, so the requests it serves see the storage, the catalog and
+  /// the TF state their caller rebuilds after the change, with no event loop in between.
+  void resumeOnDemandLater(DatasetId dataset_id);
+  /// Installs the on-demand recipes of the merged datasets (`shifts`: each dataset's raw shift, the anchor's 0) again,
+  /// producers before readers, from one snapshot, so they re-bind on `anchor`: an input qualified with a consumed
+  /// dataset resolves there; a finding's pinned time and a requested node's cursor move by the shift. One that no
+  /// longer resolves is removed, with a warning.
+  void rebindOnDemandAfterMerge(DatasetId anchor, const std::unordered_map<DatasetId, Timestamp>& shifts);
+  /// The dataset's TF for an on-demand run: while the dataset ingests (a live ingest, or a live announcement within
+  /// the last `kTfSnapshotPeriod`: a stream never begins an ingest), the snapshot of at most `kTfSnapshotPeriod` ago
+  /// (ARCHITECTURE §19); null without a TransformService.
+  [[nodiscard]] std::shared_ptr<const pj::tf::TransformSnapshot> onDemandTf(DatasetId dataset_id);
+  /// The revision `onDemandTf` would answer now, taking no snapshot.
+  [[nodiscard]] uint64_t onDemandTfRevision(DatasetId dataset_id);
+  /// Whether `onDemandTf` brakes the dataset's snapshots now.
+  [[nodiscard]] bool tfIngesting(DatasetId dataset_id) const;
+
+  /// (topic, column) of an on-demand scalar input: the scalar topic named `name`, whose first column it reads, else
+  /// the series the injected lookup names (`topic/field`), as a transform input resolves. nullopt before the lookup
+  /// is set.
+  [[nodiscard]] std::optional<std::pair<TopicId, std::size_t>> scalarInput(
+      DatasetId dataset, const std::string& name) const;
+
   DataEngine data_engine_;
   ObjectStore object_store_;
   std::shared_ptr<ObjectIngestTapRegistry> ingest_taps_;
@@ -804,12 +942,55 @@ class SessionManager : public QObject {
   // unmoved. 0 matches the neutral "no data / offset off" origin.
   Timestamp last_notified_global_reference_ = 0;
   // Owns the session's filter/transform engine; constructed in the ctor body
-  // after data_engine_ is alive (it binds a DerivedEngine to data_engine_).
+  // after data_engine_ is alive (it binds an IncrementalEngine to data_engine_).
   std::unique_ptr<DataProcessorService> processor_service_;
+  // The memory the derived-data engines' runs on the pool hold at once, one line of
+  // waiters for both. Declared before the pool so it outlives it: a run still on the
+  // pool holds its reservation.
+  std::unique_ptr<InFlightBudget> in_flight_budget_;
+  // The workers the derived-data engines run scripts on. Declared before the engines
+  // so it is destroyed after them: each engine cancels its runs, then the pool joins.
+  std::unique_ptr<EnginePool> engine_pool_;
+  // After the pool and the budget: destroyed first, its scheduler cancelling the runs the pool then joins.
+  std::unique_ptr<OnDemandService> on_demand_;
+  /// `setSeriesVisibleStart`'s, on the display axis: an offset change moves the raw instant the series receive.
+  std::map<DatasetId, DisplaySeconds> series_visible_start_;
+  /// Gives the series of `series_visible_start_`'s datasets their raw visible start under the current offsets.
+  void pushSeriesVisibleStarts();
+  // Each dataset's epoch, moved by suspendOnDemand; a result staged under another is never current.
+  std::unordered_map<DatasetId, uint64_t> epochs_;
+  ScalarSeriesLookup scalar_lookup_;
+  // Consumed dataset -> anchor. A consumed dataset stays registered, so its source keeps qualifying on-demand inputs,
+  // which bind on the anchor.
+  std::unordered_map<DatasetId, DatasetId> merged_into_;
+  QPointer<TransformService> transform_service_;
+  std::shared_ptr<const scripting::IImageDecoder> image_decoder_;
+  std::shared_ptr<scripting::IVideoFrameSource> video_source_;
+  // How long a TF snapshot serves on-demand runs while its dataset ingests: the brake rate.
+  static constexpr std::chrono::milliseconds kTfSnapshotPeriod{500};
+  std::function<std::chrono::steady_clock::time_point()> tf_clock_ = [] { return std::chrono::steady_clock::now(); };
+  struct HeldTf {
+    std::shared_ptr<const pj::tf::TransformSnapshot> snapshot;
+    std::chrono::steady_clock::time_point taken;
+  };
+  // The snapshot onDemandTf hands out per dataset while its ingest is live.
+  std::unordered_map<DatasetId, HeldTf> held_tf_;
+  // When each dataset last had a live announcement (notifyIngest).
+  std::unordered_map<DatasetId, std::chrono::steady_clock::time_point> live_at_;
   // Owns the session's whole-series marker generators (host-driven PlotMarkers);
   // constructed in the ctor after object_store_/data_engine_. Its series resolver
-  // is injected by the shell once the catalog exists (setResolver).
-  std::unique_ptr<MarkerService> marker_service_;
+  // is injected by AppSession once the catalog exists (setResolver).
+  std::unique_ptr<BatchEngine> batch_engine_;
+  // What recomputeMarkersForChanged last saw of a topic: a topic whose stamp did not
+  // move is not reported as a changed input.
+  struct MarkerInputStamp {
+    Timestamp time_range_max = 0;
+    uint64_t total_row_count = 0;
+    Timestamp retention_floor = 0;
+    uint64_t series_generation = 0;
+    bool operator==(const MarkerInputStamp&) const = default;
+  };
+  std::unordered_map<TopicId, MarkerInputStamp> marker_input_stamps_;
   // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
   // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
   // and READ from the GUI thread on every render tick (each scene3D layer +
@@ -881,7 +1062,9 @@ class RefillGuard {
   /// Keep the refilled data: drop the snapshot so the destructor no longer rolls back.
   void commit();
   /// Replay processor outputs after the final raw flush and before vanished-topic
-  /// pruning. Failure leaves the transaction live for destructor rollback.
+  /// pruning, then re-run the dataset's marker rules over them (the replay does not
+  /// fire the outputs-changed sink: the rules run once, after it). Failure leaves
+  /// the transaction live for destructor rollback.
   [[nodiscard]] Status recomputeProcessors();
   /// Retire prior topics that VANISHED from the reloaded file (codex #2): a prior
   /// scalar/object topic still empty after the refill is one the new file no longer

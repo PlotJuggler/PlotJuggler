@@ -3,7 +3,7 @@
 Implementation-relevant technical knowledge for the pj_scene2D module — a
 supplementary knowledge base sitting alongside `ARCHITECTURE.md`. Where
 `ARCHITECTURE.md` defines HOW the module is built today, this file captures the
-**domain background** that informed those decisions: Qt 6.8 specifics, codec
+**domain background** that informed those decisions: Qt specifics, codec
 caveats, platform HW-accel matrices, debugging notes, and lessons brought over
 from the standalone experiment.
 
@@ -17,7 +17,7 @@ integrated module.
 
 ---
 
-## 1. Qt 6.8 Video Rendering
+## 1. Qt Video Rendering
 
 ### QMediaPlayer Limitations
 
@@ -30,17 +30,8 @@ QMediaPlayer is unsuitable for PlotJuggler's needs:
 | No low-latency streaming | RTSP has 2-3s latency; no native SRT |
 | No external clock sync | Cannot tie playback to an external timeline |
 
-A custom decode pipeline is required.
-
-### QAbstractVideoBuffer (Public Again in 6.8)
-
-Qt 6.8 made `QAbstractVideoBuffer` public (it was private in 6.0-6.7). This is
-the bridge between a custom decode pipeline and Qt's rendering:
-
-- Three virtuals: `format()`, `map()`, `unmap()`
-- `QVideoFrame(std::unique_ptr<QAbstractVideoBuffer>)` takes ownership
-- CPU-accessible buffers only via the public API
-- True GPU texture passthrough requires `QHwVideoBuffer` (private/internal)
+A custom decode pipeline is required. PJ4 does not use Qt Multimedia at all:
+FFmpeg frames go straight into the viewer's own QRhi textures.
 
 ### QRhiWidget — Primary Render Path
 
@@ -61,12 +52,32 @@ the bridge between a custom decode pipeline and Qt's rendering:
   4x4 (range scale/offset folded into the constant column), so the shader is
   unchanged across all combinations; BT.709 + full range reproduces the historical
   hardcoded matrix bit-for-bit. See §5 "Colorimetry was dropped" for the bug this
-  fixed.
-- Backward-compatible QImage (RGB) path kept for image viewers
+  fixed. A deprecated YUVJ pixel format counts as full range, and the decoder's
+  swscale repack keeps the source range (`keepRange`): by default swscale squeezes
+  a full-range YUVJ frame to limited range while the frame stays tagged full.
+- **4:2:0 chroma siting**: chroma sample (x/2, y/2) belongs to luma pixel (x, y).
+  `yuv_to_rgb.frag` samples chroma at `uv` scaled per axis by n / (2 * chroma_n),
+  from the `textureSize` of `y_tex` and `u_tex` (both layouts), so at an odd size
+  (AV1 allows one; H.264 and HEVC crop 4:2:0 to even) the ceil(n/2)-sample chroma
+  plane is not stretched over the frame; even sizes select `uv` unchanged. The
+  chroma sampler follows the frame's `mag_filter` like luma: nearest for images
+  (one chroma sample per 2x2 block), bilinear for video. `MediaViewerOddSizeTest`
+  in `media_viewer_render_test` checks a 17x17 frame in both layouts.
+- **CPU rgb24 for on-demand scripts** (`convertToRgb24`, `ffmpeg_decoder.h`): the same
+  matrix and chroma siting as the shader, with nearest chroma, through swscale, **within 3 levels
+  per channel** of it (2 at full range; about 0.5 % of limited-range samples are off by
+  3). At a width that is a multiple of 16 and an even height it takes `SWS_POINT` alone:
+  swscale's unscaled converter for YUV420P (0.65 ms per 1080p frame), its generic scaler
+  for NV12 (2.6 ms); any other frame takes the exact rounding (within 1, about 11 ms),
+  because the unscaled converter's x86 kernel writes 16 pixels at a time and there left
+  a row's last pixels unwritten or wrote past the frame, and swscale uses it only at an
+  even height (NV12 follows the same gate, its bound being measured on those frames) (`VideoRgbConversion` tests in `streaming_video_decoder_test.cpp`).
+- RGB/BGR, Mono8 and depth frames take their own texture paths through the
+  same pipeline (`TexturePathFormat` in `media_viewer_widget.cpp`)
 - Zoom (mouse wheel) and pan (mouse drag) via view transform matrix in
   vertex shader — zero CPU-side pixel processing
-- Optional zero-copy: import HW-decoded GPU surfaces directly as QRhi
-  textures via `QRhiTexture::createFrom({nativeHandle, 0})`
+- Hardware-decoded frames are downloaded to system memory and uploaded like
+  software frames; see "GPU Zero-Copy Path" (§3) for the import that is not built
 
 ### Shader Toolchain
 
@@ -74,58 +85,56 @@ The widget consumes offline-compiled Qt shader blobs (`*.qsb`) through
 `QShader::fromSerialized()`. `shaders/shaders.qrc` embeds the `.qsb` files;
 the neighboring `.vert` / `.frag` files are reference inputs. Editing GLSL
 sources has no runtime or build effect until the matching `.qsb` file is
-regenerated with Qt's `qsb` tool from the `qtshadertools` module. The W11 WASM
-port bakes every pack with Qt 6.11's host tool. The overlay packs retain their
-existing GLSL targets and add WebGL2:
+regenerated with Qt's `qsb` tool from the `qtshadertools` module. Re-bake every
+pack with `shaders/bake.sh`, using the `qsb` of the pinned Qt (pack bytes depend
+on its version; desktop Qt kits do not ship one, a full Qt or the WASM kit does):
 
 ```bash
-qsb --glsl "100 es,120,150,300 es" --hlsl 50 --msl 12 \
-  -o shaders/<overlay-name>.qsb shaders/<overlay-name>
+widgets/shaders/bake.sh /path/to/qsb
 ```
 
-The image pass retains its existing desktop GLSL 440 target and adds WebGL2:
+The script is the single source of the targets, following the dialect policy in
+`cmake/PjQsb.cmake`. The image pass (`yuv_to_rgb`) bakes WebGL2, GLSL 330 (an
+OpenGL 3.3 context, or the macOS 4.1 core context of the Metal-to-OpenGL
+fallback) and GLSL 440. The overlay packs (`scene_lines`, `scene_text`) bake
+GLSL 100 es, 120, 150 and 300 es; a 3.3 or 4.1 core context uses 150. All carry
+HLSL 50, MSL 12 and SPIR-V. One pair of overlay shaders serves both the point
+quads and the outlines: they differ only in the geometry the CPU builds.
 
-```bash
-qsb --glsl "300 es,440" --hlsl 50 --msl 12 \
-  -o shaders/yuv_to_rgb.<stage>.qsb shaders/yuv_to_rgb.<stage>
-```
+In an Emscripten configuration, `widgets/CMakeLists.txt` re-runs `bake.sh` into
+the build tree and compares SHA-256 hashes with the committed packs, so
+configuration fails if a source and blob diverge, a pack is missing, or one is
+rebaked with the wrong target set. `media_viewer_render_test` draws every pack on
+each backend of the platform (and at the OpenGL 3.3 floor in Linux CI). A general
+`qt6_add_shaders` migration remains deferred work tracked as F-009.
 
-Both commands retain the desktop GLSL/HLSL/MSL variants and add GLSL ES 300
-for WebGL2. In an Emscripten configuration, `widgets/CMakeLists.txt` repeats that
-command into the build tree and compares SHA-256 hashes with the committed
-packs. Configuration therefore fails if a source and blob diverge or a pack is
-rebaked with the wrong target set. A general `qt6_add_shaders` migration remains
-deferred work tracked as F-009.
+### QRhiWidget in a window first shown without one
 
-### QRhiWidget Multi-Instance Lifecycle (Qt 6.8)
+A top-level first shown with no `QRhiWidget` gets a raster backing store. When a
+`QRhiWidget` joins it later (a media or Scene3D dock added to a window whose
+plots use the raster canvas), Qt switches the window to QRhi composition (found on 6.11.1, confirmed on 6.12.0),
+on desktop and in the browser, by destroying and recreating the window's native
+window. Qt only does this when the `QRhiWidget` is reparented into the window
+(`QWidgetPrivate::setParent`), and a `QRhiWidget` constructed with its parent is
+not one yet when `QWidget`'s constructor sets that parent, so the window stays
+raster (`QRhiWidget: No QRhi`). Every `QRhiWidget` is therefore constructed
+parentless and then inserted (`MediaViewerWidget`, `PlotRhiCanvas`,
+`SceneViewWidget`). On desktop `MainWindow` avoids the recreation (a visible
+flash on Wayland) by owning a hidden `QRhiWidget` from construction, so the
+window composites through QRhi from its first show; that one may take its parent
+at construction, because the first show picks the composition from the widgets
+already in the hierarchy. The browser build has none (see below).
+`rhi_mixed_dock_test` covers both paths:
+`RhiMixedLateDockFixture` (GPU docks added after a raster-only first show) and
+`RhiScene2DInPlaceTest` (a Scene2D dock built in place inside the shown window,
+as the app's dock factory does, with no other GPU widget to switch it).
 
-Qt 6.8 `QRhiWidget` has a critical initialization requirement: the
-top-level window's backing store must be RHI-capable from its first
-`show()`. If no `QRhiWidget` exists as a child when the window is
-first shown, Qt creates a regular (non-RHI) backing store. Any
-`QRhiWidget` added dynamically after that point will **never** get an
-RHI instance — `rhi()` returns null permanently, producing continuous
-"QRhiWidget: No QRhi" errors.
-
-**Workaround**: add a zero-size bootstrap `QRhiWidget` in the window's
-constructor, before `show()`:
-
-```cpp
-// Forces Qt to create an RHI-backed backing store for this window.
-auto* bootstrap = new MediaViewerWidget(parent);
-bootstrap->setMaximumSize(0, 0);
-layout->addWidget(bootstrap);
-```
-
-Dynamically added `QRhiWidget` instances will then initialize
-successfully.
-
-That workaround is **native-only**. Qt/WASM must not create a zero-size WebGL
+The browser adds its own ordering. Qt/WASM must not create a zero-size WebGL
 surface before a browser file picker: the context can be lost during the picker
 round trip, after which Emscripten's context-attribute path may dereference a
-null result. The measured browser lifecycle is instead:
+null result. The measured browser lifecycle is:
 
-1. omit both the top-level and per-dock zero-size Scene2D bootstraps;
+1. create no GPU widget before the first real viewer;
 2. construct the real `MediaViewerWidget` parentless, so its constructor calls
    `setApi(PJ::preferredGraphicsApi())` (OpenGL/WebGL2) before `QStackedWidget`
    adds it to the visible hierarchy;
@@ -140,12 +149,85 @@ ordering follows QRhiWidget's documented one-time API selection rule. A QRhi
 framebuffer readback proves GPU output, while a separate full-window snapshot is
 required to catch uninitialized black raster regions after the compositor switch.
 
+### Backends and reparenting
+
+The viewer requests `PJ::preferredGraphicsApi()`: the platform's native API
+(D3D11, Metal, OpenGL on Linux). Its
+shaders are baked for every backend. The view matrix is built in GL clip space,
+which QRhi scissors also use; the shaders receive `clipSpaceCorrMatrix() * view`,
+so Vulkan's y-down clip space does not flip the image.
+
+Floating, redocking or switching an ADS tab moves the viewer through another
+top-level, so Qt calls `releaseResources()` and then `initialize()` on the new
+QRhi. The viewer keeps its last frame and annotations on the CPU and re-uploads
+both. `rhi_dock_lifecycle_test` (pj_app) checks orientation and overlays across
+a float, a redock and a tab switch on OpenGL and Vulkan.
+
+### Render target, uploads and limits
+
+- **Colour-only target.** Nothing in the viewer depth-tests, so it turns
+  `autoRenderTarget` off and builds its own `QRhiTextureRenderTarget` over
+  `colorTexture()` in `initialize()` (`PJ::RhiColorTarget`: rebuilt on a resize,
+  its render-pass descriptor kept so the pipelines survive): QRhiWidget's automatic target would
+  add a depth-stencil renderbuffer of 4 B/px that nothing uses.
+- **Unchanged layers upload nothing.** Each texture layer keeps the
+  `shared_ptr` of the pixel buffer its textures hold. A frame (or a composite's
+  layer) that brings the same buffer only refreshes its per-frame state (opacity,
+  depth range, colour matrix); holding the reference keeps a new buffer from
+  reusing the address meanwhile. A re-created texture (size, format, filter) or a
+  new QRhi always uploads. Producers hand out a fresh buffer per decoded frame.
+- **Texture size limit.** A frame wider or taller than `QRhi::TextureSizeMax`
+  is not drawn (its layer is dropped) and a warning is logged once per viewer;
+  `setMaxTextureSizeForTest()` lowers the limit so `rhi_dock_lifecycle_test`
+  needs no gigabyte image.
+- **Glyph cache.** Text overlays cache one R8 texture per (text, size). After
+  each text rebuild the least recently used labels that rebuild did not draw are
+  evicted down to 512 entries, so a stream of ever-new strings (counters,
+  timestamps) cannot grow it without bound, and a frame with more than 512 labels
+  keeps exactly its own and re-draws them without rasterizing any again.
+- **Shader packs** are read once per process and shared by every viewer and QRhi.
+
+### GPU failure state
+
+No draw may reference a resource whose `create()` failed (D3D11 crashes in
+`beginPass` on one). When the image pipeline, its samplers or the base texture
+layer cannot be created, `initialize()` releases everything and the viewer enters
+its failed state: `render()` only clears to the background, `renderFailed()` and
+`renderingWarningChanged()` fire once, and `Scene2DDockWidget` shows the warning
+in a label below the viewer (not over it: a raster label does not composite on
+the QRhiWidget's surface). Every later `initialize()` (a new QRhi after a
+reparent, or a new render-target size) retries. Optional parts degrade instead:
+a failed overlay pipeline or buffer drops that overlay, a failed frame texture
+drops that frame, and without the blending pipeline the pixel layers draw opaque
+through the image pipeline, each with a warning logged once per QRhi. Every
+`initialize()` rebuilds whichever optional part is missing, so a dropped overlay
+or blending pipeline returns with the next new render target. A window that gets
+no QRhi at all (its API differs from the one another widget pinned the window
+to) never reaches `initialize()`: the viewer routes QRhiWidget's own
+`renderFailed()` into the same warning.
+
+A frame's texture uploads go to a resource-update batch of their own, merged into
+the frame's batch only once every texture and binding of the layer exists: a
+dropped layer deletes textures an upload already queued for it (a depth frame's
+colormap, the frame planes) references, so that batch is discarded, never
+submitted.
+
+Builds with tests (`PJ_RHI_TEST_HOOKS`, `pj_widgets/RhiTestHooks.h`) give the
+viewer its fault injection: the `pjTestFailPipeline` dynamic property (`base`,
+`composite`, `points`, `thick`, `text`, or `layer srb` for a frame layer's
+bindings) fails that creation, and the `pjTestRhiAdoptions` /
+`pjTestRhiReleases` / `pjTestRhiStale` counters record which QRhi it holds
+resources on. `rhi_mixed_dock_test` (pj_app) uses both beside a working plot and
+Scene3D view, then clears the fault and checks the recovery;
+`rhi_dock_lifecycle_test` checks that a dropped overlay returns and that a depth
+frame whose bindings fail is dropped with its uploads.
+
 ### Static JPEG ABI in the monolithic WASM module
 
 Qt's static JPEG image plugin and Scene2D's static TurboJPEG archive occupy one
 WASM symbol namespace. Both export process-global `jpeg_*` symbols, so a normal
 successful static link can bind a caller from one archive to the implementation
-from the other. Qt 6.11's kit declares `JPEG_LIB_VERSION 80`; libjpeg-turbo's
+from the other. Qt's kit declares `JPEG_LIB_VERSION 80` (found on 6.11.1; re-check on the pinned Qt); libjpeg-turbo's
 default build emulates v6b (`62`). That mismatch crashed during splash pixmap
 construction before `MainWindow`.
 
@@ -154,6 +236,21 @@ The WASM dependency provider therefore reads the selected Qt kit's
 TurboJPEG with `WITH_JPEG8=ON`. Matching only the library versions is
 insufficient here: the C ABI selected by the build option is the load-bearing
 contract. Desktop continues to use its independently packaged dependencies.
+
+### Video decode in the WASM module
+
+The browser has no native hardware-decode API that FFmpeg can drive, so its
+`FfmpegDecoder` is software-only. `cmake/PjWasmFfmpeg.cmake`
+(`PJ_WASM_WITH_VIDEO`, on with Scene2D) cross-compiles the desktop's FFmpeg
+release and dav1d into static archives with the same LGPL decode-only
+allowlist (`--disable-gpl --disable-nonfree --disable-autodetect`, decoders
+h264/hevc/mjpeg/av1/libdav1d), plus `-pthread` so libavcodec's frame threads run
+on Emscripten workers. It omits libavformat (the core decodes elementary
+streams; only its desktop tests demux MP4), assembly (it targets native CPUs)
+and every hwaccel. The archives are imported as `ffmpeg::avcodec` / `avutil` /
+`swscale`, the names the desktop graph provides, so `pj_scene2d_core` and the
+`VideoLayer` build unchanged. Configuring needs `meson` (dav1d), GNU `make` and
+`pkg-config` on the host.
 
 **Additional lifecycle rules**:
 
@@ -170,30 +267,6 @@ contract. Desktop continues to use its independently packaged dependencies.
 - At the end of `initialize()`, call `update()` if a frame is pending
   — otherwise the first frame set before init completes is lost.
 
-### QVideoSink Threading
-
-- `QVideoSink::setVideoFrame()` is thread-safe (internal `QMutex`)
-- Each call replaces the previous frame (no buffering/queue)
-- No built-in frame pacing — implement PTS-based timing externally
-- Decode on worker thread, push to UI thread via `setVideoFrame()`
-
-### Pixel Format Mapping
-
-Key `AVPixelFormat` to Qt mappings (Qt handles YUV-to-RGB conversion
-automatically in the renderer):
-
-| FFmpeg `AVPixelFormat` | Qt `QVideoFrameFormat::PixelFormat` |
-|---|---|
-| `AV_PIX_FMT_NV12` | `Format_NV12` |
-| `AV_PIX_FMT_YUV420P` | `Format_YUV420P` |
-| `AV_PIX_FMT_YUV422P` | `Format_YUV422P` |
-| `AV_PIX_FMT_P010` | `Format_P010` |
-| `AV_PIX_FMT_RGBA` | `Format_RGBA8888` |
-| `AV_PIX_FMT_BGRA` | `Format_BGRA8888` |
-
-Keep frames in YUV420P (1.5 bytes/pixel) rather than RGBA (4 bytes/pixel) —
-Qt handles conversion in the renderer.
-
 ---
 
 ## 2. Codec Details
@@ -208,7 +281,7 @@ Qt handles conversion in the renderer.
 | VP9 | Medium | ~35% better | Moderate | Not on the streaming path |
 
 The streaming `VideoFrame` decode path supports **h264 / h265 / av1** only.
-`vp9` stays an accepted `VideoFrame.format` wire value (see `VideoFrame` in [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) and `pj_base/builtin/video_frame.hpp`) but has
+`vp9` stays an accepted `VideoFrame.format` wire value (see `VideoFrame` in [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) and `pj_base/builtin/video_frame.hpp`) but has
 no renderer: it has an FFmpeg decoder yet no keyframe oracle (it cannot be
 sought), so `videoCodecIdFromFormat()` returns `AV_CODEC_ID_NONE` and the
 decoder rejects it with an explicit "unsupported video codec" error rather than
@@ -275,6 +348,7 @@ CompressedVideo, live streams):
 | Linux | VAAPI → CUDA/NVDEC → software |
 | Windows | D3D11VA → software |
 | macOS | VideoToolbox → software |
+| Browser (WASM) | software only |
 
 ### Device Selection
 
@@ -301,15 +375,20 @@ deliberately do **not** pre-query `vaQueryConfigProfiles`.
 
 ### GPU Zero-Copy Path
 
-The ideal path avoids GPU-to-CPU-to-GPU round-trips:
+Not built. `FfmpegDecoder::avFrameToDecodedFrame` downloads every hardware frame
+to system memory (`av_hwframe_transfer_data`, ~0.5-2 ms per 1080p frame) and the
+viewer uploads it like a software frame, which is acceptable for typical
+robotics resolutions. The download fills a fresh frame with pixels only, not
+frame properties, so the decoder reads the colour tags from the decoded frame
+(`ffmpeg_decoder_test`'s `DecodedFrameKeepsTheSignalledColourTags`).
+
+A zero-copy import would skip the round trip, at the cost of interop code and
+synchronization for each backend:
 
 1. HW decoder produces frames on GPU (VAAPI surface, D3D11 texture, etc.)
 2. Export as DMA-BUF (Linux) or shared texture handle (Windows/macOS)
 3. Import into QRhi as `QRhiTexture` via `createFrom()`
 4. Render directly — no pixel copy
-
-Fallback: transfer GPU frames to CPU (~0.5-2ms per 1080p frame), then upload
-to QRhi texture. This is acceptable for typical robotics resolutions.
 
 ---
 
@@ -638,7 +717,7 @@ modes.
 
 ## 8. Reference Documents
 
-- [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — canonical builtin-type catalog: Image,
+- [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — canonical builtin-type catalog: Image,
   VideoFrame, CameraCalibration, ImageAnnotations, PointCloud, SceneEntities,
   OccupancyGrid, FrameTransforms (the SDK owns all canonical schemas)
 - [`docs/research/dataset_format_comparison.md`](../../docs/research/dataset_format_comparison.md)
@@ -767,6 +846,16 @@ malformed input, this is an out-of-bounds read.
 defining `PJ_ASAN_ACTIVE` when sanitizers are enabled and skipping
 the flag in that case.
 
+**Never join a decode thread that has not started (WebAssembly).** The
+browser build pre-spawns a fixed pthread pool (`QT_WASM_PTHREAD_POOL_SIZE`,
+7). A thread created with the pool exhausted starts only once the main
+thread yields, so a main-thread `join()` on it waits forever. A failed layout
+replay builds and discards each camera dock twice in one pass, which is
+enough to exhaust the pool with three camera docks open.
+`AsyncFrameWorker::stop()` therefore joins only a thread that has entered its
+loop and detaches one that has not; the thread checks a shared start gate
+before touching the worker, so a detached thread returns at once.
+
 ## 12. Camera Rectification (2D annotation alignment)
 
 `ImagePipelineSource::rectifyIfCalibrated` (using `undistort_remap` +
@@ -787,7 +876,8 @@ edges). A scale-only fix handles the first but not the second; full rectificatio
 boxes land without touching a single detection coordinate.
 
 `frame_id` on `sdk::Image` is what pairs an image with its `CameraInfo` (each
-`<ns>/camera_info` topic is parsed and injected via `setCameraInfoMap`). The
+CameraInfo-classified topic, or legacy `<ns>/camera_info` topic, in the image's
+dataset is decoded and injected via `setCameraInfoMap`). The
 producer side (parser_protobuf / parser_ros) populates it.
 
 ### Design choice: rectify the image, not warp the annotations
@@ -806,15 +896,17 @@ chosen at runtime, because the float CPU resample was ~63–68% of process CPU
 - **GPU path (default when available).** The decode worker leaves the frame RAW
   and attaches the cached `shared_ptr<const UndistortMap>` to
   `DecodedFrame::rectify_map`. `MediaViewerWidget` rectifies in the image
-  fragment shader via an `RGBA32F` remap LUT (`undistortMapToNormalizedRG`,
-  NEAREST, +0.5 half-texel) — one extra texture lookup per pixel, and the upload
+  fragment shader via a remap LUT (`undistortMapToNormalizedRG`, +0.5
+  half-texel). Qt's QRhi has no `RG32F` (found on 6.11.1; re-check on the pinned Qt), so the two float UVs go up as their
+  bits in an `RG32UI` texture (8 B/px) and the
+  shader reads them texel-exact (`texelFetch`, then `uintBitsToFloat`) — one extra texture lookup per pixel, and the upload
   shrinks to the raw frame size. Works for YUV420P too (the shader remaps the UV,
   then samples the planes).
 - **CPU fallback** (`rectifyFrameFast` + `UndistortMapFast`): a precomputed
   source index + fixed-point bilinear fractions resampled into a reused buffer —
   **bit-for-bit equal** to the float `rectifyFrame` (a unit test asserts zero
-  mismatches) and ~2× faster (34.1 → 16.6 ms/frame at 1920×1280 RGB). Used when
-  the backend can't sample an `RGBA32F` LUT.
+  mismatches) and ~2× faster (34.1 → 16.6 ms/frame at 1920×1280 RGB). Used
+  until the widget has built its image pipeline (none: no GPU path at all).
 - **Selection.** A one-time capability handshake
   (`MediaSource::setGpuRectificationAvailable`, probed by the widget in
   `initialize()`, fanned out through `Composite`/`BorrowedMediaSource`) flips the

@@ -20,29 +20,37 @@
 #include <QPalette>
 #include <QPointer>
 #include <QSettings>
-#include <QSignalBlocker>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QVariant>
+#include <algorithm>
 #include <any>
+#include <array>
+#include <cmath>
+#include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
+#include <variant>
 
 #include "layer_xml_validation.h"
-#include "mesh_load_set.h"
-#include "mesh_loader.h"
+#include "mesh_import.h"
+#include "mesh_load_queue.h"
 #include "pj_base/builtin/robot_description.hpp"
 #include "pj_base/time.hpp"
-#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/HttpUrl.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/parse_locked.h"
+#include "pj_scene3d_core/model_budget.h"
 #include "pj_scene3d_core/robot_model_bridges.h"
+#include "pj_scene3d_widgets/layout_resources.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
-#include "pj_scene3d_widgets/parse_locked.h"
-#include "pj_scene3d_widgets/passes/mesh_render_pass.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_widgets/CheckButton.h"
 #include "pj_widgets/ColorPickerWidget.h"
@@ -60,6 +68,15 @@ namespace {
 Q_LOGGING_CATEGORY(lcRobotModelLayer, "pj.scene3d.layer.robot_model")
 
 constexpr auto kLatchRetryInterval = std::chrono::milliseconds(500);
+const glm::vec4 kPlaceholderColor{1.0f, 0.0f, 1.0f, 1.0f};
+
+constexpr UrdfParseLimits kUrdfLimits{
+    .max_links = kSceneLimits.max_urdf_links,
+    .max_joints = kSceneLimits.max_urdf_joints,
+    .max_geometries = kSceneLimits.max_urdf_geometries,
+    .max_materials = kSceneLimits.max_urdf_materials,
+    .max_string_bytes = kSceneLimits.max_urdf_string_bytes,
+};
 
 QString sourceTypeToString(RobotModelLayer::SourceType type) {
   switch (type) {
@@ -128,21 +145,14 @@ std::optional<PJ::ObjectTopicId> currentObjectTopicId(const QComboBox* combo) {
 
 QString formatFromXml(const QString& text) {
   QDomDocument doc;
-#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-  const auto result = doc.setContent(text.toUtf8());
-  if (!result) {
+  if (!doc.setContent(text.toUtf8())) {
     return u"unknown"_s;
   }
-#else
-  if (!doc.setContent(text)) {
-    return u"unknown"_s;
-  }
-#endif
   const QString root = doc.documentElement().tagName();
   return root == "robot"_L1 ? u"urdf"_s : root;
 }
 
-std::optional<QString> readTextFile(const QString& path, QString* error) {
+std::optional<QByteArray> readFile(const QString& path, QString* error) {
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
     if (error != nullptr) {
@@ -150,7 +160,7 @@ std::optional<QString> readTextFile(const QString& path, QString* error) {
     }
     return std::nullopt;
   }
-  return QString::fromUtf8(file.readAll());
+  return file.readAll();
 }
 
 QString urlDirectory(const QString& url_text) {
@@ -166,8 +176,103 @@ QString urlDirectory(const QString& url_text) {
   return url.toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
 }
 
-glm::vec3 toVec3(const glm::dvec3& v) {
-  return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
+QString formatHint(const QString& source) {
+  const QUrl url(source);
+  return QFileInfo(url.isValid() && !url.scheme().isEmpty() ? url.path() : source).suffix().toLower();
+}
+
+// URDF primitives are drawn as unit meshes the layer retains: box ±0.5, cylinder
+// radius 1 / height 1 along Z, sphere radius 1.
+constexpr std::string_view kBoxKey = "robot:primitive:box";
+constexpr std::string_view kCylinderKey = "robot:primitive:cylinder";
+constexpr std::string_view kSphereKey = "robot:primitive:sphere";
+constexpr std::string_view kPlaceholderKey = "robot:placeholder";
+
+std::shared_ptr<const Material> solidMaterial(const glm::vec4& color) {
+  Material material;
+  material.base_color_factor = color;
+  return std::make_shared<const Material>(std::move(material));
+}
+
+MeshData makeCube(const glm::vec4& color) {
+  constexpr glm::vec3 positions[] = {
+      {0.5F, -0.5F, -0.5F},  {0.5F, -0.5F, 0.5F},  {0.5F, 0.5F, 0.5F},   {0.5F, 0.5F, -0.5F},   {-0.5F, -0.5F, 0.5F},
+      {-0.5F, -0.5F, -0.5F}, {-0.5F, 0.5F, -0.5F}, {-0.5F, 0.5F, 0.5F},  {-0.5F, 0.5F, -0.5F},  {0.5F, 0.5F, -0.5F},
+      {0.5F, 0.5F, 0.5F},    {-0.5F, 0.5F, 0.5F},  {-0.5F, -0.5F, 0.5F}, {0.5F, -0.5F, 0.5F},   {0.5F, -0.5F, -0.5F},
+      {-0.5F, -0.5F, -0.5F}, {-0.5F, -0.5F, 0.5F}, {-0.5F, 0.5F, 0.5F},  {0.5F, 0.5F, 0.5F},    {0.5F, -0.5F, 0.5F},
+      {0.5F, -0.5F, -0.5F},  {0.5F, 0.5F, -0.5F},  {-0.5F, 0.5F, -0.5F}, {-0.5F, -0.5F, -0.5F},
+  };
+  constexpr glm::vec3 normals[] = {
+      {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},
+      {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, -1, 0}, {0, -1, 0}, {0, -1, 0}, {0, -1, 0},
+      {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1},
+  };
+  constexpr std::uint32_t indices[] = {
+      0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,  8,  9,  10, 8,  10, 11,
+      12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
+  };
+  MeshData mesh;
+  mesh.ok = true;
+  mesh.vertices.reserve(std::size(positions));
+  for (std::size_t index = 0; index < std::size(positions); ++index) {
+    mesh.vertices.push_back(Vertex{positions[index], normals[index], color});
+  }
+  mesh.indices.assign(std::begin(indices), std::end(indices));
+  mesh.submeshes.push_back(SubMesh{0, mesh.indices.size(), solidMaterial(color)});
+  return mesh;
+}
+
+MeshData makeCylinder() {
+  constexpr int segments = 40;
+  const glm::vec4 color{0.7F, 0.7F, 0.7F, 1.0F};
+  MeshData mesh;
+  mesh.ok = true;
+  for (int index = 0; index < segments; ++index) {
+    const float angle = static_cast<float>(index) * 2.0F * std::numbers::pi_v<float> / static_cast<float>(segments);
+    const float x = std::cos(angle);
+    const float y = std::sin(angle);
+    mesh.vertices.push_back(Vertex{{x, y, -0.5F}, glm::normalize(glm::vec3{x, y, 0.0F}), color});
+    mesh.vertices.push_back(Vertex{{x, y, 0.5F}, glm::normalize(glm::vec3{x, y, 0.0F}), color});
+  }
+  const std::uint32_t top = static_cast<std::uint32_t>(mesh.vertices.size());
+  mesh.vertices.push_back(Vertex{{0, 0, 0.5F}, {0, 0, 1}, color});
+  const std::uint32_t bottom = static_cast<std::uint32_t>(mesh.vertices.size());
+  mesh.vertices.push_back(Vertex{{0, 0, -0.5F}, {0, 0, -1}, color});
+  for (int index = 0; index < segments; ++index) {
+    const auto a = static_cast<std::uint32_t>(2 * index);
+    const auto b = static_cast<std::uint32_t>(2 * ((index + 1) % segments));
+    mesh.indices.insert(mesh.indices.end(), {a, b, a + 1, b, b + 1, a + 1, top, a + 1, b + 1, bottom, b, a});
+  }
+  mesh.submeshes.push_back(SubMesh{0, mesh.indices.size(), solidMaterial(color)});
+  return mesh;
+}
+
+MeshData makeSphere() {
+  constexpr int latitudes = 16;
+  constexpr int longitudes = 32;
+  const glm::vec4 color{0.7F, 0.7F, 0.7F, 1.0F};
+  MeshData mesh;
+  mesh.ok = true;
+  for (int latitude = 0; latitude <= latitudes; ++latitude) {
+    const float theta = static_cast<float>(latitude) * std::numbers::pi_v<float> / static_cast<float>(latitudes);
+    const float z = std::cos(theta);
+    const float radius = std::sin(theta);
+    for (int longitude = 0; longitude <= longitudes; ++longitude) {
+      const float phi =
+          static_cast<float>(longitude) * 2.0F * std::numbers::pi_v<float> / static_cast<float>(longitudes);
+      const glm::vec3 point{radius * std::cos(phi), radius * std::sin(phi), z};
+      mesh.vertices.push_back(Vertex{point, glm::normalize(point), color});
+    }
+  }
+  for (int latitude = 0; latitude < latitudes; ++latitude) {
+    for (int longitude = 0; longitude < longitudes; ++longitude) {
+      const auto a = static_cast<std::uint32_t>(latitude * (longitudes + 1) + longitude);
+      const auto b = static_cast<std::uint32_t>((latitude + 1) * (longitudes + 1) + longitude);
+      mesh.indices.insert(mesh.indices.end(), {a, b, a + 1, a + 1, b, b + 1});
+    }
+  }
+  mesh.submeshes.push_back(SubMesh{0, mesh.indices.size(), solidMaterial(color)});
+  return mesh;
 }
 
 }  // namespace
@@ -179,9 +284,7 @@ RobotModelLayer::RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_nam
       display_name_(std::move(display_name)),
       source_value_(display_name_),
       owned_resolver_(std::make_unique<UrdfPackageResolver>()),
-      mesh_loader_(std::make_unique<MeshLoader>()),
-      mesh_pass_(std::make_unique<MeshRenderPass>()),
-      mesh_loads_(std::make_unique<MeshLoadSet>()) {
+      mesh_queue_(std::make_unique<MeshLoadQueue>(this)) {
   resolver_ = owned_resolver_.get();
 }
 
@@ -213,10 +316,7 @@ QStringList RobotModelLayer::fallbackFrames() const {
 }
 
 QString RobotModelLayer::sourceFrame() const {
-  if (!model_.has_value() || model_->root_link.empty()) {
-    return {};
-  }
-  return linkFrameName(model_->root_link);
+  return QString::fromStdString(source_frame_);
 }
 
 QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
@@ -225,8 +325,7 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
   el.setAttribute(u"source_value"_s, source_value_);
   // For a topic source, source_value_ is only a display string. Persist the
   // resolvable identity (dataset_id + topic_name) so restore re-binds the SAME
-  // topic even when the user switched the config combo to a different one
-  // (source_topic_id_ != the constructor's topic_id_).
+  // topic even when the user switched the config combo to a different one.
   if (source_type_ == SourceType::kTopic && ctx_.session != nullptr) {
     const auto desc = ctx_.session->objectStore().descriptor(source_topic_id_);
     el.setAttribute(u"source_topic_name"_s, QString::fromStdString(desc.topic_name));
@@ -236,6 +335,12 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
     if (!path.isEmpty()) {
       el.setAttribute(u"source_dataset_path"_s, path);
     }
+  }
+  if (!package_url_roots_.isEmpty()) {
+    el.setAttribute(u"package_url_roots"_s, serializePackageUrlRoots(package_url_roots_));
+  }
+  if (remote_resources_only_) {
+    el.setAttribute(u"remote_resources_only"_s, u"true"_s);
   }
   el.setAttribute(u"frame_prefix"_s, frame_prefix_);
   el.setAttribute(u"display_mode"_s, displayModeToString(display_mode_));
@@ -249,30 +354,30 @@ bool RobotModelLayer::xmlLoadState(const QDomElement& element) {
   return xmlLoadStateResult(element) == XmlLoadResult::kRestored;
 }
 
-RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomElement& element) {
+std::optional<RobotModelLayer::ParsedSettings> RobotModelLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "robot_model"_L1 || !detail::isLeafPayload(element)) {
-    return XmlLoadResult::kInvalid;
+    return std::nullopt;
   }
   const QString source_type_text = element.attribute(u"source_type"_s, u"topic"_s);
   if (source_type_text != "topic"_L1 && source_type_text != "file"_L1 && source_type_text != "url"_L1) {
-    return XmlLoadResult::kInvalid;
+    return std::nullopt;
   }
-  const SourceType restored_source_type = sourceTypeFromString(source_type_text);
   const QString display_mode_text = element.attribute(u"display_mode"_s, u"auto"_s);
   if (display_mode_text != "auto"_L1 && display_mode_text != "visual"_L1 && display_mode_text != "collision"_L1) {
-    return XmlLoadResult::kInvalid;
+    return std::nullopt;
   }
-  bool restored_visible = true;
-  bool restored_ignore_up_axis = false;
-  if (!detail::parseTrueFalse(element, "visible", true, restored_visible) ||
-      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, restored_ignore_up_axis)) {
-    return XmlLoadResult::kInvalid;
+  ParsedSettings settings;
+  settings.source_type = sourceTypeFromString(source_type_text);
+  settings.display_mode = displayModeFromString(display_mode_text);
+  if (!detail::parseTrueFalse(element, "visible", true, settings.visible) ||
+      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, settings.ignore_collada_up_axis) ||
+      !detail::parseTrueFalse(element, "remote_resources_only", false, settings.remote_resources_only)) {
+    return std::nullopt;
   }
-  QColor restored_color = fallback_color_;
   if (element.hasAttribute(u"color"_s)) {
-    restored_color = QColor(element.attribute(u"color"_s));
-    if (!restored_color.isValid()) {
-      return XmlLoadResult::kInvalid;
+    settings.color = QColor(element.attribute(u"color"_s));
+    if (!settings.color->isValid()) {
+      return std::nullopt;
     }
   }
   const bool has_topic_name = element.hasAttribute(u"source_topic_name"_s);
@@ -280,28 +385,47 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
   const bool has_dataset_source = element.hasAttribute(u"source_dataset_source"_s);
   const bool has_dataset_path = element.hasAttribute(u"source_dataset_path"_s);
   const bool has_topic_identity = has_topic_name || has_dataset_id || has_dataset_source || has_dataset_path;
-  if ((restored_source_type != SourceType::kTopic && has_topic_identity) ||
+  if ((settings.source_type != SourceType::kTopic && has_topic_identity) ||
       (!has_topic_name && (has_dataset_id || has_dataset_source || has_dataset_path))) {
-    return XmlLoadResult::kInvalid;
+    return std::nullopt;
   }
-  PJ::DatasetId saved_dataset_id = 0;
   if (has_dataset_id) {
     bool id_ok = false;
     const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
     if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
-      return XmlLoadResult::kInvalid;
+      return std::nullopt;
     }
-    saved_dataset_id = static_cast<PJ::DatasetId>(value);
+    settings.dataset_id = static_cast<PJ::DatasetId>(value);
   }
-  const QString topic_name = element.attribute(u"source_topic_name"_s);
-  if (has_topic_name && topic_name.isEmpty()) {
+  settings.topic_name = element.attribute(u"source_topic_name"_s);
+  if (has_topic_name && settings.topic_name.isEmpty()) {
+    return std::nullopt;
+  }
+  settings.dataset_source = element.attribute(u"source_dataset_source"_s);
+  settings.dataset_path = element.attribute(u"source_dataset_path"_s);
+  std::optional<QMap<QString, QUrl>> roots = parsePackageUrlRoots(element.attribute(u"package_url_roots"_s));
+  if (!roots.has_value()) {
+    return std::nullopt;
+  }
+  settings.package_url_roots = std::move(*roots);
+  return settings;
+}
+
+bool RobotModelLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
+}
+
+RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomElement& element) {
+  const std::optional<ParsedSettings> settings = parseSettings(element);
+  if (!settings.has_value()) {
     return XmlLoadResult::kInvalid;
   }
+  const QString& topic_name = settings->topic_name;
   std::optional<PJ::ObjectTopicId> restored_topic;
-  if (restored_source_type == SourceType::kTopic && ctx_.session != nullptr && has_topic_name) {
-    const QString source = element.attribute(u"source_dataset_source"_s);
-    const QString path = element.attribute(u"source_dataset_path"_s);
-    if (!has_dataset_id && source.isEmpty() && path.isEmpty()) {
+  if (settings->source_type == SourceType::kTopic && ctx_.session != nullptr && !topic_name.isEmpty()) {
+    const QString& source = settings->dataset_source;
+    const QString& path = settings->dataset_path;
+    if (settings->dataset_id == 0 && source.isEmpty() && path.isEmpty()) {
       const UniqueObjectTopicResolution generic = resolveUniqueObjectTopic(
           ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kRobotDescription);
       if (generic.ambiguous) {
@@ -310,7 +434,7 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
       restored_topic = generic.topic_id;
     } else {
       const PJ::DatasetIdentityResolution dataset =
-          ctx_.session->resolveDatasetIdentity(saved_dataset_id, source, path);
+          ctx_.session->resolveDatasetIdentity(settings->dataset_id, source, path);
       if (dataset.ambiguous) {
         return XmlLoadResult::kInvalid;
       }
@@ -336,25 +460,34 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
   const bool old_visible = visible_;
   const QRgb old_color = fallback_color_.rgb();
   const bool old_ignore_up_axis = ignore_collada_up_axis_;
-  source_type_ = restored_source_type;
+  const QMap<QString, QUrl> old_roots = package_url_roots_;
+  const bool old_remote_resources_only = remote_resources_only_;
+  source_type_ = settings->source_type;
   source_value_ = element.attribute(u"source_value"_s, source_value_);
   frame_prefix_ = element.attribute(u"frame_prefix"_s);
-  display_mode_ = displayModeFromString(display_mode_text);
-  visible_ = restored_visible;
-  fallback_color_ = restored_color;
-  ignore_collada_up_axis_ = restored_ignore_up_axis;
-  draws_dirty_ = true;
+  display_mode_ = settings->display_mode;
+  visible_ = settings->visible;
+  fallback_color_ = settings->color.value_or(fallback_color_);
+  ignore_collada_up_axis_ = settings->ignore_collada_up_axis;
+  package_url_roots_ = settings->package_url_roots;
+  remote_resources_only_ = settings->remote_resources_only;
+  // Layout bytes never carry file content: a restored kFile reads its path
+  // (desktop) or asks for the file again (browser).
+  local_file_bytes_.clear();
   bool source_setter_emitted = false;
   if (restored_topic.has_value()) {
     source_setter_emitted = source_topic_id_.id != restored_topic->id;
     setSourceTopic(*restored_topic);
   } else if (ctx_.session != nullptr) {
     loadFromCurrentSource();
+  } else {
+    rebuildDrawCalls();
   }
   const bool changed = old_source_type != source_type_ || old_source_value != source_value_ ||
                        old_topic_id != source_topic_id_.id || old_prefix != frame_prefix_ ||
                        old_mode != display_mode_ || old_visible != visible_ || old_color != fallback_color_.rgb() ||
-                       old_ignore_up_axis != ignore_collada_up_axis_;
+                       old_ignore_up_axis != ignore_collada_up_axis_ || old_roots != package_url_roots_ ||
+                       old_remote_resources_only != remote_resources_only_;
   if (changed && !source_setter_emitted) {
     emit configurationChanged();
   }
@@ -367,6 +500,15 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
 bool RobotModelLayer::attach(const PJ::SceneLayerContext& ctx) {
   const auto& scene3d_ctx = static_cast<const Scene3DLayerContext&>(ctx);
   ctx_ = scene3d_ctx;
+  tf_buffer_ = ctx_.tf_buffer;  // the dock re-pushes it via setTransformBuffer on rebind
+  // disconnect first: the reload path re-attaches without an intervening detach.
+  disconnect(reload_connection_);
+  reload_connection_ = {};
+  if (ctx_.session != nullptr) {
+    reload_connection_ = connect(
+        ctx_.session, &PJ::SessionManager::datasetAboutToBeReplaced, this,
+        &RobotModelLayer::onDatasetAboutToBeReplaced);
+  }
   if (source_type_ == SourceType::kTopic) {
     if (ctx_.session == nullptr) {
       qCWarning(lcRobotModelLayer) << "attach: session is null";
@@ -388,35 +530,21 @@ bool RobotModelLayer::attach(const PJ::SceneLayerContext& ctx) {
 }
 
 void RobotModelLayer::detach() {
-  // Abort any in-flight URL fetch: a detached layer must not apply late results.
-  ++url_fetch_generation_;
-  url_fetcher_.reset();
-  model_.reset();
-  static_bridges_.clear();
-  model_has_visuals_ = false;
-  mesh_loads_->clear();
-  cached_visual_draws_.clear();
-  cached_collision_draws_.clear();
-  draws_dirty_ = true;
-  cached_render_origin_.reset();
-  if (mesh_pass_) {
-    mesh_pass_->clearMeshes();
-  }
+  disconnect(reload_connection_);
+  reload_connection_ = {};
+  resetModelState();
+  tf_buffer_.reset();
   ctx_ = {};
 }
 
 void RobotModelLayer::setFixedFrame(const QString& frame) {
   fixed_frame_ = frame;
-  draws_dirty_ = true;
   emit repaintRequested();
 }
 
 void RobotModelLayer::setTrackerTime(PJ::Timepoint time) {
   tracker_time_ = time;
-  // TF reaches this layer ONLY via tracker ticks (the dock drives setTrackerTime
-  // on every live ingest tick and every scrub), so this is where TF-driven pose
-  // changes invalidate the draw cache.
-  draws_dirty_ = true;
+  ensureStaticBridges();
   if (source_type_ == SourceType::kTopic && latch_pending_) {
     const auto now = std::chrono::steady_clock::now();
     if (last_latch_retry_ == std::chrono::steady_clock::time_point{} ||
@@ -433,201 +561,75 @@ void RobotModelLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-  if (visible) {
-    // The cache may predate the hide (TF advanced while we skipped render).
-    draws_dirty_ = true;
-  }
   emit visibilityChanged(visible);
   emit infoChanged();
   emit repaintRequested();
 }
 
-void RobotModelLayer::initializeGL() {
-  if (mesh_pass_) {
-    mesh_pass_->initializeGL();
-  }
-}
-
-void RobotModelLayer::rebuildDrawCache(const FrameContext& frame_ctx) {
-  // Reuse the member vectors (clear, never realloc fresh locals) so a steady
-  // robot does not churn the heap every time the cache invalidates.
-  cached_visual_draws_.clear();
-  cached_collision_draws_.clear();
-
-  // Bridge the URDF's fixed joints into the buffer we actually pose links against:
-  // frame_ctx.tf is the dock's LIVE buffer, whereas ctx_.tf_buffer is a snapshot
-  // taken at attach that can be null/stale if the layer attached before the
-  // dataset bound (or was rebound on reload). Guarded + idempotent, so re-running
-  // every rebuild is cheap and self-heals after a buffer clear. const_cast is safe
-  // here: TransformBuffer is internally synchronized and rebuildDrawCache runs on
-  // the GUI thread; FrameContext only hands the buffer to passes read-only.
-  ensureStaticBridges(const_cast<TransformBuffer&>(frame_ctx.tf));
-
-  const glm::vec4 placeholder_color{1.0f, 0.0f, 1.0f, 1.0f};
-
-  auto append_geom = [&](const LinkGeom& geom, const glm::mat4& link_model, bool collision) {
-    MeshRenderPass::DrawCall draw;
-    draw.model = link_model * glm::mat4(originToMat4(geom.origin_xyz, geom.origin_rpy));
-    if (geom.has_color) {
-      draw.use_vertex_color = false;
-      draw.color = geom.color;
-    } else if (collision) {
-      // Collision geometry with no <material>: orange tint so hulls read as
-      // distinct from the visual meshes (RViz convention).
-      draw.use_vertex_color = false;
-      draw.color = look::kCollisionDefaultColor;
-    } else {
-      draw.use_vertex_color = true;
-      draw.color = glm::vec4(1.0f);
-    }
-
-    if (const auto* box = std::get_if<GeomBox>(&geom.shape); box != nullptr) {
-      draw.kind = MeshRenderPass::GeometryKind::kBox;
-      draw.model = glm::scale(draw.model, toVec3(box->size));
-      draw.use_vertex_color = false;
-    } else if (const auto* cylinder = std::get_if<GeomCylinder>(&geom.shape); cylinder != nullptr) {
-      draw.kind = MeshRenderPass::GeometryKind::kCylinder;
-      draw.model = glm::scale(
-          draw.model, glm::vec3(
-                          static_cast<float>(cylinder->radius), static_cast<float>(cylinder->radius),
-                          static_cast<float>(cylinder->length)));
-      draw.use_vertex_color = false;
-    } else if (const auto* sphere = std::get_if<GeomSphere>(&geom.shape); sphere != nullptr) {
-      draw.kind = MeshRenderPass::GeometryKind::kSphere;
-      draw.model = glm::scale(draw.model, glm::vec3(static_cast<float>(sphere->radius)));
-      draw.use_vertex_color = false;
-    } else if (const auto* mesh = std::get_if<GeomMesh>(&geom.shape); mesh != nullptr) {
-      draw.model = glm::scale(draw.model, toVec3(mesh->scale));
-      if (mesh->resolved && meshReady(mesh->resolved_path)) {
-        draw.kind = MeshRenderPass::GeometryKind::kMesh;
-        draw.mesh_key = mesh->resolved_path;
+void RobotModelLayer::rebuildDrawCalls() {
+  model_draw_calls_.clear();
+  if (model_.has_value()) {
+    const std::string prefix = frame_prefix_.toStdString();
+    const auto append = [&](const RobotLink& link, const LinkGeom& geom, bool collision) {
+      ModelDrawCall call;
+      call.frame_id = prefix + link.name;
+      call.group = collision ? ModelDrawGroup::kCollision : ModelDrawGroup::kVisual;
+      // Primitives and the placeholder carry the call's colour alone (their unit
+      // meshes' material and vertex colours would apply it a second time); only a
+      // mesh without an explicit URDF colour shows its own materials.
+      call.use_material = false;
+      call.mesh_key = std::string(kPlaceholderKey);
+      bool explicit_color = true;
+      if (geom.has_color) {
+        call.override_color = geom.color;
+      } else if (collision) {
+        // Collision geometry with no <material>: orange tint so hulls read as
+        // distinct from the visual meshes (RViz convention).
+        call.override_color = look::kCollisionDefaultColor;
       } else {
-        draw.kind = MeshRenderPass::GeometryKind::kPlaceholderCube;
-        draw.color = placeholder_color;
-        draw.use_vertex_color = false;
+        explicit_color = false;
       }
-    }
-
-    if (collision) {
-      cached_collision_draws_.push_back(std::move(draw));
-    } else {
-      cached_visual_draws_.push_back(std::move(draw));
-    }
-  };
-
-  // frame_prefix_ is constant across this rebuild; convert it once instead of
-  // a QString concat + toStdString round-trip per link. rebuildDrawCache runs
-  // for every link on every draws_dirty_ rebuild (i.e. every tracker tick during
-  // playback), so the empty-prefix common case looks up link.name with no alloc.
-  const std::string frame_prefix = frame_prefix_.toStdString();
-  for (const RobotLink& link : model_->links) {
-    const auto tf = frame_prefix.empty() ? frame_ctx.lookup(link.name) : frame_ctx.lookup(frame_prefix + link.name);
-    if (!tf.has_value()) {
-      continue;
-    }
-    const glm::mat4 link_model = glm::mat4(tf->matrix());
-
-    if (display_mode_ == DisplayMode::kCollision) {
-      for (const LinkGeom& geom : link.collisions) {
-        append_geom(geom, link_model, true);
-      }
-    } else if (display_mode_ == DisplayMode::kVisual) {
-      for (const LinkGeom& geom : link.visuals) {
-        append_geom(geom, link_model, false);
-      }
-    } else {
-      // kAuto: render a link's visuals when it has them. A collision-only link is
-      // promoted to the visuals group (rendered solid) ONLY when the whole model
-      // has no visuals (review L.21 — an all-collision URDF must not ghost at the
-      // collision opacity). In a MIXED model (this one has visual links), a
-      // collision-only link is auxiliary geometry — e.g. the self-collision
-      // capsules of panda_link*_sc — so it renders in the COLLISION group and
-      // obeys the Collision opacity/visibility toggle instead of overlaying the
-      // visuals as an unhideable solid.
-      if (!link.visuals.empty()) {
-        for (const LinkGeom& geom : link.visuals) {
-          append_geom(geom, link_model, false);
+      glm::dvec3 scale{1.0};
+      if (const auto* box = std::get_if<GeomBox>(&geom.shape); box != nullptr) {
+        call.mesh_key = std::string(kBoxKey);
+        scale = box->size;
+      } else if (const auto* cylinder = std::get_if<GeomCylinder>(&geom.shape); cylinder != nullptr) {
+        call.mesh_key = std::string(kCylinderKey);
+        scale = {cylinder->radius, cylinder->radius, cylinder->length};
+      } else if (const auto* sphere = std::get_if<GeomSphere>(&geom.shape); sphere != nullptr) {
+        call.mesh_key = std::string(kSphereKey);
+        scale = glm::dvec3(sphere->radius);
+      } else if (const auto* mesh = std::get_if<GeomMesh>(&geom.shape); mesh != nullptr) {
+        scale = mesh->scale;
+        if (mesh->resolved && meshReady(mesh->resolved_path)) {
+          call.mesh_key = mesh->resolved_path;
+          call.use_material = !explicit_color;
+        } else {
+          call.override_color = kPlaceholderColor;
         }
-      } else {
+      }
+      call.model = glm::scale(originToMat4(geom.origin_xyz, geom.origin_rpy), scale);
+      model_draw_calls_.push_back(std::move(call));
+    };
+    for (const RobotLink& link : model_->links) {
+      if (display_mode_ == DisplayMode::kCollision) {
         for (const LinkGeom& geom : link.collisions) {
-          append_geom(geom, link_model, /*collision=*/model_has_visuals_);
+          append(link, geom, true);
+        }
+      } else if (display_mode_ == DisplayMode::kVisual || !link.visuals.empty()) {
+        for (const LinkGeom& geom : link.visuals) {
+          append(link, geom, false);
+        }
+      } else {
+        // kAuto, collision-only link: promoted to the visuals group only when the
+        // whole model has no visuals (see DisplayMode).
+        for (const LinkGeom& geom : link.collisions) {
+          append(link, geom, /*collision=*/model_has_visuals_);
         }
       }
     }
   }
-  cached_render_origin_ = frame_ctx.render_origin;
-}
-
-bool RobotModelLayer::drawCacheNeedsRebuild(const FrameContext& frame_ctx) const {
-  if (draws_dirty_ || !cached_render_origin_.has_value()) {
-    return true;
-  }
-  const glm::dvec3 delta = *cached_render_origin_ - frame_ctx.render_origin;
-  return delta.x != 0.0 || delta.y != 0.0 || delta.z != 0.0;
-}
-
-void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_ || !mesh_pass_ || !model_.has_value()) {
-    return;
-  }
-
-  // DrawCall matrices are in camera-relative render space, so the cache is
-  // rebuilt when draws_dirty_ OR the render origin moved (pan / zoom-to-cursor /
-  // follow); a pure view/projection repaint reuses it. Shared with the shadow
-  // hooks via ensureDrawCache (which also drains finished mesh loads) so a frame's
-  // pre-pass and color pass use one list built from the same geometry.
-  ensureDrawCache(frame_ctx);
-
-  // Per-view opacities (Part C "Meshes"/"Collision" sliders); 0 hides the group
-  // entirely. These gates stay per-frame — only the draw list is cached. The
-  // per-layer DisplayMode stays the structural override.
-  const MeshShadingParams& shading = view_params.shading;
-  if (shading.meshes_visible && shading.mesh_opacity > 0.0f) {
-    mesh_pass_->renderVisuals(view_params, cached_visual_draws_, shading.mesh_opacity);
-  }
-  if (shading.collisions_visible && shading.collision_opacity > 0.0f) {
-    mesh_pass_->renderCollisions(view_params, cached_collision_draws_, shading.collision_opacity);
-  }
-}
-
-void RobotModelLayer::ensureDrawCache(const FrameContext& frame_ctx) {
-  // Drain any finished async mesh loads FIRST, so the shadow pre-pass and the color
-  // pass in the same frame agree on the geometry: without this a future completing
-  // between the shadow hooks and render() would cast placeholder cubes but draw the
-  // real mesh. drain() is idempotent (changed == false on a second call this frame),
-  // so the redundant poll across the three callers is cheap.
-  pollMeshLoads();
-  if (drawCacheNeedsRebuild(frame_ctx)) {
-    rebuildDrawCache(frame_ctx);
-    draws_dirty_ = false;
-  }
-}
-
-std::optional<AABB> RobotModelLayer::meshShadowBounds(const FrameContext& frame_ctx) {
-  if (!visible_ || !mesh_pass_ || !model_.has_value()) {
-    return std::nullopt;
-  }
-  ensureDrawCache(frame_ctx);
-  const AABB bounds = mesh_pass_->worldBoundsOfDraws(cached_visual_draws_);
-  return bounds.valid ? std::optional<AABB>(bounds) : std::nullopt;
-}
-
-void RobotModelLayer::renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) {
-  if (!visible_ || !mesh_pass_ || !model_.has_value()) {
-    return;
-  }
-  // Visual links only: collision hulls coincide with the visuals and would
-  // double-darken the silhouette. The "meshes hidden" per-view toggle is not
-  // consulted here (the hook has no ViewParams); a hidden mesh still casting is an
-  // accepted v1 edge case.
-  ensureDrawCache(frame_ctx);
-  mesh_pass_->renderDepthOnly(light_view_proj, cached_visual_draws_);
-}
-
-void RobotModelLayer::releaseGL() {
-  if (mesh_pass_) {
-    mesh_pass_->releaseGL();
-  }
+  ++model_revision_;
 }
 
 QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
@@ -693,8 +695,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
       new QLineEdit(source_type_ == SourceType::kFile ? QFileInfo(source_value_).fileName() : QString(), file_row);
   file_edit->setReadOnly(true);
   file_edit->setToolTip(source_type_ == SourceType::kFile ? source_value_ : QString());
-  // Themed icon buttons, matching the app's chrome (resources are registered
-  // process-wide by pj_app; the LayerListView eye/trash rows are the pattern).
+  // Themed icon buttons, matching the app's chrome.
   const QString icon_theme = QGuiApplication::palette().color(QPalette::Window).valueF() < 0.5 ? u"dark"_s : u"light"_s;
   auto* browse_button = new QToolButton(file_row);
   browse_button->setAutoRaise(true);
@@ -704,6 +705,18 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   file_layout->addWidget(file_edit, 1);
   file_layout->addWidget(browse_button);
   form->addRow(QString(), file_row);
+#ifdef PJ_TARGET_WASM
+  // Browser policy: a URDF file is granted through the panel's file chooser as
+  // bytes; there is no host path to browse to or to reopen.
+  browse_button->hide();
+  if (source_type_ == SourceType::kFile && local_file_bytes_.isEmpty()) {
+    auto* note = new QLabel(
+        tr("A browser layout cannot reopen a host file automatically. Remove this row and select the URDF again."),
+        container);
+    note->setWordWrap(true);
+    outer->addWidget(note);
+  }
+#endif
 
   auto* url_row = new QWidget(container);
   auto* url_layout = new QHBoxLayout(url_row);
@@ -769,6 +782,10 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   }
   group_layout->addWidget(roots_list);
   outer->addWidget(group);
+#ifdef PJ_TARGET_WASM
+  // Browser policy: package roots are host directories the sandbox cannot read.
+  group->hide();
+#endif
 
   const auto refresh_roots_list = [this, roots_list]() {
     roots_list->clear();
@@ -782,24 +799,12 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     url_row->setVisible(source_type_ == SourceType::kUrl);
   };
   const auto refresh_status = [this, status_label, locate_button, retry_button]() {
-    QString status = status_text_;
-    if (total_mesh_count_ > 0) {
-      const int resolved = total_mesh_count_ - unresolved_mesh_count_;
-      const qsizetype split = status.indexOf(u"  •  "_s);
-      const QString prefix = split > 0 ? status.left(split) : tr("URDF: %1").arg(source_value_);
-      if (unresolved_mesh_count_ > 0) {
-        status = tr("%1  •  %2/%3 meshes  •  %4 packages unresolved")
-                     .arg(prefix)
-                     .arg(resolved)
-                     .arg(total_mesh_count_)
-                     .arg(unresolvedPackagesList().size());
-      } else {
-        status = tr("%1  •  %2/%2 meshes").arg(prefix).arg(total_mesh_count_);
-      }
-      status += unresolvedIssueClause();
-    }
-    status_label->setText(status);
+    status_label->setText(status_text_);
+#ifdef PJ_TARGET_WASM
+    locate_button->setVisible(false);
+#else
     locate_button->setVisible(!unresolvedPackagesList().isEmpty());
+#endif
     retry_button->setVisible(!status_text_.isEmpty());
   };
   apply_source_visibility();
@@ -891,7 +896,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     refresh_status();
   });
   connect(retry_button, &QToolButton::clicked, this, [this, refresh_status]() {
-    loadFromCurrentSource();
+    retry();
     refresh_status();
   });
   connect(
@@ -902,9 +907,6 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   connect(color_button, &PJ::ColorPickerWidget::colorChanged, this, &RobotModelLayer::setFallbackColor);
   connect(collada_box, &PJ::CheckButton::toggled, this, &RobotModelLayer::setIgnoreColladaUpAxis);
   connect(this, &RobotModelLayer::statusTextChanged, container, [refresh_status](const QString&) { refresh_status(); });
-  connect(this, &RobotModelLayer::meshLoadStatusChanged, container, [refresh_status](int, int, const QStringList&) {
-    refresh_status();
-  });
 
   return container;
 }
@@ -913,11 +915,22 @@ void RobotModelLayer::setPackageResolver(UrdfPackageResolver* resolver) {
   resolver_ = resolver != nullptr ? resolver : owned_resolver_.get();
 }
 
+void RobotModelLayer::setTransformBuffer(std::shared_ptr<TransformBuffer> buffer) {
+  tf_buffer_ = std::move(buffer);
+  ensureStaticBridges();
+  emit repaintRequested();
+}
+
+void RobotModelLayer::setEmbeddedAssets(QMap<QString, QByteArray> assets) {
+  embedded_assets_ = std::move(assets);
+}
+
 void RobotModelLayer::setSourceTopic(PJ::ObjectTopicId topic_id, QString display_name) {
   const bool changed = source_type_ != SourceType::kTopic || source_topic_id_.id != topic_id.id ||
                        (!display_name.isEmpty() && display_name_ != display_name);
   source_type_ = SourceType::kTopic;
   source_topic_id_ = topic_id;
+  local_file_bytes_.clear();
   if (!display_name.isEmpty()) {
     display_name_ = std::move(display_name);
     source_value_ = display_name_;
@@ -925,7 +938,7 @@ void RobotModelLayer::setSourceTopic(PJ::ObjectTopicId topic_id, QString display
   if (ctx_.session != nullptr) {
     // Existence check only; the actual decode re-resolves the binding per use.
     if (!ctx_.session->parserBindingForObjectTopic(source_topic_id_)) {
-      setStatus(tr("No parser for %1").arg(source_value_));
+      fail(tr("No parser for %1").arg(source_value_));
       return;
     }
     loadFromCurrentSource();
@@ -936,11 +949,20 @@ void RobotModelLayer::setSourceTopic(PJ::ObjectTopicId topic_id, QString display
 }
 
 void RobotModelLayer::setSourceFile(QString path) {
-  if (source_type_ == SourceType::kFile && source_value_ == path) {
+  if (source_type_ == SourceType::kFile && source_value_ == path && local_file_bytes_.isEmpty()) {
     return;
   }
   source_type_ = SourceType::kFile;
   source_value_ = std::move(path);
+  local_file_bytes_.clear();
+  loadFromCurrentSource();
+  emit configurationChanged();
+}
+
+void RobotModelLayer::setSourceFileContent(QString filename, QByteArray bytes) {
+  source_type_ = SourceType::kFile;
+  source_value_ = std::move(filename);
+  local_file_bytes_ = std::move(bytes);
   loadFromCurrentSource();
   emit configurationChanged();
 }
@@ -951,6 +973,16 @@ void RobotModelLayer::setSourceUrl(QString url) {
   }
   source_type_ = SourceType::kUrl;
   source_value_ = std::move(url);
+  local_file_bytes_.clear();
+  loadFromCurrentSource();
+  emit configurationChanged();
+}
+
+void RobotModelLayer::setPackageUrlRoots(const QMap<QString, QUrl>& roots) {
+  if (package_url_roots_ == roots) {
+    return;
+  }
+  package_url_roots_ = roots;
   loadFromCurrentSource();
   emit configurationChanged();
 }
@@ -960,8 +992,9 @@ void RobotModelLayer::setFramePrefix(QString prefix) {
     return;
   }
   frame_prefix_ = std::move(prefix);
-  draws_dirty_ = true;     // changes which TF frames each link resolves against
+  source_frame_ = model_.has_value() ? linkFrameName(model_->root_link).toStdString() : std::string{};
   rebuildStaticBridges();  // bridge frames carry the prefix too
+  rebuildDrawCalls();      // changes which TF frames each link resolves against
   emit sourceFrameChanged(sourceFrame());
   emit fallbackFramesChanged(fallbackFrames());
   emit configurationChanged();
@@ -974,21 +1007,26 @@ void RobotModelLayer::rebuildStaticBridges() {
     return;
   }
   static_bridges_ = fixedJointStaticTransforms(*model_);
-  if (frame_prefix_.isEmpty()) {
-    return;
+  if (!frame_prefix_.isEmpty()) {
+    const std::string prefix = frame_prefix_.toStdString();
+    for (StampedTransform& bridge : static_bridges_) {
+      bridge.parent_frame = prefix + bridge.parent_frame;
+      bridge.child_frame = prefix + bridge.child_frame;
+    }
   }
-  const std::string prefix = frame_prefix_.toStdString();
-  for (StampedTransform& bridge : static_bridges_) {
-    bridge.parent_frame = prefix + bridge.parent_frame;
-    bridge.child_frame = prefix + bridge.child_frame;
-  }
+  ensureStaticBridges();
 }
 
 void RobotModelLayer::ensureStaticBridges(TransformBuffer& buf) {
-  if (static_bridges_.empty()) {
-    return;
+  if (!static_bridges_.empty()) {
+    injectMissingStaticTransforms(buf, static_bridges_);
   }
-  injectMissingStaticTransforms(buf, static_bridges_);
+}
+
+void RobotModelLayer::ensureStaticBridges() {
+  if (tf_buffer_ != nullptr) {
+    ensureStaticBridges(*tf_buffer_);
+  }
 }
 
 void RobotModelLayer::setDisplayMode(DisplayMode mode) {
@@ -996,7 +1034,7 @@ void RobotModelLayer::setDisplayMode(DisplayMode mode) {
     return;
   }
   display_mode_ = mode;
-  draws_dirty_ = true;  // visuals/collisions selection changes the draw list
+  rebuildDrawCalls();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -1006,7 +1044,7 @@ void RobotModelLayer::setFallbackColor(QColor color) {
     return;
   }
   fallback_color_ = std::move(color);
-  draws_dirty_ = true;
+  rebuildDrawCalls();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -1016,79 +1054,135 @@ void RobotModelLayer::setIgnoreColladaUpAxis(bool ignore) {
     return;
   }
   ignore_collada_up_axis_ = ignore;
-  // The flip is baked into the loaded MeshData, so the toggle must reload from
-  // the current source. loadFromCurrentSource() clears the loader cache, so the
-  // .dae meshes re-import with the new effective flip (it also re-resolves the
-  // override per path in startMeshLoads).
+  // The flip is baked into the loaded MeshData, so the toggle must reload
+  // (loadFromCurrentSource clears the loader cache).
   loadFromCurrentSource();
   emit configurationChanged();
+}
+
+void RobotModelLayer::retry() {
+  loadFromCurrentSource();
 }
 
 QString RobotModelLayer::linkFrameName(const std::string& link_name) const {
   return frame_prefix_ + QString::fromStdString(link_name);
 }
 
-bool RobotModelLayer::loadFromCurrentSource() {
-  // Any in-flight URL fetch is now stale: its result must not clobber the
-  // newly-selected source when it lands.
-  ++url_fetch_generation_;
+void RobotModelLayer::resetModelState() {
+  // Every in-flight URDF fetch, mesh fetch and import of the previous source is
+  // now stale: its completion must not land on the next source.
+  ++load_generation_;
+  // Aborts the URDF and mesh fetches. Running imports keep their concurrency
+  // slots until their workers finish; their results are dropped.
+  mesh_queue_->cancelAll();
+  mesh_errors_.clear();
+  // Release the previous model's cached MeshData and make Retry/Locate
+  // genuinely re-import (failed loads included).
+  mesh_queue_->clearLoaderCache();
   model_.reset();
-  mesh_loads_->clear();
-  // Stale draws must not survive a source switch; render() also guards on
-  // model_, but rebuild on the next render once a new model lands. Covers
-  // setIgnoreColladaUpAxis, attach, and the kUrl fetch-pending window.
-  draws_dirty_ = true;
+  static_bridges_.clear();
+  model_has_visuals_ = false;
+  source_frame_.clear();
   total_mesh_count_ = 0;
   unresolved_mesh_count_ = 0;
   loaded_mesh_count_ = 0;
+  mesh_bytes_.clear();
+  mesh_retained_bytes_ = 0;
   latch_pending_ = false;
-  if (mesh_loader_) {
-    // Release the previous model's cached MeshData and make Retry/Locate
-    // genuinely re-import (failed loads included) instead of replaying the
-    // cached future.
-    mesh_loader_->clearCache();
+  base_status_.clear();
+  noteRenderSuccess();
+  model_meshes_.clear();
+  rebuildDrawCalls();
+}
+
+void RobotModelLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
+  if (source_type_ != SourceType::kTopic || ctx_.session == nullptr ||
+      ctx_.session->objectStore().descriptor(source_topic_id_).dataset_id != dataset_id) {
+    return;
   }
-  if (mesh_pass_) {
-    mesh_pass_->clearMeshes();
+  const bool had_model = model_.has_value();
+  resetModelState();  // new generation: outstanding mesh fetches/imports are dropped
+  if (had_model) {
+    emit sourceFrameChanged({});
   }
+  // The signal precedes the swap and replaceDataset runs no event loop, so a
+  // queued reload reads the replacement. A newer load (source change, retry)
+  // bumps the generation and supersedes it.
+  const std::uint64_t generation = load_generation_;
+  QMetaObject::invokeMethod(
+      this,
+      [this, generation]() {
+        if (generation == load_generation_ && source_type_ == SourceType::kTopic && ctx_.session != nullptr) {
+          loadFromCurrentSource();
+        }
+      },
+      Qt::QueuedConnection);
+  emit repaintRequested();
+}
+
+bool RobotModelLayer::loadFromCurrentSource() {
+  const bool had_model = model_.has_value();
+  resetModelState();
+  if (had_model) {
+    emit sourceFrameChanged({});
+  }
+  setDataWarning({});
 
   if (source_type_ == SourceType::kTopic) {
     return tryLoadTopicDescription();
   }
 
-  if (source_type_ == SourceType::kUrl) {
-    if (!url_fetcher_) {
-      url_fetcher_ = std::make_unique<UrlFetcher>();
+  if (source_type_ == SourceType::kFile) {
+    if (!local_file_bytes_.isEmpty()) {
+      const QString text = QString::fromUtf8(local_file_bytes_);
+      return applyRobotDescription(text, formatFromXml(text), source_value_, QString(), /*source_is_url=*/false);
     }
-    setStatus(tr("Fetching %1").arg(source_value_));
-    const QString url_text = source_value_;
-    const uint64_t generation = url_fetch_generation_;
-    // Fire-and-forget kickoff: attach()/xmlLoadState (and undo/redo restores)
-    // no longer block on the network. The layer-owned fetcher's destruction is
-    // the primary lifetime guard; the QPointer is insurance.
-    QPointer<RobotModelLayer> guard(this);
-    url_fetcher_->fetch(QUrl(url_text), [this, guard, generation, url_text](const FetchResult& fetched) {
-      if (guard.isNull() || generation != url_fetch_generation_) {
-        return;  // layer destroyed, or a newer load superseded this fetch
-      }
-      if (!fetched.ok) {
-        setStatus(tr("Fetch failed (%1)").arg(fetched.error));
-        return;
-      }
-      const QString text = QString::fromUtf8(fetched.bytes);
-      applyRobotDescription(text, formatFromXml(text), url_text, urlDirectory(url_text), /*source_is_url=*/true);
-    });
-    return true;
+#ifdef PJ_TARGET_WASM
+    fail(tr("Select the local URDF again; browser layouts cannot retain host-file access"));
+    return false;
+#else
+    QString error;
+    const std::optional<QByteArray> bytes = readFile(source_value_, &error);
+    if (!bytes.has_value()) {
+      fail(tr("Failed to read URDF: %1").arg(error));
+      return false;
+    }
+    const QString text = QString::fromUtf8(*bytes);
+    return applyRobotDescription(
+        text, formatFromXml(text), source_value_, QFileInfo(source_value_).absolutePath(), /*source_is_url=*/false);
+#endif
   }
 
-  QString error;
-  const std::optional<QString> text = readTextFile(source_value_, &error);
-  if (!text.has_value()) {
-    setStatus(tr("Failed to read URDF: %1").arg(error));
+  const QUrl url(source_value_);
+#ifdef PJ_TARGET_WASM
+  if (!PJ::isHttpUrl(url)) {
+    fail(tr("Only http(s) URDF URLs are supported in the browser"));
     return false;
   }
-  return applyRobotDescription(
-      *text, formatFromXml(*text), source_value_, QFileInfo(source_value_).absolutePath(), /*source_is_url=*/false);
+#endif
+  setStatus(tr("Fetching %1").arg(source_value_));
+  const QString url_text = source_value_;
+  const std::uint64_t generation = load_generation_;
+  // Fire-and-forget: attach()/xmlLoadState never block on the network. Through
+  // the mesh queue, so the model's meshes reuse this fetch's connections; the
+  // layer-owned queue's destruction is the primary lifetime guard.
+  QPointer<RobotModelLayer> guard(this);
+  mesh_queue_->fetch(url, [this, guard, generation, url_text](const FetchResult& fetched) {
+    if (guard.isNull() || generation != load_generation_) {
+      return;  // layer destroyed, or a newer load superseded this fetch
+    }
+    if (!fetched.ok) {
+      fail(tr("Fetch failed (%1)").arg(fetched.error));
+      return;
+    }
+    // A redirected URDF anchors its relative meshes and roots where it was served.
+    // A local source keeps its text: the mesh loader reads plain paths, not file:// URLs.
+    const QUrl served = fetched.final_url.isEmpty() ? QUrl(url_text) : fetched.final_url;
+    const QString text = QString::fromUtf8(fetched.bytes);
+    applyRobotDescription(
+        text, formatFromXml(text), url_text, urlDirectory(served.toString()), /*source_is_url=*/true, served);
+  });
+  return true;
 }
 
 bool RobotModelLayer::tryLoadTopicDescription() {
@@ -1099,30 +1193,28 @@ bool RobotModelLayer::tryLoadTopicDescription() {
   // parser slot, so a pointer cached across calls would dangle.
   const auto binding = ctx_.session->parserBindingForObjectTopic(source_topic_id_);
   PJ::ObjectStore& store = ctx_.session->objectStore();
+  const QString topic =
+      source_value_.isEmpty() ? QString::fromStdString(store.descriptor(source_topic_id_).topic_name) : source_value_;
   if (!binding) {
-    const QString topic =
-        source_value_.isEmpty() ? QString::fromStdString(store.descriptor(source_topic_id_).topic_name) : source_value_;
-    setStatus(tr("No parser for %1").arg(topic));
+    fail(tr("No parser for %1").arg(topic));
     return false;
   }
   const auto entry = store.latestAt(source_topic_id_, std::numeric_limits<PJ::Timestamp>::max());
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     latch_pending_ = true;
     last_latch_retry_ = std::chrono::steady_clock::now();
-    const QString topic =
-        source_value_.isEmpty() ? QString::fromStdString(store.descriptor(source_topic_id_).topic_name) : source_value_;
     setStatus(tr("Waiting for %1...").arg(topic));
     return true;
   }
 
   auto obj = parseLocked(binding, entry->timestamp, entry->payload);
   if (!obj.has_value()) {
-    setStatus(tr("Parse error: %1").arg(QString::fromStdString(obj.error())));
+    fail(tr("Parse error: %1").arg(QString::fromStdString(obj.error())));
     return false;
   }
   const auto* desc = obj->object.get<PJ::sdk::RobotDescription>();
   if (desc == nullptr) {
-    setStatus(tr("Parse error: parser did not return RobotDescription"));
+    fail(tr("Parse error: parser did not return RobotDescription"));
     return false;
   }
   const QString label = source_value_.isEmpty() ? QString::fromStdString(desc->topic) : source_value_;
@@ -1131,48 +1223,57 @@ bool RobotModelLayer::tryLoadTopicDescription() {
 }
 
 bool RobotModelLayer::applyRobotDescription(
-    const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url) {
+    const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url,
+    const QUrl& roots_base) {
   latch_pending_ = false;
+  const std::string xml = text.toStdString();
+  if (static_cast<std::uint64_t>(xml.size()) > kSceneLimits.max_model_source_bytes) {
+    fail(tr("robot_description exceeds the %1 MiB limit")
+             .arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL)));
+    return false;
+  }
   if (format.compare("urdf"_L1, Qt::CaseInsensitive) != 0) {
-    setStatus(tr("Format '%1' is not supported — only URDF").arg(format));
+    fail(tr("Format '%1' is not supported — only URDF").arg(format));
     return false;
   }
 
   if (resolver_ != nullptr) {
-    // No clearUnresolved(): the resolver no longer keeps a global tally (the
-    // unresolved list is derived per-model from model_ — see M.29).
+    if (!embedded_assets_.isEmpty()) {
+      resolver_->setEmbeddedAssets(embedded_assets_);
+    }
     resolver_->autoSeedSearchRoots(urdf_dir);
   }
-  auto parsed = parseUrdf(text.toStdString(), resolver_, urdf_dir.toStdString(), source_is_url, label.toStdString());
+  QMap<QString, QUrl> roots = package_url_roots_;
+  for (QUrl& root : roots) {
+    root = roots_base.resolved(root);  // absolute roots come back unchanged
+  }
+  auto parsed = parseUrdf(
+      xml, resolver_, urdf_dir.toStdString(), source_is_url, label.toStdString(), &kUrdfLimits, roots,
+      remote_resources_only_);
   if (!parsed.first.has_value()) {
-    setStatus(QString::fromStdString(parsed.second));
+    fail(QString::fromStdString(parsed.second));
     return false;
   }
 
   model_ = std::move(parsed.first);
-  draws_dirty_ = true;     // a new model: render() must rebuild the draw lists
-  rebuildStaticBridges();  // cache the fixed-joint TF bridges for this model
-  // Whether ANY link has visual geometry — gates kAuto's collision-only promotion
-  // (see rebuildDrawCache). Depends only on the latched model, so cache it once
-  // here instead of rescanning every rebuild.
-  model_has_visuals_ = false;
-  for (const RobotLink& link : model_->links) {
-    if (!link.visuals.empty()) {
-      model_has_visuals_ = true;
-      break;
-    }
-  }
-  startMeshLoads();
+  source_frame_ = linkFrameName(model_->root_link).toStdString();
+  model_has_visuals_ = std::any_of(
+      model_->links.cbegin(), model_->links.cend(), [](const RobotLink& link) { return !link.visuals.empty(); });
+  rebuildStaticBridges();  // cache (and inject) the fixed-joint TF bridges
+  const auto retain = [this](std::string_view key, MeshData mesh) {
+    mesh_retained_bytes_ = saturatedAdd(mesh_retained_bytes_, estimateRetainedMeshBytes(mesh));
+    model_meshes_.emplace(std::string(key), std::make_shared<const MeshData>(std::move(mesh)));
+  };
+  retain(kBoxKey, makeCube({0.7F, 0.7F, 0.7F, 1.0F}));
+  retain(kCylinderKey, makeCylinder());
+  retain(kSphereKey, makeSphere());
+  retain(kPlaceholderKey, makeCube(kPlaceholderColor));
+  base_status_ = tr("URDF: %1").arg(label);
+  queueMeshLoads();
+  rebuildDrawCalls();
   updateMeshCounters();
+  updateStatus();
   const QStringList unresolved = unresolvedPackagesList();
-  QString mesh_status = unresolved_mesh_count_ > 0 ? tr("URDF: %1  •  %2/%3 meshes  •  %4 packages unresolved")
-                                                         .arg(label)
-                                                         .arg(total_mesh_count_ - unresolved_mesh_count_)
-                                                         .arg(total_mesh_count_)
-                                                         .arg(unresolved.size())
-                                                   : tr("URDF: %1  •  %2/%2 meshes").arg(label).arg(total_mesh_count_);
-  mesh_status += unresolvedIssueClause();
-  setStatus(mesh_status);
   emit sourceFrameChanged(sourceFrame());
   emit fallbackFramesChanged(fallbackFrames());
   emit unresolvedPackages(unresolved);
@@ -1181,67 +1282,77 @@ bool RobotModelLayer::applyRobotDescription(
   return true;
 }
 
-void RobotModelLayer::startMeshLoads() {
-  if (!model_.has_value() || mesh_loader_ == nullptr) {
+void RobotModelLayer::queueMeshLoads() {
+  if (!model_.has_value()) {
     return;
   }
-  // Dispatch only: the counters are owned entirely by updateMeshCounters(). The
-  // map dedups by resolved path, so links sharing a mesh file kick one load.
-  // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent):
-  // force the Y->Z flip OFF only for those, otherwise let the loader decide.
-  auto start = [&](const LinkGeom& geom) {
-    const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
-    if (mesh == nullptr || !mesh->resolved || mesh->resolved_path.empty()) {
+  // Links sharing a mesh file queue one load.
+  std::unordered_set<std::string> queued;
+  const auto inspect = [this, &queued](const LinkGeom& geometry) {
+    const auto* mesh = std::get_if<GeomMesh>(&geometry.shape);
+    if (mesh == nullptr || !mesh->resolved || mesh->resolved_path.empty() ||
+        !queued.insert(mesh->resolved_path).second) {
       return;
     }
-    if (mesh_loads_->find(mesh->resolved_path) != nullptr) {
-      return;  // already dispatched this path
+    MeshLoadQueue::Source source;
+    source.location = QString::fromStdString(mesh->resolved_path);
+    const QUrl url(source.location);
+    source.kind = PJ::isHttpUrl(url) ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kPath;
+    source.format_hint = formatHint(source.location);
+    // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent).
+    const bool collada = source.format_hint == "dae"_L1 || source.format_hint == "collada"_L1;
+    if (ignore_collada_up_axis_ && collada) {
+      source.flip_override = false;
     }
-    const QString path = QString::fromStdString(mesh->resolved_path);
-    const QString suffix = QFileInfo(path).suffix().toLower();
-    const bool is_collada = suffix == QLatin1String("dae") || suffix == QLatin1String("collada");
-    const std::optional<bool> flip_override =
-        (ignore_collada_up_axis_ && is_collada) ? std::optional<bool>(false) : std::nullopt;
-    MeshLoadEntry& entry = mesh_loads_->insertOrReplace(mesh->resolved_path, mesh->resolved_path);
-    entry.future = mesh_loader_->load(path, flip_override);
-    mesh_loads_->arm(entry, this, [this]() { pollMeshLoads(); });
+    mesh_queue_->enqueue(
+        [source]() { return std::optional(source); },
+        [this, key = mesh->resolved_path](MeshLoadQueue::Outcome outcome) { admitMesh(key, std::move(outcome.mesh)); });
   };
   for (const RobotLink& link : model_->links) {
-    for (const LinkGeom& geom : link.visuals) {
-      start(geom);
+    for (const LinkGeom& geometry : link.visuals) {
+      inspect(geometry);
     }
-    for (const LinkGeom& geom : link.collisions) {
-      start(geom);
+    for (const LinkGeom& geometry : link.collisions) {
+      inspect(geometry);
     }
   }
+  mesh_queue_->pump();
 }
 
-void RobotModelLayer::pollMeshLoads() {
-  if (!mesh_pass_) {
-    return;
+void RobotModelLayer::admitMesh(const std::string& key, MeshData mesh) {
+  if (!mesh.ok) {
+    mesh_errors_[key] = std::move(mesh.error);
+  } else {
+    const std::uint64_t retained = estimateRetainedMeshBytes(mesh);
+    if (!retainedMeshFits(retained, mesh_retained_bytes_)) {
+      mesh_errors_[key] = tr("mesh would exceed the layer memory limit");
+    } else {
+      // The settle requests its own repaint, so a landed mesh replaces its
+      // placeholder without waiting for an unrelated paint.
+      model_meshes_[key] = std::make_shared<const MeshData>(std::move(mesh));
+      mesh_bytes_[key] = retained;
+      mesh_retained_bytes_ += retained;
+      mesh_errors_.erase(key);
+    }
   }
-  // Evict failed paths from the loader so a Retry re-imports instead of being
-  // handed the cached failure forever (M.30).
-  const MeshLoadSet::DrainResult drained =
-      mesh_loads_->drain(*mesh_pass_, [this](const std::string& key, const MeshLoadEntry&) {
-        if (mesh_loader_ != nullptr) {
-          mesh_loader_->evict(QString::fromStdString(key));
-        }
-      });
-  if (drained.changed) {
-    // A placeholder cube must swap to the freshly-loaded mesh, so the cached
-    // draw lists are now stale (meshReady() flips for the drained keys).
-    draws_dirty_ = true;
-    updateMeshCounters();  // recompute loaded_mesh_count_ from ready() entries
-    emit meshLoadStatusChanged(loaded_mesh_count_, total_mesh_count_, unresolvedPackagesList());
-    // Swap the placeholder for the loaded mesh now — meshLoadStatusChanged only
-    // feeds the config-widget label and schedules no paint.
-    emit repaintRequested();
-  }
+  onMeshLoadSettled();
+}
+
+void RobotModelLayer::onMeshLoadSettled() {
+  // A placeholder cube must swap to the freshly-loaded mesh.
+  rebuildDrawCalls();
+  updateMeshCounters();
+  updateStatus();
+  emit meshLoadStatusChanged(loaded_mesh_count_, total_mesh_count_, unresolvedPackagesList());
+  emit repaintRequested();
+}
+
+std::size_t RobotModelLayer::meshImportsOutstandingForTest() const {
+  return mesh_queue_->importsRunning();
 }
 
 bool RobotModelLayer::meshReady(const std::string& key) const {
-  return mesh_loads_->ready(key);
+  return mesh_bytes_.contains(key);
 }
 
 void RobotModelLayer::updateMeshCounters() {
@@ -1251,10 +1362,8 @@ void RobotModelLayer::updateMeshCounters() {
   if (!model_.has_value()) {
     return;
   }
-  // Single traversal, all counts per-geometry mesh reference (links sharing one
-  // file each count once). A reference is unresolved when it has no resolved
-  // path; loaded when its resolved path's async load is ready().
-  auto count = [&](const LinkGeom& geom) {
+  // Per-geometry mesh references (links sharing one file each count once).
+  const auto count = [&](const LinkGeom& geom) {
     const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
     if (mesh == nullptr) {
       return;
@@ -1262,7 +1371,7 @@ void RobotModelLayer::updateMeshCounters() {
     ++total_mesh_count_;
     if (!mesh->resolved || mesh->resolved_path.empty()) {
       ++unresolved_mesh_count_;
-    } else if (mesh_loads_->ready(mesh->resolved_path)) {
+    } else if (meshReady(mesh->resolved_path)) {
       ++loaded_mesh_count_;
     }
   };
@@ -1276,6 +1385,49 @@ void RobotModelLayer::updateMeshCounters() {
   }
 }
 
+QString RobotModelLayer::loadFailureClause() const {
+  if (mesh_errors_.empty()) {
+    return {};
+  }
+  return tr(
+      "  •  %n mesh load(s) failed (shown as magenta placeholders)", nullptr, static_cast<int>(mesh_errors_.size()));
+}
+
+void RobotModelLayer::updateStatus() {
+  if (!model_.has_value()) {
+    return;
+  }
+  QString status = base_status_;
+  if (unresolved_mesh_count_ > 0) {
+    status += tr("  •  %1/%2 meshes  •  %3 packages unresolved")
+                  .arg(total_mesh_count_ - unresolved_mesh_count_)
+                  .arg(total_mesh_count_)
+                  .arg(unresolvedPackagesList().size());
+  } else {
+    status += tr("  •  %1/%1 meshes").arg(total_mesh_count_);
+  }
+  status += unresolvedIssueClause();
+  QString warning;
+#ifdef PJ_TARGET_WASM
+  // Browser policy: a local URDF grants no sibling files, and URL assets need CORS.
+  if (unresolved_mesh_count_ > 0) {
+    warning = source_type_ == SourceType::kUrl
+                  ? tr("  •  %n mesh reference(s) unresolved; URL/package paths must be CORS-accessible", nullptr,
+                       unresolved_mesh_count_)
+                  : tr("  •  %n mesh reference(s) unavailable in the browser sandbox (shown as magenta placeholders)",
+                       nullptr, unresolved_mesh_count_);
+  }
+#endif
+  warning += loadFailureClause();
+  setStatus(status + warning + (renderWarning().isEmpty() ? QString() : u"  •  "_s + renderWarning()));
+  setDataWarning(warning.mid(warning.startsWith(u"  •  "_s) ? 5 : 0));
+}
+
+void RobotModelLayer::fail(const QString& message) {
+  setStatus(message);
+  setDataWarning(message);
+}
+
 void RobotModelLayer::setStatus(QString status) {
   if (status_text_ == status) {
     return;
@@ -1286,14 +1438,12 @@ void RobotModelLayer::setStatus(QString status) {
 
 QStringList RobotModelLayer::unresolvedPackagesList() const {
   // Per-MODEL, not resolver-global: the resolver is dock-shared across robot
-  // layers, so deriving the list from this layer's own model_ keeps one robot's
-  // unresolved packages from polluting a sibling's status/Locate (review M.29).
-  // Distinct package names, in first-seen order.
+  // layers. Distinct package names, in first-seen order.
   QStringList packages;
   if (!model_.has_value()) {
     return packages;
   }
-  auto collect = [&](const LinkGeom& geom) {
+  const auto collect = [&](const LinkGeom& geom) {
     const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
     if (mesh == nullptr || mesh->unresolved_package.empty()) {
       return;
@@ -1318,13 +1468,11 @@ QString RobotModelLayer::unresolvedIssueClause() const {
   if (!model_.has_value()) {
     return {};
   }
-  // Count unresolved meshes by reason kind so the status line stays actionable
-  // beyond the generic "N packages unresolved" (which only covers package://
-  // misses). kBlockedHttp and kMissingFile are the kinds the user can do nothing
-  // about via Locate, so we name them explicitly (review L.31).
+  // kBlockedHttp and kMissingFile are the kinds Locate cannot fix, so name them
+  // explicitly.
   int blocked_http = 0;
   int missing_file = 0;
-  auto tally = [&](const LinkGeom& geom) {
+  const auto tally = [&](const LinkGeom& geom) {
     const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
     if (mesh == nullptr) {
       return;

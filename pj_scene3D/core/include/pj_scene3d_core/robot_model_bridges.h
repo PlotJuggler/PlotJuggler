@@ -15,10 +15,15 @@
 #include <vector>
 
 #include "pj_scene3d_core/robot_model.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 
 namespace pj::scene3d {
+
+using pj::tf::StampedTransform;
+using pj::tf::TimePoint;
+using pj::tf::Transform;
+using pj::tf::TransformBuffer;
 
 // One static StampedTransform per FIXED joint in `model`: parent_frame =
 // joint.parent, child_frame = joint.child, transform = {origin_xyz,

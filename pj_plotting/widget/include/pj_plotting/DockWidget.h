@@ -45,6 +45,8 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
 
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
+  /// Query the host's live sidebar visibility whenever the context menu opens.
+  void setConfigurationPanelVisibilityQuery(std::function<bool()> query);
   PlotWidget* plotWidget();
   IDataWidget* objectWidget();
   PlotWidget* releasePlotWidget();
@@ -92,6 +94,8 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   DockWidget* splitVertical(PlotWidget* plot);
 
  signals:
+  /// Toggle the host's settings sidebar for this dock.
+  void settingsPanelToggleRequested(DockWidget* dock);
   void undoableChange();
   void plotWidgetCreated(PlotWidget* plot);
   // A placeholder scene icon (2D/3D) was clicked. pj_plotting stays agnostic to
@@ -116,9 +120,11 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   // objectFamilyRequested first, then drop.
   void placeholderTopicDropped(
       DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
+  // A drop carried topics no dock can show (isPanelOnlyObjectType), which were left out; `reason` is ready for a toast.
+  void topicRefused(const QString& reason);
 
  private slots:
-  void onCatalogItemsDropped(const QStringList& keys);
+  void onCatalogItemsDropped(const QStringList& dropped_keys);
   // Builds a plot and creates an XY (scatter) curve from a right-dragged pair.
   void onCatalogItemsXyRequested(const QStringList& keys);
   // Copies the current object widget XML state to the widget clipboard.
@@ -157,6 +163,7 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
+  std::function<bool()> configuration_panel_visible_;
   QWidget* content_widget_ = nullptr;
   VisualizationPlaceholderWidget* placeholder_widget_ = nullptr;
   PlotWidget* plot_widget_ = nullptr;

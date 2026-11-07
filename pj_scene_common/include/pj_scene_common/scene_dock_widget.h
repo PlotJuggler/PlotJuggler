@@ -4,6 +4,7 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QMetaObject>
 #include <QScopedValueRollback>
 #include <QSet>
 #include <QString>
@@ -29,6 +30,11 @@
 namespace PJ {
 
 class SessionManager;
+}  // namespace PJ
+
+class QLabel;
+
+namespace PJ {
 
 /// Backend-agnostic dock base that owns an ordered stack of scene layers.
 ///
@@ -55,6 +61,17 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   [[nodiscard]] QStringList unresolvedBlockingPendingRestores() const;
   virtual void clearPendingRestores();
   void clearBlockingPendingRestores();
+
+  /// Ends a restore: closes the dataset choice of a layout that mixed datasets, then makes
+  /// the last retryPendingRestores. A dock shows ONE dataset and the first saved element's
+  /// dataset wins, so until it resolves no other saved dataset binds (load order never
+  /// decides). If none was chosen by now, the dataset the dock shows wins, else the first
+  /// saved dataset that resolves; the pending elements of every other saved dataset are
+  /// dropped with a visible reason (topicRefused), without counting as a failed restore,
+  /// while the winner's own stay pending until their topics arrive. With nothing loaded
+  /// there is no winner and the first dataset to resolve afterwards wins. The shell calls it
+  /// after its whole load; DockWidget after a paste or family switch.
+  void finishRestore() override;
   /// Base<->family payload convention: attributes named `dataset_id` /
   /// `source_dataset_id` anywhere in a deferred payload are dataset
   /// references — discardPendingRestoresFor* honors exactly these.
@@ -98,7 +115,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Accepts a topic as either a render layer or a scene-wide config topic.
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
 
-  void removeTopic(ObjectTopicId topic_id);
+  /// Removes `topic_id`'s layer, or the config topic it is (removeSceneConfigTopic).
+  /// False when the dock holds neither.
+  bool removeTopic(ObjectTopicId topic_id);
+  /// removeTopic at a caller's request rather than by eviction: a dock it leaves empty
+  /// counts as never populated, so revalidateObjects keeps it instead of resetting it.
+  bool detachTopic(ObjectTopicId topic_id);
   /// Un-hiding also re-delivers the last tracker time to the layer (hidden
   /// layers receive no tracker ticks), so it catches up to the playhead instead
   /// of repainting the geometry it held at the moment of hiding.
@@ -110,6 +132,19 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Returns layer snapshots in draw order.
   [[nodiscard]] std::vector<SceneLayerInfo> layers() const;
 
+  /// The scene-wide config topics the dock consumes without a layer (a 3D view's
+  /// FrameTransforms), as snapshots. With layers() they are everything it shows.
+  [[nodiscard]] virtual std::vector<SceneLayerInfo> configTopics() const {
+    return {};
+  }
+
+  /// The reason of the latest foreign-dataset refusal, cleared by the read; empty when
+  /// none came since. Unlike topicRefused it is never coalesced, so a caller adding
+  /// topics one at a time reads every refusal's own reason.
+  [[nodiscard]] QString takeRefusalReason() {
+    return std::exchange(last_refusal_reason_, {});
+  }
+
   /// Returns a non-owning pointer to the layer for a topic, or nullptr.
   [[nodiscard]] ISceneLayer* layerFor(ObjectTopicId topic_id) const;
 
@@ -119,6 +154,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// the base stores the pointer and subclass wiring depends on it being set.
   virtual void setSessionManager(SessionManager* session);
 
+  /// The row status of a layer on a derived topic (DerivedTopicPresentation::status); empty for any other layer.
+  [[nodiscard]] QString layerStatus(ObjectTopicId topic_id) const;
+  /// The dock's status strip: "computing (behind 0.4 s)" with the largest lag of its derived layers while one of
+  /// them computes, "computing…" while none has a lag yet; empty otherwise.
+  [[nodiscard]] QString derivedStatus() const;
+
  signals:
   void layerAdded(ObjectTopicId topic_id);
   void layerRemoved(ObjectTopicId topic_id);
@@ -126,10 +167,17 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Emitted after reorderLayers() changed the draw order; read layers() for it.
   void layersReordered();
   void layerWarningChanged(ObjectTopicId topic_id, bool warn, QString reason);
+  /// layerStatus(topic_id) changed.
+  void layerStatusChanged(ObjectTopicId topic_id, QString status);
   /// Emitted whenever the dock-owned deferred queue changes.
   void pendingRestoresChanged();
   /// Emitted for committed, persistent user mutations, never during restore.
   void workspaceChanged();
+  /// Emitted when the dock refuses a topic the user (or a saved layout) asked it to
+  /// show, with the reason in user-facing words. Every refusal that is not a plain
+  /// "unsupported type" reports here, so the shell can surface it instead of
+  /// dropping the topic silently.
+  void topicRefused(const QString& reason);
 
  protected:
   enum class DeferredElementKind { kRenderLayer, kConfigTopic };
@@ -163,6 +211,10 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
 
   /// Allows subclasses to consume scene-wide config topics without adding a layer.
   virtual bool handleSceneConfigTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  /// Drops a config topic handleSceneConfigTopic took; false when `topic_id` is not one.
+  virtual bool removeSceneConfigTopic(ObjectTopicId /*topic_id*/) {
+    return false;
+  }
 
   /// Reconciles the concrete view with the current draw order.
   ///
@@ -170,7 +222,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// clear operation.
   virtual void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) = 0;
 
-  /// Requests a view repaint after layer state changes.
+  /// Invalidates the view's content after layer state changes (a family view
+  /// that retains its last frame must re-render, not just repaint).
   virtual void refreshView();
 
   /// Per-tick render fingerprint of scene content drawn by the VIEW itself rather
@@ -218,6 +271,13 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
     last_tracker_ = PJ::fromRaw(time_ns);
   }
 
+  /// The range the dock clamps the tracker to and folds into the live edge for `layer`: a derived topic's inputs'
+  /// range (SessionManager::derivedTopicInputRange; inverted for a finding, which bounds nothing), else
+  /// `layer.timeRange()`.
+  [[nodiscard]] PJ::Range<PJ::Timepoint> clockRangeOf(const ISceneLayer& layer) const;
+  /// The newest raw clock instant among the visible layers' clockRangeOf, or nullopt when none has data.
+  [[nodiscard]] std::optional<int64_t> visibleLayersLiveEdge() const;
+
   /// Removes every layer: re-points the concrete view off the old layers
   /// (syncViewLayers with an empty order) while they are still alive, then
   /// detaches and destroys them. Concrete docks whose scene view holds raw
@@ -242,6 +302,37 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   [[nodiscard]] std::optional<DatasetId> resolveObjectDataset(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic_name) const;
 
+  /// Notes the distinct datasets a saved scene state names, in document order, so
+  /// datasetForSavedElement can make the first one win. Family xmlLoadState overrides
+  /// call it once per load, right after clearing the previous pending queue. Only
+  /// <layer>/<config_topic> children that carry a dataset identity (a non-zero id, a
+  /// source or a path) and a topic name count.
+  void recordSavedDatasets(const QDomElement& state);
+
+  /// xmlLoadState of `element`, with the saved datasets recorded from `authored` instead:
+  /// the layout as the user's file wrote it, for a family that fills in the identities of
+  /// unqualified elements first (those name no dataset, so they must not join the order).
+  bool loadSavedState(const QDomElement& element, const QDomElement& authored);
+
+  /// True when a saved element names its dataset (by id, source or path).
+  [[nodiscard]] static bool hasDatasetIdentity(const QDomElement& element);
+
+  /// How a saved element binds to a live dataset during a restore.
+  struct SavedElementDataset {
+    /// The live dataset, or empty while the element must stay pending.
+    std::optional<DatasetId> dataset;
+    /// The element belongs to a dataset other than the restore's choice: it is consumed
+    /// (dropped, reported through topicRefused) instead of restored or failed.
+    bool refused = false;
+  };
+
+  /// resolveObjectDataset for a saved <layer>/<config_topic> restore. In a layout naming
+  /// several datasets, no element of a later dataset binds before the first saved dataset
+  /// has resolved; once it has, it is the dock's dataset and elements of any other are
+  /// refused. Runtime pending intents and layouts naming one dataset resolve as before.
+  /// The element's dataset_id must be well-formed (callers reject it before binding).
+  [[nodiscard]] SavedElementDataset datasetForSavedElement(const QDomElement& element);
+
   /// The dataset whose display-offset represents this dock's time domain when
   /// onTrackerTime() recovers the absolute tracker instant. The base scans render
   /// layers and returns the first non-zero dataset_id (else 0). Subclasses that own
@@ -259,6 +350,14 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// NOT re-implement the never-populated short-circuit.
   virtual bool pruneEvictedObjects();
 
+  /// Refuses `topic_id` when its dataset differs from the one this dock already
+  /// shows: reports the reason through topicRefused (once per event-loop turn, so a
+  /// multi-topic drop or a mixed layout yields one toast) and returns true. A dock
+  /// has one display clock, so arrival order must not silently decide whose wins.
+  /// An unknown topic or an empty dock never refuses. Restore paths use it too,
+  /// dropping the foreign element instead of failing the restore.
+  bool refuseForeignTopic(ObjectTopicId topic_id);
+
   /// Inserts an already-constructed layer under `topic_id`, running the same
   /// attach/wire/register/notify pipeline addLayer() uses after factory
   /// creation. For family-owned layers that never flow through the
@@ -270,9 +369,10 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   bool insertLayer(ObjectTopicId topic_id, std::unique_ptr<ISceneLayer> layer);
 
   /// Whether this dock has ever held content (a render layer or a scene-config
-  /// topic), live or restored. Latched true on the first add, never cleared. Lets
-  /// revalidateObjects() distinguish an intentionally-empty dock (click-created /
-  /// restored empty — keep it) from one whose content was all evicted (reset it).
+  /// topic), live or restored. Latched true on the first add; cleared only when
+  /// detachTopic empties the dock. Lets revalidateObjects() distinguish an
+  /// intentionally-empty dock (click-created, restored empty or emptied by a caller —
+  /// keep it) from one whose content was all evicted (reset it).
   [[nodiscard]] bool everHadContent() const noexcept {
     return ever_had_content_;
   }
@@ -283,8 +383,29 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
     QString topic_name;
   };
 
+  /// One dataset a saved scene state names.
+  struct SavedDataset {
+    DatasetId id = 0;
+    QString source;
+    QString path;
+    /// A topic the state names in this dataset; disambiguates a same-file remint when the
+    /// dataset is resolved without a specific element at hand. Not part of the identity.
+    QString topic_name;
+
+    /// Same dataset: id, source and path agree.
+    [[nodiscard]] bool operator==(const SavedDataset& other) const {
+      return id == other.id && source == other.source && path == other.path;
+    }
+    /// How the saved state called it, for messages: source, else path, else "#id".
+    [[nodiscard]] QString label() const;
+  };
+
+  /// What a rollback must hand back: the pending queue and the dataset choice still open
+  /// (empty once settled). Without the choice, re-loading the previous state would arm a
+  /// gate that no settle follows.
   struct PendingRestoreSnapshot {
     std::vector<PendingRestoreElement> elements;
+    std::vector<SavedDataset> saved_datasets;
     uint64_t restore_failure_count = 0;
     bool ever_had_content = false;
   };
@@ -314,6 +435,38 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Result of an add attempt, separating the two outcomes addTopic's bool used
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
   enum class AddOutcome { kLayerAdded, kConsumedAsConfig, kRejected };
+
+  /// Refuses a topic of `incoming_dataset` when `bound_dataset` is already shown:
+  /// logs and emits topicRefused (coalesced per event-loop turn) and returns true.
+  /// A zero on either side means "no dataset yet" and never refuses.
+  bool refuseForeignDataset(DatasetId incoming_dataset, DatasetId bound_dataset);
+
+  /// Logs and emits topicRefused (coalesced per event-loop turn) for a topic of the
+  /// dataset labelled `incoming_label` that the dock showing `bound_label` cannot take.
+  void reportForeignDataset(const QString& bound_label, const QString& incoming_label);
+
+  /// Source label of a live dataset, "#id" when unnamed.
+  [[nodiscard]] QString datasetLabel(DatasetId dataset_id) const;
+
+  /// The dataset a saved element names, or nullopt when its dataset_id is malformed. An
+  /// absent dataset_id reads as 0 ("by source/path only").
+  [[nodiscard]] static std::optional<SavedDataset> savedDatasetOf(const QDomElement& element);
+
+  /// Closes the restore's dataset choice (see finishRestore): the dataset the dock shows
+  /// wins, else the first saved dataset that is loaded. Drops the pending elements of the
+  /// losing saved datasets; the winner's own stay pending, whether or not their topic has
+  /// arrived.
+  void settleRestoreDataset();
+
+  /// A derived result landed: moves the visible layers of `topics` to the dock's time again (refreshAt), so a
+  /// result at the dock's time shows with no tracker tick. Each layer requests its own repaint.
+  void refreshDerivedLayers(const std::vector<ObjectTopicId>& topics);
+  /// Re-reads the derived presentation of `topic_id`'s layer (nothing for a raw one): its warning part, its row
+  /// status (layerStatusChanged on a change) and the dock's status strip. Never per frame.
+  void syncDerivedPresentation(ObjectTopicId topic_id);
+  /// syncDerivedPresentation of every derived layer that shows something: its text depends on the display offset.
+  void resyncDerivedPresentations();
+  void updateDerivedStatus();
 
   /// Removes matching queue entries and emits pendingRestoresChanged once.
   void erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate);
@@ -355,14 +508,27 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   LayerFactory factory_;
   SessionManager* session_ = nullptr;
   ObjectDatasetResolver object_dataset_resolver_;
+  // Datasets named by the layout being restored, in document order (recordSavedDatasets);
+  // the first wins. Dropped by settleRestoreDataset.
+  std::vector<SavedDataset> saved_datasets_;
   std::optional<PJ::Timepoint> last_tracker_;
   QWidget* scene_view_ = nullptr;
+  /// The presentation of each derived layer that shows something beside its geometry, by topicKey.
+  std::unordered_map<int64_t, DerivedTopicPresentation> derived_presentations_;
+  QLabel* derived_status_label_ = nullptr;  ///< the status strip under the view, hidden while empty
+  QMetaObject::Connection derived_published_conn_;
+  QMetaObject::Connection derived_state_conn_;
+  QMetaObject::Connection derived_offset_conn_;
+  QMetaObject::Connection derived_dataset_offset_conn_;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;
   // Latched true the first time any layer or config topic is added (see
-  // everHadContent()); never cleared, so an evicted-to-empty dock stays
-  // distinguishable from a never-populated one.
+  // everHadContent()); only detachTopic clears it, so an evicted-to-empty dock stays
+  // distinguishable from a never-populated or deliberately emptied one.
   bool ever_had_content_ = false;
   bool restoring_state_ = false;
+  // Set by the first refusal of an event-loop turn; cleared by a zero-delay timer.
+  bool refusal_reported_ = false;
+  QString last_refusal_reason_;  ///< see takeRefusalReason
   uint64_t restore_failure_count_ = 0;
 
   // Per-tick repaint coalescing (see onTrackerTime). last_render_key_ is the

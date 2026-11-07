@@ -3,8 +3,11 @@ const { test, expect } = require('@playwright/test');
 const crypto = require('crypto');
 const fs = require('fs');
 const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp } = require('./support/app');
+const { nativePickerType } = require('./support/browser');
 const { clickActiveDialogButton } = require('./support/dialogs');
-const { elementAttribute } = require('./support/layout_xml');
+const {
+  elementAttribute, elementAttributes, setElementAttribute, setElementAttributeAt,
+} = require('./support/layout_xml');
 const { downloadLayoutFromFileMenu, saveLayoutActionCenter } = require('./support/layout_actions');
 const { openFileChooser, openLayoutChooser, openSourceReplayChooser } = require('./support/pickers');
 const { requestPlotState } = require('./support/plot_probes');
@@ -19,37 +22,6 @@ async function pickerApisRemainExact(page) {
       && window.showSaveFilePicker === before.save
       && Object.prototype.hasOwnProperty.call(window, 'showOpenFilePicker') === before.openOwn
       && Object.prototype.hasOwnProperty.call(window, 'showSaveFilePicker') === before.saveOwn;
-  });
-}
-
-function setElementAttribute(xml, tag, attribute, value) {
-  const elementPattern = new RegExp(`<${tag}\\b[^>]*>`);
-  return xml.replace(elementPattern, (element) => {
-    const attributePattern = new RegExp(`\\b${attribute}="[^"]*"`);
-    if (attributePattern.test(element)) {
-      return element.replace(attributePattern, `${attribute}="${value}"`);
-    }
-    return element.replace(/\s*\/?>(?=$)/, (ending) => ` ${attribute}="${value}"${ending}`);
-  });
-}
-
-function elementAttributes(layoutBytes, tag, attribute) {
-  const xml = Buffer.isBuffer(layoutBytes) ? layoutBytes.toString('utf8') : String(layoutBytes);
-  return [...xml.matchAll(new RegExp(`<${tag}\\b[^>]*\\b${attribute}="([^"]*)"`, 'g'))]
-    .map(match => match[1]);
-}
-
-function setElementAttributeAt(xml, tag, index, attribute, value) {
-  let current = 0;
-  return xml.replace(new RegExp(`<${tag}\\b[^>]*>`, 'g'), (element) => {
-    if (current++ !== index) {
-      return element;
-    }
-    const attributePattern = new RegExp(`\\b${attribute}="[^"]*"`);
-    if (attributePattern.test(element)) {
-      return element.replace(attributePattern, `${attribute}="${value}"`);
-    }
-    return element.replace(/\s*\/?>(?=$)/, (ending) => ` ${attribute}="${value}"${ending}`);
   });
 }
 
@@ -275,7 +247,7 @@ test('browser persistence survives refresh through a bounded allowlist and scrub
   expect(errors).toEqual([]);
 });
 
-test('browser layouts open transactionally and download with exact round-trip state', async ({ page }) => {
+test('browser layouts open transactionally and download with exact round-trip state', async ({ page, browserName }) => {
   test.setTimeout(150000);
   const errors = [];
   const consoleMessages = [];
@@ -297,7 +269,8 @@ test('browser layouts open transactionally and download with exact round-trip st
       save: typeof window.showSaveFilePicker,
     };
   });
-  expect(pickerApisBefore).toEqual({ open: 'function', save: 'function' });
+  const nativePicker = nativePickerType(browserName);
+  expect(pickerApisBefore).toEqual({ open: nativePicker, save: nativePicker });
   const screen = await page.locator('#screen').boundingBox();
   expect(screen).not.toBeNull();
 

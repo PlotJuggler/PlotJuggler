@@ -5,8 +5,14 @@
 // Resolves mesh references found inside a URDF to a loadable local path / URL.
 //
 // Two entry points:
-//   resolveUri(uri, urdf_dir, source_is_url)  — URI-scheme dispatch + the guard.
-//   resolve(pkg, rel)                          — the package:// resolution chain.
+//   resolveUri(uri, urdf_dir, source_is_url, roots)  — URI-scheme dispatch + the guard.
+//   resolve(pkg, rel, ..., roots)                     — the package:// resolution chain.
+//
+// `package_url_roots` (package name -> absolute http(s)/file directory URL) is
+// the calling MODEL's explicit mapping, passed per call because the resolver is
+// shared by every robot of a dock and must keep no per-model state. A mapped
+// package resolves only under its root, with no fallback; unmapped packages take
+// the legacy chain. A mapping never permits the model's direct http(s) refs.
 //
 // The "package://" GUARD: only package:// URIs ever enter the package chain.
 // Bare relative paths (e.g. "robotiq_arg85_description/meshes/x.stl") resolve
@@ -24,6 +30,7 @@
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <memory>
 #include <string>
 
@@ -36,7 +43,7 @@ namespace pj::scene3d {
 // Outcome of a resolveUri() call. Unresolved tracking is per-call (carried out
 // in the return value), NOT resolver-global: the resolver is dock-shared across
 // robot layers, so a global tally would let one layer's load wipe/pollute a
-// sibling's (review M.29). The layer collects `package`/`issue` into its own
+// sibling's. The layer collects `package`/`issue` into its own
 // per-model set.
 struct ResolvedMesh {
   bool resolved{false};
@@ -92,14 +99,28 @@ class UrdfPackageResolver {
   // --- Resolution ----------------------------------------------------------
 
   // Full URI-scheme dispatch + guard. `urdf_dir` is the directory (or URL base)
-  // the URDF was loaded from; `source_is_url` gates http(s) refs.
-  ResolvedMesh resolveUri(const std::string& uri, const std::string& urdf_dir, bool source_is_url);
+  // the URDF was loaded from; `source_is_url` gates http(s) refs. `remote_only`
+  // (a web-hosted layout's robot) refuses everything on this host, as the browser
+  // build always does: file:// and absolute paths, bare paths not under a URL,
+  // file roots, and the local package chain (remembered map, filesystem ancestor,
+  // search roots). Embedded assets and network references still resolve.
+  ResolvedMesh resolveUri(
+      const std::string& uri, const std::string& urdf_dir, bool source_is_url,
+      const QMap<QString, QUrl>& package_url_roots = {}, bool remote_only = false);
 
-  // The package:// chain (steps 0..3). Returns "" on miss; the caller records
-  // the unresolved package (the resolver keeps no global tally — see
+  // The package:// chain (an explicit root, else steps 0..3). On the desktop an
+  // http(s) root counts only for a URL source or with `remote_only`; for any other
+  // model it is skipped and the package takes steps 0..3. Returns "" on
+  // miss, also for a mapped package whose ref escapes its root (decoded and
+  // normalized; an encoded separator or a backslash never resolves) or whose root
+  // is unusable (relative, another scheme, a file root in the browser or with
+  // `remote_only`, which also skips the local steps 1..3); the caller
+  // records the unresolved package (the resolver keeps no global tally — see
   // ResolvedMesh). `urdf_dir` enables the ancestor heuristic (step 2);
   // `source_is_url` selects the URL-segment variant of that heuristic.
-  std::string resolve(const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url);
+  std::string resolve(
+      const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url,
+      const QMap<QString, QUrl>& package_url_roots = {}, bool remote_only = false);
 
   // Manually remember a package root (the "Locate…" result): writes the
   // per-source map AND appends to the global search roots.

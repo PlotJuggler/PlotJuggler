@@ -4,6 +4,7 @@
 #include "pj_runtime/PlotTabsRuntimeHost.h"
 
 #include <algorithm>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -25,6 +26,16 @@ constexpr std::string_view kDomain{"plot_tabs"};
 [[nodiscard]] bool isEmpty(PJ_string_view_t sv) {
   return sdk::toStringView(sv).empty();
 }
+
+[[nodiscard]] bool isKnownKind(std::string_view kind) {
+  return kind == "plot" || kind == "3d" || kind == "2d";
+}
+
+/// A tail slot is served exactly when its callback is set.
+template <typename Slot, typename Callback>
+[[nodiscard]] Slot servedIf(const Callback& callback, Slot slot) {
+  return callback ? slot : nullptr;
+}
 }  // namespace
 
 PlotTabsRuntimeHost::PlotTabsRuntimeHost(Callbacks callbacks)
@@ -39,6 +50,10 @@ PlotTabsRuntimeHost::PlotTabsRuntimeHost(Callbacks callbacks)
           .add_curve = &PlotTabsRuntimeHost::onAddCurve,
           .remove_curve = &PlotTabsRuntimeHost::onRemoveCurve,
           .clear_tab = &PlotTabsRuntimeHost::onClearTab,
+          .create_tab_v2 = servedIf(callbacks_.create_tab_v2, &PlotTabsRuntimeHost::onCreateTabV2),
+          .attach_topic = servedIf(callbacks_.attach_topic, &PlotTabsRuntimeHost::onAttachTopic),
+          .detach_topic = servedIf(callbacks_.detach_topic, &PlotTabsRuntimeHost::onDetachTopic),
+          .focus_tab = servedIf(callbacks_.focus_tab, &PlotTabsRuntimeHost::onFocusTab),
       },
       raw_{this, &vtable_} {}
 
@@ -177,6 +192,68 @@ bool PlotTabsRuntimeHost::onClearTab(void* ctx, PJ_string_view_t id, PJ_error_t*
       return reject(out_error, kDomain, "this host does not support clearing tabs");
     }
     return finish(out_error, kDomain, self.callbacks_.clear_tab(sdk::toStringView(id)));
+  });
+}
+
+bool PlotTabsRuntimeHost::onCreateTabV2(
+    void* ctx, PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t title, PJ_error_t* out_error) noexcept {
+  return guarded<PlotTabsRuntimeHost>(ctx, out_error, kDomain, [&](PlotTabsRuntimeHost& self) {
+    const std::string_view id_view = sdk::toStringView(id);
+    if (id_view.empty()) {
+      return reject(out_error, kDomain, "tab id must not be empty");
+    }
+    if (id_view.find('/') != std::string_view::npos) {
+      return reject(out_error, kDomain, "tab id must not contain '/'");
+    }
+    const std::string_view kind_view = sdk::toStringView(kind);
+    if (!isKnownKind(kind_view)) {
+      return reject(
+          out_error, kDomain, "unknown tab kind '" + std::string(kind_view) + "': expected \"plot\", \"3d\" or \"2d\"");
+    }
+    return finish(out_error, kDomain, self.callbacks_.create_tab_v2(id_view, kind_view, sdk::toStringView(title)));
+  });
+}
+
+bool PlotTabsRuntimeHost::onAttachTopic(
+    void* ctx, PJ_string_view_t id, PJ_string_view_t topic, PJ_string_view_t dataset_source,
+    PJ_error_t* out_error) noexcept {
+  return guarded<PlotTabsRuntimeHost>(ctx, out_error, kDomain, [&](PlotTabsRuntimeHost& self) {
+    if (isEmpty(id)) {
+      return reject(out_error, kDomain, "tab id must not be empty");
+    }
+    if (isEmpty(topic)) {
+      return reject(out_error, kDomain, "topic must not be empty");
+    }
+    return finish(
+        out_error, kDomain,
+        self.callbacks_.attach_topic(
+            sdk::toStringView(id), sdk::toStringView(topic), sdk::toStringView(dataset_source)));
+  });
+}
+
+bool PlotTabsRuntimeHost::onDetachTopic(
+    void* ctx, PJ_string_view_t id, PJ_string_view_t topic, PJ_string_view_t dataset_source,
+    PJ_error_t* out_error) noexcept {
+  return guarded<PlotTabsRuntimeHost>(ctx, out_error, kDomain, [&](PlotTabsRuntimeHost& self) {
+    if (isEmpty(id)) {
+      return reject(out_error, kDomain, "tab id must not be empty");
+    }
+    if (isEmpty(topic)) {
+      return reject(out_error, kDomain, "topic must not be empty");
+    }
+    return finish(
+        out_error, kDomain,
+        self.callbacks_.detach_topic(
+            sdk::toStringView(id), sdk::toStringView(topic), sdk::toStringView(dataset_source)));
+  });
+}
+
+bool PlotTabsRuntimeHost::onFocusTab(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept {
+  return guarded<PlotTabsRuntimeHost>(ctx, out_error, kDomain, [&](PlotTabsRuntimeHost& self) {
+    if (isEmpty(id)) {
+      return reject(out_error, kDomain, "tab id must not be empty");
+    }
+    return finish(out_error, kDomain, self.callbacks_.focus_tab(sdk::toStringView(id)));
   });
 }
 

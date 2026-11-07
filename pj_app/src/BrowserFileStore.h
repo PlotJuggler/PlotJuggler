@@ -53,6 +53,10 @@ class BrowserFileStore {
   // job snapshots every value it needs at kickoff and touches the store no more.
   void stageAsync(const QString& browser_name, QByteArray bytes, StageCompletion completion);
 
+  // Places a file the caller writes itself (a download streamed into MEMFS) and returns its input: the path
+  // does not exist yet, content_sha256 is the caller's to fill, and the lease removes whatever the path holds.
+  [[nodiscard]] StageResult reserve(const QString& browser_name);
+
   [[nodiscard]] static QString sanitizedBasename(const QString& browser_name);
 
   // Recovers the browser-provided display name carried in a pj-upload://

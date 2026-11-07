@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QMap>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <atomic>
@@ -20,12 +21,16 @@
 #include <string>
 #include <vector>
 
+#include "mesh_import.h"  // maxConcurrentMeshLoads
+#include "mock_parser_support.h"
 #include "pj_base/time.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_scene3d_widgets/layout_resources.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
+#include "urdf_package_resolver.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -73,7 +78,7 @@ constexpr const char* kMixedCollisionUrdf = R"(
 )";
 
 // An entirely-collision model (no <visual> anywhere): kAuto must promote it to the
-// visuals group so it renders solid (review L.21).
+// visuals group so it renders solid.
 constexpr const char* kAllCollisionUrdf = R"(
 <robot name="allcol">
   <link name="solid">
@@ -264,6 +269,41 @@ class ResolvedMeshRobotDescriptionParser final : public PJ::MessageParserPluginB
   }
 };
 
+// A topic URDF naming one mesh through a package and one through a direct
+// http URL: an explicit package root may authorize the first, never the second.
+constexpr const char* kPackageUrlUrdf = R"(
+<robot name="url_roots">
+  <link name="base_link">
+    <visual><geometry><mesh filename="package://pj_url_pkg/meshes/cube.stl"/></geometry></visual>
+  </link>
+  <link name="tool0">
+    <visual><geometry><mesh filename="https://blocked.invalid/tool.stl"/></geometry></visual>
+  </link>
+  <joint name="mount" type="fixed"><parent link="base_link"/><child link="tool0"/></joint>
+</robot>
+)";
+
+class PackageUrlRobotDescriptionParser final : public PJ::MessageParserPluginBase {
+ public:
+  PackageUrlRobotDescriptionParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts,
+              .topic = "/robot_description",
+              .format = "urdf",
+              .text = kPackageUrlUrdf,
+          }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
 // Rebind-test parse counters. vtableWithCreate() requires a non-capturing create
 // function, so the counting parsers reach these via file scope rather than a
 // lambda capture.
@@ -389,6 +429,13 @@ const PJ_message_parser_vtable_t* colladaMeshParserVtable() {
   return vt;
 }
 
+const PJ_message_parser_vtable_t* packageUrlParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new PackageUrlRobotDescriptionParser(); },
+      R"({"id":"robot-package-url-test","name":"Robot Package URL Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session, std::string topic_name = "/robot_description") {
   auto topic = session.objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{.dataset_id = 1, .topic_name = std::move(topic_name), .metadata_json = "{}"});
@@ -423,7 +470,7 @@ void registerParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id, con
 pj::scene3d::Scene3DLayerContext makeContext(PJ::SessionManager& session) {
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  ctx.tf_buffer = std::make_shared<pj::scene3d::TransformBuffer>();
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>();
   return ctx;
 }
 
@@ -501,50 +548,6 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   EXPECT_EQ(layer.totalMeshCount(), 1);
   EXPECT_EQ(layer.unresolvedMeshCount(), 1);
   EXPECT_TRUE(layer.statusText().contains("packages unresolved"_L1));
-}
-
-// M.48: render() memoizes the per-link DrawCall lists and rebuilds them only
-// when their inputs change. This asserts the geometry invalidation set: every
-// geometry-affecting call must re-flag the cache. The render-origin dependency
-// introduced by camera-relative rendering is covered separately below.
-// render() itself (which clears the flag) needs a GL context the harness lacks,
-// so we clear the flag manually via the test hook before each call.
-TEST(RobotModelLayerTest, DrawCacheInvalidationSetIsExhaustive) {
-  PJ::SessionManager session;
-  const PJ::ObjectTopicId topic_id = registerTopic(session);
-  registerParser(session, topic_id, urdfParserVtable());
-  pushWireBytes(session, topic_id);
-
-  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
-  const auto ctx = makeContext(session);
-  ASSERT_TRUE(layer.attach(ctx));
-  ASSERT_NE(layer.robotModel(), nullptr);
-  // attach() -> loadFromCurrentSource()/applyRobotDescription() leave the cache
-  // dirty so the first render() builds it.
-  EXPECT_TRUE(layer.drawsDirtyForTest());
-
-  // Each geometry-affecting call must re-set the flag after a (simulated) render.
-  const auto expect_dirties = [&](const char* what, auto&& mutate) {
-    layer.clearDrawsDirtyForTest();
-    mutate();
-    EXPECT_TRUE(layer.drawsDirtyForTest()) << what << " did not invalidate the draw cache";
-  };
-
-  expect_dirties("setTrackerTime", [&]() { layer.setTrackerTime(PJ::fromRaw(123)); });
-  expect_dirties("setFixedFrame", [&]() { layer.setFixedFrame(u"map"_s); });
-  expect_dirties("setFramePrefix", [&]() { layer.setFramePrefix(u"robotA/"_s); });
-  expect_dirties("setDisplayMode", [&]() { layer.setDisplayMode(pj::scene3d::RobotModelLayer::DisplayMode::kVisual); });
-  expect_dirties("setFallbackColor", [&]() { layer.setFallbackColor(QColor(10, 20, 30)); });
-
-  // setVisible(false) must NOT touch the flag (the cache is simply not consumed
-  // while hidden); setVisible(true) must, since TF may have advanced meanwhile.
-  layer.clearDrawsDirtyForTest();
-  layer.setVisible(false);
-  EXPECT_FALSE(layer.drawsDirtyForTest()) << "hiding the layer should not dirty the cache";
-  layer.setVisible(true);
-  EXPECT_TRUE(layer.drawsDirtyForTest()) << "un-hiding the layer must dirty the cache";
-
-  expect_dirties("detach", [&]() { layer.detach(); });
 }
 
 // Regression: a finished async URDF mesh load must itself request the repaint
@@ -684,6 +687,36 @@ TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
       << "layer called the replaced (freed-in-production) parser after the reload swap";
   EXPECT_GE(g_second_urdf_parser_calls.load(), 1) << "layer did not rebind to the re-registered parser";
   EXPECT_NE(layer.robotModel(), nullptr) << "latch retry did not decode the new sample";
+}
+
+// A dataset replacement swaps the robot_description bytes under the stable topic
+// id: the previous dataset's model must go at once and the description be decoded
+// again from the replacement (after the swap, which runs no event loop).
+TEST(RobotModelLayerTest, DatasetReplacementReloadsTopicDescription) {
+  g_first_urdf_parser_calls.store(0);
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, countingUrdfVtable([]() noexcept -> void* {
+                   return new CountingUrdfParser(&g_first_urdf_parser_calls);
+                 }));
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  const int parses_before = g_first_urdf_parser_calls.load();
+
+  emit session.datasetAboutToBeReplaced(session.objectStore().descriptor(topic_id).dataset_id);
+  EXPECT_EQ(layer.robotModel(), nullptr) << "the replaced dataset's model is still shown";
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.robotModel() == nullptr && timer.elapsed() < 2000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+  }
+  EXPECT_GT(g_first_urdf_parser_calls.load(), parses_before) << "the description was not decoded again";
+  EXPECT_NE(layer.robotModel(), nullptr) << "no model loaded from the replacement";
 }
 
 // M.49/H.14 regression: the kUrl source must not block the caller. setSourceUrl
@@ -1013,20 +1046,20 @@ TEST(RobotModelLayerTest, DuplicateRawSourceDoesNotSelectFirstDatasetAfterIdRemi
 }
 
 // Seed "scene -> child" (identity) into a buffer.
-void seedSceneChild(pj::scene3d::TransformBuffer& buf, const std::string& child) {
-  pj::scene3d::StampedTransform tf;
+void seedSceneChild(pj::tf::TransformBuffer& buf, const std::string& child) {
+  pj::tf::StampedTransform tf;
   tf.stamp = PJ::fromRaw(1000);
   tf.parent_frame = "scene";
   tf.child_frame = child;
-  tf.transform = pj::scene3d::Transform{glm::dvec3(0, 0, 0), glm::dquat(1, 0, 0, 0)};
+  tf.transform = pj::tf::Transform{glm::dvec3(0, 0, 0), glm::dquat(1, 0, 0, 0)};
   ASSERT_TRUE(buf.setTransform(tf).has_value());
 }
 
 // The DROID gripper bug: the layer must bridge the URDF's fixed joints into the
-// buffer it actually RENDERS against (frame_ctx.tf — the dock's live buffer), not
-// the ctx_ snapshot captured at attach (which can be null/stale). Drive the draw
-// rebuild with a live buffer distinct from the attach-time context to prove the
-// render buffer is the one bridged.
+// buffer it actually RENDERS against (the dock's live buffer), not the ctx_
+// snapshot captured at attach (which can be null/stale). Bridge a live buffer
+// distinct from the attach-time context to prove the render buffer is the one
+// bridged.
 TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -1039,17 +1072,15 @@ TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   ASSERT_NE(layer.robotModel(), nullptr);
   ASSERT_EQ(layer.robotModel()->joints.size(), 1u);
 
-  // The live render buffer the dock feeds via frame_ctx — a distinct object that
+  // The live render buffer the dock renders against — a distinct object that
   // publishes base_link under scene but never the fixed-joint child gripper_base.
-  pj::scene3d::TransformBuffer live;
+  pj::tf::TransformBuffer live;
   seedSceneChild(live, "base_link");
-  EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000)).has_value());
+  EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000), pj::tf::Clock::kHeader).has_value());
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
-  const auto tf = live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000));
+  const auto tf = live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000), pj::tf::Clock::kHeader);
   ASSERT_TRUE(tf.has_value()) << "fixed-joint mount must be bridged into the LIVE render buffer";
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
 }
@@ -1068,54 +1099,14 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
 
-  pj::scene3d::TransformBuffer live;
+  pj::tf::TransformBuffer live;
   seedSceneChild(live, "robot1/base_link");
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
-  const auto tf = live.tryLookupTransform("scene", "robot1/gripper_base", PJ::fromRaw(2000));
+  const auto tf = live.tryLookupTransform("scene", "robot1/gripper_base", PJ::fromRaw(2000), pj::tf::Clock::kHeader);
   ASSERT_TRUE(tf.has_value()) << "prefixed bridge frame should resolve in the render buffer";
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
-}
-
-// Camera-relative rendering made RobotModelLayer's cached DrawCall matrices
-// render-origin dependent: FrameContext::lookup subtracts the camera focal before
-// the float downcast. A stopped-playback camera pan/zoom changes that origin
-// without changing tracker time, so the cache must rebuild or URDF meshes stay in
-// the old render space while pointclouds/TF gizmos use the new one.
-TEST(RobotModelLayerTest, DrawCacheInvalidatesWhenRenderOriginChanges) {
-  PJ::SessionManager session;
-  const PJ::ObjectTopicId topic_id = registerTopic(session);
-  registerParser(session, topic_id, urdfParserVtable());
-  pushWireBytes(session, topic_id);
-
-  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
-  const auto ctx = makeContext(session);
-  ASSERT_TRUE(layer.attach(ctx));
-  ASSERT_NE(layer.robotModel(), nullptr);
-
-  pj::scene3d::TransformBuffer live;
-  seedSceneChild(live, "base_link");
-
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext origin_zero{live, fixed_frame, PJ::fromRaw(2000), glm::dvec3{0.0, 0.0, 0.0}};
-  layer.rebuildDrawCacheForTest(origin_zero);
-  layer.clearDrawsDirtyForTest();
-  ASSERT_EQ(layer.visualDrawCountForTest(), 1);
-  EXPECT_FALSE(layer.drawCacheNeedsRebuildForTest(origin_zero));
-  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, 0.0f, 1e-5f);
-
-  const pj::scene3d::FrameContext origin_shifted{live, fixed_frame, PJ::fromRaw(2000), glm::dvec3{3.0, 0.0, 0.0}};
-  EXPECT_TRUE(layer.drawCacheNeedsRebuildForTest(origin_shifted))
-      << "render-origin changes must invalidate render-space mesh matrices";
-
-  layer.rebuildDrawCacheForTest(origin_shifted);
-  layer.clearDrawsDirtyForTest();
-  EXPECT_FALSE(layer.drawCacheNeedsRebuildForTest(origin_shifted));
-  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, -3.0f, 1e-5f)
-      << "draw cache should be rebuilt in the new camera-relative space";
 }
 
 // kAuto in a MIXED model: a collision-only sublink (the self-collision capsules)
@@ -1132,12 +1123,10 @@ TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenMo
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
 
-  pj::scene3d::TransformBuffer live;
-  seedSceneChild(live, "body");  // the fixed joint body->body_sc is bridged by the rebuild
+  pj::tf::TransformBuffer live;
+  seedSceneChild(live, "body");  // the fixed joint body->body_sc is bridged
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
   EXPECT_EQ(layer.visualDrawCountForTest(), 1) << "the body's <visual> box";
   EXPECT_EQ(layer.collisionDrawCountForTest(), 1) << "body_sc collision sphere must be in the collision group";
@@ -1150,7 +1139,7 @@ TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenMo
 }
 
 // kAuto in an ENTIRELY-collision model: promote to the visuals group so it renders
-// solid instead of ghosting at the collision opacity (review L.21 preserved).
+// solid instead of ghosting at the collision opacity.
 TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -1162,23 +1151,202 @@ TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
 
-  pj::scene3d::TransformBuffer live;
+  pj::tf::TransformBuffer live;
   seedSceneChild(live, "solid");
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
   EXPECT_EQ(layer.visualDrawCountForTest(), 1) << "collision-only model promoted to visuals";
   EXPECT_EQ(layer.collisionDrawCountForTest(), 0);
 }
 
-// Custom main: QFutureWatcher/UrlFetcher tests need an event loop, and the
-// QCoreApplication must die BEFORE exit handlers run — QtNetwork (loaded by the
-// layer's UrlFetcher) registers global cleanup that a function-local-static app
-// would outlive, crashing at exit (pj_marketplace's download_manager_test pattern).
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+// Coordinate contract: the layer's model is link-local (prefixed link frame +
+// <origin> × scale) and TF is applied exactly once: the view receives the
+// untransformed ModelDrawCall and applies TF itself.
+TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{}, u"robot"_s);
+  layer.setFramePrefix(u"robot1/"_s);
+  layer.setSourceFileContent(u"offset.urdf"_s, QByteArray(R"(
+<robot name="offset">
+  <link name="base_link">
+    <visual>
+      <origin xyz="1 0 0"/>
+      <geometry><box size="2 3 4"/></geometry>
+    </visual>
+  </link>
+</robot>
+)"));
+  ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
+  EXPECT_EQ(layer.sourceFrame(), u"robot1/base_link"_s);
+
+  pj::tf::TransformBuffer live;
+  pj::tf::StampedTransform tf;
+  tf.stamp = PJ::fromRaw(1000);
+  tf.parent_frame = "scene";
+  tf.child_frame = "robot1/base_link";
+  tf.transform = pj::tf::Transform{glm::dvec3(5, 0, 0), glm::dquat(1, 0, 0, 0)};
+  ASSERT_TRUE(live.setTransform(tf).has_value());
+  layer.ensureStaticBridgesForTest(live);
+  EXPECT_EQ(layer.visualDrawCountForTest(), 1);
+
+  const auto& draws = layer.modelDrawCalls();
+  ASSERT_EQ(draws.size(), 1u);
+  EXPECT_EQ(draws.front().frame_id, "robot1/base_link");
+  EXPECT_EQ(draws.front().mesh_key, "robot:primitive:box");
+  EXPECT_EQ(draws.front().group, pj::scene3d::ModelDrawGroup::kVisual);
+  EXPECT_NEAR(draws.front().model[3].x, 1.0, 1e-12) << "TF must not be baked into the link-local draw";
+  EXPECT_NEAR(draws.front().model[0].x, 2.0, 1e-12);
+  EXPECT_NEAR(draws.front().model[2].z, 4.0, 1e-12);
+}
+
+// A source switch while mesh imports run must not stack imports: superseded
+// imports keep their slots until their workers finish, so the imports still
+// running never exceed maxConcurrentMeshLoads(); their results are dropped and
+// the new source's meshes all load.
+TEST(RobotModelLayerTest, SourceSwitchKeepsSupersededImportsWithinTheBound) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const std::size_t limit = pj::scene3d::maxConcurrentMeshLoads();
+  const int mesh_count = static_cast<int>(limit) + 2;  // more than one wave
+  const std::vector<QString> paths = pj::scene3d::test::cubeCopies(dir, mesh_count);
+  QString links;
+  for (int index = 0; index < mesh_count; ++index) {
+    links +=
+        uR"(<link name="link_%1"><visual><geometry><mesh filename="%2"/></geometry></visual></link>)"_s.arg(index).arg(
+            paths[static_cast<std::size_t>(index)]);
+  }
+  const auto urdf = [&](const QString& name) { return u"<robot name=\"%1\">%2</robot>"_s.arg(name, links).toUtf8(); };
+
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{}, u"robot"_s);
+  layer.setSourceFileContent(u"first.urdf"_s, urdf(u"first"_s));
+  ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
+  ASSERT_EQ(layer.totalMeshCount(), mesh_count);
+  ASSERT_EQ(layer.meshImportsOutstandingForTest(), limit);
+
+  // No event processing in between: every first-source import is still in flight.
+  layer.setSourceFileContent(u"second.urdf"_s, urdf(u"second"_s));
+  ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
+  EXPECT_LE(layer.meshImportsOutstandingForTest(), limit) << "superseded imports lost their concurrency slots";
+
+  QElapsedTimer timer;
+  timer.start();
+  while ((layer.meshImportsOutstandingForTest() != 0 || layer.loadedMeshCount() != mesh_count) &&
+         timer.elapsed() < 10000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    ASSERT_LE(layer.meshImportsOutstandingForTest(), limit);
+  }
+  EXPECT_EQ(layer.meshImportsOutstandingForTest(), 0U) << "superseded imports never settled";
+  EXPECT_EQ(layer.loadedMeshCount(), mesh_count) << "the new source's meshes did not all load";
+}
+
+// A topic URDF has no URL of its own, so a package fetch needs an explicit
+// root. The root is model-local: the dock-shared resolver stays clean for a
+// sibling robot, the topic's direct http refs stay blocked, and the mapping
+// persists with the layer so a restored layer needs no layout context.
+TEST(RobotModelLayerTest, TopicUrdfUsesExplicitUrlRoots) {
+  const pj::scene3d::test::FileHttpServer assets(
+      {{u"/assets/pj_url_pkg/meshes/cube.stl"_s, pj::scene3d::test::readFixtureBytes("cube.stl")}});
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset_id = createDataset(session, "url-roots.mcap");
+  const PJ::ObjectTopicId topic_id = registerTopicForDataset(session, dataset_id);
+  registerParser(session, topic_id, packageUrlParserVtable());
+  pushWireBytes(session, topic_id);
+  const auto ctx = makeContext(session);
+  pj::scene3d::UrdfPackageResolver shared;
+  // A topic robot as a layout saves it: its roots, and the web-hosted layout's network-only policy.
+  const auto element = [&assets](bool web_hosted) {
+    QDomDocument doc;
+    QDomElement robot = doc.createElement(u"robot_model"_s);
+    robot.setAttribute(u"source_type"_s, u"topic"_s);
+    robot.setAttribute(u"source_value"_s, u"/robot_description"_s);
+    robot.setAttribute(u"source_topic_name"_s, u"/robot_description"_s);
+    robot.setAttribute(
+        u"package_url_roots"_s,
+        pj::scene3d::serializePackageUrlRoots({{u"pj_url_pkg"_s, QUrl(assets.url(u"/assets/pj_url_pkg/"_s))}}));
+    if (web_hosted) {
+      robot.setAttribute(u"remote_resources_only"_s, u"true"_s);
+    }
+    return robot;
+  };
+
+  // From a layout file on the desktop, the network root is skipped and nothing is fetched.
+  pj::scene3d::RobotModelLayer desktop(topic_id, u"/robot_description"_s);
+  desktop.setPackageResolver(&shared);
+  ASSERT_TRUE(desktop.attach(ctx));
+  ASSERT_TRUE(desktop.xmlLoadState(element(/*web_hosted=*/false)));
+  ASSERT_NE(desktop.robotModel(), nullptr) << desktop.statusText().toStdString();
+  EXPECT_EQ(desktop.unresolvedMeshCount(), 2);
+  EXPECT_TRUE(assets.paths().isEmpty()) << assets.paths().join(u',').toStdString();
+
+  pj::scene3d::RobotModelLayer mapped(topic_id, u"/robot_description"_s);
+  mapped.setPackageResolver(&shared);
+  ASSERT_TRUE(mapped.attach(ctx));
+  ASSERT_TRUE(mapped.xmlLoadState(element(/*web_hosted=*/true)));
+  ASSERT_NE(mapped.robotModel(), nullptr) << mapped.statusText().toStdString();
+  EXPECT_EQ(mapped.totalMeshCount(), 2);
+  EXPECT_EQ(mapped.unresolvedMeshCount(), 1) << "a package root must not authorize the topic's direct http ref";
+  ASSERT_TRUE(
+      pj::scene3d::test::pumpUntil([&mapped]() { return mapped.loadedMeshCount() == 1; }, std::chrono::seconds(10)))
+      << mapped.statusText().toStdString();
+  EXPECT_EQ(assets.paths().join(u',').toStdString(), "/assets/pj_url_pkg/meshes/cube.stl");
+
+  pj::scene3d::RobotModelLayer unmapped(topic_id, u"/robot_description"_s);
+  unmapped.setPackageResolver(&shared);
+  ASSERT_TRUE(unmapped.attach(ctx));
+  ASSERT_NE(unmapped.robotModel(), nullptr);
+  EXPECT_EQ(unmapped.unresolvedMeshCount(), 2) << "one robot's mapping leaked into the shared resolver";
+
+  QDomDocument doc;
+  const QDomElement saved = mapped.xmlSaveState(doc);
+  EXPECT_TRUE(saved.hasAttribute(u"package_url_roots"_s));
+  pj::scene3d::RobotModelLayer restored(topic_id, u"/robot_description"_s);
+  restored.setPackageResolver(&shared);
+  ASSERT_TRUE(restored.attach(ctx));
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  ASSERT_NE(restored.robotModel(), nullptr);
+  EXPECT_EQ(restored.unresolvedMeshCount(), 1);
+}
+
+// A robot restored from a web-hosted layout keeps the network-only policy for its URDF's own mesh
+// references (here a file:// mesh that exists locally), and saves it so undo and re-saves keep it.
+TEST(RobotModelLayerTest, RemoteResourcesOnlyBlocksLocalMeshesAndPersists) {
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset_id = createDataset(session, "remote-only.mcap");
+  const PJ::ObjectTopicId topic_id = registerTopicForDataset(session, dataset_id);
+  registerParser(session, topic_id, resolvedMeshParserVtable());
+  pushWireBytes(session, topic_id);
+  const auto ctx = makeContext(session);
+  const auto restored = [&](const QString& policy) {
+    QDomDocument doc;
+    QDomElement element = doc.createElement(u"robot_model"_s);
+    element.setAttribute(u"source_type"_s, u"topic"_s);
+    element.setAttribute(u"source_value"_s, u"/robot_description"_s);
+    element.setAttribute(u"source_topic_name"_s, u"/robot_description"_s);
+    if (!policy.isEmpty()) {
+      element.setAttribute(u"remote_resources_only"_s, policy);
+    }
+    auto layer = std::make_unique<pj::scene3d::RobotModelLayer>(topic_id, u"/robot_description"_s);
+    EXPECT_TRUE(layer->attach(ctx));
+    EXPECT_TRUE(layer->xmlLoadState(element)) << policy.toStdString();
+    return layer;
+  };
+
+  const auto desktop = restored({});
+  ASSERT_NE(desktop->robotModel(), nullptr);
+  EXPECT_EQ(desktop->unresolvedMeshCount(), 0);
+  QDomDocument desktop_doc;
+  EXPECT_FALSE(desktop->xmlSaveState(desktop_doc).hasAttribute(u"remote_resources_only"_s));
+
+  const auto web = restored(u"true"_s);
+  ASSERT_NE(web->robotModel(), nullptr);
+  EXPECT_EQ(web->totalMeshCount(), 1);
+  EXPECT_EQ(web->unresolvedMeshCount(), 1) << "a web layout's URDF reached a local mesh";
+  QDomDocument web_doc;
+  EXPECT_EQ(web->xmlSaveState(web_doc).attribute(u"remote_resources_only"_s), u"true"_s);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  QDomDocument invalid_doc;
+  QDomElement invalid = invalid_doc.createElement(u"robot_model"_s);
+  invalid.setAttribute(u"remote_resources_only"_s, u"maybe"_s);
+  EXPECT_FALSE(layer.xmlLoadState(invalid));
 }

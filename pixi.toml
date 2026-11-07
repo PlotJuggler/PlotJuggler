@@ -35,8 +35,8 @@ cxx-compiler = "*"
 pkg-config = "*"
 ccache = "*"
 
-# --- Qt (replaces scripts/install_qt6.sh; PJ4 pins 6.11.1 in CMakeLists) ------------
-qt6-main = "6.11.1.*"
+# --- Qt (replaces scripts/install_qt6.sh; versions.env pins PJ_QT_VERSION) -----------
+qt6-main = "6.12.0.*"
 
 # --- direct library deps (mirror conanfile.txt) ------------------------------
 fmt = "12.*"
@@ -55,8 +55,8 @@ libarchive = "3.8.*"             # shared (conda-forge has no static); conanfile
 libjpeg-turbo = "3.*"
 libpng = "1.6.*"
 backward-cpp = "1.6.*"
-draco = "*"                      # conan pinned 1.5.6 only for assimp source-build graph conflict
-assimp = "*"                     # conda-forge is 6.x vs conan 5.4.3 — API risk to verify
+draco = "*"                      # conanfile.txt pins draco to what its assimp recipe requires; conda resolves its own
+assimp = "*"                     # keep the same major as the assimp pin in conanfile.txt
 
 # --- local channel (gaps vs conda-forge; see recipes/) ------------------------
 luau = "0.700.*"
@@ -66,15 +66,17 @@ kissfft = "131.1.*"              # FFT for pj_scripting's bandPower (static, dat
 
 # Linux-only deps. elfutils backs backward-cpp's `dw` stack-trace backend
 # (Windows backward-cpp uses the DbgHelp/PDB backend instead); the libGL/EGL
-# -devel stubs feed pj_scene3D's find_package(OpenGL) (Windows gets OpenGL from
-# the SDK's opengl32). None of these have win-64 conda packages.
+# -devel stubs feed Qt's own OpenGL lookup (WrapOpenGL, pulled in by Qt6Gui and
+# Qwt's OpenGLWidgets; Windows gets OpenGL from the SDK's opengl32). None of these
+# have win-64 conda packages.
 [target.linux-64.dependencies]
-# Prebuilt against the same qt6-main; consumed via the configure task's
-# -DPJ_SYSTEM_QWT=ON. linux-64 ONLY: conda-forge ships qwt as a DLL on
-# win-64, and MSVC duplicates the QwtSeriesData<QPointF> template members
-# between qwt.dll and our own subclasses (LNK2005), so Windows always uses
-# the default FetchContent static build instead (see 3rdparty/qwt/).
-qwt = "6.3.*"
+# No conda `qwt` here: conda-forge's prebuilt qwt is pinned to the qt6-main
+# minor it was built against (<6.12 today), so it cannot co-solve with Qt 6.12.
+# Qwt is FetchContent-built statically on every platform instead. Once
+# conda-forge publishes a qwt build for the pinned qt6-main, re-add
+# `qwt = "6.3.*"` here (linux-64 only) and `-DPJ_SYSTEM_QWT=ON` to the
+# configure task (Windows must keep the static build: the DLL collides with
+# our QwtSeriesData<QPointF> subclasses, LNK2005).
 elfutils = "*"
 libgl-devel = "*"
 libopengl-devel = "*"
@@ -108,18 +110,12 @@ sccache = "0.16.*"               # MSVC cache + native GHA backend (see activati
 # preserve MSVC's own /FS synchronization for concurrent writers to one shared
 # PDB, so a parallel build hits C1041 "cannot open program database" without
 # this. Inert on Linux (these are MSVC-only CMake variables).
-configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DPJ_SYSTEM_QWT=ON -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
 build = { cmd = "cmake --build build-pixi --parallel", depends-on = ["configure"] }
 # --timeout 120 bounds any single test (a GL test under software rendering /
 # llvmpipe can stall) so a hang fails fast instead of holding the runner — the
 # Conan linux-ci.yml uses the same per-test cap.
 test = { cmd = "ctest --test-dir build-pixi --output-on-failure --timeout 120", depends-on = ["build"] }
-
-# win-64 override: identical to the shared configure task minus
-# -DPJ_SYSTEM_QWT=ON (no conda qwt on Windows — see the qwt comment in
-# [target.linux-64.dependencies]); qwt is FetchContent-built statically.
-[target.win-64.tasks]
-configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
 
 # ccache speeds up the GCC toolchain (linux). CMake reads these env vars to
 # seed CMAKE_<LANG>_COMPILER_LAUNCHER.

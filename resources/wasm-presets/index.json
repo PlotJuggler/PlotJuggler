@@ -1,0 +1,25 @@
+{
+  "presets": [
+    {
+      "id": "builtin_filters",
+      "title": "Built-in filters",
+      "description": "A car's gyro yaw rate from the SZE-JKK dataset: as recorded, through the built-in moving-average filter, and integrated into its heading.",
+      "layout": "builtin_filters/layout.pj4.xml",
+      "thumbnail": "builtin_filters/thumbnail.png"
+    },
+    {
+      "id": "anymal",
+      "title": "ANYmal GrandTour",
+      "description": "A legged robot walking a forest trail: its three cameras, the lidar scan around its model, beside its joints, IMU and speed.",
+      "layout": "anymal/layout.pj4.xml",
+      "thumbnail": "anymal/thumbnail.png"
+    },
+    {
+      "id": "city_drive",
+      "title": "Self-driving car",
+      "description": "A car driving through Toronto: its front camera and 128-beam lidar, beside its speed, yaw rate and accelerations.",
+      "layout": "city_drive/layout.pj4.xml",
+      "thumbnail": "city_drive/thumbnail.png"
+    }
+  ]
+}

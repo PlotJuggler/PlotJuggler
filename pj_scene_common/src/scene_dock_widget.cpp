@@ -4,6 +4,7 @@
 #include "pj_scene_common/scene_dock_widget.h"
 
 #include <QBoxLayout>
+#include <QLabel>
 #include <QLoggingCategory>
 #include <QSizePolicy>
 #include <QTimer>
@@ -33,6 +34,11 @@ Q_LOGGING_CATEGORY(lcSceneDock, "pj.scene.dock")
   return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
 }
 
+/// A runtime pending intent (advertised topic, no data yet), as opposed to a saved element.
+[[nodiscard]] bool isPendingIntent(const QDomElement& element) {
+  return element.attribute(u"pending_intent"_s) == "true"_L1;
+}
+
 }  // namespace
 
 SceneDockWidget::SceneDockWidget(QWidget* parent) : QWidget(parent) {
@@ -40,6 +46,10 @@ SceneDockWidget::SceneDockWidget(QWidget* parent) : QWidget(parent) {
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(0);
+  derived_status_label_ = new QLabel(this);
+  derived_status_label_->setObjectName(u"sceneDerivedStatus"_s);
+  derived_status_label_->hide();
+  layout->addWidget(derived_status_label_);
 
   QTimer::singleShot(0, this, [this]() { ensureSceneViewCreated(); });
 }
@@ -59,6 +69,131 @@ QWidget* SceneDockWidget::widget() {
 
 void SceneDockWidget::setSessionManager(SessionManager* session) {
   session_ = session;
+  disconnect(derived_published_conn_);
+  disconnect(derived_state_conn_);
+  disconnect(derived_offset_conn_);
+  disconnect(derived_dataset_offset_conn_);
+  if (session == nullptr) {
+    return;
+  }
+  derived_published_conn_ = connect(
+      session, &SessionManager::derivedEntriesPublished, this,
+      [this](const QString&, const std::vector<ObjectTopicId>& topics) { refreshDerivedLayers(topics); });
+  // A finding's "computed at" is in display seconds.
+  derived_offset_conn_ = connect(
+      session, qOverload<>(&SessionManager::displayOffsetChanged), this, [this] { resyncDerivedPresentations(); });
+  derived_dataset_offset_conn_ = connect(
+      session, qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      [this](DatasetId) { resyncDerivedPresentations(); });
+  derived_state_conn_ = connect(
+      session, &SessionManager::derivedStateChanged, this,
+      [this](const QString&, const std::vector<ObjectTopicId>& topics) {
+        for (const ObjectTopicId topic_id : topics) {
+          syncDerivedPresentation(topic_id);
+        }
+      });
+}
+
+void SceneDockWidget::refreshDerivedLayers(const std::vector<ObjectTopicId>& topics) {
+  if (!last_tracker_) {
+    return;  // no tick yet: the first one shows what is there
+  }
+  for (const ObjectTopicId topic_id : topics) {
+    if (ISceneLayer* layer = layerFor(topic_id); layer != nullptr && layer->info().visible) {
+      if (layer->refreshAt(*last_tracker_)) {
+        invalidateTrackerRenderKey();  // painted outside the per-tick gate
+      }
+    }
+  }
+}
+
+void SceneDockWidget::resyncDerivedPresentations() {
+  std::vector<ObjectTopicId> topics;
+  topics.reserve(derived_presentations_.size());
+  for (const auto& [key, presentation] : derived_presentations_) {
+    topics.push_back(ObjectTopicId{static_cast<uint32_t>(key)});  // topicKey widened the id
+  }
+  for (const ObjectTopicId topic_id : topics) {
+    syncDerivedPresentation(topic_id);
+  }
+}
+
+void SceneDockWidget::syncDerivedPresentation(ObjectTopicId topic_id) {
+  ISceneLayer* layer = layerFor(topic_id);
+  if (layer == nullptr) {
+    return;
+  }
+  DerivedTopicPresentation presentation = derivedTopicPresentation(session_, topic_id);
+  layer->setDerivedWarning(presentation.warning);
+  const int64_t key = topicKey(topic_id);
+  const QString previous = layerStatus(topic_id);
+  const QString status = presentation.status;
+  if (presentation == DerivedTopicPresentation{}) {
+    derived_presentations_.erase(key);
+  } else {
+    derived_presentations_.insert_or_assign(key, std::move(presentation));
+  }
+  if (status != previous) {
+    emit layerStatusChanged(topic_id, status);
+  }
+  updateDerivedStatus();
+}
+
+void SceneDockWidget::updateDerivedStatus() {
+  const DerivedTopicPresentation* most_behind = nullptr;
+  bool computing = false;
+  for (const auto& [key, presentation] : derived_presentations_) {
+    if (const auto shown = layer_visibility_cache_.find(key);
+        shown != layer_visibility_cache_.end() && !shown->second) {
+      continue;  // the strip sums up what the dock shows
+    }
+    computing = computing || presentation.computing;
+    if (presentation.lag && (most_behind == nullptr || *presentation.lag > *most_behind->lag)) {
+      most_behind = &presentation;
+    }
+  }
+  const QString text = most_behind != nullptr ? tr("computing (%1)").arg(most_behind->status)
+                       : computing            ? tr("computing…")
+                                              : QString();
+  derived_status_label_->setText(text);
+  derived_status_label_->setVisible(!text.isEmpty());
+}
+
+QString SceneDockWidget::layerStatus(ObjectTopicId topic_id) const {
+  const auto shown = derived_presentations_.find(topicKey(topic_id));
+  return shown != derived_presentations_.end() ? shown->second.status : QString();
+}
+
+QString SceneDockWidget::derivedStatus() const {
+  return derived_status_label_->text();
+}
+
+std::optional<int64_t> SceneDockWidget::visibleLayersLiveEdge() const {
+  std::optional<int64_t> latest;
+  for (const auto& [key, layer] : layers_) {
+    if (layer == nullptr || !layer->info().visible) {
+      continue;
+    }
+    // Empty layers and findings report an inverted range and are skipped.
+    const PJ::Range<PJ::Timepoint> range = clockRangeOf(*layer);
+    if (range.min <= range.max) {
+      const int64_t edge = PJ::toRaw(range.max);
+      latest = latest ? std::max(*latest, edge) : edge;
+    }
+  }
+  return latest;
+}
+
+PJ::Range<PJ::Timepoint> SceneDockWidget::clockRangeOf(const ISceneLayer& layer) const {
+  if (session_ != nullptr) {
+    if (const auto inputs = session_->derivedTopicInputRange(layer.info().topic_id)) {
+      if (inputs->second < inputs->first) {
+        return {PJ::Timepoint::max(), PJ::Timepoint::min()};
+      }
+      return {PJ::fromRaw(inputs->first), PJ::fromRaw(inputs->second)};
+    }
+  }
+  return layer.timeRange();
 }
 
 void SceneDockWidget::setObjectDatasetResolver(ObjectDatasetResolver resolver) {
@@ -86,14 +221,8 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
   if (layers_.find(key) != layers_.end()) {
     return AddOutcome::kRejected;
   }
-  if (session_ != nullptr) {
-    const DatasetId bound_dataset = representativeDatasetId();
-    const DatasetId incoming_dataset = session_->objectStore().descriptor(topic_id).dataset_id;
-    if (bound_dataset != 0 && incoming_dataset != 0 && incoming_dataset != bound_dataset) {
-      // The dock currently has one display-time conversion. Arrival order must
-      // not silently decide which dataset's clock is applied to every layer.
-      return AddOutcome::kRejected;
-    }
+  if (refuseForeignTopic(topic_id)) {
+    return AddOutcome::kRejected;
   }
   if (handleSceneConfigTopic(topic_id, object_type, title)) {
     ever_had_content_ = true;
@@ -132,6 +261,7 @@ bool SceneDockWidget::insertLayer(ObjectTopicId topic_id, std::unique_ptr<IScene
   ever_had_content_ = true;
   wireLayerSignals(layer.get(), topic_id);
   registerLayer(key, std::move(layer));
+  syncDerivedPresentation(topic_id);  // a layer on a failed derived topic says why from the start
 
   // Mutate -> reconcile view -> notify: the view already includes the new layer
   // when observers react to layerAdded (a slot may trigger a paint).
@@ -149,6 +279,7 @@ void SceneDockWidget::wireLayerSignals(ISceneLayer* layer, ObjectTopicId topic_i
   });
   connect(layer, &ISceneLayer::visibilityChanged, this, [this, topic_id](bool visible) {
     recordLayerVisibility(topic_id, visible);
+    updateDerivedStatus();
     syncViewLayers();
     refreshView();
   });
@@ -172,7 +303,7 @@ void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> la
 }
 
 void SceneDockWidget::seedLayerTrackerTime(ISceneLayer* layer) {
-  const auto range = layer->timeRange();
+  const auto range = clockRangeOf(*layer);
   const PJ::Timepoint first = range.min;
   const PJ::Timepoint last = range.max;
   if (last_tracker_.has_value()) {
@@ -190,15 +321,10 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     return false;
   }
 
-  bool dataset_ok = false;
-  const auto dataset_value = layer_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
-  if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+  if (!layer_el.hasAttribute(u"dataset_id"_s) || !savedDatasetOf(layer_el).has_value()) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  const auto saved_id = static_cast<DatasetId>(dataset_value);
-  const QString saved_source = layer_el.attribute(u"dataset_source"_s);
-  const QString saved_path = layer_el.attribute(u"dataset_path"_s);
   const QString topic_name = layer_el.attribute(u"topic_name"_s);
   const QString object_type_str = layer_el.attribute(u"object_type"_s);
   const QString display_name = layer_el.attribute(u"display_name"_s);
@@ -209,11 +335,14 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  const auto dataset_id_opt = resolveObjectDataset(saved_id, saved_source, saved_path, topic_name);
-  if (!dataset_id_opt.has_value()) {
+  const SavedElementDataset binding = datasetForSavedElement(layer_el);
+  if (binding.refused) {
+    return true;
+  }
+  if (!binding.dataset.has_value()) {
     return false;
   }
-  const auto topic_id_opt = session_->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+  const auto topic_id_opt = session_->objectStore().findTopic(*binding.dataset, topic_name.toStdString());
   if (!topic_id_opt.has_value()) {
     return false;
   }
@@ -221,6 +350,9 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   const sdk::BuiltinObjectType live_type = objectTypeFromMetadata(descriptor.metadata_json);
   if (live_type != sdk::BuiltinObjectType::kNone && live_type != *object_type_opt) {
     markWorkspaceRestoreFailed();
+    return true;
+  }
+  if (refuseForeignTopic(*topic_id_opt)) {
     return true;
   }
   if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::kLayerAdded) {
@@ -282,15 +414,14 @@ bool SceneDockWidget::deferTopicIntent(
       !acceptsDeferredObjectType(object_type)) {
     return false;
   }
-  const DatasetId bound_dataset = representativeDatasetId();
-  if (bound_dataset != 0 && bound_dataset != dataset_id) {
+  if (refuseForeignDataset(dataset_id, representativeDatasetId())) {
     return false;
   }
   for (const PendingRestoreElement& pending : pending_restore_elements_) {
     bool pending_id_ok = false;
     const qulonglong pending_id =
         pending.document.documentElement().attribute(u"dataset_id"_s).toULongLong(&pending_id_ok);
-    if (pending_id_ok && pending_id != 0 && pending_id != dataset_id) {
+    if (pending_id_ok && pending_id != 0 && refuseForeignDataset(dataset_id, static_cast<DatasetId>(pending_id))) {
       return false;
     }
   }
@@ -331,24 +462,32 @@ bool SceneDockWidget::restoreOnePending(const QDomElement& element) {
   return restoreLayerElement(element);
 }
 
-void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
+bool SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   const int64_t key = topicKey(topic_id);
   auto it = layers_.find(key);
   if (it == layers_.end()) {
-    return;
+    if (!removeSceneConfigTopic(topic_id)) {
+      return false;
+    }
+    invalidateTrackerRenderKey();
+    refreshView();
+    notifyWorkspaceChanged();
+    return true;
   }
   invalidateTrackerRenderKey();  // layer set shrank → next tick must repaint
   // Mutate -> reconcile view -> detach -> notify. syncViewLayers() drives
-  // SceneViewWidget::setLayers, which runs releaseGL() on the dropped layer under
-  // makeCurrent. detach() MUST follow that, because for GL-owning layers detach
-  // tears down GL-bearing containers (e.g. mesh/texture caches) with no context
-  // current — running it first orphans those resources before the contexted
-  // releaseGL can free them. Keep the removed layer alive until after the
+  // SceneViewWidget::setLayers, which releases the GPU state the view holds for
+  // the dropped layer. detach() MUST follow that: it tears down the layer's
+  // caches (e.g. meshes, textures), which the view must no longer reference
+  // when they go. Keep the removed layer alive until after the
   // notification so a paint from a layerRemoved slot never borrows a destroyed
   // source. Destroyed at scope exit.
   std::unique_ptr<ISceneLayer> removed = std::move(it->second);
   layers_.erase(it);
   layer_visibility_cache_.erase(key);
+  if (derived_presentations_.erase(key) != 0) {
+    updateDerivedStatus();
+  }
   draw_order_.erase(std::remove(draw_order_.begin(), draw_order_.end(), key), draw_order_.end());
   syncViewLayers();
   refreshView();
@@ -357,6 +496,17 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   }
   emit layerRemoved(topic_id);
   notifyWorkspaceChanged();
+  return true;
+}
+
+bool SceneDockWidget::detachTopic(ObjectTopicId topic_id) {
+  if (!removeTopic(topic_id)) {
+    return false;
+  }
+  if (layers_.empty() && configTopics().empty()) {
+    ever_had_content_ = false;
+  }
+  return true;
 }
 
 bool SceneDockWidget::revalidateObjects() {
@@ -593,6 +743,10 @@ QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
+  return loadSavedState(element, element);
+}
+
+bool SceneDockWidget::loadSavedState(const QDomElement& element, const QDomElement& authored) {
   if (element.isNull() || element.tagName() != xmlTag()) {
     return false;
   }
@@ -618,6 +772,7 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   resetWorkspaceRestoreStatus();
   clearPendingRestores();
   clearLayers();
+  recordSavedDatasets(authored);
   if (session_ == nullptr) {
     syncViewLayers();
     refreshView();
@@ -698,7 +853,7 @@ QStringList SceneDockWidget::unresolvedPendingRestores() const {
 QStringList SceneDockWidget::unresolvedBlockingPendingRestores() const {
   QStringList unresolved;
   for (const PendingRestoreElement& pending : pending_restore_elements_) {
-    if (pending.document.documentElement().attribute(u"pending_intent"_s) == "true"_L1) {
+    if (isPendingIntent(pending.document.documentElement())) {
       continue;
     }
     if (!pending.topic_name.isEmpty()) {
@@ -742,9 +897,8 @@ std::vector<SceneDockWidget::PendingRestoreDemand> SceneDockWidget::pendingResto
 }
 
 void SceneDockWidget::clearBlockingPendingRestores() {
-  erasePendingRestoresIf([](const PendingRestoreElement& pending) {
-    return pending.document.documentElement().attribute(u"pending_intent"_s) != "true"_L1;
-  });
+  erasePendingRestoresIf(
+      [](const PendingRestoreElement& pending) { return !isPendingIntent(pending.document.documentElement()); });
 }
 
 void SceneDockWidget::erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate) {
@@ -798,6 +952,7 @@ void SceneDockWidget::appendPendingRestoreElements(QDomDocument& doc, QDomElemen
 SceneDockWidget::PendingRestoreSnapshot SceneDockWidget::capturePendingRestoreState() const {
   PendingRestoreSnapshot snapshot;
   snapshot.elements = pending_restore_elements_;  // QDomDocument handles are implicitly shared — cheap copies
+  snapshot.saved_datasets = saved_datasets_;
   snapshot.restore_failure_count = restore_failure_count_;
   snapshot.ever_had_content = ever_had_content_;
   return snapshot;
@@ -805,6 +960,7 @@ SceneDockWidget::PendingRestoreSnapshot SceneDockWidget::capturePendingRestoreSt
 
 void SceneDockWidget::restorePendingRestoreState(const PendingRestoreSnapshot& snapshot) {
   pending_restore_elements_ = snapshot.elements;
+  saved_datasets_ = snapshot.saved_datasets;
   restore_failure_count_ = snapshot.restore_failure_count;
   ever_had_content_ = snapshot.ever_had_content;
 }
@@ -843,6 +999,153 @@ QString SceneDockWidget::datasetSourceName(const SessionManager* session, Datase
   }
   const PJ::DatasetInfo* info = const_cast<SessionManager*>(session)->dataEngine().getDataset(dataset_id);
   return info != nullptr ? QString::fromStdString(info->source_name) : QString();
+}
+
+bool SceneDockWidget::refuseForeignTopic(ObjectTopicId topic_id) {
+  return session_ != nullptr &&
+         refuseForeignDataset(session_->objectStore().descriptor(topic_id).dataset_id, representativeDatasetId());
+}
+
+bool SceneDockWidget::refuseForeignDataset(DatasetId incoming_dataset, DatasetId bound_dataset) {
+  if (bound_dataset == 0 || incoming_dataset == 0 || incoming_dataset == bound_dataset) {
+    return false;
+  }
+  reportForeignDataset(datasetLabel(bound_dataset), datasetLabel(incoming_dataset));
+  return true;
+}
+
+void SceneDockWidget::reportForeignDataset(const QString& bound_label, const QString& incoming_label) {
+  const QString reason =
+      tr("This view shows dataset %1; a topic from dataset %2 cannot be added to it.").arg(bound_label, incoming_label);
+  qCWarning(lcSceneDock).noquote() << "topic refused:" << reason;
+  last_refusal_reason_ = reason;
+  if (!std::exchange(refusal_reported_, true)) {
+    emit topicRefused(reason);
+    QTimer::singleShot(0, this, [this] { refusal_reported_ = false; });
+  }
+}
+
+QString SceneDockWidget::datasetLabel(DatasetId dataset_id) const {
+  const QString name = datasetSourceName(session_, dataset_id);
+  return name.isEmpty() ? tr("#%1").arg(dataset_id) : name;
+}
+
+bool SceneDockWidget::hasDatasetIdentity(const QDomElement& element) {
+  return element.hasAttribute(u"dataset_id"_s) || element.hasAttribute(u"dataset_source"_s) ||
+         element.hasAttribute(u"dataset_path"_s);
+}
+
+QString SceneDockWidget::SavedDataset::label() const {
+  return !source.isEmpty() ? source : !path.isEmpty() ? path : tr("#%1").arg(id);
+}
+
+std::optional<SceneDockWidget::SavedDataset> SceneDockWidget::savedDatasetOf(const QDomElement& element) {
+  DatasetId id = 0;
+  if (element.hasAttribute(u"dataset_id"_s)) {
+    bool id_ok = false;
+    const qulonglong raw_id = element.attribute(u"dataset_id"_s).toULongLong(&id_ok);
+    if (!id_ok || raw_id > std::numeric_limits<DatasetId>::max()) {
+      return std::nullopt;
+    }
+    id = static_cast<DatasetId>(raw_id);
+  }
+  return SavedDataset{
+      .id = id,
+      .source = element.attribute(u"dataset_source"_s),
+      .path = element.attribute(u"dataset_path"_s),
+      .topic_name = element.attribute(u"topic_name"_s)};
+}
+
+void SceneDockWidget::recordSavedDatasets(const QDomElement& state) {
+  saved_datasets_.clear();
+  for (QDomElement child = state.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    const bool restorable = child.tagName() == "layer"_L1 || child.tagName() == "config_topic"_L1;
+    if (!restorable || !hasDatasetIdentity(child) || isPendingIntent(child)) {
+      continue;
+    }
+    const std::optional<SavedDataset> saved = savedDatasetOf(child);
+    const bool unnamed = saved.has_value() && saved->id == 0 && saved->source.isEmpty() && saved->path.isEmpty();
+    if (!saved.has_value() || unnamed || saved->topic_name.isEmpty()) {
+      continue;  // a malformed or empty identity fails or waits on its own; it names no dataset
+    }
+    if (std::find(saved_datasets_.cbegin(), saved_datasets_.cend(), *saved) == saved_datasets_.cend()) {
+      saved_datasets_.push_back(*saved);
+    }
+  }
+}
+
+SceneDockWidget::SavedElementDataset SceneDockWidget::datasetForSavedElement(const QDomElement& element) {
+  const std::optional<SavedDataset> saved = savedDatasetOf(element);
+  if (!saved.has_value()) {
+    return {};
+  }
+  const auto resolve = [this](const SavedDataset& dataset) {
+    return resolveObjectDataset(dataset.id, dataset.source, dataset.path, dataset.topic_name);
+  };
+  const auto found = std::find(saved_datasets_.cbegin(), saved_datasets_.cend(), *saved);
+  const bool gated = saved_datasets_.size() >= 2 && found != saved_datasets_.cend() && !isPendingIntent(element);
+  if (!gated || found == saved_datasets_.cbegin()) {
+    return {.dataset = resolve(*saved)};
+  }
+  const std::optional<DatasetId> winner = resolve(saved_datasets_.front());
+  if (!winner.has_value()) {
+    return {};  // the first saved dataset has not arrived: nothing else may bind yet
+  }
+  const std::optional<DatasetId> resolved = resolve(*saved);
+  if (!resolved.has_value() || resolved == winner) {
+    return {.dataset = resolved};
+  }
+  refuseForeignDataset(*resolved, *winner);
+  return {.dataset = std::nullopt, .refused = true};
+}
+
+void SceneDockWidget::finishRestore() {
+  settleRestoreDataset();
+  retryPendingRestores({});
+}
+
+void SceneDockWidget::settleRestoreDataset() {
+  const std::vector<SavedDataset> datasets = std::exchange(saved_datasets_, {});
+  if (datasets.size() < 2) {
+    return;
+  }
+  const auto resolve = [this](const SavedDataset& dataset, const QString& topic_name) {
+    return resolveObjectDataset(dataset.id, dataset.source, dataset.path, topic_name);
+  };
+  // The dataset the dock already shows is the choice; else the first saved dataset that is loaded.
+  std::optional<DatasetId> chosen;
+  if (const DatasetId shown = representativeDatasetId(); shown != 0) {
+    chosen = shown;
+  }
+  auto winner = datasets.cend();
+  for (auto candidate = datasets.cbegin(); winner == datasets.cend() && candidate != datasets.cend(); ++candidate) {
+    const std::optional<DatasetId> live = resolve(*candidate, candidate->topic_name);
+    if (live.has_value() && (!chosen.has_value() || live == chosen)) {
+      chosen = live;
+      winner = candidate;
+    }
+  }
+  if (!chosen.has_value()) {
+    return;  // nothing loaded: the gate is off and the first dataset to resolve wins
+  }
+  erasePendingRestoresIf([&](const PendingRestoreElement& pending) {
+    const QDomElement element = pending.document.documentElement();
+    const std::optional<SavedDataset> saved = savedDatasetOf(element);
+    if (!saved.has_value() || isPendingIntent(element) ||
+        std::find(datasets.cbegin(), datasets.cend(), *saved) == datasets.cend()) {
+      return false;
+    }
+    // The winner's topics that have not arrived resolve to nothing, which is not "another dataset".
+    if (winner != datasets.cend() && *saved == *winner) {
+      return false;
+    }
+    const std::optional<DatasetId> dataset = resolve(*saved, pending.topic_name);
+    if (dataset == chosen) {
+      return false;
+    }
+    reportForeignDataset(datasetLabel(*chosen), dataset.has_value() ? datasetLabel(*dataset) : saved->label());
+    return true;
+  });
 }
 
 std::optional<DatasetId> SceneDockWidget::resolveObjectDataset(
@@ -889,7 +1192,7 @@ void SceneDockWidget::ensureSceneViewCreated() {
   scene_view_->setParent(this);
   scene_view_->setContentsMargins(0, 0, 0, 0);
   scene_view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-  layout->addWidget(scene_view_);
+  layout->insertWidget(0, scene_view_);  // above the status strip
 }
 
 PJ::Timepoint SceneDockWidget::clampToLayerRange(PJ::Timepoint time) const {
@@ -911,11 +1214,11 @@ PJ::Timepoint SceneDockWidget::clampToLayerRange(PJ::Timepoint time) const {
     if (layer == nullptr) {
       continue;
     }
-    const auto range = layer->timeRange();
+    const auto range = clockRangeOf(*layer);
     const PJ::Timepoint first = range.min;
     const PJ::Timepoint last = range.max;
     if (last < first) {
-      continue;  // inverted: no data
+      continue;  // inverted: no data, or a finding (it bounds no clock range)
     }
     if (!have_lo || first < lo) {
       lo = first;
@@ -959,15 +1262,17 @@ void SceneDockWidget::clearLayers() {
     return;
   }
   invalidateTrackerRenderKey();
-  // Contract (same ordering removeTopic now uses): re-point the view off every
+  // Contract (the ordering removeTopic uses): re-point the view off every
   // layer (a sync with an empty draw order) while the layers are still alive, so
-  // the view runs each layer's releaseGL() under its current context BEFORE any
-  // detach. Only then detach (which, for GL-owning layers, tears down GL-bearing
-  // caches with no context current). The retired layers are destroyed at scope exit.
+  // the view releases the GPU state it holds for each BEFORE any detach. Only then
+  // detach (which tears down the layers' caches). The retired layers are destroyed
+  // at scope exit.
   auto retired = std::move(layers_);
   layers_.clear();
   draw_order_.clear();
   layer_visibility_cache_.clear();
+  derived_presentations_.clear();
+  updateDerivedStatus();
   syncViewLayers();
   refreshView();
   for (auto& [key, layer] : retired) {

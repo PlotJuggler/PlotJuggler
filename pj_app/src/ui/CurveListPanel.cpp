@@ -37,8 +37,10 @@
 
 #include "TopicDemandController.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/Search.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
@@ -50,6 +52,8 @@ namespace PJ {
 namespace {
 
 constexpr auto kPreserveTopicNameKey = "CurveListPanel/show_topics";
+/// A series row's key in the custom view is `(series engine topic << kSeriesRowKeyColumnBits) | column`.
+constexpr int kSeriesRowKeyColumnBits = 16;
 constexpr auto kShowValuesKey = "CurveListPanel/show_values";
 
 // Composite an "omitted" variant of a chrome glyph: the base dimmed to ~40% with
@@ -116,14 +120,14 @@ bool isTopicUnsubscribed(
   return it != active_sets.constEnd() && !it->contains(topic_name);
 }
 
-// Why an object topic of `type` cannot be dragged into a view — shown as the
-// row's tooltip so a drag that never starts doesn't read as a bug.
+// Why no view takes an object topic of `type` — shown as the row's tooltip so a
+// drag that never starts, or a drop that is refused, doesn't read as a bug.
 QString undisplayableObjectTooltip(sdk::BuiltinObjectType type) {
   switch (type) {
     case sdk::BuiltinObjectType::kCameraInfo:
       return QObject::tr(
           "Camera calibration topic, used automatically by 2D and 3D views. "
-          "It cannot be displayed on its own.");
+          "It cannot be displayed on its own, but a plugin panel can read it.");
     case sdk::BuiltinObjectType::kOccupancyGridUpdate:
       return QObject::tr(
           "Incremental map update, applied automatically to its occupancy grid. "
@@ -187,8 +191,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
   const auto object_type = object_topic != nullptr ? object_topic->object_type
                            : placeholder_is_object ? advertised->classification
                                                    : sdk::BuiltinObjectType::kNone;
-  // An object topic no dock family claims (kCameraInfo, ...) must not start a
-  // drag — the drop could only end in a "cannot display" dead end.
+  // An object topic no dock family claims says so in its tooltip.
   const bool object_undisplayable =
       (object_topic != nullptr || placeholder_is_object) && !isDroppableObjectType(object_type);
   return CurveTreeView::CurvePath{
@@ -199,7 +202,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
       .selectable = scalar != nullptr || (advertised != nullptr && !placeholder_is_object),
       // String fields drag onto the State Transitions strip (plots keep
       // refusing them via the curveDescriptor gate, so a plot drop is a no-op).
-      .draggable = !object_undisplayable,
+      .draggable = !object_undisplayable || isPanelOnlyObjectType(object_type),
       .tooltip = object_undisplayable ? undisplayableObjectTooltip(object_type) : QString{},
       .is_image_topic = isImageFamilyObjectType(object_type),
       .is_3d_object_topic = is3dSceneObjectType(object_type),
@@ -225,7 +228,7 @@ void addCatalogItems(
 
 void rebuildTree(
     CurveTreeView* tree_view, CatalogModel* catalog, const TopicDemandTracker* tracker,
-    const QSet<QString>& custom_keys) {
+    const QHash<QString, CurveListPanel::CustomTopicRow>& custom_rows) {
   // A rebuild fires on every catalog removal — including the routine
   // placeholder-supersede when a demand-subscribed topic's first sample
   // arrives — so it must not cost the user their expand/scroll state.
@@ -233,15 +236,17 @@ void rebuildTree(
   QScrollBar* scroll_bar = tree_view->verticalScrollBar();
   const int scroll = scroll_bar != nullptr ? scroll_bar->value() : 0;
   tree_view->clearCurves();
-  // Note: custom_view is NOT cleared here — the derived-series rows are owned by
-  // setCustomCurves/refillCustomView.
+  // Note: custom_view is NOT cleared here — the derived-topic rows are owned by
+  // setCustomTopics/refillCustomView.
   if (catalog == nullptr) {
     return;
   }
-  // Exclude keys routed to the Custom Series panel so they never appear in both.
+  // Exclude keys routed to the Custom Topics panel so they never appear in both, and
+  // preview topics, which are not user-facing at all.
+  const QSet<QString> preview_keys = catalog->ephemeralPreviewKeys();
   std::vector<CatalogItem> tree_items;
   for (const auto& item : catalog->items()) {
-    if (!custom_keys.contains(item.key)) {
+    if (!custom_rows.contains(item.key) && !preview_keys.contains(item.key)) {
       tree_items.push_back(item);
     }
   }
@@ -277,7 +282,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   tree_view_ = ui_->treeView;
   custom_view_ = ui_->customView;
 
-  // Top tree takes more room than the custom series panel.
+  // Top tree takes more room than the custom topics panel.
   ui_->verticalSplitter->setStretchFactor(0, 5);
   ui_->verticalSplitter->setStretchFactor(1, 1);
 
@@ -356,13 +361,13 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   connect(ui_->filterTimeseries, &Search::returnPressed, ui_->filterTimeseries->lineEdit(), &QLineEdit::clearFocus);
   connect(ui_->filterCustom, &Search::returnPressed, ui_->filterCustom->lineEdit(), &QLineEdit::clearFocus);
 
-  // While the Custom Series filter has focus, hide its sibling label + buttons
+  // While the Custom Topics filter has focus, hide its sibling label + buttons
   // so the input takes the full header width. Restored on focus loss. The
   // Datasets filter lives on its own dedicated row (widgetSearchTimeseries),
   // so it never competes with the label for width and needs no such expansion.
   ui_->filterCustom->lineEdit()->installEventFilter(this);
 
-  // Lock each header band to its natural height so hiding the Custom Series
+  // Lock each header band to its natural height so hiding the Custom Topics
   // siblings can't shrink the row and shift the line edit's vertical centre.
   // QHBoxLayout vertically centres items, so even a 1-2px drop in the
   // row's preferred height (when the tallest sibling hides) was enough
@@ -375,9 +380,10 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   fix_band_height(ui_->widgetSearchTimeseries);
   fix_band_height(ui_->widgetLabelCustom);
 
-  connect(ui_->buttonAddCustom, &QToolButton::clicked, this, &CurveListPanel::createCustomSeriesRequested);
+  connect(ui_->buttonAddCustom, &QToolButton::clicked, this, &CurveListPanel::createCustomTopicRequested);
+  ui_->buttonAddCustom->setVisible(false);  // until setEditorPluginId names an editor to open
 
-  // Custom-series header overflow menu — mirrors the Datasets menu.
+  // Custom-topics header overflow menu — mirrors the Datasets menu.
   // Delete is destructive so it gets the same red treatment.
   auto* custom_menu = new QMenu(this);
   custom_menu->setObjectName(u"PJMenu"_s);
@@ -393,28 +399,31 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
     // nests under "test") deletes every custom curve beneath it. A group row itself
     // carries no catalog key, so the non-recursive selection would emit only the
     // group label, which the delete handler can't resolve — the delete silently
-    // no-ops. This mirrors the custom-series drag provider.
-    const auto names = custom_view_->selectedCurveNamesRecursive();
-    for (const auto& name : names) {
-      emit deleteCustomSeriesRequested(name);
-    }
+    // no-ops. The catalog-key walk (not the curve-name one) is what also reaches an
+    // object-topic row, which carries no curve name.
+    const std::vector<QString> keys = custom_view_->selectedCatalogKeysRecursive();
+    emit deleteCustomTopicsRequested(QStringList(keys.begin(), keys.end()));
   });
   connect(ui_->buttonCustomMenu, &QToolButton::clicked, this, [this, custom_menu]() {
     const QPoint anchor = ui_->buttonCustomMenu->mapToGlobal(QPoint(0, ui_->buttonCustomMenu->height()));
     custom_menu->popup(anchor);
   });
 
-  // Edit (pencil): enabled only when exactly one custom series is selected; opens
+  // Edit (pencil): enabled only for one row the Custom Topics editor owns; opens
   // the Transform Editor pre-populated for an in-place Modify (PJ3 parity).
   connect(ui_->buttonEditCustom, &QToolButton::clicked, this, [this]() {
-    const auto names = custom_view_->selectedCurveNames();
-    if (names.size() == 1) {
-      emit editCustomSeriesRequested(names.front());
+    // Enabled only for one selected row the editor owns (updateCustomEditButton).
+    if (const QStringList keys = selectedCustomRowKeys(); keys.size() == 1) {
+      emit editCustomTopicRequested(keys.front());
     }
   });
-  connect(custom_view_, &QTreeWidget::itemSelectionChanged, this, [this]() {
-    ui_->buttonEditCustom->setEnabled(custom_view_->selectedCurveNames().size() == 1);
+  connect(custom_view_, &QTreeWidget::itemSelectionChanged, this, &CurveListPanel::updateCustomEditButton);
+  // The custom view holds object rows too: a pull on one no view can display, or a
+  // multi-selection drag that left some out, says why, as the Datasets tree does.
+  connect(custom_view_, &CurveTreeView::dragAttemptedOnNotDraggableRow, this, [this](const QString& reason) {
+    emit toastRequested(reason.isEmpty() ? undisplayableObjectTooltip(sdk::BuiltinObjectType::kNone) : reason);
   });
+  connect(custom_view_, &CurveTreeView::dragPayloadKeysSkipped, this, &CurveListPanel::onDragPayloadKeysSkipped);
 
   const bool show_values = show_values_check_->isChecked();
   tree_view_->setValuesColumnHidden(!show_values);
@@ -446,6 +455,10 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   // Forward the tree's cancel request to the controller (MainWindow).
   connect(tree_view_, &CurveTreeView::cancelRequested, this, &CurveListPanel::cancelRequested);
+  // A series row's key packs its topic above the column: the stop names the series.
+  connect(custom_view_, &CurveTreeView::cancelRequested, this, [this](quint64 row_key, bool) {
+    emit seriesStopRequested(row_key >> kSeriesRowKeyColumnBits);
+  });
 
   // 10 Hz throttle for the value column (see refreshValues). The timeout is the
   // trailing edge: if a tracker update arrived during the window, fill once more
@@ -553,13 +566,20 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
     disconnect(catalog_, nullptr, this, nullptr);
   }
   catalog_ = catalog;
-  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
+  rebuildTree(tree_view_, catalog_, tracker_, custom_rows_);
   if (!catalog_) {
     return;
   }
   connect(catalog_, &CatalogModel::itemsAdded, this, &CurveListPanel::onCatalogItemsAdded);
   connect(catalog_, &CatalogModel::itemsRemoved, this, &CurveListPanel::onCatalogItemsRemoved);
   connect(catalog_, &CatalogModel::cleared, this, &CurveListPanel::onCatalogCleared);
+  // A key kept with new catalog data (a merge relabels its dataset): the rows built from it are stale, whatever
+  // setCustomTopics says next.
+  connect(catalog_, &CatalogModel::itemsChanged, this, [this](const QStringList& keys) {
+    if (std::any_of(keys.begin(), keys.end(), [this](const QString& key) { return custom_rows_.contains(key); })) {
+      refillCustomView();
+    }
+  });
 }
 
 void CurveListPanel::setTopicDemandTracker(TopicDemandTracker* tracker) {
@@ -633,12 +653,15 @@ void CurveListPanel::refreshUnsubscribedFlags() {
   // correctly clears every row's flag here instead of leaving stale dimming.
   const QHash<DatasetId, QSet<QString>> active_sets = buildActiveSets(*catalog_, tracker_);
   QSet<QString> unsubscribed;
-  for (const CatalogItem& item : catalog_->items()) {
-    if (isTopicUnsubscribed(active_sets, item.dataset_id, item.topic_name)) {
-      unsubscribed.insert(item.key);
-    }
+  if (!active_sets.isEmpty()) {
+    catalog_->forEachItem([&](const CatalogItem& item) {
+      if (isTopicUnsubscribed(active_sets, item.dataset_id, item.topic_name)) {
+        unsubscribed.insert(item.key);
+      }
+    });
   }
   tree_view_->setUnsubscribedKeys(unsubscribed);
+  custom_view_->setUnsubscribedKeys(unsubscribed);
 }
 
 void CurveListPanel::refreshForcedMarks() {
@@ -786,7 +809,7 @@ void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
     settings.setValue(QLatin1String(kPreserveTopicNameKey), checked);
   }
   tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::kShowTopics : CurveTreeView::ViewMode::kHierarchical);
-  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
+  rebuildTree(tree_view_, catalog_, tracker_, custom_rows_);
   tree_view_->applyFilter(ui_->filterTimeseries->text());
 }
 
@@ -844,11 +867,11 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   // pattern as the "Remove all Datasets" item in the datasets popup — so each item
   // carries a themed leading icon and the destructive ones paint in the shared
   // ${purple} via the central `QMenu#PJMenu QPushButton[destructive="true"]` rule.
-  QMenu menu(this);
-  menu.setObjectName(u"PJMenu"_s);
+  auto* menu = new QMenu(this);
+  menu->setObjectName(u"PJMenu"_s);
   const QString theme = currentTheme();
   const auto add_item = [&](const QString& icon, const QString& text, bool destructive, bool enabled) {
-    QPushButton* button = addMenuButton(&menu, icon, theme, text);
+    QPushButton* button = addMenuButton(menu, icon, theme, text);
     button->setEnabled(enabled);
     if (destructive) {
       button->setProperty("destructive", true);
@@ -867,53 +890,40 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   QPushButton* reload_button = add_item(u":/resources/svg/replay.svg"_s, tr("Reload"), false, single_file_backed);
   QPushButton* replace_button =
       add_item(u":/resources/svg/compare_arrows.svg"_s, tr("Replace"), false, single_file_backed);
+  // Always enabled: a dataset without marker rules makes it a no-op, and Manual mode
+  // has no other way to run a stale rule.
+  QPushButton* refresh_derived_button =
+      add_item(u":/resources/svg/refresh.svg"_s, tr("Refresh derived"), false, /*enabled=*/true);
   QPushButton* remove_button =
       add_item(u":/resources/svg/trash.svg"_s, tr("Remove"), /*destructive=*/true, /*enabled=*/true);
 
-  // QWidgetAction buttons don't dismiss the menu on click — close it ourselves and
-  // record the choice (exec blocks, so capturing by reference is safe).
-  bool do_info = false;
-  bool do_merge = false;
-  bool do_reload = false;
-  bool do_replace = false;
-  bool do_remove = false;
-  connect(info_button, &QPushButton::clicked, &menu, [&]() {
-    do_info = true;
-    menu.close();
-  });
-  connect(merge_button, &QPushButton::clicked, &menu, [&]() {
-    do_merge = true;
-    menu.close();
-  });
-  connect(reload_button, &QPushButton::clicked, &menu, [&]() {
-    do_reload = true;
-    menu.close();
-  });
-  connect(replace_button, &QPushButton::clicked, &menu, [&]() {
-    do_replace = true;
-    menu.close();
-  });
-  connect(remove_button, &QPushButton::clicked, &menu, [&]() {
-    do_remove = true;
-    menu.close();
-  });
+  // QWidgetAction buttons don't dismiss the menu on click — close it ourselves,
+  // then act from a queued call so the request lands after the menu is gone
+  // (on desktop, after its modal loop has returned).
+  const auto on_click = [this, menu](QPushButton* button, auto action) {
+    connect(button, &QPushButton::clicked, menu, [this, menu, action]() {
+      menu->close();
+      QTimer::singleShot(0, this, action);
+    });
+  };
+  const DatasetId first = dataset_ids.front();
+  on_click(info_button, [this, first]() { emit datasetInfoRequested(first); });
+  on_click(merge_button, [this, dataset_ids]() { emit mergeDatasetsRequested(dataset_ids); });
+  on_click(reload_button, [this, first]() { emit reloadDatasetRequested(first); });
+  on_click(replace_button, [this, first]() { emit replaceDatasetRequested(first); });
+  on_click(refresh_derived_button, [this, dataset_ids]() { emit refreshDerivedRequested(dataset_ids); });
+  on_click(remove_button, [this, dataset_ids]() { emit removeDatasetsRequested(dataset_ids); });
 
-  menu.exec(tree_view_->viewport()->mapToGlobal(pos));
-  if (do_info) {
-    emit datasetInfoRequested(dataset_ids.front());
-  } else if (do_merge) {
-    emit mergeDatasetsRequested(dataset_ids);
-  } else if (do_reload) {
-    emit reloadDatasetRequested(dataset_ids.front());
-  } else if (do_replace) {
-    emit replaceDatasetRequested(dataset_ids.front());
-  } else if (do_remove) {
-    emit removeDatasetsRequested(dataset_ids);
-  }
+  showOwnedMenu(menu, tree_view_->viewport()->mapToGlobal(pos));
 }
 
 void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint& pos) {
   if (tracker_ == nullptr || catalog_ == nullptr) {
+    return;
+  }
+  // On Linux the menu arrives on press, before a right-drag can start. Leave
+  // multi-selection gestures available, including a pair spanning both trees.
+  if (tree_view_->selectedItems().size() + custom_view_->selectedItems().size() > 1) {
     return;
   }
   // A promoted scalar topic renders as a GROUP row whose keys live on its field
@@ -939,29 +949,31 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
   // ::setTopicForced): "Stop forced streaming" only drops the forced hold — it
   // can never pause a topic something still displays.
   const bool forced = tracker_->isTopicForced(item->dataset_id, item->topic_name);
-  QMenu menu(this);
-  menu.setObjectName(u"PJMenu"_s);
+  auto* menu = new QMenu(this);
+  menu->setObjectName(u"PJMenu"_s);
   QPushButton* button = addMenuButton(
-      &menu, u":/resources/svg/cast.svg"_s, currentTheme(),
+      menu, u":/resources/svg/cast.svg"_s, currentTheme(),
       forced ? tr("Stop forced streaming") : tr("Force topic streaming"));
 
-  bool toggle = false;
-  connect(button, &QPushButton::clicked, &menu, [&]() {
-    toggle = true;
-    menu.close();
-  });
-  menu.exec(tree_view_->viewport()->mapToGlobal(pos));
-  if (toggle) {
-    tracker_->setTopicForced(item->dataset_id, item->topic_name, !forced);
-  }
+  connect(
+      button, &QPushButton::clicked, menu,
+      [this, menu, dataset_id = item->dataset_id, topic_name = item->topic_name, forced]() {
+        menu->close();
+        // tracker_ is re-read: the panel can be rebound while the menu is open.
+        if (tracker_ != nullptr) {
+          tracker_->setTopicForced(dataset_id, topic_name, !forced);
+        }
+      });
+  showOwnedMenu(menu, tree_view_->viewport()->mapToGlobal(pos));
 }
 
 void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
-  // Custom-series keys are filed flat in their own view; keep them out of the
-  // main tree.
+  // Custom-topic keys are filed in their own view and preview topics nowhere; keep
+  // both out of the main tree.
+  const QSet<QString> preview_keys = catalog_ != nullptr ? catalog_->ephemeralPreviewKeys() : QSet<QString>{};
   std::vector<CatalogItem> tree_items;
   for (const auto& item : items) {
-    if (!custom_keys_.contains(item.key)) {
+    if (!custom_rows_.contains(item.key) && !preview_keys.contains(item.key)) {
       tree_items.push_back(item);
     }
   }
@@ -970,25 +982,52 @@ void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) 
   refreshValues(last_tracker_time_);
 }
 
-void CurveListPanel::setCustomCurves(const QStringList& catalog_keys) {
-  const QSet<QString> wanted(catalog_keys.begin(), catalog_keys.end());
-  if (wanted == custom_keys_) {
-    return;  // the derived set is re-published on every data change; most carry no change
+void CurveListPanel::setCustomTopics(const std::vector<CustomTopicRow>& rows) {
+  QHash<QString, CustomTopicRow> wanted;
+  wanted.reserve(static_cast<qsizetype>(rows.size()));
+  for (const CustomTopicRow& row : rows) {
+    wanted.insert(row.key, row);
   }
-  custom_keys_ = wanted;
+  const auto same_presentation = [](const CustomTopicRow& a, const CustomTopicRow& b) {
+    return a.owner == b.owner && a.name == b.name && a.pinned_t == b.pinned_t;
+  };
+  const bool keys_changed = wanted.size() != custom_rows_.size() ||
+                            std::any_of(wanted.keyValueBegin(), wanted.keyValueEnd(), [this](const auto& entry) {
+                              return !custom_rows_.contains(entry.first);
+                            });
+  const bool presentation_changed =
+      keys_changed || std::any_of(wanted.keyValueBegin(), wanted.keyValueEnd(), [&](const auto& entry) {
+        return !same_presentation(custom_rows_.value(entry.first), entry.second);
+      });
+  custom_rows_ = std::move(wanted);
+  if (!presentation_changed) {
+    applyCustomRowStates();
+    return;
+  }
   refillCustomView();
-  // custom_keys_ is also the main tree's exclusion set, so the tree has to be
-  // rebuilt against the new set or a series would show in both lists — or in
-  // neither.
-  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
+  if (keys_changed) {
+    // The rows' keys are also the main tree's exclusion set, so the tree has to be
+    // rebuilt against the new set or a topic would show in both lists — or in
+    // neither.
+    rebuildTree(tree_view_, catalog_, tracker_, custom_rows_);
+  }
 }
 
-QStringList CurveListPanel::customSeriesNames() const {
+void CurveListPanel::setEditorPluginId(const QString& plugin_id) {
+  if (plugin_id == editor_plugin_id_) {
+    return;
+  }
+  editor_plugin_id_ = plugin_id;
+  ui_->buttonAddCustom->setVisible(!plugin_id.isEmpty());
+  refillCustomView();  // which rows are read-only, so which carry a badge
+}
+
+QStringList CurveListPanel::customTopicNames() const {
   QStringList names;
   if (catalog_ == nullptr) {
     return names;
   }
-  for (const QString& key : custom_keys_) {
+  for (const QString& key : custom_rows_.keys()) {
     if (const std::optional<CatalogItem> item = catalog_->itemDescriptor(key); item.has_value()) {
       names.push_back(item->topic_name);
     }
@@ -1003,26 +1042,218 @@ void CurveListPanel::refillCustomView() {
   }
   const QStringList expanded = custom_view_->expandedGroupPaths();
   std::vector<CurveTreeView::CurvePath> paths;
+  custom_object_rows_.clear();
+  series_row_paths_.clear();
   if (catalog_ != nullptr) {
+    const QHash<DatasetId, QSet<QString>> active_sets = buildActiveSets(*catalog_, tracker_);
     for (const auto& item : catalog_->items()) {
-      if (custom_keys_.contains(item.key)) {
-        CurveTreeView::CurvePath path;
+      const auto found = custom_rows_.constFind(item.key);
+      if (found == custom_rows_.cend()) {
+        continue;
+      }
+      const CustomTopicRow& row = *found;
+      // Built like its Datasets-tree twin (drag into a plot or a 2D / 3D view, icons, the
+      // not-draggable wording) but flat: one row, named by its recipe. The search path
+      // stays the dataset/topic one, so the glyph and the filter match.
+      const auto flat_row = [&](const QString& label) {
+        CurveTreeView::CurvePath flat = treePathFromCatalogItem(item, active_sets);
+        flat.display_name = label;
+        if (isReadOnlyCustomRow(item.key)) {
+          flat.badge = ownerInfo(row.owner).badge;
+        }
+        const QString created_by =
+            row.owner.isEmpty()
+                ? tr("Dataset %1").arg(item.dataset_name)
+                : tr("Created by %1 \u00B7 dataset %2").arg(ownerInfo(row.owner).name, item.dataset_name);
+        flat.tooltip = flat.tooltip.isEmpty() ? created_by : created_by + u"\n"_s + flat.tooltip;
+        return flat;
+      };
+      CurveTreeView::CurvePath path;
+      const ScalarFieldPayload* field = asScalarField(item);
+      if (asObjectTopic(item) != nullptr) {
+        path = flat_row(row.name.isEmpty() ? item.topic_name : row.name);
+        custom_object_rows_.insert(
+            item.key, CustomObjectRow{CurveTreeView::treePathFromCurvePath(path), item.dataset_id, path.tooltip});
+      } else if (field != nullptr && !row.name.isEmpty() && field->column_index < (1U << kSeriesRowKeyColumnBits)) {
+        path = flat_row(row.name);  // a series column: a flat, plottable leaf
+        series_row_paths_.insert(
+            (static_cast<quint64>(field->topic_id) << kSeriesRowKeyColumnBits) | field->column_index,
+            CurveTreeView::treePathFromCurvePath(path));
+      } else {
         path.key = item.key;
         path.dataset = item.topic_name;
-        paths.push_back(path);
+        if (!row.owner.isEmpty()) {
+          path.tooltip = tr("Created by %1").arg(ownerInfo(row.owner).name);
+        }
       }
+      paths.push_back(std::move(path));
     }
   }
   custom_view_->clearCurves();
   custom_view_->addCatalogItems(paths);
   custom_view_->restoreExpandedGroupPaths(expanded);
+  for (auto it = series_row_paths_.cbegin(); it != series_row_paths_.cend(); ++it) {
+    custom_view_->setDatasetRowKey(it.value(), it.key());  // before any progress that names the key
+  }
+  applySeriesProgress();
+  applyCustomRowStates();
+  updateCustomEditButton();
+}
+
+void CurveListPanel::setSeriesProgress(const QHash<quint64, CurveTreeView::DatasetProgress>& by_topic) {
+  series_progress_ = by_topic;
+  applySeriesProgress();
+}
+
+void CurveListPanel::applySeriesProgress() {
+  if (custom_view_ == nullptr) {
+    return;
+  }
+  // Only rows that exist are decorated: the view would turn an unmapped key into a ghost row.
+  QHash<quint64, CurveTreeView::DatasetProgress> by_row_key;
+  for (auto it = series_row_paths_.cbegin(); it != series_row_paths_.cend(); ++it) {
+    const auto progress = series_progress_.constFind(it.key() >> kSeriesRowKeyColumnBits);
+    if (progress != series_progress_.cend()) {
+      by_row_key.insert(it.key(), *progress);
+    }
+  }
+  custom_view_->setDatasetProgress(by_row_key);
+}
+
+namespace {
+
+// What a row says about its node's state (REQUIREMENTS D30: computing while an older result is shown keeps the
+// computing glyph, with the lag).
+QString stateText(const NodeScheduler::NodeState& state) {
+  using NodeStatus = NodeScheduler::NodeState::Status;
+  const QString detail = QString::fromStdString(state.detail);
+  switch (state.status) {
+    case NodeStatus::kPending:
+      return state.lag.has_value() ? CurveListPanel::tr("Computing; the result shown is %1 s behind")
+                                         .arg(static_cast<double>(*state.lag) / 1e9, 0, 'f', 3)
+                                   : CurveListPanel::tr("Computing");
+    case NodeStatus::kMissingInput:
+      return detail.isEmpty() ? CurveListPanel::tr("Missing input")
+                              : CurveListPanel::tr("Missing input: %1").arg(detail);
+    case NodeStatus::kError:
+      return detail.isEmpty() ? CurveListPanel::tr("Error") : CurveListPanel::tr("Error: %1").arg(detail);
+    case NodeStatus::kIdle:
+    case NodeStatus::kReady:
+      break;
+  }
+  return {};
+}
+
+CurveTreeView::DerivedGlyphState glyphStateOf(NodeScheduler::NodeState::Status status) {
+  using NodeStatus = NodeScheduler::NodeState::Status;
+  switch (status) {
+    case NodeStatus::kPending:
+      return CurveTreeView::DerivedGlyphState::kPending;
+    case NodeStatus::kReady:
+      return CurveTreeView::DerivedGlyphState::kReady;
+    case NodeStatus::kMissingInput:
+      return CurveTreeView::DerivedGlyphState::kMissingInput;
+    case NodeStatus::kError:
+      return CurveTreeView::DerivedGlyphState::kError;
+    case NodeStatus::kIdle:
+      break;
+  }
+  return CurveTreeView::DerivedGlyphState::kIdle;
+}
+
+}  // namespace
+
+void CurveListPanel::applyCustomRowStates() {
+  if (custom_view_ == nullptr) {
+    return;
+  }
+  // Each object row's whole tooltip is composed here and written with its glyph in one pass, so a row whose
+  // state, pin and catalog data did not change sees no model change (a hover stays put).
+  QHash<QString, CurveTreeView::DerivedGlyph> glyphs;
+  for (auto it = custom_object_rows_.cbegin(); it != custom_object_rows_.cend(); ++it) {
+    const CustomTopicRow& row = custom_rows_[it.key()];
+    CurveTreeView::DerivedGlyph glyph{.state = CurveTreeView::DerivedGlyphState::kIdle, .tooltip = it->base_tooltip};
+    if (row.state.has_value()) {
+      glyph.state = glyphStateOf(row.state->status);
+      if (const QString text = stateText(*row.state); !text.isEmpty()) {
+        glyph.tooltip += u"\n"_s + text;
+      }
+    }
+    // A finding names its computation instant on the axis the timeline shows (D26).
+    if (row.pinned_t.has_value() && display_time_resolver_) {
+      if (const std::optional<double> seconds = display_time_resolver_(it->dataset_id, *row.pinned_t)) {
+        glyph.tooltip += u"\n"_s + tr("Pinned at %1 s").arg(*seconds, 0, 'f', 3);
+      }
+    }
+    glyphs.insert(it->tree_path, std::move(glyph));
+  }
+  custom_view_->setDerivedTopicGlyphs(glyphs);
+}
+
+QStringList CurveListPanel::selectedCustomRowKeys() const {
+  QStringList keys;
+  for (const QTreeWidgetItem* item : custom_view_->selectedItems()) {
+    if (const QString key = CurveTreeView::catalogKeyOf(item); !key.isEmpty() && !keys.contains(key)) {
+      keys.push_back(key);
+    }
+  }
+  return keys;
+}
+
+bool CurveListPanel::isReadOnlyCustomRow(const QString& catalog_key) const {
+  return !ExtensionCatalogService::isEditorOwner(editor_plugin_id_, custom_rows_.value(catalog_key).owner);
+}
+
+CurveListPanel::OwnerInfo CurveListPanel::ownerInfo(const QString& plugin_id) const {
+  OwnerInfo info = owner_resolver_ ? owner_resolver_(plugin_id) : OwnerInfo{};
+  // An owner that is not loaded keeps a visible mark: its id stands in for both.
+  if (info.badge.isEmpty()) {
+    info.badge = plugin_id;
+  }
+  if (info.name.isEmpty()) {
+    info.name = plugin_id;
+  }
+  return info;
+}
+
+void CurveListPanel::updateCustomEditButton() {
+  const QStringList keys = selectedCustomRowKeys();
+  const auto read_only_tooltip = [this](const QString& key) {
+    const QString owner = custom_rows_.value(key).owner;
+    return owner.isEmpty() ? tr("Read-only") : tr("Created by %1; read-only").arg(ownerInfo(owner).name);
+  };
+  bool edit_enabled = false;
+  QString edit_tooltip = tr("Edit the selected custom topic");
+  if (keys.size() == 1) {
+    if (isReadOnlyCustomRow(keys.front())) {
+      edit_tooltip = read_only_tooltip(keys.front());
+    } else {
+      edit_enabled = true;
+    }
+  }
+  ui_->buttonEditCustom->setEnabled(edit_enabled);
+  ui_->buttonEditCustom->setToolTip(edit_tooltip);
+
+  // Delete acts on every key under the selection (a group row included), so one
+  // use-only row anywhere in it disables the whole action.
+  bool delete_enabled = true;
+  QString delete_tooltip;
+  for (const QString& key : custom_view_->selectedCatalogKeysRecursive()) {
+    if (isReadOnlyCustomRow(key)) {
+      delete_enabled = false;
+      delete_tooltip = read_only_tooltip(key);
+      break;
+    }
+  }
+  delete_custom_button_->setEnabled(delete_enabled);
+  delete_custom_button_->setToolTip(delete_tooltip);
 }
 
 void CurveListPanel::removeCustomCurve(const QString& catalog_key) {
   if (custom_view_ == nullptr) {
     return;
   }
-  custom_keys_.remove(catalog_key);
+  custom_rows_.remove(catalog_key);
   refillCustomView();
 }
 
@@ -1033,7 +1264,7 @@ void CurveListPanel::onCatalogItemsRemoved(const QStringList& keys) {
   // the vanished keys are known.
   bool custom_changed = false;
   for (const QString& key : keys) {
-    custom_changed = custom_keys_.remove(key) || custom_changed;
+    custom_changed = custom_rows_.remove(key) || custom_changed;
   }
   if (custom_changed) {
     refillCustomView();
@@ -1041,12 +1272,14 @@ void CurveListPanel::onCatalogItemsRemoved(const QStringList& keys) {
   // One rebuild per batch (a dataset / multi-key trash is a single itemsRemoved).
   // TODO: incremental CurveTreeView::removeCurve(name); linear rebuild wipes
   // scroll/expansion/selection.
-  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
+  rebuildTree(tree_view_, catalog_, tracker_, custom_rows_);
 }
 
 void CurveListPanel::onCatalogCleared() {
   tree_view_->clearCurves();
-  custom_keys_.clear();
+  custom_rows_.clear();
+  custom_object_rows_.clear();
+  series_row_paths_.clear();
   if (custom_view_ != nullptr) {
     custom_view_->clearCurves();
   }
@@ -1067,7 +1300,7 @@ bool CurveListPanel::eventFilter(QObject* watched, QEvent* event) {
     const bool focused = (type == QEvent::FocusIn);
     if (watched == ui_->filterCustom->lineEdit()) {
       ui_->labelCustom->setVisible(!focused);
-      ui_->buttonAddCustom->setVisible(!focused);
+      ui_->buttonAddCustom->setVisible(!focused && !editor_plugin_id_.isEmpty());
       ui_->buttonCustomMenu->setVisible(!focused);
     }
   }
@@ -1153,7 +1386,7 @@ void CurveListPanel::applyIcons(QString theme) {
     layout->setContentsMargins(title_band_margins);
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }
-  // Per-row padding on the Datasets / Custom Series trees. QTreeView
+  // Per-row padding on the Datasets / Custom Topics trees. QTreeView
   // has no setSpacing() the way QListWidget does — instead, push a
   // per-instance stylesheet that pads ::item by layout_spacing on top
   // and bottom. Setting an empty stylesheet at zero spacing clears the

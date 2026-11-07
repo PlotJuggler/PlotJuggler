@@ -6,10 +6,25 @@
 // Keeping it out of the shell source makes the production ownership boundary
 // explicit while preserving same-translation-unit access to probe helpers.
 
-#include <functional>
+#include <emscripten/heap.h>
+#include <emscripten/val.h>
+#include <malloc.h>
 
+#include <QCheckBox>
+#include <QDirIterator>
+#include <qwt_plot.h>
+#include <functional>
+#include <string>
+
+#include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
+
+#ifdef PJ_WASM_WITH_PYTHON
+#include "wasm_python_probe.inc"
+#endif
+
+#include "pj_scripting/python_object_script.h"
 
 namespace {
 
@@ -22,6 +37,12 @@ void stopWasmFrameTimingProbe() {
 }
 
 }  // namespace
+
+/// Whether this build has the on-demand Python lane. Unlike the smoke probe it starts no Python work, so a spec can
+/// decide on it before doing anything else.
+extern "C" EMSCRIPTEN_KEEPALIVE int pj_wasm_test_python_available() {
+  return PJ::scripting::pythonAvailable() ? 1 : 0;
+}
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_open_load() {
   for (QWidget* widget : QApplication::topLevelWidgets()) {
@@ -240,6 +261,106 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_supersede_source_layout_picker
   qWarning("PJ_WASM_SOURCE_LAYOUT_SUPERSEDE_FAILED no main window");
 }
 
+// Opens globalThis.pjWasmProbeLayoutUrl through MainWindow::loadLayoutFromUrl,
+// the entry point a preset deep link and the preset dialog use. From the first
+// call on, every layoutUrlLoadProgress is logged as PJ_WASM_LAYOUT_URL_PROGRESS.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_load_layout_url() {
+  const QUrl url(QString::fromStdString(emscripten::val::global("pjWasmProbeLayoutUrl").as<std::string>()));
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      static bool progress_logged = false;
+      if (!std::exchange(progress_logged, true)) {
+        QObject::connect(
+            main_window, &PJ::MainWindow::layoutUrlLoadProgress, [](const QUrl&, qint64 received, qint64 total) {
+              qInfo(
+                  "PJ_WASM_LAYOUT_URL_PROGRESS received=%lld total=%lld", static_cast<long long>(received),
+                  static_cast<long long>(total));
+            });
+      }
+      QMetaObject::invokeMethod(
+          main_window, [main_window, url]() { main_window->loadLayoutFromUrl(url); }, Qt::QueuedConnection);
+      return;
+    }
+  }
+  qWarning("PJ_WASM_LAYOUT_URL_FAILED no main window");
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_cancel_layout_url() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      QMetaObject::invokeMethod(
+          main_window, [main_window]() { main_window->cancelLayoutFromUrl(); }, Qt::QueuedConnection);
+      return;
+    }
+  }
+  qWarning("PJ_WASM_LAYOUT_URL_FAILED no main window");
+}
+
+// The welcome presets dialog as the user sees it: one line per entry (its
+// thumbnail state, Open button center, enabled), then the dialog line with the
+// Cancel, Retry and Upload centers (-1,-1 when hidden) and the status text.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_presets_dialog() {
+  PJ::MainWindow* main_window = nullptr;
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* candidate = qobject_cast<PJ::MainWindow*>(widget)) {
+      main_window = candidate;
+      break;
+    }
+  }
+  auto* dialog = main_window != nullptr ? main_window->findChild<PJ::WelcomePresetsDialog*>() : nullptr;
+  const auto center = [main_window](const QWidget* widget) {
+    return widget != nullptr && widget->isVisible()
+               ? main_window->mapFromGlobal(widget->mapToGlobal(widget->rect().center()))
+               : QPoint(-1, -1);
+  };
+  const auto child = [dialog](const QString& name) {
+    return dialog != nullptr ? dialog->findChild<QWidget*>(name) : nullptr;
+  };
+  if (dialog != nullptr) {
+    const QList<QLabel*> thumbnails = dialog->findChildren<QLabel*>(u"labelPresetThumbnail"_s);
+    for (const QPushButton* open : dialog->findChildren<QPushButton*>(u"buttonOpenPreset"_s)) {
+      const QString id = open->property("presetId").toString();
+      QString thumbnail;
+      for (const QLabel* label : thumbnails) {
+        if (label->property("presetId").toString() == id) {
+          thumbnail = label->property("thumbnail").toString();
+        }
+      }
+      const QPoint open_center = center(open);
+      qInfo(
+          "PJ_WASM_PRESETS_ENTRY id=%s thumbnail=%s open=%d,%d enabled=%d", qPrintable(id), qPrintable(thumbnail),
+          open_center.x(), open_center.y(), open->isEnabled() ? 1 : 0);
+    }
+  }
+  const auto* status = qobject_cast<QLabel*>(child(u"labelStatus"_s));
+  const QPoint cancel = center(child(u"buttonCancel"_s));
+  const QPoint retry = center(child(u"buttonRetry"_s));
+  const QPoint upload = center(child(u"buttonUpload"_s));
+  qInfo(
+      "PJ_WASM_PRESETS_DIALOG visible=%d cancel=%d,%d retry=%d,%d upload=%d,%d status=%s",
+      dialog != nullptr && dialog->isVisible() ? 1 : 0, cancel.x(), cancel.y(), retry.x(), retry.y(), upload.x(),
+      upload.y(), status != nullptr && status->isVisible() ? qPrintable(status->text()) : "");
+}
+
+// Reports whether File → Presets is offered, and triggers it when it is.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_open_presets() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    auto* main_window = qobject_cast<PJ::MainWindow*>(widget);
+    if (main_window == nullptr) {
+      continue;
+    }
+    auto* action = main_window->findChild<QAction*>(u"actionPresets"_s);
+    qInfo(
+        "PJ_WASM_PRESETS_ACTION present=%d visible=%d enabled=%d", action != nullptr ? 1 : 0,
+        action != nullptr && action->isVisible() ? 1 : 0, action != nullptr && action->isEnabled() ? 1 : 0);
+    if (action != nullptr && action->isVisible() && action->isEnabled()) {
+      action->trigger();
+    }
+    return;
+  }
+  qWarning("PJ_WASM_PRESETS_ACTION_FAILED no main window");
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_buttons() {
   PJ::MainWindow* main_window = nullptr;
   for (QWidget* widget : QApplication::topLevelWidgets()) {
@@ -297,6 +418,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_buttons() {
       cancel != nullptr && cancel->isEnabled() ? 1 : 0);
 }
 
+// Geometry of the CSV import dialog's delimiter and time-axis controls. The
+// time-axis mode is a combo docked in the "Time Axis" section header; `item1`
+// is the second row of whichever combo popup is open (semicolon in the
+// delimiter list, "Selected Column" in the mode list).
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_csv_dialog_controls() {
   PJ::MainWindow* main_window = nullptr;
   for (QWidget* widget : QApplication::topLevelWidgets()) {
@@ -307,38 +432,40 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_csv_dialog_controls() {
   }
   QWidget* dialog = QApplication::activeModalWidget();
   auto* delimiter = dialog != nullptr ? dialog->findChild<QComboBox*>(u"comboBox"_s) : nullptr;
-  auto* select_column = dialog != nullptr ? dialog->findChild<QRadioButton*>(u"radioButtonSelect"_s) : nullptr;
+  auto* auto_delimiter = dialog != nullptr ? dialog->findChild<QCheckBox*>(u"checkBoxAutoDelim"_s) : nullptr;
+  auto* mode = dialog != nullptr ? dialog->findChild<QComboBox*>(u"timeAxisModeCombo"_s) : nullptr;
   auto* columns = dialog != nullptr ? dialog->findChild<QListWidget*>(u"listWidgetSeries"_s) : nullptr;
-  QListWidgetItem* time_item = nullptr;
-  if (columns != nullptr) {
-    const auto matches = columns->findItems(u"time"_s, Qt::MatchExactly);
-    time_item = matches.empty() ? nullptr : matches.front();
-  }
-  if (main_window == nullptr || delimiter == nullptr || select_column == nullptr || columns == nullptr) {
+  if (main_window == nullptr || delimiter == nullptr || auto_delimiter == nullptr || mode == nullptr ||
+      columns == nullptr) {
     qWarning("PJ_WASM_CSV_DIALOG_CONTROLS_FAILED incomplete active dialog");
     return;
   }
   const auto center = [main_window](QWidget* widget) {
     return main_window->mapFromGlobal(widget->mapToGlobal(widget->rect().center()));
   };
-  const QPoint delimiter_center = center(delimiter);
-  const QPoint select_center = center(select_column);
-  QPoint semicolon_center(-1, -1);
-  if (QAbstractItemView* popup = delimiter->view();
-      popup != nullptr && popup->isVisible() && delimiter->model()->rowCount() > 1) {
-    const QModelIndex semicolon = delimiter->model()->index(1, delimiter->modelColumn());
-    semicolon_center =
-        main_window->mapFromGlobal(popup->viewport()->mapToGlobal(popup->visualRect(semicolon).center()));
+  QPoint item1_center(-1, -1);
+  for (QComboBox* combo : {delimiter, mode}) {
+    QAbstractItemView* popup = combo->view();
+    if (popup != nullptr && popup->isVisible() && combo->model()->rowCount() > 1) {
+      const QModelIndex item = combo->model()->index(1, combo->modelColumn());
+      item1_center = main_window->mapFromGlobal(popup->viewport()->mapToGlobal(popup->visualRect(item).center()));
+    }
   }
   QPoint time_center(-1, -1);
-  if (time_item != nullptr) {
-    time_center =
-        main_window->mapFromGlobal(columns->viewport()->mapToGlobal(columns->visualItemRect(time_item).center()));
+  const auto matches = columns->findItems(u"time"_s, Qt::MatchExactly);
+  if (!matches.empty() && columns->isEnabled()) {
+    time_center = main_window->mapFromGlobal(
+        columns->viewport()->mapToGlobal(columns->visualItemRect(matches.front()).center()));
   }
+  const QPoint delimiter_center = center(delimiter);
+  const QPoint auto_center = center(auto_delimiter);
+  const QPoint mode_center = center(mode);
   qInfo(
-      "PJ_WASM_CSV_DIALOG_CONTROLS delimiter=%d,%d semicolon=%d,%d select=%d,%d time=%d,%d", delimiter_center.x(),
-      delimiter_center.y(), semicolon_center.x(), semicolon_center.y(), select_center.x(), select_center.y(),
-      time_center.x(), time_center.y());
+      "PJ_WASM_CSV_DIALOG_CONTROLS delimiter=%d,%d enabled=%d auto=%d,%d checked=%d mode=%d,%d mode_index=%d "
+      "item1=%d,%d time=%d,%d",
+      delimiter_center.x(), delimiter_center.y(), delimiter->isEnabled() ? 1 : 0, auto_center.x(), auto_center.y(),
+      auto_delimiter->isChecked() ? 1 : 0, mode_center.x(), mode_center.y(), mode->currentIndex(), item1_center.x(),
+      item1_center.y(), time_center.x(), time_center.y());
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_ingest_controls() {
@@ -428,6 +555,35 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dataset_count() {
     }
   }
   qWarning("PJ_WASM_DATASET_COUNT_FAILED no main window");
+}
+
+// Counts the files staged in MEMFS (uploads and preset downloads alike): each
+// stays until the last lease on it (a loaded dataset, a pending replay) is gone.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_staged_files() {
+  int count = 0;
+  qint64 bytes = 0;
+  QDirIterator staged(u"/pj_uploads"_s, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+  while (staged.hasNext()) {
+    bytes += staged.nextFileInfo().size();
+    ++count;
+  }
+  qInfo("PJ_WASM_STAGED_FILES count=%d bytes=%lld", count, static_cast<long long>(bytes));
+}
+
+// The wasm heap: the bytes malloc holds now, the linear memory's size (it never
+// shrinks, so it is the peak so far) and the resident payload pool's capacity.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_heap() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      const struct mallinfo info = mallinfo();
+      qInfo(
+          "PJ_WASM_HEAP in_use=%lld memory=%lld resident_pool=%lld", static_cast<long long>(info.uordblks),
+          static_cast<long long>(emscripten_get_heap_size()),
+          static_cast<long long>(main_window->wasmProbeResidentPoolCapacity()));
+      return;
+    }
+  }
+  qWarning("PJ_WASM_HEAP_FAILED no main window");
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_streaming_state() {
@@ -691,18 +847,30 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
   auto* panel = main_window->findChild<QWidget*>(u"TransformEditorDialog"_s);
   const bool open = panel != nullptr && panel->isVisibleTo(main_window);
   auto* sources = open ? panel->findChild<QTableWidget*>(u"tableSources"_s) : nullptr;
-  auto* name = open ? panel->findChild<QLineEdit*>(u"nameLineEdit"_s) : nullptr;
+  // The name is asked by the editor's "Create..." prompt, a sub-dialog outside the panel.
+  QLineEdit* name = nullptr;
+  for (QWidget* widget : QApplication::allWidgets()) {
+    auto* line_edit = qobject_cast<QLineEdit*>(widget);
+    if (line_edit != nullptr && line_edit->objectName() == u"createRecipeName"_s && line_edit->isVisible()) {
+      name = line_edit;
+      break;
+    }
+  }
   auto* function = open ? panel->findChild<QPlainTextEdit*>(u"functionText"_s) : nullptr;
-  auto* terminal = open ? panel->findChild<QPlainTextEdit*>(u"terminalPlainText"_s) : nullptr;
+  auto* terminal = open ? panel->findChild<QLabel*>(u"statusLabel"_s) : nullptr;
   auto* create = open ? panel->findChild<QPushButton*>(u"pushButtonCreate"_s) : nullptr;
   const QPoint add_center = center(add);
   const QPoint drop_center = sources != nullptr ? center(sources->viewport()) : QPoint(-1, -1);
   const QPoint name_center = center(name);
   const QPoint function_center = center(function);
   const QPoint create_center = center(create);
+  // The host renders a plugin chart as a PlotWidget or a ChartPreviewWidget;
+  // both are Qwt plots, so read the curves off whichever QwtPlot the frame holds.
   auto* preview_frame = open ? panel->findChild<QFrame*>(u"framePlotPreview"_s) : nullptr;
-  auto* preview = preview_frame != nullptr ? preview_frame->findChild<PJ::PlotWidget*>() : nullptr;
-  const int preview_curves = preview != nullptr ? static_cast<int>(preview->curveList().size()) : 0;
+  auto* preview = preview_frame != nullptr ? preview_frame->findChild<QwtPlot*>() : nullptr;
+  const QwtPlotItemList preview_items =
+      preview != nullptr ? preview->itemList(QwtPlotItem::Rtti_PlotCurve) : QwtPlotItemList{};
+  const int preview_curves = static_cast<int>(preview_items.size());
   qInfo(
       "PJ_WASM_TRANSFORM_EDITOR open=%d add=%d,%d source=%d,%d drop=%d,%d name=%d,%d function=%d,%d "
       "create=%d,%d create_enabled=%d source_rows=%d preview_curves=%d",
@@ -712,7 +880,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
       preview_curves);
   const QByteArray name_b64 = name != nullptr ? name->text().toUtf8().toBase64() : QByteArray();
   const QByteArray function_b64 = function != nullptr ? function->toPlainText().toUtf8().toBase64() : QByteArray();
-  const QByteArray terminal_b64 = terminal != nullptr ? terminal->toPlainText().toUtf8().toBase64() : QByteArray();
+  const QByteArray terminal_b64 = terminal != nullptr ? terminal->text().toUtf8().toBase64() : QByteArray();
   auto* panel_engine = main_window->findChild<PJ::PanelEngine*>();
   const PJ::PanelEngine::Stats stats = panel_engine != nullptr ? panel_engine->stats() : PJ::PanelEngine::Stats{};
   auto* panel_timer = panel_engine != nullptr ? panel_engine->findChild<QTimer*>() : nullptr;
@@ -731,21 +899,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
       terminal_b64.constData(), stats.tick_count, stats.event_count, stats.diff_apply_count,
       panel_timer != nullptr && panel_timer->isActive() ? 1 : 0, dialogs_b64.constData());
 
-  if (preview == nullptr) {
-    return;
-  }
-  for (const PJ::PlotWidgetBase::CurveInfo& info : preview->curveList()) {
-    if (info.curve == nullptr || info.curve->data() == nullptr) {
+  for (const QwtPlotItem* item : preview_items) {
+    const auto* curve = dynamic_cast<const QwtPlotCurve*>(item);
+    if (curve == nullptr || curve->data() == nullptr) {
       continue;
     }
-    const auto* data = info.curve->data();
+    const auto* data = curve->data();
     const std::size_t count = data->size();
     const double first = count > 0 ? data->sample(0).y() : 0.0;
     const double last = count > 0 ? data->sample(count - 1).y() : 0.0;
-    const QByteArray title = info.curve->title().text().toUtf8().toBase64();
+    const QByteArray title = curve->title().text().toUtf8().toBase64();
     qInfo(
         "PJ_WASM_TRANSFORM_PREVIEW title_b64=%s samples=%llu first=%.17g last=%.17g dashed=%d", title.constData(),
-        static_cast<unsigned long long>(count), first, last, info.curve->pen().style() == Qt::DashLine ? 1 : 0);
+        static_cast<unsigned long long>(count), first, last, curve->pen().style() == Qt::DashLine ? 1 : 0);
   }
 }
 
@@ -1090,9 +1256,11 @@ WasmPixelBounds findWasmBlendedColor(const QImage& image, const QColor& color, c
   return result;
 }
 
+// By default the whole image but its outer 2 device pixels: the canvas's 1 px
+// frame (the palette's WindowText, up to DPR 2) is not text.
 WasmPixelBounds findWasmDarkPixels(const QImage& image, QRect search_rect = {}) {
   WasmPixelBounds result{.min_x = image.width(), .min_y = image.height()};
-  search_rect = search_rect.isValid() ? search_rect.intersected(image.rect()) : image.rect();
+  search_rect = search_rect.isValid() ? search_rect.intersected(image.rect()) : image.rect().adjusted(2, 2, -2, -2);
   for (int y = search_rect.top(); y <= search_rect.bottom(); ++y) {
     for (int x = search_rect.left(); x <= search_rect.right(); ++x) {
       const QColor pixel = image.pixelColor(x, y);
@@ -1454,6 +1622,94 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_placeholder_icons() {
       transitions.x(), transitions.y(), scene2d.x(), scene2d.y(), scene3d.x(), scene3d.y());
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_preferences_action() {
+  reportWasmMenuAction(u"Preferences..."_s, "preferences");
+}
+
+// Reports every visible push button inside an open popup menu (the curve
+// tree's dataset menu builds its items as QWidgetAction buttons, which carry no
+// QAction label for reportWasmMenuAction to match).
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_menu_buttons() {
+  int count = 0;
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    auto* menu = qobject_cast<QMenu*>(widget);
+    if (menu == nullptr || !menu->isVisible()) {
+      continue;
+    }
+    for (QPushButton* button : menu->findChildren<QPushButton*>()) {
+      if (!button->isVisible()) {
+        continue;
+      }
+      const QPoint center = button->mapToGlobal(button->rect().center());
+      qInfo(
+          "PJ_WASM_MENU_BUTTON label=%s enabled=%d center=%d,%d", qPrintable(button->text()),
+          button->isEnabled() ? 1 : 0, center.x(), center.y());
+      ++count;
+    }
+  }
+  qInfo("PJ_WASM_MENU_BUTTONS_DONE count=%d", count);
+}
+
+// Reports the open MessageBox (title + every button), whether it was shown
+// modally or through the browser's non-blocking open().
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_message_box() {
+  PJ::MessageBox* box = qobject_cast<PJ::MessageBox*>(QApplication::activeModalWidget());
+  if (box == nullptr) {
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+      if (auto* candidate = qobject_cast<PJ::MessageBox*>(widget); candidate != nullptr && candidate->isVisible()) {
+        box = candidate;
+        break;
+      }
+    }
+  }
+  if (box == nullptr) {
+    qInfo("PJ_WASM_MESSAGE_BOX_DONE present=0 title= count=0");
+    return;
+  }
+  auto* title = box->findChild<QLabel*>(u"pjMessageBoxTitle"_s);
+  int count = 0;
+  for (auto* button : box->findChildren<QPushButton*>(u"pjMessageBoxButton"_s)) {
+    const QPoint center = button->mapToGlobal(button->rect().center());
+    qInfo("PJ_WASM_MESSAGE_BOX_BUTTON label=%s center=%d,%d", qPrintable(button->text()), center.x(), center.y());
+    ++count;
+  }
+  qInfo(
+      "PJ_WASM_MESSAGE_BOX_DONE present=1 title=%s count=%d", title != nullptr ? qPrintable(title->text()) : "", count);
+}
+
+// Counts every visible top-level dialog (message boxes and plugin dialogs alike)
+// and names them by window title, so a test can prove an action opened none.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_visible_dialogs() {
+  QStringList titles;
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (qobject_cast<QDialog*>(widget) != nullptr && widget->isVisible()) {
+      titles << widget->windowTitle();
+    }
+  }
+  qInfo(
+      "PJ_WASM_VISIBLE_DIALOGS count=%lld titles=%s", static_cast<long long>(titles.size()),
+      qPrintable(titles.join(u'|')));
+}
+
+// Reports whether Preferences is open, where its OK button is, and the plot
+// precision it would commit.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_preferences_dialog() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    auto* dialog = qobject_cast<PJ::PreferencesDialog*>(widget);
+    if (dialog == nullptr || !dialog->isVisible()) {
+      continue;
+    }
+    auto* ok = dialog->findChild<QPushButton*>(u"buttonOk"_s);
+    auto* plugins = dialog->findChild<QWidget*>(u"pagePlugins"_s);
+    const QPoint center = ok != nullptr ? ok->mapToGlobal(ok->rect().center()) : QPoint(-1, -1);
+    qInfo(
+        "PJ_WASM_PREFERENCES visible=1 ok=%d,%d plugins_page=%d", center.x(), center.y(),
+        plugins != nullptr && plugins->isVisibleTo(dialog) ? 1 : 0);
+    return;
+  }
+  qInfo("PJ_WASM_PREFERENCES visible=0 ok=-1,-1 plugins_page=0");
+}
+
 // clang-format off
 EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmOpenLoadProbe = () => Module._pj_wasm_test_open_load();
@@ -1471,11 +1727,25 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportLayoutPersistenceProbe = () => Module._pj_wasm_test_report_layout_persistence();
   globalThis.pjWasmReportSourceLayoutDecisionProbe = () => Module._pj_wasm_test_report_source_layout_decision();
   globalThis.pjWasmSupersedeSourceLayoutPickerProbe = () => Module._pj_wasm_test_supersede_source_layout_picker();
+  globalThis.pjWasmLoadLayoutUrlProbe = (url) => {
+    globalThis.pjWasmProbeLayoutUrl = url;
+    Module._pj_wasm_test_load_layout_url();
+  };
+  globalThis.pjWasmCancelLayoutUrlProbe = () => Module._pj_wasm_test_cancel_layout_url();
+  globalThis.pjWasmReportPresetsDialogProbe = () => Module._pj_wasm_test_report_presets_dialog();
+  globalThis.pjWasmOpenPresetsProbe = () => Module._pj_wasm_test_open_presets();
   globalThis.pjWasmReportDialogButtonsProbe = () => Module._pj_wasm_test_report_dialog_buttons();
+  globalThis.pjWasmReportPreferencesActionProbe = () => Module._pj_wasm_test_report_preferences_action();
+  globalThis.pjWasmReportMenuButtonsProbe = () => Module._pj_wasm_test_report_menu_buttons();
+  globalThis.pjWasmReportMessageBoxProbe = () => Module._pj_wasm_test_report_message_box();
+  globalThis.pjWasmReportVisibleDialogsProbe = () => Module._pj_wasm_test_report_visible_dialogs();
+  globalThis.pjWasmReportPreferencesDialogProbe = () => Module._pj_wasm_test_report_preferences_dialog();
   globalThis.pjWasmReportCsvDialogControlsProbe = () => Module._pj_wasm_test_report_csv_dialog_controls();
   globalThis.pjWasmReportIngestControlsProbe = () => Module._pj_wasm_test_report_ingest_controls();
   globalThis.pjWasmReportLayoutSnapshotProbe = () => Module._pj_wasm_test_report_layout_snapshot();
   globalThis.pjWasmReportDatasetCountProbe = () => Module._pj_wasm_test_report_dataset_count();
+  globalThis.pjWasmReportStagedFilesProbe = () => Module._pj_wasm_test_report_staged_files();
+  globalThis.pjWasmReportHeapProbe = () => Module._pj_wasm_test_report_heap();
   globalThis.pjWasmReportCurveRowsProbe = () => Module._pj_wasm_test_report_curve_rows();
   globalThis.pjWasmReportPlaceholderIconsProbe = () => Module._pj_wasm_test_report_placeholder_icons();
   globalThis.pjWasmReportStreamingStateProbe = () => Module._pj_wasm_test_report_streaming_state();
@@ -1503,5 +1773,167 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportSaveSourceLayoutActionProbe = () => Module._pj_wasm_test_report_save_source_layout_action();
   globalThis.pjWasmReportApplyFilterActionProbe = () => Module._pj_wasm_test_report_apply_filter_action();
   globalThis.pjWasmReportQuitActionProbe = () => Module._pj_wasm_test_report_quit_action();
+  globalThis.pjWasmPythonAvailableProbe = () => Module._pj_wasm_test_python_available() === 1;
+  globalThis.pjWasmPythonSmokeProbe = () => Module._pj_wasm_test_python_smoke?.();
+  globalThis.pjWasmPythonHoldGilProbe = () => Module._pj_wasm_test_python_hold_gil?.();
+  globalThis.pjWasmPythonCompileNowProbe = () => Module._pj_wasm_test_python_compile_now?.();
 });
 // clang-format on
+
+// The plot readback probes (F8 state + pixels, F9 add-and-read a curve, F10 the
+// same after fitting the whole series), for plotting.spec.js: they only report,
+// through qInfo breadcrumbs, what the canvas drew.
+void PJ::MainWindow::installWasmPlotAcceptanceProbes() {
+  const auto run_wasm_plot_probe = [this](bool fit_complete_series) {
+    PlotWidget* plot = firstPlotOfActiveTab();
+    const auto curves = session_->catalogModel().curves();
+    if (plot == nullptr || curves.empty()) {
+      qWarning("PJ_WASM_PLOT_PROBE_FAILED no plot or scalar curve");
+      return;
+    }
+    auto selected = std::find_if(
+        curves.begin(), curves.end(), [](const CurveDescriptor& curve) { return curve.field_name == u"temp"_s; });
+    if (selected == curves.end()) {
+      selected = curves.begin();
+    }
+    auto* added = plot->addCurve(selected->name);
+    if (added == nullptr) {
+      qWarning("PJ_WASM_PLOT_PROBE_FAILED addCurve rejected %s", qPrintable(selected->name));
+      return;
+    }
+    if (fit_complete_series) {
+      plot->zoomOut(/*emit_signal=*/false);
+    }
+    auto* canvas = plot->findChild<PlotRhiCanvas*>();
+    const QColor curve_color = added->curve->pen().color();
+    QTimer::singleShot(500, canvas, [canvas, curve_color]() {
+      const QImage image = canvas->grabFramebuffer();
+      const WasmPixelBounds curve = findWasmExactColor(image, curve_color);
+      qInfo(
+          "PJ_WASM_PLOT_READBACK size=%dx%d curve=%s curve_pixels=%lld curve_bounds=%d,%d..%d,%d", image.width(),
+          image.height(), qPrintable(curve_color.name(QColor::HexArgb)), static_cast<long long>(curve.pixels),
+          curve.min_x, curve.min_y, curve.max_x, curve.max_y);
+    });
+  };
+  auto* wasm_plot_probe_shortcut = new QShortcut(QKeySequence(Qt::Key_F9), this);
+  connect(wasm_plot_probe_shortcut, &QShortcut::activated, this, [run_wasm_plot_probe]() {
+    run_wasm_plot_probe(/*fit_complete_series=*/false);
+  });
+  auto* wasm_reduction_probe_shortcut = new QShortcut(QKeySequence(Qt::Key_F10), this);
+  connect(wasm_reduction_probe_shortcut, &QShortcut::activated, this, [run_wasm_plot_probe]() {
+    run_wasm_plot_probe(/*fit_complete_series=*/true);
+  });
+  auto* wasm_plot_state_shortcut = new QShortcut(QKeySequence(Qt::Key_F8), this);
+  connect(wasm_plot_state_shortcut, &QShortcut::activated, this, [this]() {
+    PlotWidget* plot = firstPlotOfActiveTab();
+    if (plot == nullptr) {
+      qWarning("PJ_WASM_PLOT_STATE_FAILED no plot");
+      return;
+    }
+    auto* canvas = plot->findChild<PlotRhiCanvas*>();
+    if (canvas == nullptr) {
+      qWarning("PJ_WASM_PLOT_STATE_FAILED no RHI canvas");
+      return;
+    }
+    QStringList titles;
+    std::vector<std::pair<QString, QColor>> curve_colors;
+    for (const PlotWidgetBase::CurveInfo& info : plot->curveList()) {
+      if (info.curve == nullptr) {
+        continue;
+      }
+      const QString title = info.curve->title().text();
+      titles.push_back(title);
+      curve_colors.emplace_back(title, info.curve->pen().color());
+    }
+    const QPoint canvas_position = canvas->mapTo(this, QPoint(0, 0));
+    const QRectF view = plot->currentBoundingRect();
+    const QColor tracker_color =
+        theme::interaction(theme::Variant::Highlight, theme::State::Checked, theme::appTheme());
+    const QColor grid_color =
+        theme::outline(theme::OutlineRole::Gridline, theme::OutlineState::Rest, theme::appTheme());
+    const QColor hover_fill_color =
+        theme::interaction(theme::Variant::Emphasis, theme::State::Nominal, theme::appTheme());
+    const QColor canvas_color = canvas->palette().color(QPalette::Window);
+    const WasmHoverState hover = findWasmHoverState(plot);
+    const QByteArray encoded_hover_label = QUrl::toPercentEncoding(hover.label);
+    const int curve_style = static_cast<int>(plot->defaultCurveStyle());
+    const int line_width = static_cast<int>(plot->lineWidth());
+    static quint64 sequence = 0;
+    const quint64 current_sequence = ++sequence;
+    qInfo(
+        "PJ_WASM_PLOT_STATE count=%lld titles=%s canvas=%d,%d,%dx%d view=%.17g,%.17g,%.17g,%.17g "
+        "time=%.17g tracker_enabled=%d tracker_parameter=%d xy=%d style=%d width=%d sequence=%llu",
+        static_cast<long long>(titles.size()), qPrintable(titles.join(',')), canvas_position.x(), canvas_position.y(),
+        canvas->width(), canvas->height(), view.left(), view.right(), view.bottom(), view.top(),
+        toAxisDouble(session_->playbackEngine().currentTime()), plot->trackerEnabled() ? 1 : 0,
+        static_cast<int>(plot->trackerParameter()), plot->isXYPlot() ? 1 : 0, curve_style, line_width,
+        static_cast<unsigned long long>(current_sequence));
+    qInfo(
+        "PJ_WASM_PLOT_HOVER sequence=%llu enabled=%d visible=%d point=%.17g,%.17g label=%s",
+        static_cast<unsigned long long>(current_sequence),
+        plot->showPoints() ? 1 : 0, hover.visible ? 1 : 0, hover.point.x(), hover.point.y(),
+        encoded_hover_label.constData());
+
+    QTimer::singleShot(
+        250, canvas,
+        [canvas, curve_colors = std::move(curve_colors), tracker_color, grid_color, hover_fill_color, canvas_color,
+         curve_style, line_width, current_sequence]() {
+          const QImage image = canvas->grabFramebuffer();
+          QStringList counts;
+          WasmPixelBounds first_curve;
+          for (const auto& [title, color] : curve_colors) {
+            const WasmPixelBounds pixels = findWasmExactColor(image, color);
+            if (counts.empty()) {
+              first_curve = pixels;
+            }
+            counts.push_back(u"%1:%2:%3"_s.arg(title, color.name(QColor::HexArgb)).arg(pixels.pixels));
+          }
+          qInfo("PJ_WASM_PLOT_CURVE_PIXELS curves=%s", qPrintable(counts.join(',')));
+          if (!curve_colors.empty()) {
+            qInfo(
+                "PJ_WASM_PLOT_STYLE_PIXELS style=%d width=%d pixels=%lld bounds=%d,%d..%d,%d hash=%llu "
+                "framebuffer=%dx%d",
+                curve_style, line_width, static_cast<long long>(first_curve.pixels), first_curve.min_x,
+                first_curve.min_y, first_curve.max_x, first_curve.max_y,
+                static_cast<unsigned long long>(first_curve.coordinate_hash), image.width(), image.height());
+          }
+
+          const WasmLineCadence major_grid = findWasmVerticalCadence(image, grid_color, 6, 4);
+          const WasmLineCadence minor_grid = findWasmVerticalCadence(image, grid_color, 3, 1);
+          qInfo(
+              "PJ_WASM_PLOT_GRID_PIXELS major_pixels=%lld major_column=%d major_period=%d "
+              "major_period_matches=%d major_period_comparisons=%d major_phase_mask=%d major_on_phases=%d "
+              "minor_pixels=%lld minor_column=%d minor_period=%d minor_period_matches=%d "
+              "minor_period_comparisons=%d minor_phase_mask=%d minor_on_phases=%d",
+              static_cast<long long>(major_grid.pixels), major_grid.column, major_grid.period,
+              major_grid.period_matches, major_grid.period_comparisons, major_grid.phase_mask, major_grid.on_phases,
+              static_cast<long long>(minor_grid.pixels), minor_grid.column, minor_grid.period,
+              minor_grid.period_matches, minor_grid.period_comparisons, minor_grid.phase_mask, minor_grid.on_phases);
+
+          const WasmPixelBounds tracker = findWasmBlendedColor(image, tracker_color, canvas_color);
+          qInfo(
+              "PJ_WASM_PLOT_TRACKER color=%s pixels=%lld bounds=%d,%d..%d,%d framebuffer=%dx%d",
+              qPrintable(tracker_color.name(QColor::HexArgb)), static_cast<long long>(tracker.pixels), tracker.min_x,
+              tracker.min_y, tracker.max_x, tracker.max_y, image.width(), image.height());
+          const WasmPixelBounds text = findWasmDarkPixels(image);
+          qInfo(
+              "PJ_WASM_PLOT_TEXT_PIXELS pixels=%lld bounds=%d,%d..%d,%d framebuffer=%dx%d",
+              static_cast<long long>(text.pixels), text.min_x, text.min_y, text.max_x, text.max_y, image.width(),
+              image.height());
+          const WasmPixelBounds hover_fill = findWasmExactColor(image, hover_fill_color);
+          WasmPixelBounds hover_border;
+          if (hover_fill.pixels > 0) {
+            const QRect hover_border_rect =
+                QRect(QPoint(hover_fill.min_x, hover_fill.min_y), QPoint(hover_fill.max_x, hover_fill.max_y))
+                    .adjusted(-3, -3, 3, 3);
+            hover_border = findWasmDarkPixels(image, hover_border_rect);
+          }
+          qInfo(
+              "PJ_WASM_PLOT_HOVER_PIXELS sequence=%llu yellow_pixels=%lld yellow_bounds=%d,%d..%d,%d "
+              "border_pixels=%lld framebuffer=%dx%d",
+              static_cast<unsigned long long>(current_sequence), static_cast<long long>(hover_fill.pixels), hover_fill.min_x, hover_fill.min_y,
+              hover_fill.max_x, hover_fill.max_y, static_cast<long long>(hover_border.pixels), image.width(),
+              image.height());
+        });
+  });
+}

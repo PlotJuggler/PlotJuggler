@@ -22,8 +22,8 @@
 #include "pj_datastore/chunk.hpp"
 #include "pj_datastore/column_buffer.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_datastore/saturating_time.hpp"
 #include "pj_datastore/writer.hpp"
-#include "saturating_time.hpp"
 
 namespace PJ {
 
@@ -346,6 +346,30 @@ void DataEngine::evictTopicHistory(TopicId topic_id) {
   }
 }
 
+Expected<TopicId> DataEngine::createColumnGroupTopic(
+    DatasetId dataset_id, const std::string& topic_name, const std::string& schema_name,
+    const std::vector<GroupColumn>& columns) {
+  std::vector<std::shared_ptr<TypeTreeNode>> fields;
+  fields.reserve(columns.size());
+  for (const GroupColumn& column : columns) {
+    fields.push_back(makePrimitive(column.name, column.type));
+  }
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);  // the registry is unsynchronized
+  auto schema = impl_->type_registry.registerOrGet(schema_name, makeStruct(schema_name, std::move(fields)));
+  if (!schema.has_value()) {
+    return unexpected(schema.error());
+  }
+  return createTopicLocked(
+      dataset_id, TopicDescriptor{.name = topic_name, .schema_id = *schema, .dataset_id = dataset_id}, 0);
+}
+
+void DataEngine::clearTopicHistory(TopicId topic_id) {
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
+  if (auto it = impl_->topics.find(topic_id); it != impl_->topics.end()) {
+    it.value()->clearChunks();
+  }
+}
+
 void DataEngine::retireTopic(TopicId topic_id) {
   std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
   // Mirror replaceDatasetFrom's retire: exclude the id from listTopics (the catalog
@@ -423,6 +447,7 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
     topic_snapshot.chunks = std::move(storage->sealed_chunks_);
     topic_snapshot.column_descriptors = storage->column_descriptors_;
     topic_snapshot.retention_floor = storage->retention_floor_;
+    topic_snapshot.evicted_through_chunk_id = storage->evicted_through_chunk_id_;
     topic_snapshot.max_observed_array_length = storage->max_observed_array_length_;
     topic_snapshot.truncated_sample_count = storage->truncated_sample_count_;
     topic_snapshot.array_expansion_counts = storage->array_expansion_counts_;
@@ -465,6 +490,7 @@ void DataEngine::reattachDatasetChunks(DatasetId dataset_id, DatasetChunkSnapsho
     storage->invalidateChunkAggregate();
     storage->column_descriptors_ = std::move(topic_snapshot.column_descriptors);
     storage->retention_floor_ = topic_snapshot.retention_floor;
+    storage->evicted_through_chunk_id_ = topic_snapshot.evicted_through_chunk_id;
     storage->max_observed_array_length_ = topic_snapshot.max_observed_array_length;
     storage->truncated_sample_count_ = topic_snapshot.truncated_sample_count;
     storage->array_expansion_counts_ = std::move(topic_snapshot.array_expansion_counts);
@@ -511,10 +537,9 @@ Status DataEngine::flushTo(DataEngine& dst) {
           "flushTo: destination has no topic '" + src_storage.descriptor().name + "' for dataset " +
           std::to_string(src_storage.descriptor().dataset_id));
     }
-    // The source is a staging engine that is never retention-evicted, so its
-    // timeMin() is the physical minimum (no retention-floor clamp in play). The
-    // flushTo contract assumes the source carries no floor; if it ever did, the
-    // clamped timeMin() could let physically-older source rows past this check.
+    // The source's timeMin() is its first VISIBLE row: a paused stream trims its
+    // staging engine, and rows under that floor are not flushed into view (the
+    // floor travels with the chunks, see adoptChunksFrom).
     if (!dst_storage->empty() && src_storage.timeMin() < dst_storage->timeMax()) {
       return PJ::unexpected("flushTo: monotonicity violation for topic '" + src_storage.descriptor().name + "'");
     }
@@ -546,6 +571,14 @@ void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
     dst.sealed_chunks_.push_back(std::move(chunk));
   }
   dst.invalidateChunkAggregate();
+  // What src's retention hid or dropped stays hidden and dropped: its floor keeps a
+  // straddling chunk's sub-floor rows invisible, and its evicted-through id lets a
+  // consumer that never saw the dropped rows notice. src is left as an empty,
+  // never-trimmed storage.
+  dst.retention_floor_ = std::max(dst.retention_floor_, src.retention_floor_);
+  dst.evicted_through_chunk_id_ = std::max(dst.evicted_through_chunk_id_, src.evicted_through_chunk_id_);
+  src.retention_floor_ = kNoRetentionFloor;
+  src.evicted_through_chunk_id_ = 0;
   // Both sides changed content outside appendSealedChunk's in-order test (the
   // flushTo boundary even permits an equal timestamp), so incremental sample
   // caches on either storage must rebuild.
@@ -959,13 +992,11 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     (dest_is_new ? report.added_topics : report.modified_topics).push_back(dest_tid);
   }
 
-  // Empty the consumed source datasets (destructive). They stay registered; the
-  // host removes them from its catalog.
+  // Empty the consumed source datasets (destructive). They stay registered, with no topics: a same-named topic left
+  // on one would read as a second recording to whoever walks the datasets. The host removes them from its catalog.
   for (const auto& src : sources) {
     for (const TopicId tid : listTopics(src.dataset_id)) {
-      if (TopicStorage* st = getTopicStorage(tid)) {
-        st->clearChunks();
-      }
+      retireTopic(tid);
     }
     report.consumed_datasets.push_back(src.dataset_id);
   }

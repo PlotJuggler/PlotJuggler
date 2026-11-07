@@ -87,6 +87,22 @@ TEST(CubeDrawPolicyTest, CubeOverhangingTheFrustumEdgeSurvives) {
   EXPECT_EQ(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSkip);
 }
 
+// A screen-sized sprite has no world extent to inflate by: its screen reach keeps a
+// centre just past the side plane, and only that far.
+TEST(CubeDrawPolicyTest, SpriteReachingIntoTheViewSurvives) {
+  const float distance = 10.0f;
+  const float half_height = distance * std::tan(glm::radians(kFovYDegrees) * 0.5f);
+  CubeCloudView view = viewAt(distance, 0.0f, /*cube_size_m=*/0.0f, /*lod_threshold_px=*/0.0f);
+  const float centre_y = half_height * 1.02f;  // 1% of the view height (7 px) past the top edge
+  view.centre_bounds.min.y = centre_y;
+  view.centre_bounds.max.y = centre_y;
+  EXPECT_EQ(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSkip);
+  view.screen_reach_ndc = glm::vec2(30.0f / static_cast<float>(kHeightPx));  // a 30 px sprite reaches 15 px
+  EXPECT_NE(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSkip);
+  view.screen_reach_ndc = glm::vec2(10.0f / static_cast<float>(kHeightPx));  // 5 px falls short
+  EXPECT_EQ(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSkip);
+}
+
 TEST(CubeDrawPolicyTest, DistantCloudDegradesToSprites) {
   // 5 cm cubes at 200 m: well under a pixel at this projection.
   EXPECT_EQ(chooseCubeDrawMode(viewAt(200.0f, 2.0f, 0.05f, 1.0f), kAll), CubeDrawMode::kSprite);

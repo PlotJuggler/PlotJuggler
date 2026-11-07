@@ -6,11 +6,13 @@
 
 #include <QColor>
 #include <QPointF>
+#include <QPointer>
 #include <QRectF>
 #include <QWidget>
 #include <list>
 #include <map>
 #include <optional>
+#include <vector>
 
 #include "pj_base/types.hpp"
 
@@ -73,13 +75,17 @@ class PlotWidgetBase : public QWidget {
   // on this widget's per-instance nextColor() counter.
   [[nodiscard]] static QColor paletteColor(int index);
 
-  // Session-wide override for the OpenGL-canvas choice. When set true (from the
+  // Session-wide override for the GPU-canvas choice. When set true (from the
   // --disable-opengl CLI flag in main.cpp), every plot constructed afterwards
   // uses the software raster canvas regardless of the Preferences::use_opengl
   // setting — without modifying that saved preference. The override is inactive
   // by default (so the saved preference decides); intended to be set once at
   // startup, before any plot is constructed.
-  static void setOpenGlDisabledOverride(bool disabled);
+  static void setGpuCanvasDisabledOverride(bool disabled);
+
+  /// Whether a plot constructed now gets the QRhi canvas: always in the browser;
+  /// on desktop the Preferences::use_opengl setting unless the override above is set.
+  [[nodiscard]] static bool gpuCanvasEnabled();
 
   virtual void resetZoom();
   [[nodiscard]] virtual Range<double> getVisualizationRangeX() const;
@@ -134,16 +140,22 @@ class PlotWidgetBase : public QWidget {
 
   // Installs `filter` on the canvas and every visible axis scale widget,
   // so the caller sees Enter/Leave across the whole chart surface (Qt
-  // does not bubble those events to ancestors).
+  // does not bubble those events to ancestors). A replacement canvas (the
+  // raster fallback after a GPU failure) gets it too.
   void installHoverFilter(QObject* filter);
 
   // The Qwt canvas widget: the plot area proper, excluding axes and legend.
   // Overlays that must stay inside the plotted region (the model-tab
-  // watermark) anchor to its geometry.
+  // watermark) anchor to its geometry. Not stable: a failed GPU canvas is
+  // replaced by the raster one, so do not cache it.
   [[nodiscard]] QWidget* canvasWidget() const;
 
  public slots:
   void replot();
+  // replot() after a change to markers only (the tracker, ride-along markers):
+  // the GPU canvas keeps its grid and curve geometry. Any other change needs
+  // replot().
+  void replotOverlays();
   virtual void removeAllCurves();
 
  signals:
@@ -173,6 +185,9 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] PlotPanner* panner2();
 
   void updateMaximumZoomArea();
+  // Whether any visible curve has samples to frame: the same test the X-range fit
+  // applies per curve, which frames nothing when it fails for all of them.
+  [[nodiscard]] bool hasUsableCurveData() const;
   bool eventFilter(QObject* obj, QEvent* event) override;
 
   // Re-reads the Data Backdrop surface for the active theme and re-applies it to
@@ -194,6 +209,11 @@ class PlotWidgetBase : public QWidget {
 
  private:
   void refreshCanvasBackground();
+  // Replaces a failed GPU canvas with the raster QwtPlotCanvas and moves the
+  // magnifier, panners, zoomer and every canvas event filter over, in their
+  // original order. No-op once the canvas is the raster one. Retries later
+  // while a popup or modal widget is open, since the swap deletes the canvas.
+  void fallBackToRasterCanvas();
 
   QwtPlotPimpl* plot_ = nullptr;
   bool xy_mode_ = false;
@@ -201,6 +221,10 @@ class PlotWidgetBase : public QWidget {
   bool keep_aspect_ratio_ = false;
   LineWidth line_width_ = LineWidth::kPoints10;
   int next_color_index_ = 0;
+  // installHoverFilter() filters, re-installed on a replacement canvas.
+  std::vector<QPointer<QObject>> hover_filters_;
+  // fallBackToRasterCanvas() waits for a popup or modal window to close.
+  bool fallback_retry_pending_ = false;
 };
 
 }  // namespace PJ

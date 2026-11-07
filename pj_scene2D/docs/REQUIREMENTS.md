@@ -140,7 +140,7 @@ explicitly a viewer concern. Video keyframe indexing is owned by
 ### 4.1 Data Types
 
 All data type schemas are defined in the SDK builtin-type catalog:
-[`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md).
+[`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md).
 This document does not duplicate field-level definitions.
 
 **Types pj_scene2D RENDERS (image-pixel space only):**
@@ -163,7 +163,7 @@ which is the machinery `pj_scene3D` owns. Duplicating that inside
 pj_scene2D would create two TF resolvers and two projection paths for the
 same primitive — exactly the mistake the independent-widget-families design avoids.
 
-**Note on Grid**: `sdk::OccupancyGrid` (see [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — `## OccupancyGrid`) carries world-space metadata (`pose`, `resolution`, `frame_id`), which makes it a "2D/3D" type in nature. pj_scene2D
+**Note on Grid**: `sdk::OccupancyGrid` (see [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — `## OccupancyGrid`) carries world-space metadata (`pose`, `resolution`, `frame_id`), which makes it a "2D/3D" type in nature. pj_scene2D
 nevertheless defers Grid to `pj_scene3D` because Grid carries world-space
 metadata (`pose`, `cell_size`, `frame_id`) and its natural display is a
 **world-space** top-down tile — a different viewer class from pj_scene2D's
@@ -343,7 +343,7 @@ Prerequisites note on protocol v4 + service-registry bindings.)
 | Retention budget / eviction trigger | Application (budget) + ObjectStore (enforcement) |
 
 **Frame granularity**: following the `VideoFrame` schema convention in
-[`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) (and matching
+[`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) (and matching
 Foxglove and Rerun), each ObjectStore entry represents **exactly one
 frame**. VideoFrame messages contain exactly enough data to decode one
 frame, with SPS/VPS/PPS prepended on keyframes. DataSources that receive
@@ -563,6 +563,10 @@ decoder seek and entry eviction.
   Turning it off forces raw passthrough, the operator's override when a stream is
   already rectified (avoids double-undistortion) or its detections live in raw
   space. Persisted in the layout XML; see TECHNICAL_NOTES §12.
+  Disabled when the decoded image lacks a matching, usable CameraInfo; its tooltip
+  explains missing frame IDs, missing calibration, or invalid intrinsics. Calibration
+  is scoped to the image's dataset, and turning rectification off keeps the control
+  enabled when valid calibration exists.
 - **Zoom and pan**: the viewer supports zoom (mouse wheel, cursor-anchored)
   and pan (mouse drag) via a view transform matrix in the vertex shader.
   No pixel reprocessing; transformation is free on the GPU. This
@@ -607,18 +611,28 @@ entry at or before the current display time, never a future entry even if
 closer in time. Causality is preserved — an annotation from time
 `t + 10 ms` never appears on an image rendered at time `t`.
 
-**No automatic skew rejection**: multi-rate data is the norm — a 10 Hz
-detection overlay composited on a 60 Hz video is correct when the same
+**No automatic skew rejection for an overlay that is not paired**: multi-rate data is
+the norm — a 10 Hz detection overlay composited on a 60 Hz video is correct when the same
 bounding box persists across 5 consecutive video frames. The compositor
-does NOT drop a layer for being "too old"; it trusts that an entry
+does NOT drop such a layer for being "too old"; it trusts that an entry
 exists in the store until it is explicitly evicted.
+
+**Annotations of a derived topic that name their image are paired with it**: an annotation
+whose `image_topic` is set, on an on-demand derived topic, is shown only when that topic is
+the base layer's store topic and its timestamp lies within one image cadence (the median
+positive gap of the image topic's last 16 entries at or before the shown frame; 100 ms with
+fewer) of the own stamp of the frame actually delivered (its payload's, on the dataset clock;
+what a script stamps the annotations made from it with), including asynchronous decode lag. A
+mismatch hides those annotations and raises the layer's row warning, cleared once they pair or
+the layer is hidden. A parser's annotations are never checked: their `image_topic` is
+informational.
 
 **frame_id correlation (optional)**: when an overlay's metadata carries a
 `frame_id` matching a specific source image, the compositor may prefer
 exact pairing over nearest-timestamp matching. This is an optional
 feature for layers that publish correlation metadata; layers without
 `frame_id` fall back to timestamp-based pairing. See the per-type `frame_id` field
-definitions in [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) for `frame_id` semantics.
+definitions in [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) for `frame_id` semantics.
 
 **Layer ordering and blending modes** (direct color, colormap, false-color,
 alpha blending) are widget configuration, not part of the data model.
@@ -688,7 +702,7 @@ direction:
   Contains `QRhiWidget`-based viewers, GLSL shaders, widget-level
   configuration, and any Qt-specific integration. Depends on
   `pj_scene2d_core`, `pj_scene_common`, `pj_runtime`, `pj_widgets`, plus
-  Qt 6.11.1 (the build's `find_package(Qt6 6.11.1 …)` floor).
+  Qt (the version pinned by `PJ_QT_VERSION` in `versions.env`, which sets the build's `find_package(Qt6 …)` floor).
 
 **Consumer contract:**
 

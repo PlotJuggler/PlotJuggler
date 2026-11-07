@@ -393,7 +393,7 @@ its built-in default.
 
 This is the **PlotJuggler Marketplace**, an extension distribution system for PlotJuggler (a robotics data visualization tool). Key points:
 
-- **Stack:** C++20, Qt 6.11 Widgets, CMake, Conan
+- **Stack:** C++20, Qt 6.12 Widgets, CMake, Conan
 - **Architecture:** Serverless (GitHub-hosted registry and artifacts)
 - **Key innovation:** Plugins don't depend on Qt (ABI stability)
 

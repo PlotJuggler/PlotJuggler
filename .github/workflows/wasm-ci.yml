@@ -1,50 +1,72 @@
-# On-demand check for the WebAssembly platform. Manually triggered
-# (workflow_dispatch) — the wasm build is expensive and most PRs don't touch
-# it, so run it deliberately from the Actions tab (or `gh workflow run
-# "WASM CI" --ref <branch>`) when working on wasm-relevant changes, before
-# merging one, or when cutting a release. Two configurations of the same
+# WebAssembly platform check: nightly on the default branch (skipped when it has
+# not moved), on PRs that touch the browser build itself, and on demand from the
+# Actions tab (or `gh workflow run "WASM CI" --ref <branch>`) before merging a
+# risky shared-code change or cutting a release. Two configurations of the same
 # sources prove the advertised feature matrix:
 #
-#   1. Production MVP — Scene2D/Scene3D OFF, probes OFF: the app must
-#      configure, build, package deterministically, and pass the deployment
-#      contract + cold threaded Chromium boot.
-#   2. Acceptance — Scene2D/Scene3D ON, ingress probe ON: the retained QRhi
-#      capability probe and functional browser suite run against the same
-#      source graph used by the packaged application.
+#   1. Production — the shipped defaults (Scene2D/Scene3D and browser Python
+#      ON), probes OFF: the app must configure, build, package deterministically
+#      with the sample presets (resources/wasm-presets), stay within its
+#      download budget, and pass the deployment contract + cold threaded
+#      Chromium boot.
+#   2. Acceptance — the same defaults with the ingress probe ON: the retained
+#      QRhi capability probe and functional browser suite (with python.spec.js
+#      and python_layout.spec.js) run against the same source graph used by the
+#      packaged application, in Chromium (wasm-chromium job, three Playwright
+#      workers) and Firefox (wasm-firefox, two shards of one worker), which run
+#      in parallel on this job's package.
+#      It is packaged twice: without presets (deploy/, every spec) and with the
+#      samples (deploy-presets/, which presets.spec.js serves itself).
 #
-# Cross-browser product coverage, the deterministic release archive, and
-# performance budgets remain part of the release tranche.
+# The deterministic release archive and performance budgets remain part of
+# the release tranche.
 name: WASM CI
 
 on:
   workflow_dispatch:
   # Wasm breakage is invisible to the standard PR checks (native CI stays green
-  # when shared code calls a native-only API), so run on PRs that can plausibly
-  # affect the browser build. Not a required check; ~20-30 min on warm caches.
+  # when shared code calls a native-only API). Shared-code changes are caught by
+  # the nightly run; PRs run it only when they touch the browser build itself.
+  # Not a required check; ~20-30 min on warm caches. Drafts wait: marking one
+  # ready runs it.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '**/wasm/**'
       - 'tests/wasm/**'
       - 'cmake/PjWasm*'
+      - 'cmake/wasm_python/**'
+      - 'cmake/wasm_notices/**'
+      # The on-demand Python lane compiles into the browser build.
+      - 'pj_scripting/**'
       # Packaging, serving and size-gate scripts: this job is their only
       # consumer, and '**/wasm/**' does not match a file whose name — not
       # directory — carries the wasm token.
       - 'scripts/*wasm*'
+      # The sample presets the production and acceptance packages deploy.
+      - 'resources/wasm-presets/**'
       - '.github/workflows/wasm-ci.yml'
-      - 'pj_app/**'
-      - 'pj_widgets/**'
-      - 'pj_scene2D/**'
-      - 'pj_scene3D/**'
-      - 'pj_scene_common/**'
-      - 'pj_runtime/**'
-      - 'conanfile.txt'
+  schedule:
+    - cron: "0 4 * * *"
 
 concurrency:
   group: wasm-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changed:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/main-changed.yml
+    permissions:
+      actions: read
+
   wasm:
+    needs: changed
+    # !cancelled(): on PR and manual runs the gate is skipped, which would
+    # otherwise skip this job too. Drafts wait: marking one ready runs it.
+    if: >-
+      ${{ !cancelled() && !github.event.pull_request.draft &&
+      (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
     runs-on: depot-ubuntu-22.04-4
     # Generous first-run ceiling (cold Qt+emsdk+ccache); warm runs are expected
     # in the 20-30 minute band. Tighten once real timings accumulate.
@@ -80,7 +102,9 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ccache ninja-build python3-pip
+          sudo apt-get install -y --no-install-recommends ccache ninja-build python3-pip make pkg-config
+          # Scene2D video cross-compiles dav1d, whose build system is meson.
+          python3 -m pip install --user meson
           # Runtime libraries for the desktop host Qt tools (qsb bakes the QRhi
           # shaders offline and transitively links the full Qt GUI stack, even
           # headless). The lean runner ships none of these, so qsb would die at
@@ -148,12 +172,24 @@ jobs:
           ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
           ccache --zero-stats
 
-      - name: Build production MVP (Scene2D/Scene3D off, probes off)
+      - name: Cache the WebAssembly CPython build
+        # A content key (the recipe with its pinned tarball hash, the Emscripten
+        # release): an exact hit or a cold ~4 minute build, so the plain action,
+        # which saves only on a miss, adds one entry per recipe change.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pj-wasm-cpython
+          key: wasm-cpython-${{ hashFiles('cmake/PjWasmPython.cmake', 'cmake/wasm_python/**') }}-emsdk-${{ steps.versions.outputs.emscripten }}
+
+      - name: Build production package (shipped defaults, probes off)
         shell: bash
         run: |
           set -euo pipefail
           source .emsdk/emsdk_env.sh >/dev/null
-          cmake -S . -B build-wasm-mvp -G Ninja \
+          # Scene2D's find_package(ZLIB 1.3.1 EXACT) resolves against Emscripten's
+          # lazily materialized sysroot zlib port; build it before configuring.
+          embuilder build zlib
+          cmake -S . -B build-wasm-prod -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
             -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_QT_VERSION}/gcc_64" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -162,20 +198,30 @@ jobs:
             -DPJ_BUILD_TESTS=OFF \
             -DPJ_BUILD_DEMOS=OFF \
             -DPJ_WASM_ENABLE_INGRESS_PROBE=OFF \
-            -DPJ_WASM_WITH_SCENE2D=OFF \
-            -DPJ_WASM_WITH_SCENE3D=OFF
-          cmake --build build-wasm-mvp --target pj_app --parallel 4
+            -DPJ_WASM_PYTHON_CACHE_DIR="${HOME}/.cache/pj-wasm-cpython"
+          cmake --build build-wasm-prod --target pj_app --parallel 4
 
-      - name: Package MVP and verify packaging scripts
+      - name: Package production build and verify packaging scripts
         shell: bash
         run: |
           set -euo pipefail
           npm --prefix tests/wasm run test:package
-          node scripts/package_wasm.mjs \
-            --source build-wasm-mvp/pj_app --output build-wasm-mvp/deploy
-          node scripts/package_wasm.mjs \
-            --source build-wasm-mvp/pj_app --output build-wasm-mvp/deploy-b
-          diff -qr build-wasm-mvp/deploy build-wasm-mvp/deploy-b
+          node scripts/package_wasm.mjs --presets resources/wasm-presets \
+            --source build-wasm-prod/pj_app --output build-wasm-prod/deploy
+          node scripts/package_wasm.mjs --presets resources/wasm-presets \
+            --source build-wasm-prod/pj_app --output build-wasm-prod/deploy-b
+          diff -qr build-wasm-prod/deploy build-wasm-prod/deploy-b
+
+      - name: Download budget of the production package
+        # 5 % over the measured 16,125,617 B (2026-10-21, Python and the
+        # notices included). Raise it deliberately, with the new measurement.
+        run: node scripts/wasm_size_budget.mjs build-wasm-prod/deploy/manifest.json 16932000
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('tests/wasm/package-lock.json') }}
 
       - name: Install browser gate
         working-directory: tests/wasm
@@ -183,21 +229,17 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Deployment contract and cold threaded boot (MVP package)
+      - name: Deployment contract and cold threaded boot (production package)
         working-directory: tests/wasm
         env:
-          PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-mvp/deploy
+          PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-prod/deploy
         run: npm run test:deployment
 
-      - name: Build acceptance configuration (Scene2D/Scene3D on, ingress probe on)
+      - name: Build acceptance configuration (shipped defaults, ingress probe on)
         shell: bash
         run: |
           set -euo pipefail
           source .emsdk/emsdk_env.sh >/dev/null
-          # Scene2D's find_package(ZLIB 1.3.1 EXACT) resolves against Emscripten's
-          # sysroot zlib port, which is lazily materialized. Build it before the
-          # configure so a cold emsdk cache doesn't fail at find_package time.
-          embuilder build zlib
           cmake -S . -B build-wasm-probe -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
             -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_QT_VERSION}/gcc_64" \
@@ -209,7 +251,9 @@ jobs:
             -DPJ_WASM_ENABLE_INGRESS_PROBE=ON \
             -DPJ_WASM_SCENE3D_CAPABILITY_PROBE=ON \
             -DPJ_WASM_WITH_SCENE2D=ON \
-            -DPJ_WASM_WITH_SCENE3D=ON
+            -DPJ_WASM_WITH_SCENE3D=ON \
+            -DPJ_WASM_WITH_PYTHON=ON \
+            -DPJ_WASM_PYTHON_CACHE_DIR="${HOME}/.cache/pj-wasm-cpython"
           cmake --build build-wasm-probe \
             --target pj_app pj_scene3d_wasm_capability_probe --parallel 4
           ccache --show-stats
@@ -244,19 +288,247 @@ jobs:
           PJ_WASM_SCENE3D_CAP_URL="http://127.0.0.1:6932/scene3d_capability_probe.html" \
             npm --prefix tests/wasm run test:scene3d-capability
 
-      - name: Functional browser suite (acceptance package)
+      - name: Package acceptance build
+        # deploy/ boots without a welcome dialog over every spec; the samples'
+        # own cases (presets.spec.js) serve deploy-presets/.
+        run: |
+          node scripts/package_wasm.mjs \
+            --source build-wasm-probe/pj_app --output build-wasm-probe/deploy
+          node scripts/package_wasm.mjs --presets resources/wasm-presets \
+            --source build-wasm-probe/pj_app --output build-wasm-probe/deploy-presets
+
+      - name: Upload acceptance package for the browser jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-acceptance
+          # emrun.py is stdlib-only Python: the Firefox job serves the
+          # capability probe exactly as below without installing emsdk.
+          path: |
+            build-wasm-probe/deploy
+            build-wasm-probe/deploy-presets
+            build-wasm-probe/pj_app/scene3d_capability_probe.*
+            build-wasm-probe/pj_app/qtloader.js
+            build-wasm-probe/pj_app/qtlogo.svg
+            .emsdk/upstream/emscripten/emrun.py
+          include-hidden-files: true
+          # The package is already .br/.gz compressed.
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
+  wasm-chromium:
+    # The acceptance package of the wasm job, in Chromium (SwiftShader WebGL),
+    # including the robot hosting spec, which runs docs/wasm/Caddyfile in Caddy.
+    # Skipped, like wasm-firefox, on PRs into release-* while the repo variable
+    # PJ_CI_RELEASE_PR_LITE is 'true'; the wasm build itself still runs.
+    needs: wasm
+    # Explicit result check: the implicit success() also fails on the skipped
+    # `changed` gate two levels up, which would skip this job on every PR run.
+    if: >-
+      ${{ !cancelled() && needs.wasm.result == 'success' &&
+      !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
+    runs-on: depot-ubuntu-22.04-4
+    timeout-minutes: 60
+    env:
+      PJ_WASM_URL: http://127.0.0.1:6931/
+      PJ_WASM_BUILD_DIR: build-wasm-probe
+      PJ_WASM_PYTHON: '1'  # the acceptance package has Python: python.spec.js must not skip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read toolchain versions
+        id: versions
+        run: |
+          source ./versions.env
+          echo "node=${PJ_WASM_NODE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "PJ_CADDY_VERSION=${PJ_CADDY_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_CADDY_LINUX_AMD64_SHA512=${PJ_CADDY_LINUX_AMD64_SHA512}" >> "${GITHUB_ENV}"
+
+      - name: Install pinned packaging runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+
+      - name: Download acceptance package
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-acceptance
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('tests/wasm/package-lock.json') }}
+
+      - name: Install browser gate
+        working-directory: tests/wasm
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Install the fake bridge's Python
+        # bridge.spec.js serves tests/wasm/support/bridge_server.py, whose data
+        # frames need zstd: the standard library has it from Python 3.14.
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install Caddy for the robot hosting spec
+        # robot_deployment.spec.js serves the package through docs/wasm/Caddyfile,
+        # using the official release pinned with its sha512 in versions.env.
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/package_wasm.mjs \
-            --source build-wasm-probe/pj_app --output build-wasm-probe/deploy
-          node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port 6931 &
-          server_pid=$!
-          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+          archive="caddy_${PJ_CADDY_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/caddyserver/caddy/releases/download/v${PJ_CADDY_VERSION}/${archive}"
+          echo "${PJ_CADDY_LINUX_AMD64_SHA512}  ${RUNNER_TEMP}/${archive}" | sha512sum -c -
+          mkdir -p "${RUNNER_TEMP}/caddy"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/caddy" caddy
+          echo "PJ_CADDY=${RUNNER_TEMP}/caddy/caddy" >> "${GITHUB_ENV}"
+          # The guide's example configuration (Caddy's local CA, default ports) stays valid too.
+          PJ_ROBOT_HOST=robot.local PJ_WASM_ROOT="${PWD}/build-wasm-probe/deploy" \
+            XDG_DATA_HOME="${RUNNER_TEMP}/caddy-state" XDG_CONFIG_HOME="${RUNNER_TEMP}/caddy-state" \
+            "${RUNNER_TEMP}/caddy/caddy" validate --config docs/wasm/Caddyfile --adapter caddyfile
+
+      - name: Mirror the hosted sample assets
+        # The suites never reach the network (tests/wasm/support/browser.js): the
+        # samples that load from assets.plotjuggler.io are served from this mirror,
+        # each file checked against tests/wasm/fixtures/hosted_assets.json.
+        uses: actions/cache@v5
+        with:
+          path: build-wasm-assets
+          key: wasm-hosted-assets-${{ hashFiles('tests/wasm/fixtures/hosted_assets.json') }}
+
+      - name: Fetch the hosted sample assets the cache lacks
+        run: npm --prefix tests/wasm run fetch:assets
+
+      - name: Serve acceptance package
+        # The background server outlives this step; the runner reaps it at job end.
+        run: |
+          node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port 6931 > /dev/null 2>&1 &
           for _ in $(seq 1 50); do
-            curl -fsS -o /dev/null http://127.0.0.1:6931/ && break
+            curl -fsS -o /dev/null "${PJ_WASM_URL}" && break
             sleep 0.2
           done
-          curl -fsS -o /dev/null http://127.0.0.1:6931/ || { echo "wasm server failed to start"; exit 1; }
-          PJ_WASM_URL="http://127.0.0.1:6931/" PJ_WASM_BUILD_DIR=build-wasm-probe \
-            npm --prefix tests/wasm run test
+          curl -fsS -o /dev/null "${PJ_WASM_URL}" || { echo "wasm server failed to start"; exit 1; }
+
+      - name: Functional browser suite (acceptance package)
+        # Three workers (playwright.config.js); the @serial cases run alone below.
+        run: npm --prefix tests/wasm run test
+
+      - name: Serial cases (acceptance package)
+        if: ${{ !cancelled() }}
+        run: npm --prefix tests/wasm run test:serial
+
+  wasm-firefox:
+    # The acceptance package of the wasm job, in Firefox. Firefox has no
+    # SwiftShader: WebGL comes from Mesa's llvmpipe on the GPU-less runner,
+    # and headless Firefox gets no WebGL at all without a display (Xvfb).
+    # One Playwright worker (playwright.config.js), so the suite is split
+    # across two jobs instead.
+    needs: wasm
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    # Explicit result check: the implicit success() also fails on the skipped
+    # `changed` gate two levels up, which would skip this job on every PR run.
+    if: >-
+      ${{ !cancelled() && needs.wasm.result == 'success' &&
+      !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
+    runs-on: depot-ubuntu-22.04-4
+    timeout-minutes: 60
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      PJ_WASM_URL: http://127.0.0.1:6931/
+      PJ_WASM_PYTHON: '1'
+      PJ_WASM_SCENE3D_CAP_URL: http://127.0.0.1:6932/scene3d_capability_probe.html
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read toolchain versions
+        id: versions
+        run: |
+          source ./versions.env
+          echo "node=${PJ_WASM_NODE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install pinned packaging runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+
+      - name: Download acceptance package
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-acceptance
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-firefox-${{ hashFiles('tests/wasm/package-lock.json') }}
+
+      - name: Install browser gate
+        # --with-deps installs xvfb (Playwright's ubuntu22.04 tool list); Firefox's
+        # own dependency list has no Mesa, so llvmpipe's GL/EGL come from here.
+        working-directory: tests/wasm
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libegl1 libgl1-mesa-dri libegl-mesa0
+          npm ci
+          npx playwright install --with-deps firefox
+
+      - name: Install the fake bridge's Python
+        # bridge.spec.js serves tests/wasm/support/bridge_server.py, whose data
+        # frames need zstd: the standard library has it from Python 3.14.
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Mirror the hosted sample assets
+        # The suites never reach the network (tests/wasm/support/browser.js): the
+        # samples that load from assets.plotjuggler.io are served from this mirror,
+        # each file checked against tests/wasm/fixtures/hosted_assets.json.
+        uses: actions/cache@v5
+        with:
+          path: build-wasm-assets
+          key: wasm-hosted-assets-${{ hashFiles('tests/wasm/fixtures/hosted_assets.json') }}
+
+      - name: Fetch the hosted sample assets the cache lacks
+        run: npm --prefix tests/wasm run fetch:assets
+
+      - name: Serve acceptance package and capability probe
+        # Background servers outlive this step; the runner reaps them at job end.
+        run: |
+          python3 .emsdk/upstream/emscripten/emrun.py --no-browser --serve-after-exit \
+            --port 6932 build-wasm-probe/pj_app/scene3d_capability_probe.html > /dev/null 2>&1 &
+          node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port 6931 > /dev/null 2>&1 &
+          for url in "${PJ_WASM_URL}" "${PJ_WASM_SCENE3D_CAP_URL}"; do
+            for _ in $(seq 1 50); do
+              curl -fsS -o /dev/null "${url}" && break
+              sleep 0.2
+            done
+            curl -fsS -o /dev/null "${url}" || { echo "server for ${url} failed to start"; exit 1; }
+          done
+
+      - name: Retained Scene3D capability probe (Firefox)
+        if: matrix.shard == 1
+        run: xvfb-run -a npm --prefix tests/wasm run test:scene3d-capability:firefox
+
+      - name: Functional browser suite (Firefox)
+        run: >-
+          xvfb-run -a npm --prefix tests/wasm run test:firefox --
+          --grep-invert editors.spec.js --shard=${{ matrix.shard }}/2
+
+      - name: Editors suite (Firefox, non-blocking)
+        # Non-blocking until the time-sliced first Luau materialization is
+        # proven to hold the 100 ms main-thread heartbeat budget in Firefox
+        # on CI runners.
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        continue-on-error: true
+        run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep editors.spec.js

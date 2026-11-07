@@ -41,4 +41,11 @@ inline constexpr auto kBrowserUploadScheme = "pj-upload://";
   return identity.startsWith(QLatin1StringView(kBrowserUploadScheme));
 }
 
+// `pj-stream://<record id>`: the source identity a layout binds to one of its stream records.
+inline constexpr auto kStreamIdentityScheme = "pj-stream://";
+
+[[nodiscard]] inline bool isStreamIdentity(const QString& identity) {
+  return identity.startsWith(QLatin1StringView(kStreamIdentityScheme));
+}
+
 }  // namespace PJ

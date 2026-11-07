@@ -13,6 +13,7 @@
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"  // ObjectStore, ObjectTopicId
+#include "pj_runtime/MarkerTopics.h"      // MarkerTopic, MarkerTopicInfo
 #include "pj_runtime/Time.h"              // DisplayOffset
 
 class QFontMetrics;
@@ -23,11 +24,11 @@ namespace PJ {
 
 class SessionManager;
 
-/// A (dataset, topic) the marker overlay should render markers for. The topic is
-/// either a series identity (field path) or the reserved dataset-global name.
+/// A (dataset, marker set) the marker overlay should render markers for: one series'
+/// markers, or one of the two reserved scopes.
 struct MarkerTarget {
   DatasetId dataset = 0;
-  QString topic;
+  MarkerTopicInfo marker;
 };
 
 /// One object topic the overlay draws for a target, and the frame its times are
@@ -38,17 +39,17 @@ struct MarkerTargetTopic {
   bool display_frame = false;
 };
 
-/// Every family member `target` resolves to: the all-datasets scope reads the
-/// shared home only; any other key reads its dataset's family and then the shared
-/// home's (a scope=all rule may publish under a per-series key). The overlay's
-/// resolver, exposed as the test seam.
-[[nodiscard]] std::vector<MarkerTargetTopic> markerTargetTopics(const ObjectStore& store, const MarkerTarget& target);
-
-// The reserved marker-scope topic names live in pj_runtime/MarkerTopics.h; this
-// module has no shadow copy of them.
+/// Every family member `target` resolves to, matched in memory against the scans of
+/// its dataset (`dataset_topics`) and of the shared home (`shared_topics`, both from
+/// `scanMarkerTopics`): the all-datasets scope reads the shared home only; any other
+/// target reads its dataset's family and then the shared home's (a scope=all rule may
+/// publish under a per-series key). The overlay's resolver, exposed as the test seam.
+[[nodiscard]] std::vector<MarkerTargetTopic> markerTargetTopics(
+    const MarkerTarget& target, const std::vector<MarkerTopic>& dataset_topics,
+    const std::vector<MarkerTopic>& shared_topics);
 
 /// Custom QwtPlotItem that overlays plot markers (regions / events / value bands /
-/// labels), drawn on top of the curves. Each (dataset, topic) target is a FAMILY of
+/// labels), drawn on top of the curves. Each (dataset, marker set) target is a FAMILY of
 /// serialized PlotMarkers object topics in the session ObjectStore — the bare topic
 /// plus one per owning generator (`markerTopicsOf`) — drawn as their union; each
 /// topic is drawn once per paint even when several targets resolve to it (the
@@ -60,13 +61,24 @@ class PlotMarkersItem : public QwtPlotItem {
  public:
   explicit PlotMarkersItem(SessionManager* session);
 
-  /// Provider of the (dataset, topic) targets to render, set by the owning
+  /// Provider of the (dataset, marker set) targets to render, set by the owning
   /// PlotWidget and recomputed from the plot's current curves on each draw.
   void setTargetsProvider(std::function<std::vector<MarkerTarget>()> provider);
 
   void setSession(SessionManager* session) {
     session_ = session;
   }
+
+  /// A one-line note drawn over the markers in the canvas's top-left corner; empty
+  /// removes it. Returns whether the text changed (the caller replots then).
+  bool setStatusNote(const QString& text);
+  [[nodiscard]] const QString& statusNote() const noexcept {
+    return status_note_;
+  }
+  /// Where the note sits in a canvas of `canvas_rect`, empty without a note: the top-left
+  /// corner, or the top-right one when the legend is aligned top-left. The one rect the
+  /// paint and the tooltip hit-test share.
+  [[nodiscard]] QRectF statusNoteRect(const QRectF& canvas_rect) const;
 
   [[nodiscard]] int rtti() const override {
     return QwtPlotItem::Rtti_PlotUserItem;
@@ -76,6 +88,10 @@ class PlotMarkersItem : public QwtPlotItem {
       QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const override;
 
  private:
+  void drawMarkerSets(
+      QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const;
+  void drawStatusNote(QPainter* painter, const QRectF& canvas_rect) const;
+
   /// Paint one object topic's set (decoded through `decode_cache_`), raw times
   /// mapped through `offset`.
   void drawTopic(
@@ -84,6 +100,7 @@ class PlotMarkersItem : public QwtPlotItem {
 
   SessionManager* session_ = nullptr;
   std::function<std::vector<MarkerTarget>()> targets_provider_;
+  QString status_note_;
 
   // Decode cache: the deserialized marker set per object-topic. draw() runs on
   // every replot (up to 60 Hz while streaming) but markers change only when a

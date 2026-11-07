@@ -2,6 +2,7 @@
 #include "pj_widgets/HeaderResizePolicy.h"
 
 #include <QAbstractItemModel>
+#include <QAbstractScrollArea>
 #include <QEvent>
 #include <QFontMetrics>
 #include <QHeaderView>
@@ -41,19 +42,56 @@ HeaderResizePolicy::HeaderResizePolicy(QHeaderView* header, int fill_section, in
   connect(header_, &QHeaderView::sectionResized, this, &HeaderResizePolicy::onSectionResized);
   // A new column arrives Interactive-by-default only if the *global* mode is
   // re-applied, and the fill section has to reclaim the slack either way.
-  connect(header_, &QHeaderView::sectionCountChanged, this, [this](int, int) {
+  connect(header_, &QHeaderView::sectionCountChanged, this, [this](int old_count, int new_count) {
     header_->setSectionResizeMode(QHeaderView::Interactive);
+    sizeNewSections(old_count, new_count);
     enforceMinimumWidths();
   });
   header_->installEventFilter(this);
+  // A hidden header never receives a Resize event, so the owning view's viewport
+  // is the only resize signal such a table gives.
+  if (auto* view = qobject_cast<QAbstractScrollArea*>(header_->parentWidget())) {
+    viewport_ = view->viewport();
+    viewport_->installEventFilter(this);
+  }
   enforceMinimumWidths();
 }
 
 bool HeaderResizePolicy::eventFilter(QObject* watched, QEvent* event) {
-  if (watched == header_ && event->type() == QEvent::Resize) {
+  if ((watched == header_ || (viewport_ != nullptr && watched == viewport_)) && event->type() == QEvent::Resize) {
     rebalance();
   }
   return QObject::eventFilter(watched, event);
+}
+
+int HeaderResizePolicy::availableWidth() const {
+  // A hidden header keeps a stale width, so the viewport it would have spanned
+  // is the authority then.
+  if (header_->isHidden() && viewport_ != nullptr) {
+    return viewport_->width();
+  }
+  return header_->width();
+}
+
+void HeaderResizePolicy::sizeNewSections(int old_count, int new_count) {
+  const int fill = fillSection();
+  if (fill < 0 || fill >= old_count) {
+    // No established fill column to take width from; it will absorb the slack.
+    return;
+  }
+  const bool was_adjusting = adjusting_;
+  adjusting_ = true;
+  for (int i = old_count; i < new_count && i < header_->count(); ++i) {
+    if (header_->isSectionHidden(i)) {
+      continue;
+    }
+    // Default width, but never more than the fill section can give up while
+    // staying at its own floor, so the new column does not overflow the view.
+    const int spare = std::max(0, header_->sectionSize(fill) - minimumWidthFor(fill));
+    const int width = std::max(minimumWidthFor(i), std::min(header_->defaultSectionSize(), spare));
+    header_->resizeSection(i, width);
+  }
+  adjusting_ = was_adjusting;
 }
 
 int HeaderResizePolicy::nextVisibleSection(int section) const {
@@ -183,7 +221,7 @@ void HeaderResizePolicy::rebalance() {
       occupied += header_->sectionSize(i);
     }
   }
-  const int target = std::max(minimumWidthFor(fill), header_->width() - occupied);
+  const int target = std::max(minimumWidthFor(fill), availableWidth() - occupied);
   if (header_->sectionSize(fill) == target) {
     return;
   }

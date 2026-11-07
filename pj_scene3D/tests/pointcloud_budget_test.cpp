@@ -10,33 +10,27 @@
 namespace pj::scene3d {
 namespace {
 
-TEST(PointCloudBrowserBudget, InputLimitsAcceptTheirExactBoundaryOnly) {
-  EXPECT_TRUE(browserPointCountFits(kBrowserMaxPointsPerCloud));
-  EXPECT_FALSE(browserPointCountFits(kBrowserMaxPointsPerCloud + 1U));
-  EXPECT_TRUE(browserPointPayloadFits(kBrowserMaxWireBytesPerCloud));
-  EXPECT_FALSE(browserPointPayloadFits(kBrowserMaxWireBytesPerCloud + 1U));
-}
-
 TEST(PointCloudBrowserBudget, ViewBudgetAggregatesWithoutUnsignedUnderflow) {
-  std::uint64_t remaining = kBrowserMaxPointVerticesPerView;
-  EXPECT_TRUE(tryConsumeBrowserPointVertices(400'000U, remaining));
+  std::uint64_t remaining = kBrowserSceneLimits.max_point_vertices_per_view;
+  EXPECT_TRUE(tryConsumeBudget(400'000U, remaining));
   EXPECT_EQ(remaining, 600'000U);
-  EXPECT_TRUE(tryConsumeBrowserPointVertices(600'000U, remaining));
+  EXPECT_TRUE(tryConsumeBudget(600'000U, remaining));
   EXPECT_EQ(remaining, 0U);
-  EXPECT_FALSE(tryConsumeBrowserPointVertices(1U, remaining));
+  EXPECT_FALSE(tryConsumeBudget(1U, remaining));
   EXPECT_EQ(remaining, 0U);
 }
 
 TEST(PointCloudBrowserBudget, DepthDimensionsWidenBeforeApplyingSharedPointLimit) {
   std::uint64_t pixels = 0;
-  EXPECT_TRUE(browserDepthDimensionsFit(1000U, 1000U, pixels));
-  EXPECT_EQ(pixels, kBrowserMaxPointsPerCloud);
-  EXPECT_FALSE(browserDepthDimensionsFit(1001U, 1000U, pixels));
+  EXPECT_TRUE(depthDimensionsFit(1000U, 1000U, pixels, kBrowserSceneLimits));
+  EXPECT_EQ(pixels, kBrowserSceneLimits.max_points_per_cloud);
+  EXPECT_FALSE(depthDimensionsFit(1001U, 1000U, pixels, kBrowserSceneLimits));
   EXPECT_EQ(pixels, 1'001'000U);
-  EXPECT_FALSE(browserDepthDimensionsFit(0U, 1000U, pixels));
+  EXPECT_FALSE(depthDimensionsFit(0U, 1000U, pixels, kBrowserSceneLimits));
   EXPECT_EQ(pixels, 0U);
-  EXPECT_FALSE(browserDepthDimensionsFit(
-      std::numeric_limits<std::uint32_t>::max(), std::numeric_limits<std::uint32_t>::max(), pixels));
+  EXPECT_FALSE(depthDimensionsFit(
+      std::numeric_limits<std::uint32_t>::max(), std::numeric_limits<std::uint32_t>::max(), pixels,
+      kBrowserSceneLimits));
   EXPECT_GT(pixels, std::numeric_limits<std::uint32_t>::max());
 }
 

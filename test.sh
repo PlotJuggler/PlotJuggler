@@ -4,12 +4,15 @@
 # the desktop; `offscreen` keeps them invisible (CI gets the same via xvfb).
 # --sanitize selects the build tree and runtime defaults; other arguments go to
 # ctest. An explicit --test-dir takes precedence over the lane's build tree.
+# --display keeps the caller's display (xvfb-run, a private X server) instead of
+# offscreen, for the QRhi display runners, which skip offscreen.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/versions.env"
 
 PJ_SANITIZE="${PJ_SANITIZE-none}"
 TEST_DIR=""
+KEEP_DISPLAY=0
 CTEST_ARGS=()
 
 bad_value() { echo "$1" >&2; exit 2; }
@@ -22,6 +25,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --sanitize) set_sanitize "${2-}"; shift ;;
     --sanitize=*) set_sanitize "${1#--sanitize=}" ;;
+    --display) KEEP_DISPLAY=1 ;;
     --test-dir)
       [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || bad_value "--test-dir needs a directory"
       TEST_DIR="$2"
@@ -63,7 +67,9 @@ if [[ "$PJ_SANITIZE" != none ]]; then
   export PYTHONMALLOC="${PYTHONMALLOC-malloc}"
 fi
 
-export QT_QPA_PLATFORM=offscreen
+if [[ "$KEEP_DISPLAY" == 0 ]]; then
+  export QT_QPA_PLATFORM=offscreen
+fi
 export QT_IM_MODULE=""
 export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64/plugins"
 

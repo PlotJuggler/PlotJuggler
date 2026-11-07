@@ -54,19 +54,18 @@ class ToolboxPresenter {
 
   // Presentation changes. Each releases the container from where it is and
   // attaches it elsewhere; the plugin session, drawer and actions ride along.
-  // moveToDock returns false when the chart slot could not be claimed, leaving
-  // the container released (detached) for the caller to place or tear down.
-  // moveToTab's `transient` marks a host-chosen fold, excluded from layout save.
-  bool moveToDock();
+  // Each is a no-op when there is no container to place. moveToTab's
+  // `transient` marks a host-chosen fold, excluded from layout save.
+  void moveToDock();
   void moveToTab(bool transient);
   void moveToFloating();
-  // The "dock" gesture: a missing chart slot must not strand a live session
-  // offscreen, so it falls back to a (user-chosen, persisted) tab.
-  void moveToDockOrTab();
 
   // Detaches the container from its presentation without teardown and returns
-  // it parentless, updating title() from the tab strip's (possibly renamed)
-  // label. Null when nothing is presented or the presentation no longer holds
+  // it hidden, updating title() from the tab strip's (possibly renamed) label.
+  // It is NOT reparented: it stays a child of where it was presented (a
+  // floating window is only deleted later) until its destination reparents it
+  // or teardown deletes it in place — see MainWindow::releaseCentralPanel for
+  // why. Null when nothing is presented or the presentation no longer holds
   // this container, which leaves it untouched.
   QWidget* release();
 

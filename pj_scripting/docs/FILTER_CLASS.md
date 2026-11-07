@@ -19,11 +19,14 @@ This document is the source of truth for:
 ## 1. Module shape
 
 A filter file `return`s **one class table**, or a **list of class tables** (the
-bundled builtins ship as one multi-class resource). Line 1 is an engine directive
-parsed from raw bytes *before* execution:
+bundled builtins ship as one multi-class resource). Line 1 is the engine directive
+`-- pj-script: luau`. The host reads it from the raw bytes to pick the backend of a
+plugin-submitted transform (`DataProcessorService`; `pj-script: python` selects the
+Python engine, §8); the engine itself ignores it, so the bundled resource's
+`-- pj-filter: luau` is a plain comment.
 
 ```lua
--- pj-filter: luau
+-- pj-script: luau
 -- SPDX-License-Identifier: MPL-2.0
 return { <classA>, <classB>, ... }   -- or a single class table
 ```
@@ -36,7 +39,7 @@ A class table:
 | `name` | yes | human type name shown in the filter list |
 | `description` | no | catalogue / tooltip |
 | `version` | no | semver, for the marketplace (deferred) |
-| `output` | no (⇒ `"double"`) | `"double"` \| `"int64"` \| `"same"` — the stored `StorageKind` (M3) |
+| `output` | no (⇒ `"double"`) | `"double"` \| `"int64"` \| `"same"` — the stored `StorageKind` |
 | `parameters` | no (⇒ none) | the schema array below |
 | `create` | yes | `function(params) -> instance` factory |
 
@@ -148,8 +151,8 @@ These diverge from PJ3 by design — PJ4 is greenfield, not 3.x-layout-compatibl
 | time arg | raw absolute `p.x` | seconds since session start (rebased int64) | precision (see §4) |
 | `reset()` | no-op (a known streaming-crash workaround) | construct-new-and-swap (clears state) | the eager engine recomputes from start; state **must** clear or the integral double-counts |
 | error | throws, aborts the commit | sticky-fail the node, suppresses | one bad sample shouldn't abort ingest |
-| return shapes | value / (t,v) / **table of rows** | value / (t,v) / nil | multi-row output is the deferred MIMO path |
-| inputs | main + extra sources (`v1, v2, …`) | **SISO** (single input) | MIMO deferred |
+| return shapes | value / (t,v) / **table of rows** | value / (t,v) / nil; a MIMO class returns M numbers (§7) | one row per input sample; there is no table-of-rows form |
+| inputs | main + extra sources (`v1, v2, …`) | one input (SISO), or N inputs joined to one timestamp (MIMO, §7) | the engine node owns the join, not the script |
 | globals | standard Lua libs, no injected helpers | standard Luau libs, no injected helpers | parity |
 
 Parity (no change): the script owns its own previous-value/first-point state via
@@ -182,7 +185,7 @@ them if a use case demands bit-exactness beyond 2^53.
 ## 6. Full example — derivative
 
 ```lua
--- pj-filter: luau
+-- pj-script: luau
 local Derivative = {
   id = "derivative", name = "Derivative", description = "dv/dt", version = "1.0.0",
   parameters = {
@@ -247,9 +250,58 @@ sticky-failure behaviour are identical to SISO.
 
 ---
 
+## 8. Python filters
+
+A filter may be a Python module instead of a Luau one (`makePythonEngine`, embedded
+CPython, in-process). Line 1 is `# pj-script: python`: the host reads it to route the
+source to the Python engine. The module defines **one** top-level class named `T` (not a
+list of classes):
+
+```python
+# pj-script: python
+class T:
+    id = "my_filter"        # required, non-empty
+    name = "My Filter"      # optional, defaults to id
+    description = ""        # optional
+    version = ""            # optional
+    output = "double"       # optional: "double" (default) | "int64" | "same"
+
+    @staticmethod
+    def create(params):     # params: a dict decoded from the params JSON ({} when empty)
+        return T()
+
+    def reset(self):        # optional
+        ...
+
+    def calculate(self, time, value, *args):
+        return value * 2    # a number | (out_time, value) | None to suppress
+```
+
+- **Same contracts as Luau.** The instance contract (§3) and the time/value contract (§4)
+  hold unchanged: `time` is seconds since session start, a number is emitted at the input
+  time, a two-element `(out_time, value)` at an explicit time, `None` suppresses, a runtime
+  error fails the node (sticky).
+- **MIMO.** The secondary inputs arrive in `*args`, and `calculate` returns a tuple or list
+  of M numbers (a bare number is one output; `None` suppresses).
+- **No parameter schema.** The engine reads only `id`, `name`, `description`, `version` and
+  `output` from the class, so a Python filter gets no generated `ParameterForm`; `create`
+  receives the params JSON as a dict.
+- **Imports.** Only `math`, `cmath` and `statistics`; any other import is refused with an
+  error naming the allowed set.
+- **Limits** (`BudgetLimits`, `sandbox.h`): each `calculate()` / `reset()` runs under a
+  wall-clock watchdog (`python_call_millis`), module evaluation and `create()` under
+  `python_watchdog_millis`, and an instance's allocations, across its whole life, under
+  `mem_bytes`. Past any of them the instance fails for good, even if the script caught the
+  error. The audit hook refuses `open`, `os.*` and `subprocess.*`. This is a guardrail, not
+  a sandbox (`python_engine.h`; `docs/derived_objects/ARCHITECTURE.md` §14).
+- **Where it runs.** On the GUI thread, like every filter (`IncrementalEngine`), holding the
+  GIL for each call. It is unavailable in the browser build.
+
+---
+
 ## Implementation pointers
 - Schema/types: `pj_scripting/include/pj_scripting/filter_class.h` (`ParamSpec`, `FilterClass`).
-- Engine seam: `pj_scripting/include/pj_scripting/script_engine.h` (`ScriptEngine`, `FilterInstance`, `makeLuauEngine`).
+- Engine seam: `pj_scripting/include/pj_scripting/script_engine.h` (`ScriptEngine`, `FilterInstance`, `makeLuauEngine`); `pj_scripting/include/pj_scripting/python_engine.h` (`makePythonEngine`, the Python module contract).
 - Luau binding: `pj_scripting/src/luau_engine.cpp` (hand-written — NOT sol2; Luau headers are C++-linkage, `lua_ref` does not pop).
-- Engine node: `pj_scripting/include/pj_scripting/lua_siso_transform.h` (`LuaSisoTransform : PJ::proc::DataProcessor`, the data-processor base in `pj_datastore`; the existing `ProcessorSisoAdapter` installs it as a `DerivedEngine` node).
-- The generated panel (`ParameterForm`) is built in `pj_plotting/widget` (M4).
+- Engine node: `pj_scripting/include/pj_scripting/lua_siso_transform.h` (`LuaSisoTransform : PJ::proc::DataProcessor`, the data-processor base in `pj_datastore`; the existing `ProcessorSisoAdapter` installs it as a `IncrementalEngine` node).
+- The generated panel (`ParameterForm`) is built in `pj_plotting/widget`.

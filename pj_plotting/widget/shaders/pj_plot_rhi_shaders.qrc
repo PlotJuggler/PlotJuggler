@@ -1,0 +1,9 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+  <qresource prefix="/pj_plotting/shaders">
+    <file>plot_color.vert.qsb</file>
+    <file>plot_color.frag.qsb</file>
+    <file>plot_text.vert.qsb</file>
+    <file>plot_text.frag.qsb</file>
+  </qresource>
+</RCC>

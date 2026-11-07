@@ -2,7 +2,6 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
-#include <QComboBox>
 #include <QFontInfo>
 #include <QLabel>
 #include <QScrollArea>
@@ -13,6 +12,7 @@
 #include "AppLanguage.h"
 #include "PreferencesDialog.h"
 #include "Theme.h"
+#include "pj_widgets/ComboBox.h"
 #include "support/gui_test_env.h"
 
 using namespace Qt::StringLiterals;
@@ -22,10 +22,11 @@ namespace {
 TEST(PreferencesLanguageTest, FreshProfileOffersChineseAndEnglishWithARestartNotice) {
   PJ::Theme theme;
   PJ::PreferencesDialog dialog(theme);
-  const auto* combo = dialog.findChild<QComboBox*>(u"languageCombo"_s);
+  const auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
   ASSERT_NE(combo, nullptr);
   ASSERT_EQ(combo->count(), 2);
   EXPECT_EQ(combo->currentData().toString(), u"en_US"_s);
+  EXPECT_EQ(combo->itemData(0).toString(), u"zh_CN"_s);
   EXPECT_EQ(combo->itemData(1).toString(), u"en_US"_s);
   const auto* notice = dialog.findChild<QLabel*>(u"labelLanguageRestart"_s);
   ASSERT_NE(notice, nullptr);
@@ -38,7 +39,7 @@ TEST(PreferencesLanguageTest, AcceptSavesNextLaunchLanguageWithoutRetranslatingT
   PJ::Theme theme;
   {
     PJ::PreferencesDialog dialog(theme);
-    auto* combo = dialog.findChild<QComboBox*>(u"languageCombo"_s);
+    auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
     ASSERT_NE(combo, nullptr);
     combo->setCurrentIndex(combo->findData(u"en_US"_s));
     EXPECT_FALSE(QSettings().contains(PJ::AppLanguage::kPreferenceKey));
@@ -48,7 +49,7 @@ TEST(PreferencesLanguageTest, AcceptSavesNextLaunchLanguageWithoutRetranslatingT
   EXPECT_EQ(qApp->property("interfaceLanguage").toString(), u"zh_CN"_s);
   EXPECT_NE(QCoreApplication::translate("PreferencesContent", "Language:"), u"Language:"_s);
   PJ::PreferencesDialog reopened(theme);
-  const auto* combo = reopened.findChild<QComboBox*>(u"languageCombo"_s);
+  const auto* combo = reopened.findChild<PJ::ComboBox*>(u"languageCombo"_s);
   ASSERT_NE(combo, nullptr);
   EXPECT_EQ(combo->currentData().toString(), u"en_US"_s);
 }
@@ -59,7 +60,7 @@ TEST(PreferencesLanguageTest, EnglishToChineseTakesEffectOnlyOnNextLaunch) {
   {
     const PJ::AppLanguage running(*qApp, PJ::AppLanguage::preferredLanguage(QSettings()));
     PJ::PreferencesDialog dialog(theme);
-    auto* combo = dialog.findChild<QComboBox*>(u"languageCombo"_s);
+    auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
     ASSERT_NE(combo, nullptr);
     ASSERT_EQ(combo->currentData().toString(), u"en_US"_s);
     const int chinese_index = combo->findData(u"zh_CN"_s);
@@ -74,7 +75,7 @@ TEST(PreferencesLanguageTest, EnglishToChineseTakesEffectOnlyOnNextLaunch) {
   const PJ::AppLanguage restarted(*qApp, PJ::AppLanguage::preferredLanguage(QSettings()));
   ASSERT_TRUE(restarted.catalogLoaded());
   PJ::PreferencesDialog reopened(theme);
-  const auto* combo = reopened.findChild<QComboBox*>(u"languageCombo"_s);
+  const auto* combo = reopened.findChild<PJ::ComboBox*>(u"languageCombo"_s);
   ASSERT_NE(combo, nullptr);
   EXPECT_EQ(combo->currentData().toString(), u"zh_CN"_s);
   EXPECT_EQ(qApp->property("interfaceLanguage").toString(), u"zh_CN"_s);
@@ -86,7 +87,7 @@ TEST(PreferencesLanguageTest, CancelLeavesTheSavedLanguageAlone) {
   PJ::Theme theme;
   {
     PJ::PreferencesDialog dialog(theme);
-    auto* combo = dialog.findChild<QComboBox*>(u"languageCombo"_s);
+    auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
     ASSERT_NE(combo, nullptr);
     EXPECT_EQ(combo->currentData().toString(), u"en_US"_s);
     combo->setCurrentIndex(combo->findData(u"zh_CN"_s));
@@ -100,7 +101,7 @@ TEST(PreferencesLanguageTest, SessionOverrideDoesNotChangeTheNextLaunchSelection
   const PJ::AppLanguage running(*qApp, u"en_US"_s);
   PJ::Theme theme;
   PJ::PreferencesDialog dialog(theme);
-  const auto* combo = dialog.findChild<QComboBox*>(u"languageCombo"_s);
+  const auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
   ASSERT_NE(combo, nullptr);
   EXPECT_EQ(combo->currentData().toString(), u"zh_CN"_s);
   EXPECT_EQ(qApp->property("interfaceLanguage").toString(), u"en_US"_s);
@@ -109,10 +110,13 @@ TEST(PreferencesLanguageTest, SessionOverrideDoesNotChangeTheNextLaunchSelection
 TEST(PreferencesLanguageTest, LanguageSelectorHonorsBothSizeHintsAcrossFonts) {
   struct RestoreApplicationFont {
     QFont original = qApp->font();
-    ~RestoreApplicationFont() { QApplication::setFont(original); }
+    ~RestoreApplicationFont() {
+      QApplication::setFont(original);
+    }
   } restore_font;
-  for (const QFont& font : {restore_font.original, QFont(u"DejaVu Sans"_s, 9), QFont(u"DejaVu Sans"_s, 12),
-                            QFont(u"Liberation Sans"_s, 9)}) {
+  for (const QFont& font :
+       {restore_font.original, QFont(u"DejaVu Sans"_s, 9), QFont(u"DejaVu Sans"_s, 12),
+        QFont(u"Liberation Sans"_s, 9)}) {
     SCOPED_TRACE(font.toString().toStdString());
     QApplication::setFont(font);
     SCOPED_TRACE(QFontInfo(qApp->font()).family().toStdString());
@@ -121,7 +125,7 @@ TEST(PreferencesLanguageTest, LanguageSelectorHonorsBothSizeHintsAcrossFonts) {
       const PJ::AppLanguage running(*qApp, requested);
       PJ::Theme theme;
       PJ::PreferencesDialog dialog(theme);
-      auto* combo = dialog.findChild<QComboBox*>(u"languageCombo"_s);
+      auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
       ASSERT_NE(combo, nullptr);
       dialog.resize(420, 300);
       dialog.show();
@@ -129,7 +133,7 @@ TEST(PreferencesLanguageTest, LanguageSelectorHonorsBothSizeHintsAcrossFonts) {
 
       // Compare against a freshly populated control as well as Qt's cached
       // minimum: a cached empty-model hint can be wider OR narrower than text.
-      QComboBox populated(combo->parentWidget());
+      PJ::ComboBox populated(combo->parentWidget());
       populated.setObjectName(combo->objectName());
       populated.setFont(combo->font());
       populated.setSizeAdjustPolicy(combo->sizeAdjustPolicy());
@@ -153,9 +157,14 @@ TEST(PreferencesLanguageTest, MinimumSizeKeepsTranslatedAppearanceControlsReacha
     dialog.show();
     QTest::qWait(20);
     auto* scroll = dialog.findChild<QScrollArea*>(u"appearanceScrollArea"_s);
-    auto* combo = dialog.findChild<QComboBox*>(u"languageCombo"_s);
+    auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
     auto* notice = dialog.findChild<QLabel*>(u"labelLanguageRestart"_s);
-    auto* last_control = dialog.findChild<QWidget*>(u"telemetryToggle"_s);
+    auto* last_control = dialog.findChild<QWidget*>(u"systemFileDialogToggle"_s);
+    ASSERT_NE(last_control, nullptr);
+    // The system picker is offered only on supported platforms.
+    if (last_control->isHidden()) {
+      last_control = dialog.findChild<QWidget*>(u"telemetryToggle"_s);
+    }
     ASSERT_NE(scroll, nullptr);
     ASSERT_NE(combo, nullptr);
     ASSERT_NE(notice, nullptr);

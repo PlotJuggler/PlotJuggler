@@ -17,11 +17,13 @@
 #include <exception>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "pj_scene3d_core/model_budget.h"
+#include "pj_widgets/Fnv1a.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -57,13 +59,9 @@ glm::mat3 zUpFromYUpRotation() {
 }
 
 // FNV-1a over a byte span — a cheap, stable content hash for embedded-texture
-// cache keys (dedups identical embedded images and survives GL-context recreation).
+// cache keys (dedups identical embedded images and survives a QRhi recreation).
 std::string contentHashKey(const std::uint8_t* data, std::size_t size) {
-  std::uint64_t h = 1469598103934665603ULL;  // FNV offset basis
-  for (std::size_t i = 0; i < size; ++i) {
-    h ^= data[i];
-    h *= 1099511628211ULL;  // FNV prime
-  }
+  const std::uint64_t h = PJ::fnv1a(std::span(data, size));
   std::array<char, 17> buf{};
   std::snprintf(buf.data(), buf.size(), "%016llx", static_cast<unsigned long long>(h));
   return std::string("emb:") + buf.data();
@@ -72,7 +70,8 @@ std::string contentHashKey(const std::uint8_t* data, std::size_t size) {
 // Resolve one texture map of a material into a TextureSource. Embedded glTF/GLB
 // images (assimp ref "*N") become inline bytes keyed by content hash; external
 // refs become an absolute filesystem path (resolved relative to base_dir, with a
-// small extension-retry for refs that drop their suffix). Only compressed
+// small extension-retry for refs that drop their suffix); with no base_dir (an
+// in-memory import) every ref stays `unresolved_ref`, never a local path. Only compressed
 // embedded images (PNG/JPEG, the universal glTF case where aiTexture::mHeight ==
 // 0) are supported; raw embedded RGBA (mHeight > 0, rare) is skipped and the
 // slot stays empty.
@@ -99,21 +98,17 @@ TextureSource resolveTexture(
       return {};  // missing, or raw-RGBA embedded (unsupported) — leave untextured.
     }
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(tex->pcData);
-#ifdef PJ_TARGET_WASM
     // Charged once per resolved slot (not per distinct image): every resolved
     // slot retains its own encoded copy below, so per-copy charging is what
     // bounds worst-case CPU retention.
     if (texture_budget != nullptr &&
-        (texture_budget->bytes + tex->mWidth > kBrowserMaxModelEncodedTextureBytesPerMesh)) {
+        (texture_budget->bytes + tex->mWidth > kSceneLimits.max_model_encoded_texture_bytes_per_mesh)) {
       texture_budget->exceeded = true;
       return {};
     }
     if (texture_budget != nullptr) {
       texture_budget->bytes += tex->mWidth;
     }
-#else
-    (void)texture_budget;
-#endif
     TextureSource source;
     source.bytes.assign(bytes, bytes + tex->mWidth);  // mWidth is the encoded byte count when mHeight == 0.
     source.key = contentHashKey(bytes, tex->mWidth);
@@ -121,16 +116,13 @@ TextureSource resolveTexture(
   }
 
   const QString ref = QDir::fromNativeSeparators(raw);
+  if (base_dir.isEmpty()) {
+    TextureSource source;
+    source.unresolved_ref = ref;
+    return source;
+  }
   const auto resolve = [&base_dir](const QString& path) -> QString {
-    QString candidate;
-    if (QDir::isAbsolutePath(path)) {
-      candidate = path;
-    } else if (!base_dir.isEmpty()) {
-      candidate = QDir(base_dir).absoluteFilePath(path);
-    } else {
-      return {};
-    }
-    const QFileInfo info(QDir::cleanPath(candidate));
+    const QFileInfo info(QDir::cleanPath(QDir(base_dir).absoluteFilePath(path)));
     return info.isFile() ? info.absoluteFilePath() : QString{};
   };
 
@@ -218,22 +210,22 @@ Material readMaterial(
   }
 
   out.base_color = resolveTexture(scene, mat, aiTextureType_BASE_COLOR, base_dir, texture_budget);
-  if (out.base_color.empty()) {
+  if (!out.base_color.named()) {
     out.base_color = resolveTexture(scene, mat, aiTextureType_DIFFUSE, base_dir, texture_budget);
   }
   // assimp's glTF2 importer exposes the packed metallic-roughness image under the
   // metalness slot (and aiTextureType_UNKNOWN on older versions) — same file, the
   // shader reads G=roughness/B=metallic.
   out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_METALNESS, base_dir, texture_budget);
-  if (out.metallic_roughness.empty()) {
+  if (!out.metallic_roughness.named()) {
     out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_DIFFUSE_ROUGHNESS, base_dir, texture_budget);
   }
-  if (out.metallic_roughness.empty()) {
+  if (!out.metallic_roughness.named()) {
     out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_UNKNOWN, base_dir, texture_budget);
   }
   out.normal = resolveTexture(scene, mat, aiTextureType_NORMALS, base_dir, texture_budget);
   out.occlusion = resolveTexture(scene, mat, aiTextureType_AMBIENT_OCCLUSION, base_dir, texture_budget);
-  if (out.occlusion.empty()) {
+  if (!out.occlusion.named()) {
     out.occlusion = resolveTexture(scene, mat, aiTextureType_LIGHTMAP, base_dir, texture_budget);
   }
   out.emissive = resolveTexture(scene, mat, aiTextureType_EMISSIVE, base_dir, texture_budget);
@@ -333,10 +325,9 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     out.error = u"assimp returned no scene for %1"_s.arg(source);
     return out;
   }
-#ifdef PJ_TARGET_WASM
   // Assimp has already parsed the bounded source bytes, but do not let
   // file-declared mesh counts drive our own material/vertex/index allocations.
-  // Widen every accumulation before comparing with the browser envelope.
+  // Widen every accumulation before comparing with the scene limits.
   std::uint64_t vertex_count = 0;
   std::uint64_t index_count = 0;
   std::uint64_t submesh_count = 0;
@@ -348,14 +339,14 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     pending_nodes.pop_back();
     ++node_count;
     max_node_depth = std::max(max_node_depth, depth);
-    if (!browserModelStructureFits(scene->mNumMaterials, node_count, max_node_depth)) {
-      out.error = u"model exceeds browser structure limits in %1 (%2 materials, %3 nodes, depth %4)"_s.arg(
+    if (!modelStructureFits(scene->mNumMaterials, node_count, max_node_depth)) {
+      out.error = u"model exceeds structure limits in %1 (%2 materials, %3 nodes, depth %4)"_s.arg(
           source, QString::number(scene->mNumMaterials), QString::number(node_count), QString::number(max_node_depth));
       return out;
     }
     for (unsigned int child_index = 0; child_index < node->mNumChildren; ++child_index) {
       if (node->mChildren[child_index] == nullptr ||
-          pending_nodes.size() + node_count >= kBrowserMaxModelNodesPerMesh) {
+          pending_nodes.size() + node_count >= kSceneLimits.max_model_nodes_per_mesh) {
         out.error = u"model has an invalid or over-limit node graph in %1"_s.arg(source);
         return out;
       }
@@ -388,15 +379,14 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
       }
     }
   }
-  if (!browserModelMeshCountsFit(vertex_count, index_count, submesh_count)) {
-    out.error = u"model exceeds browser geometry limits in %1 (%2 vertices, %3 indices, %4 submeshes)"_s.arg(
+  if (!modelMeshCountsFit(vertex_count, index_count, submesh_count)) {
+    out.error = u"model exceeds geometry limits in %1 (%2 vertices, %3 indices, %4 submeshes)"_s.arg(
         source, QString::number(vertex_count), QString::number(index_count), QString::number(submesh_count));
     return out;
   }
   out.vertices.reserve(static_cast<std::size_t>(vertex_count));
   out.indices.reserve(static_cast<std::size_t>(index_count));
   out.submeshes.reserve(static_cast<std::size_t>(submesh_count));
-#endif
   // Resolve each material once (embedded-texture extraction is per-material, not
   // per-mesh) and index into it by aiMesh::mMaterialIndex while walking the graph.
   std::vector<std::shared_ptr<const Material>> materials;
@@ -405,12 +395,10 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
   for (unsigned int i = 0; i < scene->mNumMaterials; ++i) {
     materials.push_back(std::make_shared<const Material>(readMaterial(scene, i, base_dir, &texture_budget)));
   }
-#ifdef PJ_TARGET_WASM
   if (texture_budget.exceeded) {
-    out.error = u"model exceeds the browser embedded-texture limit in %1"_s.arg(source);
+    out.error = u"model exceeds the embedded-texture limit in %1"_s.arg(source);
     return out;
   }
-#endif
   const glm::mat3 extra = flip_to_z_up ? zUpFromYUpRotation() : glm::mat3(1.0f);
   appendNode(scene, scene->mRootNode, glm::mat4(1.0f), extra, materials, out);
   if (out.vertices.empty() || out.indices.empty()) {
@@ -418,17 +406,15 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     out.ok = false;
     return out;
   }
-#ifdef PJ_TARGET_WASM
-  const auto retained = browserModelRetainedBytes(
+  const auto retained = modelRetainedByteCount(
       out.vertices.size(), sizeof(Vertex), out.indices.size(), out.submeshes.size(), sizeof(SubMesh),
       texture_budget.bytes);
-  if (!retained.has_value() || *retained > kBrowserMaxModelRetainedBytesPerMesh) {
+  if (!retained.has_value() || *retained > kSceneLimits.max_model_retained_bytes_per_mesh) {
     out = {};
-    out.error = u"model would retain more than %1 MiB in the browser"_s.arg(
-        kBrowserMaxModelRetainedBytesPerMesh / (1024ULL * 1024ULL));
+    out.error = u"model would retain more than %1 MiB"_s.arg(
+        kSceneLimits.max_model_retained_bytes_per_mesh / (1024ULL * 1024ULL));
     return out;
   }
-#endif
   out.ok = true;
   return out;
 }
@@ -449,18 +435,17 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
   // Exception barrier: assimp drives allocations from file-declared counts and
   // buildMeshData reserves from them too, so hostile input can throw
   // bad_alloc/length_error. This runs on a QtConcurrent worker — an escaped
-  // exception would be rethrown by QFuture::result() on the GUI thread (inside
-  // paintGL) and terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
+  // exception would be rethrown by QFuture::result() on the GUI thread and
+  // terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
   try {
-#ifdef PJ_TARGET_WASM
     const QFileInfo source_info(path);
-    if (source_info.size() < 0 || !browserModelSourceFits(static_cast<std::uint64_t>(source_info.size()))) {
+    if (source_info.size() < 0 ||
+        static_cast<std::uint64_t>(source_info.size()) > kSceneLimits.max_model_source_bytes) {
       MeshData out;
       out.error =
-          u"model source exceeds the %1 MiB browser limit"_s.arg(kBrowserMaxModelSourceBytes / (1024ULL * 1024ULL));
+          u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
       return out;
     }
-#endif
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(path.toStdString(), kPostProcessFlags);
     if (scene == nullptr) {
@@ -486,14 +471,12 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
 MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& format_hint, bool flip_to_z_up) {
   // Same exception barrier as importFromFile (see the comment there).
   try {
-#ifdef PJ_TARGET_WASM
-    if (bytes.size() < 0 || !browserModelSourceFits(static_cast<std::uint64_t>(bytes.size()))) {
+    if (bytes.size() < 0 || static_cast<std::uint64_t>(bytes.size()) > kSceneLimits.max_model_source_bytes) {
       MeshData out;
       out.error =
-          u"model source exceeds the %1 MiB browser limit"_s.arg(kBrowserMaxModelSourceBytes / (1024ULL * 1024ULL));
+          u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
       return out;
     }
-#endif
     Assimp::Importer importer;
     const std::string hint = format_hint.toStdString();
     const aiScene* scene = importer.ReadFileFromMemory(
@@ -507,9 +490,7 @@ MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& fo
       }
       return out;
     }
-    // Embedded buffers (glTF/GLB, the Waymo path) keep their per-submesh materials:
-    // embedded textures are extracted into Material::base_color etc. by readMaterial,
-    // so there is no external base_dir to resolve against and nothing to flatten.
+    // Per-submesh materials are kept (embedded textures: readMaterial); external refs stay unresolved.
     return buildMeshData(scene, flip_to_z_up, u"<memory:%1>"_s.arg(format_hint), QString{});
   } catch (const std::exception& ex) {
     MeshData out;

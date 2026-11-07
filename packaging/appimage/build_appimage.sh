@@ -344,6 +344,12 @@ export QMAKE="${QT_DIR}/bin/qmake6"
 export PATH="${QT_DIR}/bin:${PATH}"
 export LD_LIBRARY_PATH="${QT_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
+[[ -f "${QT_DIR}/plugins/platforms/libqwayland.so" ]] || {
+  echo "ERROR: Qt Wayland platform plugin is missing from ${QT_DIR}" >&2
+  exit 1
+}
+export EXTRA_PLATFORM_PLUGINS="${EXTRA_PLATFORM_PLUGINS:+${EXTRA_PLATFORM_PLUGINS};}libqwayland.so"
+
 # ---------------------------------------------------------------------------
 # 5. Deploy, then bundle plugins, then package — in that order.
 #
@@ -371,22 +377,50 @@ fi
   --plugin qt \
   "${SANITIZER_LIBRARY_ARGS[@]}"
 
+deployed_app="${APPDIR}/usr/bin/plotjuggler4"
+
+# Put the build executable back over the copy linuxdeploy deployed (and possibly
+# stripped), keeping the RPATH/RUNPATH linuxdeploy set on it.
+restore_build_executable() {
+  command -v patchelf >/dev/null || {
+    echo "ERROR: patchelf is required to restore the build executable while preserving its deployed RPATH" >&2
+    exit 1
+  }
+  local deployed_rpath
+  deployed_rpath="$(patchelf --print-rpath "${deployed_app}")"
+  local rpath_args=(--set-rpath "${deployed_rpath}")
+  # Preserve DT_RPATH versus DT_RUNPATH semantics as well as the path value.
+  if LC_ALL=C readelf -d "${deployed_app}" | grep -F '(RPATH)' >/dev/null; then
+    rpath_args+=(--force-rpath)
+  fi
+  install -m 0755 "${BUILD}/pj_app/plotjuggler4" "${deployed_app}"
+  patchelf "${rpath_args[@]}" "${deployed_app}"
+  echo "Restored the build executable with the deployed RPATH/RUNPATH: ${deployed_rpath}"
+}
+
+# The Qt deployer follows the platform plugin's ELF dependencies and copies its
+# decoration/shell plugins. Graphics integrations are discovered dynamically, so
+# deploy their dependency closure explicitly, before adding PJ extensions whose
+# external ROS dependencies must remain outside the bundle.
+wayland_src="${QT_DIR}/plugins/wayland-graphics-integration-client"
+wayland_dst="${APPDIR}/usr/plugins/wayland-graphics-integration-client"
+mkdir -p "${wayland_dst}"
+install -m 755 "${wayland_src}"/*.so "${wayland_dst}/"
+"./${LD}" --appdir "${APPDIR}" --deploy-deps-only "${wayland_dst}"
+# Qt only warns when a shell or EGL integration fails to load, so a missing one
+# could still pass the render check: require them here.
+for wayland_plugin in platforms/libqwayland.so wayland-shell-integration/libxdg-shell.so \
+    wayland-graphics-integration-client/libqt-plugin-wayland-egl.so; do
+  [[ -f "${APPDIR}/usr/plugins/${wayland_plugin}" ]] || {
+    echo "ERROR: ${wayland_plugin} was not deployed into the AppDir" >&2
+    exit 1
+  }
+done
+
 if [[ "${PJ_SANITIZE}" == asan ]]; then
-  deployed_app="${APPDIR}/usr/bin/plotjuggler4"
   if ! has_debug_lines "${deployed_app}"; then
-    command -v patchelf >/dev/null || {
-      echo "ERROR: linuxdeploy stripped .debug_line despite NO_STRIP=1; patchelf is required to restore the executable while preserving its deployed RPATH" >&2
-      exit 1
-    }
-    deployed_rpath="$(patchelf --print-rpath "${deployed_app}")"
-    rpath_args=(--set-rpath "${deployed_rpath}")
-    # Preserve DT_RPATH versus DT_RUNPATH semantics as well as the path value.
-    if LC_ALL=C readelf -d "${deployed_app}" | grep -F '(RPATH)' >/dev/null; then
-      rpath_args+=(--force-rpath)
-    fi
-    install -m 0755 "${BUILD}/pj_app/plotjuggler4" "${deployed_app}"
-    patchelf "${rpath_args[@]}" "${deployed_app}"
-    echo "Sanitizers: linuxdeploy stripped .debug_line despite NO_STRIP=1; restored the unstripped build executable and reapplied the deployed RPATH/RUNPATH: ${deployed_rpath}"
+    echo "Sanitizers: linuxdeploy stripped .debug_line despite NO_STRIP=1"
+    restore_build_executable
   fi
   has_debug_lines "${deployed_app}" || {
     echo "ERROR: deployed ${deployed_app} lacks .debug_line; refusing to package an instrumented AppImage without file/line information" >&2
@@ -394,8 +428,7 @@ if [[ "${PJ_SANITIZE}" == asan ]]; then
   }
   echo "Sanitizers: verified .debug_line in deployed usr/bin/plotjuggler4"
 
-  # linuxdeploy-plugin-qt deploys only the platform plugin the app actually used
-  # at deploy time, which is xcb. Running this artifact headlessly
+  # The bundled platform plugins (xcb, wayland) all need a display. Running this artifact headlessly
   # with no display — in CI and on a developer machine where starting an X server
   # is not an option — so add Qt's offscreen platform plugin. Instrumented builds
   # ONLY: the shipped release artifact is deliberately left byte-identical.
@@ -406,6 +439,16 @@ if [[ "${PJ_SANITIZE}" == asan ]]; then
   else
     echo "WARNING: ${offscreen_src} not found; running this artifact will require a display" >&2
   fi
+else
+  # linuxdeploy's strip also drops the symbol table, which leaves crash
+  # backtraces with no names for PlotJuggler's own frames. Ship the executable
+  # with its symbol table and without DWARF (about 1 MB more, compressed).
+  restore_build_executable
+  strip --strip-debug "${deployed_app}"
+  LC_ALL=C readelf -SW "${deployed_app}" | grep -E '[[:space:]]\.symtab[[:space:]]' >/dev/null || {
+    echo "ERROR: deployed ${deployed_app} lacks .symtab" >&2
+    exit 1
+  }
 fi
 
 # Scalable icon next to the 256px raster, so HiDPI docks and app grids render

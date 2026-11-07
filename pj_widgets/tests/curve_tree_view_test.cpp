@@ -8,7 +8,9 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QSignalSpy>
 #include <QTimer>
+#include <QToolTip>
 #include <QTreeWidgetItem>
 #include <QVariant>
 #include <QtGlobal>
@@ -606,8 +608,8 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
   EXPECT_TRUE(catalog_keys.contains("object:b"_L1));
 }
 
-// An object topic whose type no view can display (draggable=false, e.g. a
-// CameraInfo topic) stays selectable but never starts a drag, shows the
+// An object topic whose type no view can display (draggable=false, e.g. an
+// occupancy-grid update) stays selectable but never starts a drag, shows the
 // caller-supplied "why" tooltip, and is skipped by the drag payload even when
 // it sits inside a dragged multi-selection.
 TEST(CurveTreeViewTest, UndisplayableObjectTopicIsNotDraggableAndExcludedFromDragPayload) {
@@ -1159,6 +1161,163 @@ TEST(CurveTreeViewTest, ForcedTopicMarksLandOnTheTopicNodeAndSurviveRebuild) {
   view.setForcedTopicPaths({});
   EXPECT_FALSE(view.isTopicPathForced(imu_path));
   EXPECT_FALSE(view.isTopicPathForced(pc_path));
+}
+
+// Derived-topic glyphs: stamped on the topic node, survive a rebuild, kIdle/kReady paint nothing, and a
+// full-set replace clears the rest.
+TEST(CurveTreeViewTest, DerivedTopicGlyphsLandOnTheTopicNodeAndSurviveRebuild) {
+  PJ::CurveTreeView view;
+  view.setViewMode(PJ::CurveTreeView::ViewMode::kShowTopics);
+  const auto add_all = [&view]() {
+    std::vector<PJ::CurveTreeView::CurvePath> paths;
+    for (const QString& topic : {u"/derived/pending"_s, u"/derived/error"_s, u"/derived/ready"_s}) {
+      paths.push_back(
+          PJ::CurveTreeView::CurvePath{
+              .key = {}, .dataset = u"robot"_s, .topic = topic, .field = {}, .selectable = false});
+    }
+    view.addCatalogItems(paths);
+  };
+  add_all();
+
+  const auto topic_path = [](const QString& topic) {
+    return PJ::CurveTreeView::treePathFromCurvePath(
+        PJ::CurveTreeView::CurvePath{.key = {}, .dataset = u"robot"_s, .topic = topic, .field = {}});
+  };
+  const QString pending_path = topic_path(u"/derived/pending"_s);
+  const QString error_path = topic_path(u"/derived/error"_s);
+  const QString ready_path = topic_path(u"/derived/ready"_s);
+  using Glyph = PJ::CurveTreeView::DerivedGlyph;
+  using State = PJ::CurveTreeView::DerivedGlyphState;
+
+  view.setDerivedTopicGlyphs({
+      {pending_path, Glyph{State::kPending, u"Computing"_s}},
+      {error_path, Glyph{State::kError, u"Error: boom"_s}},
+      {ready_path, Glyph{State::kReady, {}}},
+  });
+  EXPECT_EQ(view.derivedGlyphStateAt(pending_path), State::kPending);
+  EXPECT_EQ(view.derivedGlyphStateAt(error_path), State::kError);
+  EXPECT_EQ(view.derivedGlyphStateAt(ready_path), State::kIdle) << "kReady paints no glyph";
+
+  // The set is retained: a rebuild (clear + re-add) re-stamps the marks.
+  view.clearCurves();
+  add_all();
+  EXPECT_EQ(view.derivedGlyphStateAt(pending_path), State::kPending);
+
+  // Full-set replace: a path left out of the new map is cleared.
+  view.setDerivedTopicGlyphs({{pending_path, Glyph{State::kMissingInput, u"Missing input: cloud"_s}}});
+  EXPECT_EQ(view.derivedGlyphStateAt(pending_path), State::kMissingInput);
+  EXPECT_EQ(view.derivedGlyphStateAt(error_path), State::kIdle);
+}
+
+// The host re-sends the whole glyph set on every state change: an identical set must leave the model untouched,
+// or the native hover tooltip the user is reading is invalidated.
+TEST(CurveTreeViewTest, RepeatedDerivedReadinessKeepsErrorTooltipWithoutModelChurn) {
+  TestCurveTreeView view;
+  view.resize(480, 240);
+  view.setViewMode(PJ::CurveTreeView::ViewMode::kShowTopics);
+  const PJ::CurveTreeView::CurvePath path{
+      .key = {}, .dataset = u"robot"_s, .topic = u"/derived"_s, .field = {}, .selectable = false};
+  view.addCatalogItems({path});
+  const QString tree_path = PJ::CurveTreeView::treePathFromCurvePath(path);
+  QHash<QString, PJ::CurveTreeView::DerivedGlyph> glyphs{
+      {tree_path, {PJ::CurveTreeView::DerivedGlyphState::kError, u"Error: script failed"_s}}};
+  view.setDerivedTopicGlyphs(glyphs);
+  view.expandAll();
+  view.show();
+  QApplication::processEvents();
+  auto* dataset = findTopLevel(view, u"robot"_s);
+  ASSERT_NE(dataset, nullptr);
+  ASSERT_EQ(dataset->childCount(), 1);
+  auto* topic = dataset->child(0);
+  const QRect row = view.visualItemRect(topic);
+  const QPoint pos(row.left() + 4, row.center().y());
+  QHelpEvent hover(QEvent::ToolTip, pos, view.viewport()->mapToGlobal(pos));
+  EXPECT_TRUE(view.viewportEvent(&hover));
+  EXPECT_EQ(QToolTip::text(), glyphs[tree_path].tooltip);
+  QSignalSpy changes(view.model(), &QAbstractItemModel::dataChanged);
+  for (int poll = 0; poll < 100; ++poll) {
+    view.setDerivedTopicGlyphs(glyphs);
+  }
+  EXPECT_EQ(changes.count(), 0) << "identical readiness must leave the hover's model data untouched";
+  EXPECT_EQ(QToolTip::text(), glyphs[tree_path].tooltip);
+  glyphs[tree_path].tooltip = u"Error: a different failure"_s;
+  view.setDerivedTopicGlyphs(glyphs);
+  EXPECT_GT(changes.count(), 0);
+  EXPECT_EQ(topic->toolTip(0), glyphs[tree_path].tooltip);
+  view.setDerivedTopicGlyphs({});
+  EXPECT_TRUE(topic->toolTip(0).isEmpty());
+  QToolTip::hideText();
+}
+
+// A row with a display name is one flat top-level row labelled verbatim (a slash never splits it), still found by
+// its dataset/topic search path, with the badge kept out of its text and key.
+TEST(CurveTreeViewTest, FlatRowsKeepTheirSearchPathAndBadge) {
+  PJ::CurveTreeView view;
+  view.setViewMode(PJ::CurveTreeView::ViewMode::kShowTopics);
+  PJ::CurveTreeView::CurvePath object{
+      .key = u"k1"_s, .dataset = u"robot"_s, .topic = u"owner/pair/left"_s, .field = {}, .selectable = false};
+  object.display_name = u"pair/left"_s;
+  object.badge = u"Assistant"_s;
+  PJ::CurveTreeView::CurvePath curve{
+      .key = u"k2"_s, .dataset = u"robot"_s, .topic = u"owner/n"_s, .field = u"value"_s, .selectable = true};
+  curve.display_name = u"n/value"_s;
+  view.addCatalogItems({object, curve});
+
+  ASSERT_EQ(view.topLevelItemCount(), 2);
+  QTreeWidgetItem* object_row =
+      view.topLevelItem(0)->text(0) == u"pair/left"_s ? view.topLevelItem(0) : view.topLevelItem(1);
+  QTreeWidgetItem* curve_row = object_row == view.topLevelItem(0) ? view.topLevelItem(1) : view.topLevelItem(0);
+  EXPECT_EQ(object_row->text(0), u"pair/left"_s);
+  EXPECT_EQ(object_row->childCount(), 0);
+  EXPECT_EQ(curve_row->text(0), u"n/value"_s);
+  EXPECT_EQ(PJ::CurveTreeView::catalogKeyOf(object_row), u"k1"_s);
+  EXPECT_EQ(PJ::CurveTreeView::badgeOf(object_row), u"Assistant"_s);
+  EXPECT_TRUE(PJ::CurveTreeView::badgeOf(curve_row).isEmpty());
+  EXPECT_TRUE(curve_row->flags().testFlag(Qt::ItemIsDragEnabled)) << "a flat curve leaf still drags";
+
+  // The glyph finds the flat row by its dataset/topic path.
+  const QString path = PJ::CurveTreeView::treePathFromCurvePath(object);
+  view.setDerivedTopicGlyphs({{path, {PJ::CurveTreeView::DerivedGlyphState::kPending, u"Computing"_s}}});
+  EXPECT_EQ(view.derivedGlyphStateAt(path), PJ::CurveTreeView::DerivedGlyphState::kPending);
+
+  // Painting the badge and the glyph is safe.
+  view.resize(320, 200);
+  EXPECT_FALSE(view.grab().isNull());
+}
+
+// A progress bar on a flat curve row (a series replaying in Custom Topics) leaves its selection alone, across every
+// update: the user may edit, delete or drag it mid-replay. Only a dataset row drops its selection while loading.
+TEST(CurveTreeViewTest, ProgressOnAFlatCurveRowKeepsItsSelection) {
+  PJ::CurveTreeView view;
+  PJ::CurveTreeView::CurvePath curve{
+      .key = u"k2"_s, .dataset = u"robot"_s, .topic = u"owner/n"_s, .field = u"value"_s, .selectable = true};
+  curve.display_name = u"n/value"_s;
+  view.addCatalogItems({curve});
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  QTreeWidgetItem* row = view.topLevelItem(0);
+  view.setDatasetRowKey(PJ::CurveTreeView::treePathFromCurvePath(curve), 7);
+  row->setSelected(true);
+
+  PJ::CurveTreeView::DatasetProgress progress;
+  progress.state = PJ::CurveTreeView::DatasetProgress::State::kLoading;
+  progress.fraction = 0.25;
+  progress.cancellable = true;
+  view.setDatasetProgress({{7, progress}});
+  EXPECT_TRUE(row->isSelected()) << "the first update";
+  progress.fraction = 0.5;
+  view.setDatasetProgress({{7, progress}});
+  EXPECT_TRUE(row->isSelected()) << "a fraction-only update";
+
+  PJ::CurveTreeView datasets;
+  const PJ::CurveTreeView::CurvePath field{
+      .key = u"k3"_s, .dataset = u"drive.mcap"_s, .topic = u"/imu"_s, .field = u"x"_s, .selectable = true};
+  datasets.addCatalogItems({field});
+  ASSERT_EQ(datasets.topLevelItemCount(), 1);
+  QTreeWidgetItem* dataset = datasets.topLevelItem(0);
+  datasets.setDatasetRowKey(u"drive.mcap"_s, 8);
+  dataset->setSelected(true);
+  datasets.setDatasetProgress({{8, progress}});
+  EXPECT_FALSE(dataset->isSelected()) << "a loading dataset row still drops its selection";
 }
 
 TEST(CurveTreeViewTest, DatasetProgressSurvivesClearCurvesAndReAdd) {

@@ -15,7 +15,11 @@ Core tests are grouped into the `pj_scene2d_core_tests` and
 per case. The source-directory runner uses the repository root for video fixtures.
 `mcap_integration_test` and `dual_store_test` stay separate because both define
 `MCAP_IMPLEMENTATION`; `ffmpeg_decoder_test` stays separate to preserve its ctest
-`LSAN_OPTIONS` environment.
+`LSAN_OPTIONS` environment. The viewer's pixel checks (YUV/NV12 colour matrices,
+BGRA, depth colormap, rectification, overlays, scissoring) are
+`media_viewer_render_test`, a QRhi display runner registered once per backend of
+the platform; it skips under `test.sh`'s `offscreen` QPA and runs in the CI
+display lanes.
 
 **Depth images** arrive as `sdk::Image` with a depth `encoding` (16UC1 / 32FC1 /
 compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` peeks a
@@ -26,6 +30,12 @@ frame's depth percentiles) and everything else to the plain `ImageLayer` (which
 renders images with **nearest** (pixelated) magnification and exposes a **rectify**
 toggle that undistorts the image with its `CameraInfo` — on by default, turn off to
 override the always-on auto-decision for an already-rectified stream).
+The toggle is disabled with an explanation until the decoded image has a usable
+`CameraInfo` with the same `frame_id` in its dataset. Calibration topics are
+recognized by their object classification (or the legacy `/camera_info` suffix),
+and can contain parser-bound messages or canonical CameraInfo bytes.
+An explicit clear (an empty-image tombstone or a seek before the shown image)
+resets rectification eligibility; a no-update result preserves the displayed image's status.
 Both
 `ImagePipelineSource` and `DepthPipelineSource` obtain the `sdk::Image` from a store
 entry through one shared seam — `image_resolve.h::resolveImage` (the topic's
@@ -60,16 +70,16 @@ Read in this order:
 
 - [`docs/REQUIREMENTS.md`](./docs/REQUIREMENTS.md) — the WHAT: scope, use cases, functional requirements, module contract.
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the HOW: module structure, data flow, scrub architecture, codec pipeline, threading model, key invariants.
-- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — domain background: Qt 6.11.1/QRhi specifics, codec caveats, HW-accel matrices, lessons learned.
-- [`../plotjuggler_sdk/docs/builtin_type.md`](../plotjuggler_sdk/docs/builtin_type.md) — canonical builtin-type catalog (the SDK owns all canonical scene/object schemas: Image, DepthImage, VideoFrame, PointCloud, OccupancyGrid, SceneEntities, FrameTransforms, ImageAnnotations, etc.).
+- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — domain background: the pinned Qt's QRhi specifics, codec caveats, HW-accel matrices, lessons learned.
+- [`docs/builtin_type.md` in the SDK repo](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — canonical builtin-type catalog (the SDK owns all canonical scene/object schemas: Image, DepthImage, VideoFrame, PointCloud, OccupancyGrid, SceneEntities, FrameTransforms, ImageAnnotations, etc.).
 
 ## Key headers
 
 - `core/include/pj_scene2d_core/media_source.h` — the uniform `setTimestamp`/`takeFrame` frame-delivery contract everything plugs into.
-- `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations.
-- `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec); shared by the image and depth pipeline sources.
+- `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations. The composite also pairs the annotations of a derived topic, which name their image, with the delivered frame (`setLayerPairing`, ARCHITECTURE §8.3a); a parser's are shown as they are.
+- `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec) and its stamp on the dataset clock (the payload's plus the entry's merge shift, carried as `DecodedFrame::stamp` for annotation pairing); shared by the image and depth pipeline sources.
 - `core/include/pj_scene2d_core/streaming_video_decoder.h`, `ffmpeg_decoder.h` — GOP-aware streaming video decode on top of FFmpeg. `FfmpegDecoder` carries the codec's colorimetry onto each frame and emits native NV12 on the hardware-decode path.
-- `core/include/pj_scene2d_core/video_color.h` — `buildYuvMatrix(space, range)`: the per-frame YUV→RGB matrix (BT.601/709 + limited/full range) the media shader uploads, replacing the old hardcoded BT.709. `depth_range.h` — `depthPercentileRange` backing the depth Auto-fit.
+- `core/include/pj_scene2d_core/video_color.h` — `buildYuvMatrix(space, range)`: the per-frame YUV→RGB matrix (BT.601/709 + limited/full range) the media shader uploads. `depth_range.h` — `depthPercentileRange` backing the depth Auto-fit.
 - `core/include/pj_scene2d_core/overlay_geometry.h` — backend-agnostic tessellation of annotation overlays (lines/points/fills/circles) into GPU vertex data; stroke width scales with zoom but is **floored at 1px on screen** so edges never go sub-pixel and vanish.
 - `widgets/include/pj_scene2d_widgets/media_viewer_widget.h` — the `QRhiWidget` renderer (YUV/RGB pipelines + annotation overlays).
 - `widgets/include/pj_scene2d_widgets/Scene2DDockWidget.h` — the dock widget wiring layers into `pj_scene_common`'s `SceneDockWidget`.
@@ -78,7 +88,11 @@ Read in this order:
 
 - Run the module tests and make sure they pass before any commit.
 - Keep the markdown files in `docs/` in sync with the code you change (see the
-  root `CLAUDE.md` freshness discipline); record hard-won lessons in
-  `TECHNICAL_NOTES.md`, especially after long debugging sessions.
+  root `CLAUDE.md` freshness discipline); hard-won lessons go in `TECHNICAL_NOTES.md`
+  (root `CLAUDE.md` rule).
+- Editing a shader means re-baking its `.qsb` with the pinned `qsb` (`widgets/shaders/bake.sh`) and committing both,
+  or the WASM configure hash check fails.
+- Derived topics (script outputs) reach this module as ordinary store topics, through `pj_scene_common` and the
+  catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline) and §17 (scene integration).
 - Think test-first: prefer automated reproduction over asking the user to run
   the app. When an issue is reported, reproduce it in a test before fixing it.

@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Serves a PlotJuggler 4 browser deployment package over HTTPS from a robot and
+# proxies /bridge to the PlotJuggler Bridge running beside it, so a preset whose
+# stream URL is ${deployment.ws_origin}/bridge works on any robot. The guide is
+# docs/WASM_HOSTING.md. Everything is configured through the environment:
+#
+#   PJ_ROBOT_HOST       required: the name or address clients open, optionally
+#                       with :<port> (default port 443)
+#   PJ_WASM_ROOT        required: the unpacked deployment package
+#   PJ_TLS              the arguments of Caddy's tls directive: "internal" (the
+#                       default, Caddy's own local CA), "<cert.pem> <key.pem>"
+#                       for a certificate you supply, or an e-mail address for
+#                       a public ACME certificate
+#   PJ_HTTP_PORT        the plain-HTTP port that redirects to HTTPS (default 80)
+#   PJ_BRIDGE_UPSTREAM  the bridge's own address (default 127.0.0.1:9090, the
+#                       pj_bridge default port)
+#
+# The responses follow the package's contract (its manifest.json and _headers):
+# the isolation headers on every response, the manifest's MIME types, no-cache
+# everywhere but the content-addressed assets/, no-store on errors, and the
+# .br/.gz siblings chosen by Accept-Encoding, below presets/ too.
+# tests/wasm/robot_deployment.spec.js runs this file against a package's manifest.
+{
+	http_port {$PJ_HTTP_PORT:80}
+	# The clients are other devices: Caddy's local CA in the robot's own trust
+	# store would trust nothing useful, and installing it needs root.
+	skip_install_trust
+}
+
+{$PJ_ROBOT_HOST} {
+	tls {$PJ_TLS:internal}
+	root * {$PJ_WASM_ROOT}
+
+	header {
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Embedder-Policy require-corp
+		Cross-Origin-Resource-Policy same-origin
+		X-Content-Type-Options nosniff
+		?Cache-Control no-cache
+	}
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
+
+	# Errors are never cached, not even below assets/: a bundle file that 404s
+	# while a package is still being copied must load once the copy completes.
+	handle_errors {
+		header Cache-Control no-store
+		header Content-Type "text/plain; charset=utf-8"
+		respond "{err.status_code} {err.status_text}"
+	}
+
+	handle /bridge {
+		reverse_proxy {$PJ_BRIDGE_UPSTREAM:127.0.0.1:9090}
+	}
+
+	handle {
+		# CONTENT_TYPES of scripts/package_wasm.mjs, never the host's MIME database.
+		map {path} {pj_content_type} {
+			~(?i)\.html$ "text/html; charset=utf-8"
+			~(?i)\.js$ "text/javascript; charset=utf-8"
+			~(?i)\.json$ "application/json; charset=utf-8"
+			~(?i)\.svg$ "image/svg+xml"
+			~(?i)\.wasm$ "application/wasm"
+			~(?i)\.csv$ "text/csv; charset=utf-8"
+			~(?i)\.dae$ "model/vnd.collada+xml"
+			~(?i)\.glb$ "model/gltf-binary"
+			~(?i)\.gltf$ "model/gltf+json"
+			~(?i)\.mcap$ "application/octet-stream"
+			~(?i)\.md$ "text/markdown; charset=utf-8"
+			~(?i)\.obj$ "model/obj"
+			~(?i)\.png$ "image/png"
+			~(?i)\.stl$ "model/stl"
+			~(?i)\.txt$ "text/plain; charset=utf-8"
+			~(?i)\.xml$ "application/xml"
+			# A directory's index.html, and extensionless files (LICENSE, NOTICE).
+			~/$ "text/html; charset=utf-8"
+			~/[^/.]+$ "text/plain; charset=utf-8"
+		}
+		header Content-Type {pj_content_type}
+		file_server {
+			precompressed br gzip
+			# Only logical paths are resources: an encoding is reached through its
+			# file's own URL, and _headers is configuration for other hosts.
+			hide _headers *.br *.gz
+		}
+	}
+}

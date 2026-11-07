@@ -22,7 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Packaging channel stamped into the anonymous telemetry ping. A channel token
 # (like gcc_64/msvc2022_64), not a version — deliberately NOT in versions.env.
-set(PJ_INSTALLATION "source" CACHE STRING "Packaging channel: source, appimage, deb, or windows")
+set(PJ_INSTALLATION "source" CACHE STRING "Packaging channel: source, appimage, deb, windows, macos, or conda")
 
 configure_file(cmake/pj_version.h.in ${CMAKE_BINARY_DIR}/generated/pj_version.h @ONLY)
 
@@ -78,7 +78,13 @@ else()
 endif()
 set(PJ_BUILD_TESTS ${_PJ_BUILD_TESTS_DEFAULT} CACHE BOOL "Build foundation (SDK + pj_datastore) tests")
 unset(_PJ_BUILD_TESTS_DEFAULT)
-option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone dev demos" ON)
+option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone benchmarks" ON)
+# The GPU widgets' test-only fault injection and QRhi lifecycle counters
+# (pj_widgets/RhiTestHooks.h). Release builds configure PJ_BUILD_TESTS=OFF, so
+# shipped binaries carry none of it.
+if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
+    add_compile_definitions(PJ_RHI_TEST_HOOKS)
+endif()
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
@@ -93,12 +99,21 @@ endif()
 # ---------------------------------------------------------------------------
 
 if(MSVC)
-    set(PJ_WARNING_FLAGS /W4 /WX /permissive-)
+    # C4702 (unreachable code) is a code-generation warning that Qt's own
+    # headers raise once inlined (qnumeric.h's overflow helpers after their
+    # intrinsic early return), so it cannot be scoped to our sources.
+    set(PJ_WARNING_FLAGS /W4 /WX /permissive- /wd4702)
 else()
     set(PJ_WARNING_FLAGS
         -Wall -Wextra -Wshadow -Wnon-virtual-dtor -Wold-style-cast
         -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
     )
+    # Clang's -Wconversion also covers sign conversions, and its -Wall unused
+    # constants (here often ones only a WASM #ifdef reads); GCC's, the reference
+    # compiler, cover neither. Match GCC so both reject the same code.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND PJ_WARNING_FLAGS -Wno-sign-conversion -Wno-unused-const-variable)
+    endif()
     # wasm32 makes size_t 32-bit and surfaces the SDK's explicitly tracked
     # uint64_t ABI conversions. Keep the warnings visible, but do not turn the
     # cross-compile bring-up into an unrelated warning-cleanup project.
@@ -131,7 +146,16 @@ if(EMSCRIPTEN)
         Core Gui GuiPrivate Widgets Concurrent Network Xml Svg SvgWidgets PrintSupport ShaderTools)
 else()
     set(PJ_QT_REQUIRED_VERSION ${PJ_QT_VERSION})
+    # OpenGLWidgets: no PJ4 code links it outside the display tests (pj_scene3D's
+    # runners take the target from here), but Qt6UiTools (pj_dialog_host) depends
+    # on it, so the kit, the app and its packages need it regardless.
     find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml Svg SvgWidgets)
+    # Header-only process and frame probes (cmake/test_mains/pj_bench_probes.h) of
+    # every frame benchmark, with or without tests.
+    find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS GuiPrivate)
+    add_library(pj_bench_probes INTERFACE)
+    target_include_directories(pj_bench_probes INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_mains")
+    target_link_libraries(pj_bench_probes INTERFACE Qt6::Widgets Qt6::GuiPrivate)
 endif()
 find_package(fmt REQUIRED)
 
@@ -146,7 +170,7 @@ find_package(fmt REQUIRED)
 # ---------------------------------------------------------------------------
 
 file(STRINGS conanfile.txt _pj_sdk_require REGEX "^plotjuggler_sdk/")
-string(REGEX REPLACE "^plotjuggler_sdk/([0-9.]+).*" "\\1" PJ_SDK_VERSION "${_pj_sdk_require}")
+string(REGEX REPLACE "^plotjuggler_sdk/([0-9][0-9A-Za-z.-]*).*" "\\1" PJ_SDK_VERSION "${_pj_sdk_require}")
 set(_pj_sdk_url https://github.com/PlotJuggler/plotjuggler_sdk/archive/refs/tags/v${PJ_SDK_VERSION}.tar.gz)
 # Pin the source build to bytes, not to a tag name: a tag can be moved, and the
 # sanitizer lanes compile this tarball instead of the Conan package, so an
@@ -154,7 +178,7 @@ set(_pj_sdk_url https://github.com/PlotJuggler/plotjuggler_sdk/archive/refs/tags
 # hash in the same commit as any PJ_SDK_VERSION bump in conanfile.txt — a stale
 # hash aborts the download loudly, which is the intended failure mode.
 set(_pj_sdk_url_hash
-    SHA256=b42b3d53f13cd495c3e8a73e5728503b1cc6949c9dd820e164ba449f22349c32)  # v0.34.1
+    SHA256=42aef7e2229b68e198ab97212ab4df05dcacfdaed5c26aecabef045238890f1e)  # v0.39.0
 include(FetchContent)
 # Timestamps on extracted archives. DOWNLOAD_EXTRACT_TIMESTAMP is a CMake 3.24
 # keyword and the sanctioned builder image ships 3.22, where an unrecognised
@@ -187,7 +211,11 @@ if(PJ_SDK_LOCAL_DIR)
   message(STATUS " NOT reproducible — do not use for release artifacts")
   message(STATUS "==================================================================")
   FetchContent_Declare(plotjuggler_sdk SOURCE_DIR "${PJ_SDK_LOCAL_DIR}")
+  # The same Python3 lookup guard as the pinned-release source build below.
+  set(_pj_saved_disable_py3 "${CMAKE_DISABLE_FIND_PACKAGE_Python3}")
+  set(CMAKE_DISABLE_FIND_PACKAGE_Python3 ON)
   FetchContent_MakeAvailable(plotjuggler_sdk)
+  set(CMAKE_DISABLE_FIND_PACKAGE_Python3 "${_pj_saved_disable_py3}")
   set(plotjuggler_sdk_FOUND TRUE)
 elseif(NOT PJ_SDK_FORCE_SOURCE)
   find_package(plotjuggler_sdk CONFIG QUIET)
@@ -241,12 +269,19 @@ if(EMSCRIPTEN)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmProtobuf.cmake)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmTransformEditor.cmake)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmDummyStream.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmPjBridge.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmJson.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmDataTamer.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasm3dLoader.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmQuaternion.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmFft.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmAnomalyDetector.cmake)
 endif()
 if(NOT EMSCRIPTEN)
     add_subdirectory(resources)
 endif()
-# pj_datastore: columnar store + DerivedEngine + the data-processor execution
-# substrate (DataProcessor base + ProcessorSisoAdapter, formerly pj_proc).
+# pj_datastore: columnar store + IncrementalEngine + the data-processor execution
+# substrate (DataProcessor base + ProcessorSisoAdapter).
 add_subdirectory(pj_datastore)
 
 # The MemorySanitizer lane stops here, and the cut is load-bearing rather than an
@@ -262,6 +297,12 @@ if(PJ_ENABLE_MSAN)
     message(STATUS "MemorySanitizer lane: configuring pj_datastore only (Qt-free closure)")
     return()
 endif()
+
+# pj_tf: the TF frame tree (Transform/TransformBuffer), a Qt-free leaf linked by
+# both pj_scene3d_core and pj_runtime. After the MSan cut because it needs glm,
+# which that lane's closure does not carry; before pj_scene3D and pj_runtime so
+# its target exists for both.
+add_subdirectory(pj_tf)
 
 # pj_scripting: Luau filter engine for Data Processors (self-describing filter
 # classes). Depends on pj_datastore (added above) + Conan Luau. See its CLAUDE.md.
@@ -293,6 +334,11 @@ set(BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(3rdparty/Qt-Advanced-Docking)
 add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
+# Qt 6.12 deprecates Q_ENUMS, which the fork's ads_globals.h still uses; as a
+# system include its warnings stay out of our -Werror targets.
+get_target_property(_pj_ads_includes qtadvanceddocking-qt6 INTERFACE_INCLUDE_DIRECTORIES)
+set_target_properties(qtadvanceddocking-qt6 PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pj_ads_includes}")
+unset(_pj_ads_includes)
 # Target options follow the directory-inherited sanitizer flags on the command
 # line, so -fno-sanitize=all wins for this library only. See PJ_SANITIZE_QT_ADS.
 if(PJ_SANITIZERS_ACTIVE AND NOT PJ_SANITIZE_QT_ADS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -327,6 +373,7 @@ endif()
 if(TARGET pj_scene3d_widgets)
     add_compile_definitions(PJ_WITH_SCENE3D)
 endif()
+# The Scene3D standalone benchmarks.
 if(PJ_BUILD_DEMOS AND NOT EMSCRIPTEN)
     add_subdirectory(pj_scene3D/demos)
 endif()
@@ -344,6 +391,7 @@ endif()
 add_subdirectory(pj_widgets)
 add_subdirectory(pj_scene_common)
 add_subdirectory(pj_plotting)
+add_subdirectory(pj_custom_widgets)
 
 if(PJ4_BUILD_APP)
     add_subdirectory(pj_app)

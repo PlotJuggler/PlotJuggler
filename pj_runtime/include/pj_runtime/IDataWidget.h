@@ -54,6 +54,13 @@ class IDataWidget {
     return false;
   }
 
+  /// Non-mutating hover preflight. Widgets with payload-dependent restrictions override
+  /// this to reject incompatible catalog drops before the user releases the mouse.
+  /// The default leaves acceptance to tryAcceptObjectTopic().
+  [[nodiscard]] virtual bool canAcceptObjectTopic(ObjectTopicId, sdk::BuiltinObjectType) const {
+    return true;
+  }
+
   // Optional hook, sibling of tryAcceptObjectTopic for SCALAR catalog keys: a
   // host (DockWidget) offers the keys of a curve-list drop to a mounted widget
   // that consumes scalar series itself (the state-transitions strip takes
@@ -75,6 +82,16 @@ class IDataWidget {
   virtual bool xmlLoadState(const QDomElement& /*element*/) {
     return true;
   }
+
+  /// Host call once the data a just-loaded `xmlLoadState` refers to is final: the shell
+  /// after its whole load, or a dock after a paste/family switch into a session whose data
+  /// is already loaded. A widget that defers saved elements until their data arrives
+  /// settles whatever is still undecided and makes its last attempt here. Default no-op.
+  virtual void finishRestore() {}
+
+  /// Called once, right before the host schedules this widget for deferred deletion (never when it
+  /// moves to another dock): release here, synchronously, what must not wait for the event loop.
+  virtual void aboutToBeDiscarded() {}
 };
 
 }  // namespace PJ

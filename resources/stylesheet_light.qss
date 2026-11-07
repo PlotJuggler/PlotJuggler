@@ -2068,6 +2068,16 @@ QDialog QLabel#dialogTitleLabel {
     padding-left: ${space_snug}px;
 }
 
+/* Secondary text in a side-panel page (a widget's source plugin, a wire's state). */
+QLabel[pjMuted="true"] {
+    color: ${on_backdrop_muted};
+}
+
+/* A row-level action inside a side-panel list (the Custom Widget page's "Choose series"). */
+QPushButton[pjCompact="true"] {
+    padding: ${space_tight}px ${space_comfortable}px;
+}
+
 /* Recording page: the two one-line section notes read as headings. */
 QLabel#labelRecordingNote,
 QLabel#labelSourceCacheNote {
@@ -2585,4 +2595,12 @@ PJ--ToastNotification QPushButton#toastCloseButton {
 
 PJ--ToastNotification QPushButton#toastCloseButton:hover {
     color: ${text};
+}
+
+/* Welcome presets dialog: each preset is a card, and a thumbnail that is
+   missing or failed to load reads as an empty frame. */
+QFrame#presetCard,
+QLabel#labelPresetThumbnail {
+    border: 1px solid ${separation};
+    border-radius: ${radius_card}px;
 }

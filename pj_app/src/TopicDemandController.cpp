@@ -7,9 +7,11 @@
 
 #include <QTimer>
 #include <algorithm>
+#include <utility>
 
 #include "LayoutXml.h"
 #include "PendingDisplayBinder.h"
+#include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotWidget.h"
@@ -24,13 +26,14 @@ namespace PJ {
 
 TopicDemandController::TopicDemandController(
     CatalogModel& catalog, TopicDemandTracker& tracker, DataProcessorService& processors,
-    PendingDisplayBinder& pending_binder, DataEngine& engine, QObject* parent)
+    PendingDisplayBinder& pending_binder, DataEngine& engine, VisibleStartSink visible_start, QObject* parent)
     : QObject(parent),
       catalog_(catalog),
       tracker_(tracker),
       processors_(processors),
       pending_binder_(pending_binder),
-      engine_(engine) {
+      engine_(engine),
+      visible_start_(std::move(visible_start)) {
   // The one persistent catalog wiring this controller owns: drives preview
   // release-on-promotion, the advertise-burst census, and preview teardown.
   connect(&catalog_, &CatalogModel::itemsAdded, this, &TopicDemandController::onCatalogItemsAdded);
@@ -71,6 +74,12 @@ void TopicDemandController::registerPlot(PlotWidget* plot) {
   }
   plot_topics_.emplace(plot, std::vector<std::pair<DatasetId, QString>>{});
   connect(plot, &PlotWidgetBase::curveListChanged, this, [this, plot]() { syncPlot(plot); });
+  // Any move of its time axis, a linked peer's or a plugin's zoom included; only this plot's datasets.
+  connect(plot, &PlotWidget::visibleXRangeChanged, this, [this, plot]() {
+    if (const auto found = plot_topics_.find(plot); found != plot_topics_.end()) {
+      reportVisibleStart(plot, found->second);
+    }
+  });
   // A canvas drop named an advertised placeholder — register demand + a pending
   // bind instead of the (impossible, no storage id) normal add-curve path.
   connect(plot, &PlotWidget::placeholderCurveDropped, this, [this, plot](const QString& catalog_key) {
@@ -112,7 +121,22 @@ void TopicDemandController::syncPlot(PlotWidget* plot) {
     const TopicId topic_id = isScalarField(*item) ? asScalarField(*item)->topic_id : 0;
     appendTopicRefs(current, item->dataset_id, item->topic_name, topic_id);
   }
+  reportVisibleStart(plot, current);
   applyTopicDelta(std::move(current), plot_topics_[plot]);
+}
+
+void TopicDemandController::reportVisibleStart(
+    PlotWidget* plot, const std::vector<std::pair<DatasetId, QString>>& topics) {
+  if (!visible_start_ || plot->isXYPlot()) {
+    return;  // an XY plot's x axis is not time
+  }
+  const DisplaySeconds start = fromAxisDouble(plot->currentBoundingRect().left());
+  std::set<DatasetId> reported;
+  for (const auto& [dataset_id, topic_name] : topics) {
+    if (reported.insert(dataset_id).second) {
+      visible_start_(dataset_id, start);
+    }
+  }
 }
 
 void TopicDemandController::applyTopicDelta(
@@ -139,13 +163,8 @@ void TopicDemandController::applyTopicDelta(
 }
 
 std::optional<std::pair<DatasetId, QString>> TopicDemandController::resolveObjectTopic(ObjectTopicId topic_id) const {
-  for (const CatalogItem& item : catalog_.items()) {
-    if (const auto* object_topic = asObjectTopic(item);
-        object_topic != nullptr && object_topic->object_topic_id == topic_id) {
-      return std::make_pair(item.dataset_id, item.topic_name);
-    }
-  }
-  return std::nullopt;
+  const std::optional<CatalogItem> item = catalog_.objectTopicItem(topic_id);
+  return item.has_value() ? std::optional(std::make_pair(item->dataset_id, item->topic_name)) : std::nullopt;
 }
 
 void TopicDemandController::registerSceneDock(SceneDockWidget* dock) {
@@ -215,6 +234,29 @@ void TopicDemandController::syncStateTransitionsDock(StateTransitionsDockWidget*
     current.emplace_back(dataset_id, topic_name);
   }
   applyTopicDelta(std::move(current), state_dock_topics_[dock]);
+}
+
+void TopicDemandController::registerCustomWidgetDock(CustomWidgetDockWidget* dock) {
+  if (dock == nullptr || custom_dock_topics_.count(dock) > 0) {
+    return;  // idempotent, mirroring registerPlot
+  }
+  custom_dock_topics_.emplace(dock, std::vector<std::pair<DatasetId, QString>>{});
+  connect(dock, &CustomWidgetDockWidget::bindingsChanged, this, [this, dock]() { syncCustomWidgetDock(dock); });
+  connect(dock, &QObject::destroyed, this, [this, dock]() {
+    auto it = custom_dock_topics_.find(dock);
+    if (it == custom_dock_topics_.end()) {
+      return;
+    }
+    for (const auto& [dataset_id, topic_name] : it->second) {
+      tracker_.removeReference(dataset_id, topic_name);
+    }
+    custom_dock_topics_.erase(it);
+  });
+  syncCustomWidgetDock(dock);  // covers wires restored before this call
+}
+
+void TopicDemandController::syncCustomWidgetDock(CustomWidgetDockWidget* dock) {
+  applyTopicDelta(dock->displayedTopics(), custom_dock_topics_[dock]);
 }
 
 void TopicDemandController::handlePlaceholderPlotDrop(

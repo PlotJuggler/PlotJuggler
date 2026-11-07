@@ -12,6 +12,18 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#ifdef PJ_SCENE3D_FIXTURES_DIR
+#include <QByteArray>
+#include <QFile>
+#include <QHash>
+#include <QHostAddress>
+#include <QObject>
+#include <QString>
+#include <QStringList>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QTemporaryDir>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -115,5 +127,70 @@ bool pumpUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chr
   }
   return predicate();
 }
+
+#ifdef PJ_SCENE3D_FIXTURES_DIR
+// The fixture runner's (pj_scene3d_widget_fixture_tests, which links Qt6::Network).
+
+// `count` distinct copies of the cube fixture in `dir`: MeshLoader caches by
+// path, and a cached future would finish without occupying a worker.
+inline std::vector<QString> cubeCopies(const QTemporaryDir& dir, int count) {
+  std::vector<QString> paths;
+  for (int index = 0; index < count; ++index) {
+    const QString path = dir.filePath(QStringLiteral("cube_%1.stl").arg(index));
+    EXPECT_TRUE(QFile::copy(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/cube.stl"), path));
+    paths.push_back(path);
+  }
+  return paths;
+}
+
+// The bytes of tests/fixtures/meshes/`name`; a missing fixture fails the test.
+inline QByteArray readFixtureBytes(const char* name) {
+  QFile file(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/") + QLatin1String(name));
+  EXPECT_TRUE(file.open(QIODevice::ReadOnly)) << "missing fixture: " << name;
+  return file.readAll();
+}
+
+// Serves `files` over HTTP on localhost by request path (404 for any other) and
+// records every requested path.
+class FileHttpServer {
+ public:
+  explicit FileHttpServer(QHash<QString, QByteArray> files) : files_(std::move(files)) {
+    EXPECT_TRUE(server_.listen(QHostAddress::LocalHost, 0));
+    QObject::connect(&server_, &QTcpServer::newConnection, &server_, [this]() {
+      QTcpSocket* socket = server_.nextPendingConnection();
+      QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket]() {
+        const QString path = QString::fromLatin1(socket->readAll().split(' ').value(1));
+        paths_.push_back(path);
+        const auto file = files_.constFind(path);
+        const bool found = file != files_.cend();
+        const QByteArray body = found ? *file : QByteArray();
+        socket->write(
+            QByteArray(found ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found") +
+            "\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: " + QByteArray::number(body.size()) +
+            "\r\n\r\n" + body);
+        socket->disconnectFromHost();
+      });
+    });
+  }
+  [[nodiscard]] QString url(const QString& path) const {
+    return QStringLiteral("http://127.0.0.1:%1%2").arg(server_.serverPort()).arg(path);
+  }
+  [[nodiscard]] const QStringList& paths() const {
+    return paths_;
+  }
+
+ private:
+  QHash<QString, QByteArray> files_;
+  QTcpServer server_;
+  QStringList paths_;
+};
+
+// An http URL for `name` on `server`, which listens on localhost from the first
+// call on: it accepts connections and never responds, so a fetch stays in flight.
+inline QString silentServerUrl(QTcpServer& server, const QString& name) {
+  EXPECT_TRUE(server.isListening() || server.listen(QHostAddress::LocalHost, 0));
+  return QStringLiteral("http://127.0.0.1:%1/%2").arg(server.serverPort()).arg(name);
+}
+#endif
 
 }  // namespace pj::scene3d::test

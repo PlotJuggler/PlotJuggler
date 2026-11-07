@@ -45,8 +45,9 @@ class StateSeriesAdapter {
  public:
   /// `source` must identify a discrete column of primitive `logical_type` (the
   /// caller validates via CatalogModel::isDiscreteKey before constructing). A
-  /// sample whose value cannot be read as that type — a float/kUnspecified
-  /// column, or a chunk sealed before the column appeared — is treated as null.
+  /// sample whose value cannot be read as that type — a fractional value in a
+  /// float column, a kUnspecified column, or a chunk sealed before the column
+  /// appeared — is treated as null.
   StateSeriesAdapter(SessionManager* session, CurveDescriptor source, PrimitiveType logical_type);
 
   /// Re-scan the store and rebuild segments(). On a failed range query the

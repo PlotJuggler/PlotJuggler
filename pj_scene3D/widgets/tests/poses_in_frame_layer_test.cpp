@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_base/builtin/poses_in_frame_codec.hpp"  // serializePosesInFrame (canonical-blob, no-parser test)
+#include "pj_base/time.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -149,6 +151,34 @@ TEST_F(PosesInFrameLayerTest, RendersCanonicalBlobWithoutParser) {
   EXPECT_EQ(layer.instancesForTest().size(), 3U);  // 1 pose * 3 arms
   EXPECT_EQ(layer.sourceFrame(), u"map"_s);
   EXPECT_EQ(g_parser_calls.load(), 0);  // canonical path, parser never invoked
+}
+
+// TF R6: the layer reports the pose array's own header stamp, which the view
+// places it at (header clock), not the store (log) time it was found at. An
+// unstamped array reports none and is placed at the cursor.
+TEST_F(PosesInFrameLayerTest, RenderStampIsThePosesOwnHeaderStamp) {
+  const PJ::ObjectTopicId stamped_topic = registerObjectTopic(session_, "/poses_stamped");
+  const auto push = [&](int64_t logged_ns, int64_t stamp_ns) {
+    PJ::sdk::PosesInFrame msg;
+    msg.frame_id = "map";
+    msg.timestamp_ns = stamp_ns;
+    PJ::sdk::Pose pose;
+    pose.orientation.w = 1.0;
+    msg.poses.push_back(pose);
+    ASSERT_TRUE(session_.objectStore().pushOwned(stamped_topic, logged_ns, PJ::serializePosesInFrame(msg)).has_value());
+  };
+  push(/*logged_ns=*/1000, /*stamp_ns=*/960);
+  push(/*logged_ns=*/2000, /*stamp_ns=*/0);
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::PosesInFrameLayer layer(stamped_topic, u"poses_stamped"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.renderAtForTest(1000);
+  EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(960));
+  layer.renderAtForTest(2000);
+  EXPECT_EQ(layer.renderStamp(), std::nullopt);
 }
 
 TEST_F(PosesInFrameLayerTest, UnchangedSampleIsNotRedecoded) {

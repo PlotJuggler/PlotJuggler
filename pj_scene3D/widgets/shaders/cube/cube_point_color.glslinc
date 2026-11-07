@@ -1,0 +1,49 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+// A point's colour and its outside-range cull, shared by every point-cloud shader
+// (point, cube and sprite). They take the already-resolved
+// `scalar` because how a shape gets one differs (vertex attribute, per-instance attribute
+// or fixed-frame axis), while everything downstream of it does not. Needs sampleColormap() (pj_widgets colormapGlsl()) declared before it.
+
+// Display-referred base colour. The colormaps are display-referred sRGB; callers
+// linearize for a linear-light target.
+vec3 resolveBaseColor(int color_mode, vec3 solid_color, vec3 per_point_rgb, int colormap_id, bool invert,
+                      float scalar, float range_min, float range_max) {
+  float span = max(range_max - range_min, 1e-9);
+  float normalized = clamp((scalar - range_min) / span, 0.0, 1.0);
+  if (color_mode == 1) {
+    return solid_color;
+  }
+  if (color_mode == 2) {
+    return per_point_rgb;  // per-point colour used directly (no colormap)
+  }
+  return sampleColormap(colormap_id, invert ? 1.0 - normalized : normalized);
+}
+
+// resolveBaseColor() converted to the LINEAR space a linear-light scene target holds.
+vec3 resolveBaseLinear(int color_mode, vec3 solid_color, vec3 per_point_rgb, int colormap_id, bool invert,
+                       float scalar, float range_min, float range_max) {
+  vec3 base = resolveBaseColor(color_mode, solid_color, per_point_rgb, colormap_id, invert, scalar, range_min,
+                               range_max);
+  return pow(max(base, vec3(0.0)), vec3(2.2));
+}
+
+// True when this draw must not emit the point at all: either the fade would leave nothing
+// visible, or the point belongs to the other half of the opaque/translucent two-pass
+// (partition 1 = in-range only, 2 = outside only). Callers degenerate the vertex.
+// `outside` also drives the fade, so it is an out-parameter rather than local.
+// `partition` is a GLSL reserved word, hence partition_mode.
+bool pointcloudCulled(float scalar, float range_min, float range_max, float outside_range_alpha, int partition_mode,
+                      out bool outside) {
+  outside = !(scalar >= range_min && scalar <= range_max);  // NaN -> outside
+  bool invisible = outside_range_alpha <= 0.003;
+  return (outside && (invisible || partition_mode == 1)) || (!outside && partition_mode == 2);
+}
+
+// Mean of cubeLambert() over a sphere imposter's disc: the one flat shade a sphere gets
+// below kSphereDiscMaxPx, where per-fragment imposter shading is driver-dependent (MSAA
+// sample placement and point-size rounding decide which of a pixel or two gets which
+// normal). Area-matched, so a cloud receding past the threshold keeps its brightness.
+// cube_mesh_test re-derives it from the light above.
+const float kSphereDiscShading = 0.702;
+const float kSphereDiscMaxPx = 2.0;  // device-pixel diameter below which spheres draw flat

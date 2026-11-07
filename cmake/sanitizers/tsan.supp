@@ -111,6 +111,13 @@ race_top:qobjectdefs_impl.h
 race:QtConcurrent::StoredFunctionCall<pj::scene3d::MeshLoader::load
 race:QtConcurrent::StoredFunctionCall<pj::scene3d::PointCloudLayer::startDecode
 race:QtConcurrent::StoredFunctionCall<pj::scene3d::TrailLayer::startRebuild
+# LatestWinsWorker (the point, depth, scene-entity and trail
+# decode workers): the task and its captures, first read on the worker; and the
+# stored result, cleared by ~QFutureInterface on the GUI thread after the worker
+# reported it. Both hand-offs are ordered inside libQt6Core (the thread pool's
+# queue, the future's state and refcount).
+race:QtConcurrent::StoredFunctionCall<pj::scene3d::LatestWinsWorker
+race:QFutureInterface<pj::scene3d::LatestWinsWorker
 race:QtConcurrent::StoredFunctionCall<PJ::DownloadManager::onReplyFinished
 # Queued lambdas posted from provider, ingest or plugin worker threads: their
 # captures, first read on the GUI thread.

@@ -230,7 +230,8 @@ void MarketplaceWindow::finishConstruction(const QMap<QString, InstalledExtensio
   }
   updateDiagnosticsButton();
   showLatestDiagnostic();
-  registry_mgr_->fetchRegistry(registry_url_);
+  // Queued: a host can only connect to registryManager() once the constructor has returned.
+  QMetaObject::invokeMethod(this, [this]() { registry_mgr_->fetchRegistry(registry_url_); }, Qt::QueuedConnection);
 }
 
 MarketplaceWindow::~MarketplaceWindow() {

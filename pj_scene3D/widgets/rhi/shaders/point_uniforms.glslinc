@@ -1,0 +1,40 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+// The uniform block every point-cloud shader declares (PointUniforms in
+// point_rhi_pass.cpp mirrors it; keep the two in lockstep). Render space is the
+// fixed frame minus the camera-relative render origin.
+layout(std140, binding = 0) uniform PointUniforms {
+    mat4 view_projection;    // corrected clip <- render space
+    mat4 fixed_from_source;  // render space <- source frame
+    mat4 view;               // view <- render space (face normals, sprite light)
+    vec4 face_pick_eye;      // eye position (w = 1, perspective) or scene->camera direction (w = 0, ortho)
+    vec4 color_axis_offset;  // xyz: render origin, added back to colour by an absolute fixed-frame axis
+    vec4 size_params;        // x: size m (sphere diameter, cube side), y: point px, z: device height px, w: proj[1][1]
+    vec4 clamp_params;       // x: min px, y: max px, z: perspective depth threshold m, w: 1 perspective
+    vec4 range_params;       // x: range min, y: range max, z: outside alpha, w: partition (0 all, 1 in, 2 out)
+    vec4 solid_color;        // rgb: solid colour; w: unused
+    vec2 clip_per_px;        // clip units per render pixel at w = 1
+    float pixel_scale;       // render pixels per output pixel
+    float clip_y_up;         // sign of screen-up in corrected clip y
+    ivec4 modes;             // x: colour mode (0 field, 1 solid, 2 rgb), y: colormap, z: invert, w: axis or -1
+    ivec4 shape;             // x: 0 point (px size), 1 sphere, 2 cube LOD sprite; y: vertex format (0 xyz, 1 +scalar, 2 +rgba)
+};
+
+// A point's attribute as shape.y (PointVertexFormat) stores it: the scalar's bits
+// (1) or a packed RGBA8 colour (2); the other decodes to 0.0 / opaque white. The
+// 12-byte layout feeds z's bits, which kXyz ignores.
+void decodePointAttribute(uint bits, out float scalar, out vec4 color) {
+    scalar = shape.y == 1 ? uintBitsToFloat(bits) : 0.0;
+    // Spelled out: unpackUnorm4x8 is missing from GLSL ES 300 and GLSL 330.
+    uvec4 channels = uvec4(bits, bits >> 8u, bits >> 16u, bits >> 24u) & 0xFFu;
+    color = shape.y == 2 ? vec4(channels) / 255.0 : vec4(1.0);
+}
+
+layout(std140, binding = 8) uniform RenderMode {
+    ivec4 render_mode;  // x: 1 when writing the linear-light HDR target
+};
+
+// The colour in the space the current target holds.
+vec3 toTargetSpace(vec3 display_referred) {
+    return render_mode.x != 0 ? pow(max(display_referred, vec3(0.0)), vec3(2.2)) : display_referred;
+}

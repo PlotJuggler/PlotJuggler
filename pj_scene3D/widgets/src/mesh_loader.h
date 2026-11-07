@@ -5,7 +5,7 @@
 // CPU-side async mesh loader (design §B.4 + §3 embedded path). Imports STL /
 // Collada(DAE) / OBJ / glTF via assimp on a worker thread (QtConcurrent::run)
 // and returns a QFuture<MeshData> of interleaved vertices + indices. There is
-// NO GL here: the render pass (Prompt 3) owns buffer upload. Results are cached
+// no GPU work here: the view's model pass owns buffer upload. Results are cached
 // by resolved path so the same mesh referenced by multiple links loads once.
 
 #include <QByteArray>
@@ -19,7 +19,7 @@
 
 namespace pj::scene3d {
 
-// Stateless-ish loader with a path-keyed cache. Holds no GL state and is safe to
+// Stateless-ish loader with a path-keyed cache. Holds no GPU state and is safe to
 // keep on the entity. Both entry points run assimp on a QtConcurrent thread and
 // hand back a QFuture; a test may call .result() to block.
 class MeshLoader {
@@ -38,6 +38,7 @@ class MeshLoader {
   // Load from an in-memory buffer (embedded glTF / Waymo path, design §3). The
   // `format_hint` is an assimp extension hint without the dot (e.g. "glb",
   // "gltf", "dae") so assimp can pick the importer for headerless buffers.
+  // External texture refs are left in TextureSource::unresolved_ref (no directory to resolve against).
   QFuture<MeshData> loadFromMemory(
       const QByteArray& bytes, const QString& format_hint, std::optional<bool> flip_override = std::nullopt);
 

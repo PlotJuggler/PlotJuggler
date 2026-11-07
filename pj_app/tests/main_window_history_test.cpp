@@ -10,11 +10,18 @@
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTest>
+#include <QThread>
 #include <QTimer>
 #include <QToolButton>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -28,13 +35,14 @@
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_runtime/XmlCdata.h"
 #include "pj_widgets/Timeline.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 #include "support/gui_test_env.h"
@@ -194,6 +202,55 @@ std::vector<PJ::Timestamp> allDatasetsMarkerTimes(PJ::AppSession& app, std::stri
   return pj_test::markerTimes(app, PJ::kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic, owner);
 }
 
+// For one test: the production create budget, and every marker run computed on the
+// pool held until release() (a synchronous run on the GUI thread passes). Counts
+// every compute, held or not. The destructor releases and waits for the held computes
+// to return and their runs to publish before the probe goes, since a cancelled run's
+// compute is held on the pool although no binding is running.
+class HeldMarkerComputes {
+ public:
+  explicit HeldMarkerComputes(PJ::BatchEngine& engine)
+      : engine_(engine), previous_budget_(PJ::BatchEngine::setCreateBudgetForTest(PJ::BatchEngine::kCreateBudget)) {
+    QThread* const gui = QThread::currentThread();
+    PJ::BatchEngine::setComputeThreadProbeForTest([this, gui](QThread* thread) {
+      ++computes_;
+      ++holding_;
+      for (int waited_ms = 0; thread != gui && !released_.load() && waited_ms < 5000; ++waited_ms) {
+        QThread::msleep(1);
+      }
+      --holding_;
+    });
+  }
+  ~HeldMarkerComputes() {
+    release();
+    static_cast<void>(QTest::qWaitFor([this] { return idle() && engine_.runningIds().empty(); }, 5000));
+    PJ::BatchEngine::setComputeThreadProbeForTest({});
+    PJ::BatchEngine::setCreateBudgetForTest(previous_budget_);
+  }
+  HeldMarkerComputes(const HeldMarkerComputes&) = delete;
+  HeldMarkerComputes& operator=(const HeldMarkerComputes&) = delete;
+
+  void release() {
+    released_ = true;
+  }
+
+  [[nodiscard]] int computes() const {
+    return computes_.load();
+  }
+
+  // Whether no compute is inside the probe (held or about to be).
+  [[nodiscard]] bool idle() const {
+    return holding_.load() == 0;
+  }
+
+ private:
+  PJ::BatchEngine& engine_;
+  std::chrono::milliseconds previous_budget_;
+  std::atomic<bool> released_{false};
+  std::atomic<int> computes_{0};
+  std::atomic<int> holding_{0};
+};
+
 QString catalogKeyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
   for (const auto& curve : catalog.curves()) {
     if (const auto descriptor = catalog.curveDescriptor(curve.name);
@@ -218,7 +275,7 @@ QDomElement addSavedAbsoluteProcessor(
   processor.setAttribute(u"input_dataset_source"_s, source_name);
   processor.setAttribute(u"processor_id"_s, u"absolute"_s);
   processor.setAttribute(u"output_name"_s, topic_name + u"[Absolute]"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, processor, u"{}"_s);
+  PJ::appendJsonAsCdata(doc, processor, u"{}"_s);
   processors.appendChild(processor);
   return processor;
 }
@@ -783,7 +840,7 @@ TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTh
   ASSERT_NE(a, 0U);
   ASSERT_NE(b, 0U);
   constexpr std::string_view kRule = "test/global-rule";
-  PJ::MarkerService::GeneratorRecipe recipe;
+  PJ::BatchEngine::GeneratorRecipe recipe;
   recipe.id = std::string(kRule);
   recipe.all_datasets = true;
   recipe.inputs = {"/sensor/value"};
@@ -792,7 +849,7 @@ TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTh
     local s = series("/sensor/value")
     for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
   )";
-  const auto inserted = session.markerService().upsertGenerator(recipe);
+  const auto inserted = session.batchEngine().upsertGenerator(recipe);
   ASSERT_TRUE(inserted.has_value()) << (inserted.has_value() ? std::string{} : inserted.error());
   // Both datasets are aligned, so each contributes its two samples at their raw instants.
   const std::vector<PJ::Timestamp> baseline{100 * kSecond, 100 * kSecond, 110 * kSecond, 110 * kSecond};
@@ -821,6 +878,144 @@ TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTh
   PJ::MainWindowHistoryTestPeer::undo(window);
   EXPECT_EQ(session.sourceDisplayOffset(b).value.count(), 0);
   EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), redone);
+}
+
+// A run staged at a dragged offset is still computing when an undo restores the
+// offset: the undo re-creates the all-datasets rule, which cancels that run, so the
+// set is drawn in the restored frame when the undo returns and the cancelled run's
+// result never lands.
+TEST_F(MainWindowHistoryFixture, UndoOfADragDuringAGlobalRunDrawsTheRestoredFrame) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::SessionManager& session = app.sessionManager();
+  PJ::BatchEngine& engine = session.batchEngine();
+  const PJ::DatasetId a = addScalarDataset(app, "a", "/sensor", 100 * kSecond, 110 * kSecond);
+  const PJ::DatasetId b = addScalarDataset(app, "b", "/sensor", 100 * kSecond, 110 * kSecond);
+  ASSERT_NE(a, 0U);
+  ASSERT_NE(b, 0U);
+  constexpr std::string_view kRule = "test/global-rule";
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = std::string(kRule);
+  recipe.all_datasets = true;
+  recipe.inputs = {"/sensor/value"};
+  recipe.outputs = {std::string(PJ::kAllDatasetsMarkerTopic)};
+  recipe.script = R"(
+    local s = series("/sensor/value")
+    for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+  )";
+  ASSERT_TRUE(engine.upsertGenerator(recipe).has_value());
+  const std::vector<PJ::Timestamp> baseline{100 * kSecond, 100 * kSecond, 110 * kSecond, 110 * kSecond};
+  ASSERT_EQ(allDatasetsMarkerTimes(app, kRule), baseline);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  session.setDisplayOffset(a, PJ::DisplayOffset{PJ::Duration{20 * kSecond}});
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+
+  HeldMarkerComputes held(engine);
+  engine.refresh(kRule);
+  ASSERT_TRUE(engine.isRunning(kRule)) << "the refresh staged a's samples 20 s earlier";
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  ASSERT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), baseline) << "drawn in the restored frame when the undo returns";
+
+  held.release();
+  EXPECT_TRUE(QTest::qWaitFor([&] { return held.idle() && !engine.isRunning(kRule); }, 5000));
+  QTest::qWait(50);  // the cancelled run's publish would land here
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), baseline);
+}
+
+// A marker rule bound to dataset `dataset` drawing one marker per /sensor sample, or,
+// with `first_only`, at the first sample only.
+PJ::BatchEngine::GeneratorRecipe sensorRule(PJ::DatasetId dataset, bool first_only = false) {
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "test/slow-rule";
+  recipe.dataset_id = dataset;
+  recipe.inputs = {"/sensor/value"};
+  recipe.outputs = {std::string(PJ::sdk::kGlobalMarkerTopic)};
+  recipe.script = first_only ? R"(
+    local s = series("/sensor/value")
+    createMarker(s:at(0).t)
+  )"
+                             : R"(
+    local s = series("/sensor/value")
+    for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+  )";
+  return recipe;
+}
+
+// The sequential uid of the set `owner` last published for `output` on `dataset`:
+// a republish or a tombstone mints a new one.
+std::optional<std::uint64_t> publishUid(
+    PJ::AppSession& app, PJ::DatasetId dataset, std::string_view output, std::string_view owner) {
+  const PJ::ObjectStore& store = app.sessionManager().objectStore();
+  const std::optional<PJ::ObjectTopicId> id = store.findTopic(dataset, PJ::markerOwnerTopicName(output, owner));
+  const std::optional<PJ::ResolvedObjectEntry> entry =
+      id.has_value() ? store.latestAt(*id, std::numeric_limits<PJ::Timestamp>::max()) : std::nullopt;
+  return entry.has_value() ? std::optional<std::uint64_t>{entry->sequential_uid.value} : std::nullopt;
+}
+
+// An undo whose snapshot describes a live rule unchanged leaves it as it is drawn:
+// however slow the rule, nothing runs, and its set is neither tombstoned nor
+// republished.
+TEST_F(MainWindowHistoryFixture, UndoOfAnotherStepLeavesASlowRuleDrawnAndRunsNothing) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::SessionManager& session = app.sessionManager();
+  const PJ::DatasetId a = addScalarDataset(app, "a", "/sensor", 100 * kSecond, 110 * kSecond);
+  ASSERT_NE(a, 0U);
+  const PJ::BatchEngine::GeneratorRecipe recipe = sensorRule(a);
+  const auto inserted = session.batchEngine().upsertGenerator(recipe);
+  ASSERT_TRUE(inserted.has_value()) << (inserted.has_value() ? std::string{} : inserted.error());
+  const std::string_view output = PJ::sdk::kGlobalMarkerTopic;
+  const std::vector<PJ::Timestamp> baseline{100 * kSecond, 110 * kSecond};
+  ASSERT_EQ(pj_test::markerTimes(app, a, output, recipe.id), baseline);
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  plot->setStateId(u"slow-rule-before"_s);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  plot->setStateId(u"slow-rule-after"_s);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  const std::optional<std::uint64_t> drawn = publishUid(app, a, output, recipe.id);
+  ASSERT_TRUE(drawn.has_value());
+
+  const HeldMarkerComputes held(session.batchEngine());
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(held.computes(), 0) << "the rule did not change, so it does not run";
+  EXPECT_TRUE(session.batchEngine().runningIds().empty());
+  EXPECT_EQ(publishUid(app, a, output, recipe.id), drawn) << "the drawn set is left as it is";
+  EXPECT_EQ(pj_test::markerTimes(app, a, output, recipe.id), baseline);
+}
+
+// An undo that changes a rule runs it to completion before it returns, however slow
+// the run: the user expects the previous markers back, not a blank set while it
+// computes. The run is computed on the GUI thread, so the held pool computes never
+// delay it.
+TEST_F(MainWindowHistoryFixture, UndoThatChangesASlowRuleDrawsItsRestoredMarkersWhenItReturns) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::SessionManager& session = app.sessionManager();
+  PJ::BatchEngine& engine = session.batchEngine();
+  const PJ::DatasetId a = addScalarDataset(app, "a", "/sensor", 100 * kSecond, 110 * kSecond);
+  ASSERT_NE(a, 0U);
+  const std::string_view output = PJ::sdk::kGlobalMarkerTopic;
+  const PJ::BatchEngine::GeneratorRecipe recipe = sensorRule(a);
+  ASSERT_TRUE(engine.upsertGenerator(recipe).has_value());
+  const std::vector<PJ::Timestamp> baseline{100 * kSecond, 110 * kSecond};
+  ASSERT_EQ(pj_test::markerTimes(app, a, output, recipe.id), baseline);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  ASSERT_TRUE(engine.upsertGenerator(sensorRule(a, /*first_only=*/true)).has_value());
+  ASSERT_EQ(pj_test::markerTimes(app, a, output, recipe.id), std::vector<PJ::Timestamp>{100 * kSecond});
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+
+  const HeldMarkerComputes held(engine);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(held.computes(), 1) << "the changed rule ran once";
+  EXPECT_FALSE(engine.isRunning(recipe.id)) << "the undo waited for the run";
+  ASSERT_NE(engine.firstBinding(recipe.id), nullptr);
+  EXPECT_EQ(engine.firstBinding(recipe.id)->script, recipe.script) << "the snapshot's rule is installed";
+  EXPECT_EQ(pj_test::markerTimes(app, a, output, recipe.id), baseline) << "its markers are drawn when the undo returns";
 }
 
 TEST_F(MainWindowHistoryFixture, ProgressiveDrainRestoresOffsetsGlobalMarkersAndHiddenScopeRows) {
@@ -905,13 +1100,21 @@ TEST_F(MainWindowHistoryFixture, ProgressiveDrainRestoresOffsetsGlobalMarkersAnd
   EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
   session.setDatasetSourcePath(a, source_a);
   session.setDatasetSourcePath(b, source_b);
+  // A layout load does not wait for a slow rule: it returns with the run in flight,
+  // and the markers and their scope row arrive with the run's later publish.
+  HeldMarkerComputes held(session.batchEngine());
   PJ::MainWindowHistoryTestPeer::drainProgressiveRestore(window);
   EXPECT_FALSE(PJ::MainWindowHistoryTestPeer::progressiveRestoreInFlight(window));
   EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 20 * kSecond);
+  EXPECT_TRUE(allDatasetsMarkerTimes(app, "test/progressive-global").empty()) << "the run is still computing";
   plot = ensureCurrentPlot(window);
   ASSERT_NE(plot, nullptr);
-  EXPECT_FALSE(plot->markerScopeRows().empty());
-  EXPECT_FALSE(plot->datasetMarkerScopeVisible(a, PJ::MarkerScope::kAllDatasets));
+  EXPECT_TRUE(plot->markerScopeRows().empty()) << "nothing is published yet";
+
+  held.release();
+  EXPECT_TRUE(QTest::qWaitFor([&plot] { return !plot->markerScopeRows().empty(); }, 5000))
+      << "the late publish brings the scope row";
+  EXPECT_FALSE(plot->datasetMarkerScopeVisible(a, PJ::MarkerScope::kAllDatasets)) << "the saved hidden scope survives";
   // Only a carries /sensor; replayed under its restored 20 s offset, raw 100/200 sit at 80/180.
   EXPECT_EQ(
       allDatasetsMarkerTimes(app, "test/progressive-global"),

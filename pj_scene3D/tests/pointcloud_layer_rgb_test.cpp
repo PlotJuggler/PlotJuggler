@@ -22,15 +22,15 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
-#include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 using namespace Qt::StringLiterals;
 
 namespace {
 
 using namespace pj::scene3d::test;
-using ColorType = pj::scene3d::PointcloudRenderPass::ColorType;
+using ColorType = pj::scene3d::PointColorType;
 using DT = PJ::sdk::PointField::Datatype;
 
 constexpr std::string_view kSchema = "mock/point_cloud";

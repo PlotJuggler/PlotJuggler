@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -19,6 +20,9 @@
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_scene2d_core/borrowed_media_source.h"
+#include "pj_scene2d_core/composite_media_source.h"
+#include "pj_scene2d_core/depth_pipeline_source.h"
 #include "test_png_io.h"
 
 namespace {
@@ -160,7 +164,8 @@ struct FrameSync {
   std::condition_variable cv;
   bool ready = false;
 
-  void install(PJ::ImagePipelineSource& source) {
+  template <class Source>
+  void install(Source& source) {
     source.setFrameReadyCallback([this]() {
       std::lock_guard lock(mutex);
       ready = true;
@@ -606,6 +611,56 @@ TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedRawRgb8) {
   EXPECT_EQ(*frame->base->pixels, rgb);
 }
 
+// A delivered frame carries the image's own stamp on the dataset clock (its payload's, plus the shift a merge gave the
+// entry), which annotations made from it carry, and the time of its store entry. Both canonical sources.
+TEST(ImagePipelineSourceTest, CanonicalFramesCarryThePayloadStampOnTheDatasetClock) {
+  constexpr int64_t kSec = 1'000'000'000;
+  const char* kMetadata = R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})";
+  for (const bool depth : {false, true}) {
+    SCOPED_TRACE(depth);
+    const std::vector<uint8_t> bytes(depth ? 2 : 3, 7);  // one pixel
+    PJ::sdk::Image image;
+    image.width = 1;
+    image.height = 1;
+    image.encoding = depth ? "16UC1" : "rgb8";
+    image.data = PJ::Span<const uint8_t>(bytes.data(), bytes.size());
+    PJ::ObjectStore store;
+    const auto anchor = store.registerTopic({PJ::DatasetId{1}, "/cam", kMetadata});
+    const auto merged = store.registerTopic({PJ::DatasetId{2}, "/cam", kMetadata});
+    ASSERT_TRUE(anchor && merged);
+    image.timestamp_ns = 1'000;
+    ASSERT_TRUE(store.pushOwned(*anchor, 1'000, PJ::serializeImage(image)));
+    image.timestamp_ns = 3 * kSec;  // its entry is at 5 s
+    ASSERT_TRUE(store.pushOwned(*merged, 5 * kSec, PJ::serializeImage(image)));
+    ASSERT_TRUE(store.mergeDatasets(PJ::DatasetId{1}, {{PJ::DatasetId{2}, 2 * kSec}}));
+
+    FrameSync sync;
+    std::unique_ptr<PJ::MediaSource> source;
+    if (depth) {
+      auto made = std::make_unique<PJ::DepthPipelineSource>(&store, *anchor);
+      sync.install(*made);
+      source = std::move(made);
+    } else {
+      auto made =
+          std::make_unique<PJ::ImagePipelineSource>(&store, *anchor, PJ::ImagePipelineSource::CanonicalImageCodec{});
+      sync.install(*made);
+      source = std::move(made);
+    }
+    source->setTimestamp(7 * kSec);
+    ASSERT_TRUE(sync.waitReady());
+    const auto frame = source->takeFrame();
+    ASSERT_TRUE(frame);
+    // Depth arrives as a pixel layer, an image as the base; the compositor takes either as the shown frame.
+    ASSERT_TRUE(depth ? frame->pixel_layers.size() == 1 : frame->base.has_value());
+    const PJ::DecodedFrame& shown = depth ? frame->pixel_layers[0].frame : *frame->base;
+    EXPECT_EQ(shown.stamp, std::optional<int64_t>(5 * kSec));
+    EXPECT_EQ(shown.entry_ts, std::optional<int64_t>(7 * kSec));  // a depth frame's pts is its own stamp
+    if (!depth) {
+      EXPECT_EQ(shown.pts, 7 * kSec);
+    }
+  }
+}
+
 TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedPngWrappedRgb8) {
   // The real Mosaico shape: a serialized sdk::Image whose encoding is "rgb8" but
   // whose data is the flat buffer wrapped in a grayscale PNG (width=row_step).
@@ -674,6 +729,29 @@ TEST(ImagePipelineSourceTest, CpuFallbackRectifiesToNativeResolutionWithNoMap) {
   EXPECT_EQ(frame->base->width, 8);
   EXPECT_EQ(frame->base->height, 6);
   EXPECT_EQ(frame->base->rectify_map, nullptr);
+}
+
+TEST(ImagePipelineSourceTest, CalibrationEligibilityRemainsAvailableWithRectifyTurnedOff) {
+  using Status = PJ::ImagePipelineSource::RectificationStatus;
+  for (const auto& [frame_id, expected] : std::vector<std::pair<std::string, Status>>{
+           {"", Status::kMissingFrameId}, {"other", Status::kMissingCalibration}, {"cam", Status::kReady}}) {
+    PJ::ObjectStore store;
+    const auto topic = store.registerTopic({PJ::DatasetId{1}, "/image", "{}"});
+    ASSERT_TRUE(topic);
+    ASSERT_TRUE(store.pushOwned(*topic, 1000, makeRawRgbBlob(4, 3, frame_id, std::vector<uint8_t>(36, 128))));
+    FrameSync sync;
+    PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+    EXPECT_EQ(source.rectificationStatus(), Status::kWaitingForImage);
+    source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
+    source.setRectifyEnabled(false);
+    sync.install(source);
+    source.setTimestamp(1000);
+    ASSERT_TRUE(sync.waitReady());
+    EXPECT_EQ(source.rectificationStatus(), expected) << frame_id;
+    const auto frame = source.takeFrame();
+    ASSERT_TRUE(frame && frame->base);
+    EXPECT_EQ(frame->base->width, 4);
+  }
 }
 
 TEST(ImagePipelineSourceTest, GpuModeKeepsRawFrameAndAttachesRectifyMap) {
@@ -814,4 +892,126 @@ TEST(ImagePipelineSourceTest, RectifyReEnabledRedecodesAndRectifies) {
     EXPECT_EQ(frame->base->width, 8);
     EXPECT_EQ(frame->base->height, 6);
   }
+}
+
+namespace {
+
+/// A serialized 2x1 rgb8 image, or an empty one (the image a derived topic's tombstone holds).
+std::vector<uint8_t> canonicalImage(bool empty) {
+  static const std::vector<uint8_t> kRgb = {10, 20, 30, 40, 50, 60};
+  PJ::sdk::Image img;
+  if (!empty) {
+    img.width = 2;
+    img.height = 1;
+    img.encoding = "rgb8";
+    img.row_step = 6;
+    img.data = PJ::Span<const uint8_t>(kRgb.data(), kRgb.size());
+  }
+  return PJ::serializeImage(img);
+}
+
+constexpr int64_t kFindingTimestamp = INT64_MIN;  // where a derived finding's entry sits (pj_runtime)
+
+}  // namespace
+
+// A derived image finding sits at INT64_MIN: it decodes, also when the cursor is before its real stamp. The memo is
+// the entry's UID, so no stamp can pass for "nothing delivered yet".
+TEST(ImagePipelineSourceTest, AnEntryAtTheEarliestStampDecodes) {
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/finding", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, kFindingTimestamp, canonicalImage(false)));
+
+  FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  sync.install(source);
+  source.setTimestamp(5'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+  EXPECT_EQ(frame->base->width, 2);
+}
+
+// An empty image (a derived tombstone) clears what was shown: an explicit clear sample with no pixels, which the
+// compositor turns into a layer with no pixel contribution. Nothing new at a later cursor stays "no update".
+TEST(ImagePipelineSourceTest, AnEmptyImageClearsThePixels) {
+  using Status = PJ::ImagePipelineSource::RectificationStatus;
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/derived", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, makeRawRgbBlob(2, 1, "cam", std::vector<uint8_t>(6, 128))));
+  ASSERT_TRUE(store.pushOwned(*topic, 2'000, canonicalImage(true)));
+
+  FrameSync sync;
+  PJ::ImagePipelineSource image(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  image.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 2, 1)}});
+  sync.install(image);
+  PJ::CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<PJ::BorrowedMediaSource>(&image), 1.0f, &image);
+
+  composite.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto shown = composite.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_EQ(shown->pixel_layers.size(), 1u);
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
+
+  composite.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto cleared = composite.takeFrame();
+  ASSERT_TRUE(cleared.has_value()) << "a clear is an update";
+  EXPECT_TRUE(cleared->pixel_layers.empty());
+  EXPECT_FALSE(cleared->base.has_value());
+  EXPECT_EQ(image.rectificationStatus(), Status::kWaitingForImage);
+
+  composite.setTimestamp(2'500);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(composite.takeFrame().has_value()) << "the same entry again is no update";
+}
+
+// A seek before the delivered entry's stamp with nothing at the new time clears the pixels (a derived image computed
+// only later must not stay on screen); a later time with no new entry stays "no update".
+TEST(ImagePipelineSourceTest, ASeekBeforeTheShownEntryClearsThePixels) {
+  using Status = PJ::ImagePipelineSource::RectificationStatus;
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/derived", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 2'000, makeRawRgbBlob(2, 1, "cam", std::vector<uint8_t>(6, 128))));
+
+  FrameSync sync;
+  PJ::ImagePipelineSource image(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  image.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 2, 1)}});
+  sync.install(image);
+  image.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto shown = image.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_TRUE(shown->base.has_value());
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
+
+  image.setTimestamp(3'000);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(image.takeFrame().has_value()) << "the same entry is no update";
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
+
+  image.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady()) << "a clear is an update";
+  auto cleared = image.takeFrame();
+  ASSERT_TRUE(cleared.has_value());
+  EXPECT_FALSE(cleared->base.has_value());
+  EXPECT_EQ(image.rectificationStatus(), Status::kWaitingForImage);
+
+  image.setTimestamp(500);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(image.takeFrame().has_value()) << "nothing shown: nothing more to clear";
+  image.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  shown = image.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  EXPECT_TRUE(shown->base.has_value()) << "the entry decodes again";
+  EXPECT_EQ(image.rectificationStatus(), Status::kReady);
 }

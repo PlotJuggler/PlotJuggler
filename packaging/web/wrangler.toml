@@ -1,0 +1,40 @@
+# The hosted browser app (packaging/web/README.md). Deploy only through deploy.mjs, which uploads a
+# release to the bucket and passes its prefix as RELEASE. Not "plotjuggler-web": that Worker serves
+# the plotjuggler.io website, and a deploy under its name would replace it.
+name = "plotjuggler-app"
+main = "worker.mjs"
+compatibility_date = "2025-09-01"
+workers_dev = false
+routes = [
+  { pattern = "app.plotjuggler.io", custom_domain = true },
+  { pattern = "stats.plotjuggler.io", custom_domain = true },
+]
+
+[vars]
+STATS_HOST = "stats.plotjuggler.io"
+
+[[r2_buckets]]
+binding = "SITE"
+bucket_name = "plotjuggler-web"
+
+# The telemetry Worker (PlotJuggler/pj-telemetry): its dashboard and the /telemetry ingest.
+[[services]]
+binding = "TELEMETRY"
+service = "plotjuggler"
+
+# A preview on workers.dev: the same bucket and telemetry Worker, no custom domain.
+[env.preview]
+name = "plotjuggler-app-preview"
+workers_dev = true
+routes = []
+
+[env.preview.vars]
+STATS_HOST = "stats.invalid"
+
+[[env.preview.r2_buckets]]
+binding = "SITE"
+bucket_name = "plotjuggler-web"
+
+[[env.preview.services]]
+binding = "TELEMETRY"
+service = "plotjuggler"

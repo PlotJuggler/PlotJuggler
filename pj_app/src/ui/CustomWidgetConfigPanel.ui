@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CustomWidgetConfigPanel</class>
+ <widget class="QWidget" name="CustomWidgetConfigPanel">
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="PJ::SectionHeaderBand" name="headerBand">
+     <property name="text">
+      <string>Custom Widget</string>
+     </property>
+     <property name="titleObjectName">
+      <string>labelWidgetName</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="headerBody" native="true">
+     <layout class="QVBoxLayout" name="headerBodyLayout">
+      <item>
+       <widget class="QLabel" name="labelPluginName">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="pjMuted" stdset="0">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="labelMissingReason">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="textInteractionFlags">
+         <set>Qt::TextSelectableByMouse</set>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QStackedWidget" name="bodyStack">
+     <widget class="QWidget" name="formPage">
+      <layout class="QVBoxLayout" name="formPageLayout">
+       <property name="spacing">
+        <number>0</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QScrollArea" name="formScrollArea">
+         <property name="frameShape">
+          <enum>QFrame::NoFrame</enum>
+         </property>
+         <property name="horizontalScrollBarPolicy">
+          <enum>Qt::ScrollBarAlwaysOff</enum>
+         </property>
+         <property name="widgetResizable">
+          <bool>true</bool>
+         </property>
+         <widget class="QWidget" name="formContents">
+          <layout class="QVBoxLayout" name="formContentsLayout">
+           <property name="spacing">
+            <number>0</number>
+           </property>
+           <property name="leftMargin">
+            <number>0</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>0</number>
+           </property>
+           <property name="bottomMargin">
+            <number>0</number>
+           </property>
+           <item>
+            <widget class="PJ::SectionHeaderBand" name="inputsBand">
+             <property name="text">
+              <string>Inputs</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QWidget" name="inputsHost" native="true">
+             <layout class="QVBoxLayout" name="inputsLayout"/>
+            </widget>
+           </item>
+           <item>
+            <widget class="PJ::SectionHeaderBand" name="settingsBand">
+             <property name="text">
+              <string>Settings</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QWidget" name="settingsHost" native="true">
+             <layout class="QVBoxLayout" name="settingsHostLayout">
+              <item>
+               <widget class="QLabel" name="labelNoSettings">
+                <property name="text">
+                 <string>This widget has no settings.</string>
+                </property>
+                <property name="wordWrap">
+                 <bool>true</bool>
+                </property>
+                <property name="pjMuted" stdset="0">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <layout class="QFormLayout" name="settingsForm">
+                <property name="fieldGrowthPolicy">
+                 <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                </property>
+                <property name="labelAlignment">
+                 <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                </property>
+               </layout>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <spacer name="formBottomSpacer">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>0</width>
+               <height>0</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="chooserPage">
+      <layout class="QVBoxLayout" name="chooserPageLayout">
+       <property name="spacing">
+        <number>0</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="PJ::SectionHeaderBand" name="chooserBand">
+         <property name="text">
+          <string>Choose a series</string>
+         </property>
+         <property name="filterPlaceholder">
+          <string>Filter...</string>
+         </property>
+         <property name="filterFieldName">
+          <string>customWidgetSeriesFilter</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="PJ::CurveTreeView" name="chooserTree"/>
+       </item>
+       <item>
+        <widget class="QWidget" name="chooserFooter" native="true">
+         <layout class="QHBoxLayout" name="chooserFooterLayout">
+          <item>
+           <widget class="QLabel" name="labelChooserHint">
+            <property name="text">
+             <string>Double-click a series to wire it.</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+            <property name="pjMuted" stdset="0">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="buttonCancelChooser">
+            <property name="text">
+             <string>Cancel</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>PJ::SectionHeaderBand</class>
+   <extends>QWidget</extends>
+   <header>pj_widgets/SectionHeaderBand.h</header>
+  </customwidget>
+  <customwidget>
+   <class>PJ::CurveTreeView</class>
+   <extends>QTreeWidget</extends>
+   <header>pj_widgets/CurveTreeView.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

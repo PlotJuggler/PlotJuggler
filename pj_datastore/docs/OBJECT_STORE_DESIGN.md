@@ -12,6 +12,7 @@ expanded into scalar columns at ingest time.
 - timestamped entries per topic, kept in non-decreasing order (out-of-order pushes are inserted, not dropped)
 - eager payload storage through `pushOwned()`
 - lazy payload storage through `pushLazy()`
+- atomic publication of one entry to each of several topics (`pushOwnedBundle()`)
 - at-or-before timestamp lookup
 - entry-index lookup and timestamp views
 - per-topic retention budgets
@@ -19,7 +20,10 @@ expanded into scalar columns at ingest time.
 
 It does not decode payloads, interpret metadata, choose renderers, or own UI
 policy. Topic metadata is opaque JSON retained verbatim for callers that need to
-interpret object bytes.
+interpret object bytes. The one exception is `stampLegacyMarkerMetadata`
+(`marker_topic_metadata.hpp`): registration gives a direct write to a 0.35
+`__markers__/<key>` name the metadata that marks it as a plot-markers topic, so
+nothing else has to read marker names.
 
 ## Data Model
 
@@ -161,6 +165,23 @@ so the budget bounds logical payload bytes, not anchor-backed RSS.
 Both write paths apply the topic retention budget after the new entry is
 inserted.
 
+### Bundle publication
+
+`pushOwnedBundle(writes)` publishes one entry to each of several distinct topics as
+one transaction; what fails, what a failure leaves and what readers see is the
+contract on `ObjectStore::pushOwnedBundle` and `OwnedObjectWrite` in
+`object_store.hpp`. Nothing is refused for size: the result ring that uses it evicts,
+it never rejects (docs/derived_objects/ARCHITECTURE.md §9). The ring trims its window
+with `drop` and evicts all of a node's outputs at one stamp in one bundle (`append =
+false` plus a `drop`), so a node's outputs never disagree.
+
+Both phases run under the exclusive store lock. Phase 1 changes no topic: it validates
+the writes, runs each `drop` once per entry into a removal plan
+(`OrderedEntries::planRemoval`) and allocates the new entries. Phase 2 applies each plan
+in place (`OrderedEntries::remove` compacts the entries and timestamps and renumbers the
+UID order in O(n), with no copy and no sort), then appends through the insert path
+`pushOwned` uses.
+
 ## Dataset Merge
 
 `ObjectStore::mergeDatasets(anchor, sources)` is the object-side companion to the
@@ -188,8 +209,9 @@ caller-supplied raw timestamp shifts.
   delta in `ObjectEntry::payload_stamp_shift` (carried through `resolveEntry` to
   `ResolvedObjectEntry`). A consumer that keys off payload-embedded stamps adds
   it; one that keys off the store `timestamp` ignores it. It is 0 for unmerged
-  data and accumulates across chained merges. The one consumer today is the 3D TF
-  buffer, which indexes history by each transform's own inner stamp.
+  data and accumulates across chained merges. Consumers that key off payload
+  stamps add it: `TransformService` (TF history is indexed by each transform's own
+  inner stamp), the marker `BatchEngine` and the script `InputStager`.
 
 ## Read Paths
 
@@ -205,6 +227,12 @@ in-order array slot, unaffected by the `uid_order` index).
 topic/generation).
 
 `indexAt(id, timestamp)` returns the index that `latestAt()` would resolve.
+`indexOf(id, uid)` returns an entry's index by its UID, which equal stamps do not
+alias. `contentIdentity(id)` returns the topic's two revisions (process-unique, so a
+topic id reused after a clear never repeats them): `content` moves on every change,
+`rewrite` only on one a UID cursor plus a timestamp floor cannot follow (anything but
+an append at or after the newest stamp or a front eviction). The streaming video decoder
+refreshes its index from them.
 
 `latestEntryIdAt(id, timestamp)` returns the `{sequential_uid, timestamp}` identity
 of the entry `latestAt()` would resolve, without resolving its payload (metadata
@@ -231,6 +259,13 @@ UID, which an out-of-order insert (old ts, newest UID) can leave *below* a retai
 entry's. A live time-window consumer that tracks "everything consumed up to `t`"
 must advance its cursor to this, not to `latestAt`'s UID, or a late out-of-order
 entry is re-detected every tick. O(count of entries with `ts <= t`).
+
+`oldestArrivalAfter(id, uid)` returns the oldest timestamp among the entries with
+UID strictly greater than `uid` (nullopt when none): a consumer that evaluated
+everything up to some time, as the store held it when `uid` was minted, finds an
+out-of-order or same-stamp arrival at or before that time without resolving
+anything. O(log n + those entries), so a cursor with nothing new costs one
+binary search (the on-demand series' late-arrival check).
 
 `rangeByTime(id, lo, hi)` returns the entries with `lo < ts <= hi` as
 `(uid, timestamp)` pairs in ascending-timestamp order — the correct primitive for
@@ -303,12 +338,19 @@ Retention is configured per topic:
   payloads plus lazy `resident_bytes`) is at or below the cap.
 - `max_entries > 0`: keep at most that many of the most recent entries.
 
-Either axis can be zero to disable that axis. Both zero disables automatic
-retention.
+Each axis is disabled by zero. All three zero disables automatic retention.
 
 Automatic retention runs on push and after `flushTo()` / `mergeDatasets()`. Explicit
 eviction is available through `evictBefore(id, threshold)` and
-`evictAllBefore(threshold)`.
+`evictAllBefore(threshold)`, which trim the oldest prefix. Removing entries anywhere in
+a topic is a bundle with `append = false` and a `drop` predicate (above).
+
+Each limit, and each explicit eviction, counts the oldest entries it expires (a binary
+search for a time floor, a forward byte sum for the memory cap, the excess for the entry
+cap) and evicts them in one pass (`OrderedEntries::evictFront(count, removed)`), so a
+retention jump (a shrunk window, a resume far past a paused tail) costs O(size), not one
+pass per entry: 100k expired entries take about 8 ms instead of 1.3 s under the series
+write lock (`ObjectStoreBundleBench.RetentionJump`).
 
 Memory accounting includes owned payloads and each lazy entry's `resident_bytes`.
 Seeded bytes are charged to the ResidentPayloadPool instead, never to the series.
@@ -318,7 +360,9 @@ Seeded bytes are charged to the ResidentPayloadPool instead, never to the series
 The store has one global shared mutex for topic lookup and one shared mutex per
 topic series. Reads can proceed concurrently with reads on the same or different
 topics. Writes take the target topic's exclusive lock. Topic registration,
-removal, and `clear()` take the global exclusive lock.
+removal, `clear()` and `pushOwnedBundle()` take the global exclusive lock; a bundle
+holds it through both of its phases, so it blocks every reader and writer of every
+topic while it runs.
 
 The per-series `uid_order` side index (inside `OrderedEntries`) is maintained
 under that same per-series mutex as `entries`, written exclusively in lockstep
@@ -336,9 +380,9 @@ mutex. The global store lock is released before the resolve too (the snapshot
 owns every capture it needs), so a slow fetch never stalls registration-level
 exclusive operations either; `latestAt` re-takes it only to write the warm
 cache back. An entry evicted mid-resolve is
-harmless (the snapshot owns its captures); the warm cache may then briefly
-memoize that already-evicted payload, bounded at one per topic, until the next
-differing read replaces it.
+harmless (the snapshot owns its captures), and `latestAt` checks under the series lock
+that the entry is still in the series before it memoizes the payload, so the warm cache
+never holds an evicted one.
 
 The ResidentPayloadPool has its own mutex, taken briefly by seed admission and
 by slot retirement. Payload anchors of evicted seeds are always released outside
@@ -399,9 +443,10 @@ removes the underlying topic.
 Core behavior is covered by:
 
 - `pj_datastore/tests/ordered_entries_test.cpp` (the `OrderedEntries` invariant
-  at the value-type boundary — in/out-of-order push, evict, re-UID, rebuild,
-  shift, and the cross-series bulk moves)
-- `pj_datastore/tests/object_store_test.cpp`
+  at the value-type boundary — in/out-of-order push, evict, removal anywhere,
+  re-UID, rebuild, shift, and the cross-series bulk moves)
+- `pj_datastore/tests/object_store_test.cpp` (bundle publication and
+  `ObjectStoreBundleBench`, a `PJ_BENCH=1` measurement of one publication)
 - `pj_datastore/tests/plugin_data_host_object_test.cpp`
 - `pj_datastore/tests/plugin_data_host_object_read_test.cpp`
 - `pj_datastore/tests/plugin_parser_object_write_test.cpp`
@@ -430,7 +475,7 @@ a drain never reports past what it returns.
 
 Waiting for the series lock is acceptable here because no drain runs on a
 latency-critical thread: FrameTransforms are decoded by the worker-side ingest
-tap (see `pj_scene3D`), and the remaining drains are cold rebuilds. A writer's
+tap (`ObjectIngestTap.h`, claimed by `pj_runtime`'s `TransformService`), and the remaining drains are cold rebuilds. A writer's
 exclusive hold does have a real worst case — `OrderedEntries::push`'s
 out-of-order branch is O(n) under the exclusive series lock (~1.1 ms/push at
 200k entries) — so a future GUI-thread consumer would need a non-blocking

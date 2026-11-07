@@ -3,7 +3,10 @@
 
 #include "pj_runtime/PluginRuntimeCatalog.h"
 
+#include <QLibraryInfo>
+#include <QVersionNumber>
 #include <algorithm>
+#include <cstdio>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string_view>
@@ -12,10 +15,13 @@
 #include <unordered_set>
 #include <utility>
 
+#include "ShippedQtModules.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/toolbox_protocol.h"
 #include "pj_marketplace/plugin_compatibility.hpp"
 #include "pj_marketplace/version_compare.hpp"
+#include "pj_plugins/widget_protocol.h"
+#include "pj_plugins/widget_types.hpp"
 
 namespace PJ {
 
@@ -64,6 +70,59 @@ std::string normalizeExtension(std::string ext) {
 bool extensionEquals(std::string_view lhs, std::string_view rhs) {
   const auto fold = [](char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; };
   return std::ranges::equal(lhs, rhs, [&](char a, char b) { return fold(a) == fold(b); });
+}
+
+// Whether a loaded library of `family` may leave the process's catalog by any other way than a user
+// disable: dropped when its file vanishes, evicted and reloaded when the file is rewritten, superseded
+// by a static registration. A Widget library may not: Qt calls into the widgets it created at times
+// the host does not control, so its panels must keep finding the same code. A rewritten file is
+// reported once as "updated on disk; restart required" instead. The SDK loader keeps the library
+// mapped for the life of the process whatever the catalog does with the WidgetLibrary object.
+constexpr bool unloadableFamily(PluginFamily family) {
+  return family != PluginFamily::kWidget;
+}
+
+std::string majorMinor(int major, int minor) {
+  return std::to_string(major) + "." + std::to_string(minor);
+}
+
+/// The loader's message, or its Qt-version reading (with the raw text kept) when that is what failed.
+std::string readableLoadFailure(const std::string& loader_message) {
+  const QVersionNumber host = QLibraryInfo::version();
+  const std::string qt = describeQtVersionLoadFailure(loader_message, host.majorVersion(), host.minorVersion());
+  return qt.empty() ? loader_message : qt + " [" + loader_message + "]";
+}
+
+// Why a Widget library's Qt build cannot be shared with this host, or nullopt when it can. The
+// widget objects live in the host's Qt, so the plugin must have been compiled against the same
+// major.minor (patch ignored), the same compiler family, and, where debug and release runtimes do
+// not mix (MSVC), the same configuration. The reason is a user-facing sentence: the dock shows it
+// in place of the missing widget.
+std::optional<std::string> widgetBuildMismatch(const PJ_widget_build_info_t* info) {
+  if (info == nullptr) {
+    return "this widget does not report which Qt it was built with";
+  }
+  const QVersionNumber host = QLibraryInfo::version();
+  const int host_major = host.majorVersion();
+  const int host_minor = host.minorVersion();
+  if (static_cast<int>(info->qt_major) != host_major || static_cast<int>(info->qt_minor) != host_minor) {
+    return "this widget needs Qt " + majorMinor(static_cast<int>(info->qt_major), static_cast<int>(info->qt_minor)) +
+           " (PlotJuggler uses " + majorMinor(host_major, host_minor) + ")";
+  }
+  const std::string_view compiler =
+      info->compiler.data == nullptr ? std::string_view{} : std::string_view(info->compiler.data, info->compiler.size);
+  if (!compiler.empty() && compiler != widgetCompilerFamily()) {
+    return "this widget was built with " + std::string(compiler) + " (PlotJuggler is built with " +
+           std::string(widgetCompilerFamily()) + ")";
+  }
+#if defined(_MSC_VER)
+  const bool plugin_debug = (info->flags & PJ_WIDGET_BUILD_DEBUG) != 0;
+  if (plugin_debug != QLibraryInfo::isDebugBuild()) {
+    return plugin_debug ? "this widget was built in debug configuration (PlotJuggler is a release build)"
+                        : "this widget was built in release configuration (PlotJuggler is a debug build)";
+  }
+#endif
+  return std::nullopt;
 }
 
 // Probes a fresh plugin instance and returns its capability mask, or nullopt
@@ -267,13 +326,16 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
 
 void PluginRuntimeCatalog::scanDirectory() {
   // Statically registered plugins have no backing file; a rescan only rebuilds
-  // the DSO-backed set.
-  const auto drop_dso_backed = [](auto& vec) {
-    std::erase_if(vec, [](const auto& plugin) { return !isStaticPath(plugin.path); });
+  // the DSO-backed set, and a family that may not unload keeps what it loaded.
+  const auto drop_dso_backed = [](auto& vec, PluginFamily family) {
+    if (unloadableFamily(family)) {
+      std::erase_if(vec, [](const auto& plugin) { return !isStaticPath(plugin.path); });
+    }
   };
-  drop_dso_backed(data_sources_);
-  drop_dso_backed(message_parsers_);
-  drop_dso_backed(toolbox_plugins_);
+  drop_dso_backed(data_sources_, PluginFamily::kDataSource);
+  drop_dso_backed(message_parsers_, PluginFamily::kMessageParser);
+  drop_dso_backed(toolbox_plugins_, PluginFamily::kToolbox);
+  drop_dso_backed(widget_plugins_, PluginFamily::kWidget);
 
   for (const PluginDescriptor& descriptor : collectDeduplicatedPlugins()) {
     if (!loadAndRegister(descriptor)) {
@@ -294,23 +356,33 @@ bool PluginRuntimeCatalog::reload() {
   }
 
   bool changed = false;
-  auto drop_missing = [&](auto& vec, std::string_view family) {
+  auto drop_missing = [&](auto& vec, PluginFamily family, std::string_view family_name) {
     const auto before = vec.size();
     std::erase_if(vec, [&](const auto& plugin) {
+      if (!unloadableFamily(family)) {
+        // Kept whatever happened to its file (static or not); a user disable still withdraws it, so
+        // no new panel can use it, while the panels already running it keep the mapped code.
+        const bool disabled = disabled_ids_.contains(plugin.id);
+        if (disabled) {
+          report(DiagnosticLevel::kInfo, plugin.id, plugin.id + ": disabled by user, withdrawn from the catalog");
+        }
+        return disabled;
+      }
       if (isStaticPath(plugin.path)) {
         return false;  // no backing file to go missing
       }
       const bool gone = std::find(on_disk.begin(), on_disk.end(), plugin.path) == on_disk.end();
       if (gone) {
-        report(DiagnosticLevel::kInfo, plugin.id, "Unloaded " + std::string(family) + ": " + plugin.path);
+        report(DiagnosticLevel::kInfo, plugin.id, "Unloaded " + std::string(family_name) + ": " + plugin.path);
       }
       return gone;
     });
     changed = changed || vec.size() != before;
   };
-  drop_missing(data_sources_, "DataSource");
-  drop_missing(message_parsers_, "MessageParser");
-  drop_missing(toolbox_plugins_, "Toolbox");
+  drop_missing(data_sources_, PluginFamily::kDataSource, "DataSource");
+  drop_missing(message_parsers_, PluginFamily::kMessageParser, "MessageParser");
+  drop_missing(toolbox_plugins_, PluginFamily::kToolbox, "Toolbox");
+  drop_missing(widget_plugins_, PluginFamily::kWidget, "Widget");
 
   for (const PluginDescriptor& descriptor : plugins) {
     const std::string path = canonicalPath(descriptor.dso_path);
@@ -324,6 +396,26 @@ bool PluginRuntimeCatalog::reload() {
     const bool already_loaded = prior_mtime != std::filesystem::file_time_type{};
     if (already_loaded && disk_mtime <= prior_mtime) {
       continue;
+    }
+    if (!unloadableFamily(descriptor.family)) {
+      // A rewritten file and a second copy of an already loaded id are both reported once and left
+      // for the next start.
+      std::string notice_key;
+      std::string notice;
+      if (already_loaded) {
+        notice_key = path + "@" + std::to_string(static_cast<int64_t>(disk_mtime.time_since_epoch().count()));
+        notice = "updated on disk; restart required";
+      } else if (std::ranges::any_of(widget_plugins_, [&](const auto& w) { return w.id == descriptor.id; })) {
+        notice_key = path;
+        notice = "another copy of this library is already loaded and is never unloaded; restart required to use " +
+                 descriptor.dso_path.string();
+      }
+      if (!notice.empty()) {
+        if (widget_notices_.insert(notice_key).second) {
+          report(DiagnosticLevel::kInfo, descriptor.id, descriptor.id + ": " + notice);
+        }
+        continue;
+      }
     }
     if (already_loaded) {
       evictByPath(path);
@@ -465,7 +557,9 @@ bool PluginRuntimeCatalog::registerStaticToolbox(
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
       [](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); },
       [this](const std::string& id) { return claimStaticId(id, "Toolbox"); },
-      [this](RuntimeToolboxPlugin& loaded, const PluginDescriptor& /*descriptor*/) {
+      [this](RuntimeToolboxPlugin& loaded, const PluginDescriptor& descriptor) {
+        loaded.custom_topics_editor = descriptor.hasCapability(kCustomTopicsEditorCapability);
+        loaded.badge = descriptor.badge;
         const auto capabilities = probeCapabilities(loaded.library);
         if (!capabilities) {
           report(
@@ -492,6 +586,29 @@ bool PluginRuntimeCatalog::registerStaticToolbox(
       });
 }
 
+bool PluginRuntimeCatalog::registerStaticWidget(const PJ_widget_vtable_t* vtable) {
+  return registerStaticPlugin(
+      vtable, widget_plugins_, PluginFamily::kWidget,
+      [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
+      [](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); },
+      [this](const std::string& id) {
+        // A loaded DSO cannot yield to a static registration: its family may not unload.
+        if (std::ranges::any_of(widget_plugins_, [&](const auto& w) { return w.id == id && !isStaticPath(w.path); })) {
+          report(
+              DiagnosticLevel::kError, id,
+              "static Widget: plugin id \"" + id + "\" is already loaded from a shared library");
+          return false;
+        }
+        return claimStaticId(id, "Widget");
+      },
+      [this](RuntimeWidgetPlugin& loaded, const PluginDescriptor& descriptor) {
+        loaded.widgets = descriptor.widgets;
+        admitWidgetBuild(loaded, descriptor);
+        return true;
+      },
+      [](const PJ_widget_vtable_t* widget_vtable) { return WidgetLibrary::loadStatic(widget_vtable); });
+}
+
 bool PluginRuntimeCatalog::registerStaticPlugins(const StaticPluginSet& plugins) {
   bool ok = true;
   for (const auto& entry : plugins.data_sources) {
@@ -502,6 +619,9 @@ bool PluginRuntimeCatalog::registerStaticPlugins(const StaticPluginSet& plugins)
   }
   for (const auto& entry : plugins.toolboxes) {
     ok = registerStaticToolbox(entry.plugin, entry.dialog) && ok;
+  }
+  for (const auto& entry : plugins.widgets) {
+    ok = registerStaticWidget(entry.plugin) && ok;
   }
   return ok;
 }
@@ -520,6 +640,8 @@ bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
       return loadAndRegisterMessageParser(descriptor);
     case PluginFamily::kToolbox:
       return loadAndRegisterToolbox(descriptor);
+    case PluginFamily::kWidget:
+      return loadAndRegisterWidget(descriptor);
     case PluginFamily::kDialog:
       report(
           DiagnosticLevel::kWarning, descriptor.id,
@@ -617,6 +739,8 @@ bool PluginRuntimeCatalog::loadAndRegisterToolbox(const PluginDescriptor& descri
   loaded.id = descriptor.id;
   loaded.name = descriptor.name;
   loaded.version = descriptor.version;
+  loaded.custom_topics_editor = descriptor.hasCapability(kCustomTopicsEditorCapability);
+  loaded.badge = descriptor.badge;
 
   const auto capabilities = probeCapabilities(loaded.library);
   if (!capabilities) {
@@ -644,11 +768,59 @@ bool PluginRuntimeCatalog::loadAndRegisterToolbox(const PluginDescriptor& descri
   return true;
 }
 
+void PluginRuntimeCatalog::admitWidgetBuild(RuntimeWidgetPlugin& loaded, const PluginDescriptor& descriptor) const {
+  const std::string origin = loaded.path;
+  if (const auto mismatch = widgetBuildMismatch(loaded.library.buildInfo())) {
+    loaded.qt_compatible = false;
+    loaded.qt_mismatch_reason = *mismatch;
+    report(DiagnosticLevel::kError, loaded.id, origin + ": " + *mismatch);
+    return;
+  }
+  // Only after a compatible build: a module outside the shipped set loads where Qt is installed in
+  // full and fails on a user's machine, so it is worth a warning but never a refusal.
+  for (const std::string& module_name : descriptor.qt_modules) {
+    if (!isShippedQtModule(module_name)) {
+      report(
+          DiagnosticLevel::kWarning, loaded.id,
+          origin + ": widget library declares Qt module \"" + module_name + "\", which PlotJuggler does not ship");
+    }
+  }
+}
+
+bool PluginRuntimeCatalog::loadAndRegisterWidget(const PluginDescriptor& descriptor) {
+  const std::string path = canonicalPath(descriptor.dso_path);
+  if (std::ranges::any_of(widget_plugins_, [&](const auto& w) { return w.id == descriptor.id || w.path == path; })) {
+    return true;  // already loaded; a Widget library is never replaced at runtime
+  }
+  auto result = WidgetLibrary::load(descriptor.dso_path.string());
+  if (!result) {
+    report(
+        DiagnosticLevel::kError, descriptor.id,
+        descriptor.dso_path.string() + ": " + readableLoadFailure(result.error()));
+    return false;
+  }
+
+  RuntimeWidgetPlugin loaded;
+  loaded.library = std::move(*result);
+  loaded.path = path;
+  loaded.loaded_mtime = safeMtime(descriptor.dso_path);
+  loaded.id = descriptor.id;
+  loaded.name = descriptor.name;
+  loaded.version = descriptor.version;
+  loaded.widgets = descriptor.widgets;
+
+  admitWidgetBuild(loaded, descriptor);
+  report(DiagnosticLevel::kInfo, loaded.id, "Loaded Widget " + loaded.name + " from " + loaded.path);
+  widget_plugins_.push_back(std::move(loaded));
+  return true;
+}
+
 bool PluginRuntimeCatalog::isStaticallyRegisteredId(const std::string& id) const {
   const auto has_static = [&](const auto& vec) {
     return std::ranges::any_of(vec, [&](const auto& plugin) { return plugin.id == id && isStaticPath(plugin.path); });
   };
-  return has_static(data_sources_) || has_static(message_parsers_) || has_static(toolbox_plugins_);
+  return has_static(data_sources_) || has_static(message_parsers_) || has_static(toolbox_plugins_) ||
+         has_static(widget_plugins_);
 }
 
 bool PluginRuntimeCatalog::claimStaticId(const std::string& id, const char* family) {
@@ -661,14 +833,17 @@ bool PluginRuntimeCatalog::claimStaticId(const std::string& id, const char* fami
   // A DSO-backed plugin with the same id yields to the static registration, the
   // same precedence scans apply (collectDeduplicatedPlugins skips descriptors
   // whose id is statically registered) — kept order-independent here.
-  const auto evict_dso_backed = [&](auto& vec) {
+  const auto evict_dso_backed = [&](auto& vec, PluginFamily family) {
     const auto before = vec.size();
-    std::erase_if(vec, [&](const auto& plugin) { return plugin.id == id && !isStaticPath(plugin.path); });
+    if (unloadableFamily(family)) {
+      std::erase_if(vec, [&](const auto& plugin) { return plugin.id == id && !isStaticPath(plugin.path); });
+    }
     return vec.size() != before;
   };
-  bool evicted = evict_dso_backed(data_sources_);
-  evicted = evict_dso_backed(message_parsers_) || evicted;
-  evicted = evict_dso_backed(toolbox_plugins_) || evicted;
+  bool evicted = evict_dso_backed(data_sources_, PluginFamily::kDataSource);
+  evicted = evict_dso_backed(message_parsers_, PluginFamily::kMessageParser) || evicted;
+  evicted = evict_dso_backed(toolbox_plugins_, PluginFamily::kToolbox) || evicted;
+  evicted = evict_dso_backed(widget_plugins_, PluginFamily::kWidget) || evicted;
   if (evicted) {
     report(
         DiagnosticLevel::kInfo, id,
@@ -679,14 +854,18 @@ bool PluginRuntimeCatalog::claimStaticId(const std::string& id, const char* fami
 
 bool PluginRuntimeCatalog::evictByPath(const std::string& path) {
   bool removed = false;
-  auto erase_path = [&](auto& vec) {
+  auto erase_path = [&](auto& vec, PluginFamily family) {
+    if (!unloadableFamily(family)) {
+      return;
+    }
     const auto before = vec.size();
     std::erase_if(vec, [&](const auto& plugin) { return plugin.path == path; });
     removed = removed || vec.size() != before;
   };
-  erase_path(data_sources_);
-  erase_path(message_parsers_);
-  erase_path(toolbox_plugins_);
+  erase_path(data_sources_, PluginFamily::kDataSource);
+  erase_path(message_parsers_, PluginFamily::kMessageParser);
+  erase_path(toolbox_plugins_, PluginFamily::kToolbox);
+  erase_path(widget_plugins_, PluginFamily::kWidget);
   return removed;
 }
 
@@ -701,7 +880,10 @@ std::filesystem::file_time_type PluginRuntimeCatalog::loadedMtimeForPath(const s
   if (auto mtime = find_mtime(message_parsers_); mtime != std::filesystem::file_time_type{}) {
     return mtime;
   }
-  return find_mtime(toolbox_plugins_);
+  if (auto mtime = find_mtime(toolbox_plugins_); mtime != std::filesystem::file_time_type{}) {
+    return mtime;
+  }
+  return find_mtime(widget_plugins_);
 }
 
 std::vector<RuntimeDataSourcePlugin*> PluginRuntimeCatalog::fileImportSources() {
@@ -837,8 +1019,29 @@ void PluginRuntimeCatalog::report(DiagnosticLevel level, const std::string& id, 
 
 void PluginRuntimeCatalog::reportScanDiagnostics(const PluginScanResult& scan) const {
   for (const auto& diagnostic : scan.diagnostics) {
-    report(DiagnosticLevel::kError, {}, diagnostic.path.string() + ": " + diagnostic.message);
+    report(DiagnosticLevel::kError, {}, diagnostic.path.string() + ": " + readableLoadFailure(diagnostic.message));
   }
+}
+
+std::string describeQtVersionLoadFailure(std::string_view loader_message, int host_qt_major, int host_qt_minor) {
+  // glibc: "version `Qt_6.13' not found" (or "version `Qt_6.13_PRIVATE_API' not found").
+  static constexpr std::string_view kMarker = "version `Qt_";
+  const auto at = loader_message.find(kMarker);
+  if (at == std::string_view::npos) {
+    return {};
+  }
+  std::string_view rest = loader_message.substr(at + kMarker.size());
+  const auto end = rest.find('\'');
+  if (end == std::string_view::npos) {
+    return {};
+  }
+  int major = 0;
+  int minor = 0;
+  if (std::sscanf(std::string(rest.substr(0, end)).c_str(), "%d.%d", &major, &minor) != 2) {
+    return {};
+  }
+  return "needs Qt " + majorMinor(major, minor) + " (PlotJuggler uses " + majorMinor(host_qt_major, host_qt_minor) +
+         ")";
 }
 
 }  // namespace PJ

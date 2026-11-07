@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -15,11 +16,16 @@
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
+#include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -51,8 +57,10 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
       catalog_model_(std::make_unique<CatalogModel>(session_manager_.get())),
       topic_demand_tracker_(std::make_unique<TopicDemandTracker>()),
       extension_catalog_(
-          std::make_unique<ExtensionCatalogService>(
-              std::move(extensions_dir), std::move(sink), std::move(static_plugins))) {
+          std::make_unique<ExtensionCatalogService>(std::move(extensions_dir), sink, std::move(static_plugins))) {
+  // A transform replay that fails after its create returned reports here, the
+  // same notifications the create error itself would have reached.
+  session_manager_->dataProcessorService().setDiagnosticSink(sink);
   // Forget remembered curve colors whenever the catalog empties (data cleared
   // or replaced), matching PJ3's per-PlotData COLOR_HINT lifetime so reopening
   // fresh data restarts palette rotation from the first color. The registry is
@@ -64,6 +72,173 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
     session_manager_->curveColorRegistry().clear();
     resetPlaybackToEmpty();
   });
+  // Marker generators read their inputs through the catalog. This is session state,
+  // not panel state: a layout restores generators before any toolbox exists. A key
+  // names a series the way the producer and the overlay do (markerSeriesKey), so a
+  // generator yields the same markers in the GUI and headless.
+  BatchEngine& batch_engine = session_manager_->batchEngine();
+  // A marker rule's scheduled run that fails reaches the same notifications.
+  batch_engine.setDiagnosticSink(std::move(sink));
+  batch_engine.setResolver(
+      [this](
+          DatasetId dataset, const std::string& key,
+          const BatchEngine::Window& window) -> std::optional<BatchEngine::ResolvedSeries> {
+        const std::optional<ScalarFieldPayload> scalar = catalog_model_->findScalarForMarkerKey(dataset, key);
+        if (!scalar.has_value()) {
+          return std::nullopt;
+        }
+        // A generator reads the whole series, so a transform output still replaying in
+        // slices is completed first.
+        session_manager_->dataEngine().awaitCompleteSeries(scalar->topic_id);
+        const DataReader reader = session_manager_->createReader();
+        Expected<SeriesReader> series = reader.series(scalar->topic_id, scalar->column_index);
+        if (!series.has_value()) {
+          return std::nullopt;
+        }
+        return readResolvedSeries(*series, window);
+      });
+  // For `all_datasets` generators: every loaded dataset.
+  batch_engine.setDatasetLister([this] { return catalog_model_->datasetIds(); });
+  // Marker rules re-run automatically only on a dataset something consumes: a
+  // demand-capable stream while a widget displays one of its topics, any other
+  // dataset (a file, a stream that sends everything) always.
+  batch_engine.setDemandPredicate([this](DatasetId dataset_id) {
+    return !catalog_model_->isPerTopicPauseCapable(dataset_id) || topic_demand_tracker_->hasAnyReference(dataset_id);
+  });
+  // A display reference is the demand; an active-set change also covers a stream that
+  // stopped (no longer pause-capable, so demanded from then on).
+  QObject::connect(
+      topic_demand_tracker_.get(), &TopicDemandTracker::referenceDemandChanged, &batch_engine,
+      &BatchEngine::demandChanged);
+  QObject::connect(
+      topic_demand_tracker_.get(), &TopicDemandTracker::activeTopicsChanged, &batch_engine,
+      &BatchEngine::demandChanged);
+
+  // On-demand recipes (docs/derived_objects/ARCHITECTURE.md §8) read scalar series, strings included (D4), through the
+  // catalog, follow the playhead while something displays one of their outputs, and are requested where the cursor is
+  // parked when they are installed or become displayed; a finding, at its pin, once per install. Connected before the
+  // scene docks' own slots, so a request precedes the docks' read of the same tick.
+  session_manager_->setScalarSeriesLookup(
+      [this](DatasetId dataset, const std::string& name) -> std::optional<std::pair<TopicId, std::size_t>> {
+        const std::optional<ScalarFieldPayload> scalar = catalog_model_->findScalarForMarkerKey(dataset, name, true);
+        if (!scalar) {
+          return std::nullopt;
+        }
+        return std::pair<TopicId, std::size_t>{scalar->topic_id, scalar->column_index};
+      });
+  // While the transport follows the live edge (playing, held at the range's end), the live pass requests the recipes
+  // of every streaming dataset (SessionManager::notifyIngest): the playhead sits at the newest sample, not at each
+  // recipe's inputs'. When it starts following again, the live pass requests them at once, nothing new needed.
+  const auto following = [this] { return playback_engine_->isPlaying() && playback_engine_->holdsAtRangeMax(); };
+  QObject::connect(playback_engine_.get(), &PlaybackEngine::currentTimeChanged, this, [this, following] {
+    const OnDemandService& service = session_manager_->onDemandService();
+    const bool live_owns = following();
+    for (const std::string& key : service.demandedKeys()) {
+      if (!live_owns || !session_manager_->isLive(service.graph().find(key)->dataset)) {
+        requestOnDemandAtPlayhead(key);
+      }
+    }
+  });
+  QObject::connect(playback_engine_.get(), &PlaybackEngine::playingChanged, this, [this, following] {
+    if (!following()) {
+      return;
+    }
+    OnDemandService& service = session_manager_->onDemandService();
+    std::set<DatasetId> datasets;
+    for (const std::string& key : service.demandedKeys()) {
+      datasets.insert(service.graph().find(key)->dataset);
+    }
+    for (const DatasetId dataset : datasets) {
+      if (session_manager_->isLive(dataset)) {
+        service.restartLiveEdge(dataset);
+      }
+    }
+  });
+  // An offset change at a parked playhead moves the raw time the demanded recipes are requested at.
+  QObject::connect(
+      session_manager_.get(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      [this](DatasetId dataset) {
+        for (const std::string& key : session_manager_->onDemandService().demandedKeys(dataset)) {
+          requestOnDemandAtPlayhead(key);
+        }
+      });
+  QObject::connect(session_manager_.get(), qOverload<>(&SessionManager::displayOffsetChanged), this, [this] {
+    for (const std::string& key : session_manager_->onDemandService().demandedKeys()) {
+      requestOnDemandAtPlayhead(key);
+    }
+  });
+  QObject::connect(session_manager_.get(), &SessionManager::onDemandRecipeInstalled, this, [this](const QString& key) {
+    const OnDemandService& service = session_manager_->onDemandService();
+    const std::string name = key.toStdString();
+    const RecipeGraph::Node* node = service.graph().find(name);
+    if (node != nullptr && (node->recipe.pinned_t || service.isDemanded(name))) {
+      requestOnDemandAtPlayhead(name);
+    }
+    if (node != nullptr) {
+      demandOnDemandRawInputs(node->dataset);
+    }
+  });
+  // A removal, and a re-binding on another dataset (a merge), retire topics: the tiers they left are stale.
+  QObject::connect(
+      session_manager_.get(), &SessionManager::objectTopicsChanged, this, [this] { refreshOnDemandRawInputs(); });
+  QObject::connect(
+      topic_demand_tracker_.get(), &TopicDemandTracker::activeTopicsChanged, this,
+      [this](DatasetId dataset, const std::vector<QString>& active_topics) {
+        OnDemandService& service = session_manager_->onDemandService();
+        const std::vector<std::string> before = service.demandedKeys(dataset);
+        std::vector<std::string> names;
+        names.reserve(active_topics.size());
+        for (const QString& topic : active_topics) {
+          names.push_back(topic.toStdString());
+        }
+        service.setDemand(dataset, std::move(names));
+        const std::vector<std::string> after = service.demandedKeys(dataset);
+        for (const std::string& key : after) {
+          if (!std::ranges::binary_search(before, key)) {
+            requestOnDemandAtPlayhead(key);
+          }
+        }
+        for (const std::string& key : before) {
+          if (!std::ranges::binary_search(after, key)) {
+            service.withdraw(key);
+          }
+        }
+        demandOnDemandRawInputs(dataset);  // its own change comes back here once, with the same demanded keys
+      });
+}
+
+void AppSession::demandOnDemandRawInputs(DatasetId dataset) {
+  std::vector<QString> topics;
+  const DataReader reader = session_manager_->createReader();
+  for (const RecipeGraph::Binding& input : session_manager_->onDemandService().displayedRawInputs(dataset)) {
+    if (input.object_type != sdk::BuiltinObjectType::kNone) {
+      topics.push_back(QString::fromStdString(input.name));
+    } else if (const auto scalar = catalog_model_->findScalarForMarkerKey(dataset, input.name, true)) {
+      if (const auto metadata = reader.getMetadata(scalar->topic_id)) {
+        topics.push_back(QString::fromStdString(metadata->name));
+      }
+    }
+  }
+  if (topics.empty()) {
+    raw_input_datasets_.erase(dataset);
+  } else {
+    raw_input_datasets_.insert(dataset);
+  }
+  topic_demand_tracker_->setDerivedInputTopics(dataset, topics);
+}
+
+void AppSession::refreshOnDemandRawInputs() {
+  for (const DatasetId dataset : std::set<DatasetId>(raw_input_datasets_)) {
+    demandOnDemandRawInputs(dataset);
+  }
+}
+
+void AppSession::requestOnDemandAtPlayhead(const std::string& key) {
+  OnDemandService& service = session_manager_->onDemandService();
+  if (const RecipeGraph::Node* node = service.graph().find(key)) {
+    const DisplayOffset offset = session_manager_->displayOffset(node->dataset);
+    service.requestAt(key, displaySecondsToRaw(playback_engine_->currentTime(), offset));
+  }
 }
 
 AppSession::~AppSession() {
@@ -88,7 +263,15 @@ void AppSession::forEachVisibleRawRange(
   // underlying topic once.
   std::unordered_set<TopicId> seen_topics;
   std::unordered_set<uint32_t> seen_object_topics;
+  std::unordered_map<DatasetId, bool> static_references;
   for (const CatalogItem& item : catalog_model_->items()) {
+    auto [reference, inserted] = static_references.try_emplace(item.dataset_id, false);
+    if (inserted) {
+      reference->second = session_manager_->isStaticReferenceDataset(item.dataset_id);
+    }
+    if (reference->second) {
+      continue;
+    }
     Timestamp raw_min = 0;
     Timestamp raw_max = 0;
     if (const ScalarFieldPayload* scalar = asScalarField(item)) {
@@ -105,7 +288,10 @@ void AppSession::forEachVisibleRawRange(
       if (!seen_object_topics.insert(object->object_topic_id.id).second) {
         continue;
       }
-      if (object_store.entryCount(object->object_topic_id) == 0) {
+      // A marker set or an on-demand result is host-published off the data clock (a finding sits at
+      // kFindingTimestamp): it never stretches a range.
+      if (object_store.entryCount(object->object_topic_id) == 0 ||
+          isOffClockTopic(object_store.descriptor(object->object_topic_id))) {
         continue;
       }
       std::tie(raw_min, raw_max) = object_store.timeRange(object->object_topic_id);
@@ -166,13 +352,15 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
     new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
   });
   if (!new_min) {
-    // No time-bearing rows. Distinguish a GENUINE empty (the catalog has no
-    // items — last dataset removed / full clear) from a TRANSIENT one (a
-    // replacing reload detaches a dataset's chunks, so its still-visible topics
-    // momentarily hold 0 rows): only collapse the transport when the catalog is
-    // truly empty, so a reload doesn't flicker the range to [0,0] and pause
-    // mid-load.
-    if (catalog_model_->isEmpty()) {
+    // Static references alone have no transport. Otherwise preserve the range
+    // across a transient empty while a replacing reload detaches its chunks,
+    // so playback does not pause or flicker mid-load.
+    const auto items = catalog_model_->items();
+    const bool only_references =
+        !items.empty() && std::all_of(items.begin(), items.end(), [&](const CatalogItem& item) {
+          return session_manager_->isStaticReferenceDataset(item.dataset_id);
+        });
+    if (catalog_model_->isEmpty() || only_references) {
       resetPlaybackToEmpty();
     }
     return std::nullopt;
@@ -255,10 +443,14 @@ std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vec
   struct Kind {
     sdk::BuiltinObjectType type{};
     std::string format;
+    // Merged marker sets keep the anchor's description, so it must match too (the
+    // description only: direct writes may carry custom metadata fields).
+    std::optional<MarkerTopicInfo> marker;
   };
   const auto kindOf = [](const ObjectTopicDescriptor& descriptor) {
     return Kind{
-        objectTypeFromMetadata(descriptor.metadata_json), objectPayloadFormatFromMetadata(descriptor.metadata_json)};
+        objectTypeFromMetadata(descriptor.metadata_json), objectPayloadFormatFromMetadata(descriptor.metadata_json),
+        markerTopicInfo(descriptor.metadata_json)};
   };
   std::unordered_map<std::string, Kind> kind_by_name;
   for (const ObjectTopicId object_topic_id : object_store.listTopics(plan->anchor)) {
@@ -272,7 +464,8 @@ std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vec
       const ObjectTopicDescriptor descriptor = object_store.descriptor(object_topic_id);
       Kind source_kind = kindOf(descriptor);
       const auto [it, inserted] = kind_by_name.emplace(descriptor.topic_name, source_kind);
-      if (inserted || (source_kind.type == it->second.type && source_kind.format == it->second.format)) {
+      if (inserted || (source_kind.type == it->second.type && source_kind.format == it->second.format &&
+                       source_kind.marker == it->second.marker)) {
         continue;  // first contributor for this name (sets the destination kind), or a match.
       }
       conflicts.push_back(
@@ -283,6 +476,7 @@ std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vec
               .source_type = source_kind.type,
               .anchor_format = it->second.format,
               .source_format = std::move(source_kind.format),
+              .marker_description_differs = source_kind.marker != it->second.marker,
           });
     }
   }
@@ -385,6 +579,9 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
   std::optional<DisplaySeconds> object_max;
 
   for (const DatasetId dataset_id : datasets) {
+    if (session_manager_->isStaticReferenceDataset(dataset_id)) {
+      continue;
+    }
     const DisplayOffset offset = session_manager_->displayOffset(dataset_id);
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
       const auto metadata = reader.getMetadata(topic_id);
@@ -397,9 +594,7 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
       scalar_max = scalar_max ? std::max(*scalar_max, ds_max) : ds_max;
     }
     for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
-      // Marker snapshots sit at a sentinel timestamp (0), off the data clock;
-      // folding them into the playback focus would stretch it back to the epoch.
-      if (isMarkerObjectTopic(object_store.descriptor(object_topic_id).topic_name)) {
+      if (isOffClockTopic(object_store.descriptor(object_topic_id))) {
         continue;
       }
       if (object_store.entryCount(object_topic_id) == 0) {

@@ -32,6 +32,7 @@ void RegistryManager::fetchRegistry(const QUrl& url) {
   }
 
   extensions_.clear();
+  url_ = url;
 
   emit fetchStarted();
 
@@ -168,6 +169,7 @@ bool RegistryManager::parseJson(const QByteArray& data) {
     ext.repository = obj["repository"].toString();
     ext.license = obj["license"].toString();
     ext.icon_url = obj["icon_url"].toString();
+    ext.entry_point = obj["entry_point"].toString();
     ext.category = obj["category"].toString();
     const auto minimum_sdk = optional_string(obj, "min_sdk_required");
     const auto minimum_application = optional_string(obj, "min_plotjuggler_version");

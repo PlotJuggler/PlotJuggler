@@ -1,0 +1,453 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- The browser app's entry page; scripts/package_wasm.mjs fills its at-sign placeholders. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- user-scalable=0 keeps a 1:1 map between CSS pixels and Qt's device-independent pixels. -->
+  <meta name="viewport" content="width=device-width, height=device-height, user-scalable=0">
+  <meta name="color-scheme" content="dark">
+  <title>PlotJuggler</title>
+  <link rel="icon" href="@BUNDLE@/plotjuggler.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --bg: #0a0e16;
+      --glow: #16213a;
+      --fg: #e9edf5;
+      --muted: #8892a6;
+      --axis: #cfd6e4;
+      --grid: rgba(150, 170, 210, 0.07);
+      --magenta: #dd3fdd;
+      --blue: #3d8bff;
+      --error: #ff7a7a;
+      --button: rgba(255, 255, 255, 0.08);
+    }
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    }
+    #screen { width: 100%; height: 100%; display: none; }
+    body[data-state="ready"] #screen { display: block; }
+
+    #loader {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      box-sizing: border-box;
+      text-align: center;
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 42%, var(--glow), transparent 75%),
+        var(--bg);
+      transition: opacity 0.4s ease;
+    }
+    /* A faint plot grid that fades out toward the edges. */
+    #loader::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 44px 44px;
+      background-position: center;
+      -webkit-mask-image: radial-gradient(ellipse 55% 55% at 50% 45%, #000 30%, transparent 75%);
+      mask-image: radial-gradient(ellipse 55% 55% at 50% 45%, #000 30%, transparent 75%);
+      pointer-events: none;
+    }
+    body[data-state="ready"] #loader { opacity: 0; pointer-events: none; }
+    #loader > * { position: relative; }
+
+    .chart { width: min(240px, 58vw); height: auto; overflow: visible; }
+    .axis { fill: var(--axis); }
+    .curve { fill: none; stroke-width: 18; stroke-linecap: round; stroke-linejoin: round; }
+    .curve.magenta { stroke: var(--magenta); }
+    .curve.blue { stroke: var(--blue); }
+    .ghost { opacity: 0.16; }
+    .live { filter: drop-shadow(0 0 14px color-mix(in srgb, var(--blue) 40%, transparent)); }
+    #revealRect { transition: width 0.25s ease-out; }
+    #tracker { stroke: var(--fg); stroke-width: 3; stroke-dasharray: 10 9; opacity: 0.55; transition: transform 0.25s ease-out; }
+    body:not([data-state="loading"]) #tracker { opacity: 0; transition: opacity 0.3s; }
+    body[data-phase="preparing"] .live { animation: breathe 1.6s ease-in-out infinite; }
+    @keyframes breathe { 50% { opacity: 0.55; } }
+
+    h1 { margin: 22px 0 6px; font-size: 30px; font-weight: 650; letter-spacing: 0.01em; }
+    .meter { display: flex; gap: 10px; align-items: baseline; justify-content: center; min-height: 28px; }
+    #percent { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: right; }
+    #status { color: var(--muted); font-size: 15px; max-width: 34em; line-height: 1.45; }
+    body[data-state="failed"] #percent { display: none; }
+    body[data-state="failed"] #status { color: var(--error); text-align: center; }
+    body[data-state="failed"] .live { filter: grayscale(1); opacity: 0.35; }
+    .hint { margin: 14px 0 0; color: var(--muted); font-size: 13px; opacity: 0.8; }
+    body[data-state="failed"] .hint { display: none; }
+    #retry, #continue {
+      margin-top: 18px;
+      padding: 9px 22px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--button);
+      color: var(--fg);
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #mobile { display: none; max-width: 30em; margin: 6px 0 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+    #mobile strong { color: var(--fg); font-weight: 600; }
+    body[data-state="confirm"] #mobile { display: block; }
+    body[data-state="confirm"] .meter, body[data-state="confirm"] .hint { display: none; }
+    #continue { display: none; }
+    body[data-state="confirm"] #continue { display: inline-block; }
+    #loader > footer { position: absolute; bottom: 18px; left: 0; right: 0; font-size: 12px; color: var(--muted); }
+    footer a { color: inherit; }
+    @media (prefers-reduced-motion: reduce) {
+      #revealRect, #tracker, #loader { transition: none; }
+      body[data-phase="preparing"] .live { animation: none; }
+    }
+  </style>
+</head>
+<body data-state="loading" data-phase="downloading">
+  <main id="loader">
+    <svg class="chart" viewBox="0 0 512 512" aria-hidden="true">
+      <defs>
+        <clipPath id="reveal"><rect id="revealRect" x="0" y="0" width="60" height="512"/></clipPath>
+        <path id="magentaCurve" class="curve magenta" d="M488 417.4C386.4 419.1 329.4 348.6 307.4 274.1 295.6 234.3 270.6 152.2 219.9 151.4c-50.6-.8-69.1 75.9-82.1 107.4-9.8 23.9-39.9 97.4-78.2 97.4"/>
+        <path id="blueCurve" class="curve blue" d="M59.6 356.2c101.7 1.7 155.7-74.3 186.8-145.5 16.4-37.6 38.9-86.4 80.5-89 37.6-2.3 56.9 42.1 69.8 73.6 9.8 23.9 52.2 118.9 90.5 118.9"/>
+      </defs>
+      <g class="ghost">
+        <use href="#magentaCurve"/>
+        <use href="#blueCurve"/>
+      </g>
+      <g class="live" clip-path="url(#reveal)">
+        <use href="#magentaCurve"/>
+        <use href="#blueCurve"/>
+      </g>
+      <line id="tracker" x1="60" x2="60" y1="40" y2="464"/>
+      <path class="axis" d="M503.9 488.1H38.9c-4.4 0-7.9-3.6-7.9-8V10c0-4.4 3.6-8 7.9-8s7.9 3.6 7.9 8v462.1h457.1c4.4 0 7.9 3.6 7.9 8s-3.6 8-7.9 8z"/>
+    </svg>
+    <h1>PlotJuggler</h1>
+    <div class="meter" role="progressbar" aria-label="Loading PlotJuggler" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span id="percent">0%</span>
+      <span id="status">Downloading</span>
+    </div>
+    <p class="hint">The first visit downloads about @DOWNLOAD_MB@ MB; later visits start from the browser cache.</p>
+    <p id="mobile"><strong>PlotJuggler is not intended for mobile devices.</strong> It is a desktop application:
+      on a phone its windows do not fit the screen. Continuing downloads about @DOWNLOAD_MB@ MB.</p>
+    <button id="continue" type="button">Continue anyway</button>
+    <button id="retry" type="button" hidden onclick="location.reload()">Reload</button>
+    <noscript>JavaScript is disabled. Please enable JavaScript to use this application.</noscript>
+    <footer>PlotJuggler @VERSION@ · <a href="https://plotjuggler.io" target="_blank" rel="noopener">plotjuggler.io</a></footer>
+  </main>
+  <div id="screen"></div>
+
+  <script>
+    const WASM_URL = '@BUNDLE@/plotjuggler4.wasm';
+    // The decoded module size: the browser counts decoded bytes, while Content-Length is the compressed size.
+    const WASM_BYTES = @WASM_BYTES@;
+    // Horizontal span of the logo's curves in the chart's viewBox: the tracker sweeps it as bytes arrive.
+    const CURVE_START = 60;
+    const CURVE_END = 488;
+
+    const body = document.body;
+    const status = document.querySelector('#status');
+    const percent = document.querySelector('#percent');
+    const meter = document.querySelector('.meter');
+    const revealRect = document.querySelector('#revealRect');
+    const tracker = document.querySelector('#tracker');
+    const loader = document.querySelector('#loader');
+
+    function showProgress(fraction) {
+      const value = Math.min(100, Math.floor(fraction * 100));
+      const x = CURVE_START + (CURVE_END - CURVE_START) * Math.min(1, fraction);
+      percent.textContent = `${value}%`;
+      meter.setAttribute('aria-valuenow', String(value));
+      revealRect.setAttribute('width', String(x + 12));
+      tracker.style.transform = `translateX(${x - CURVE_START}px)`;
+    }
+
+    function setPhase(phase, text) {
+      body.dataset.phase = phase;
+      status.textContent = text;
+    }
+
+    function fail(message) {
+      body.dataset.state = 'failed';
+      loader.style.display = '';
+      status.textContent = message;
+      status.setAttribute('role', 'alert');
+      meter.removeAttribute('role');
+      document.querySelector('#retry').hidden = false;
+      console.error(message);
+    }
+
+    // Streams the module through a byte counter into the compiler, so it compiles while it downloads; calls
+    // `downloaded` once the last byte has arrived.
+    async function compileWithProgress(downloaded) {
+      const response = await fetch(WASM_URL);
+      if (!response.ok) {
+        throw new Error(`Downloading the app failed (HTTP ${response.status}).`);
+      }
+      let received = 0;
+      let frame = 0;
+      const counter = new TransformStream({
+        transform(chunk, controller) {
+          received += chunk.byteLength;
+          frame ||= requestAnimationFrame(() => {
+            frame = 0;
+            showProgress(received / WASM_BYTES);
+          });
+          controller.enqueue(chunk);
+        },
+        flush() {
+          showProgress(1);
+          setPhase('preparing', 'Preparing');
+          downloaded();
+        },
+      });
+      return WebAssembly.compileStreaming(
+        new Response(response.body.pipeThrough(counter), { headers: { 'Content-Type': 'application/wasm' } }));
+    }
+
+    // The threaded runtime needs a secure, cross-origin isolated page; init reports why it cannot start.
+    const isolationFailure = window.isSecureContext && window.crossOriginIsolated ? '' : (
+      'PlotJuggler cannot start: this page '
+      + (window.isSecureContext ? 'is not cross-origin isolated. ' : 'was not served over HTTPS. ')
+      + @ISOLATION_REQUIREMENT@);
+    // A phone gets the desktop layout, which does not fit: it asks before spending the download.
+    const smallTouchScreen = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600;
+    const pageLoaded = new Promise(resolve => window.addEventListener('load', resolve, { once: true }));
+
+    // What a preset's recordings may stage together: kMaxPresetDataBytes in pj_runtime/include/pj_runtime/PresetCatalog.h.
+    const MAX_PRESET_DATA_BYTES = 512 * 1024 * 1024;
+    // How long a prefetched recording the app has not taken stays buffered once the app has started.
+    const PREFETCH_UNUSED_MS = 60000;
+
+    // Runs in a dedicated Worker, whose download keeps flowing while the page's main thread boots the app. It fetches
+    // the posted recordings one after the other, the order the app asks for them in, within one byte budget, and
+    // answers each with {url, status, statusText, headers, body}: the body is a transferred stream that buffers until
+    // the app reads it, in ~8 MB pieces (Firefox moves network-sized chunks between threads at a fraction of network
+    // speed). A body that overruns the budget ends with its first piece past it, which the app refuses as too large.
+    // A failed fetch, a redirect from https to http (a constructed Response has no URL to show it to the app), or a
+    // success without a body or declared over the budget answers {url, error} instead, so the app fetches it itself.
+    function prefetchWorker() {
+      const PIECE_BYTES = 8 * 1024 * 1024;
+      const controllers = new Map();
+      onmessage = async ({ data }) => {
+        if (data.abort) {
+          controllers.get(data.abort)?.abort();
+          return;
+        }
+        let budget = data.maxBytes;
+        for (const url of data.urls) {
+          const controller = new AbortController();
+          controllers.set(url, controller);
+          try {
+            if (budget < 0) {
+              throw new Error('over the preset data limit');
+            }
+            const response = await fetch(url, { signal: controller.signal });
+            if (url.startsWith('https:') && response.url.startsWith('http:')) {
+              response.body?.cancel();
+              throw new Error('insecure redirect');
+            }
+            const answer = {
+              url, status: response.status, statusText: response.statusText, headers: [...response.headers],
+            };
+            if (!response.ok) {
+              response.body?.cancel();
+              postMessage(answer);
+              continue;
+            }
+            if (!response.body || Number(response.headers.get('Content-Length')) > budget) {
+              throw new Error('no body within the preset data limit');
+            }
+            let parts = [];
+            let partBytes = 0;
+            const deliver = (queue) => {
+              if (partBytes === 0) {
+                return;
+              }
+              const piece = new Uint8Array(partBytes);
+              let offset = 0;
+              for (const part of parts) {
+                piece.set(part, offset);
+                offset += part.byteLength;
+              }
+              parts = [];
+              partBytes = 0;
+              queue.enqueue(piece);
+            };
+            const pieces = new TransformStream({
+              transform(chunk, queue) {
+                parts.push(chunk);
+                partBytes += chunk.byteLength;
+                budget -= chunk.byteLength;
+                if (partBytes >= PIECE_BYTES || budget < 0) {
+                  deliver(queue);
+                }
+                if (budget < 0) {
+                  queue.terminate();
+                }
+              },
+              flush: deliver,
+            }, undefined, { highWaterMark: Infinity });
+            const downloaded = response.body.pipeTo(pieces.writable);
+            postMessage({ ...answer, body: pieces.readable }, [pieces.readable]);
+            await downloaded.catch(() => {});
+          } catch (error) {
+            // Stops a download still running when its hand-off failed (a browser without transferable streams).
+            controller.abort();
+            postMessage({ url, error: String(error) });
+          }
+        }
+      };
+    }
+
+    // Whether the browser keeps the recording `url` pinned to `sha256`, which BrowserFetch (pj_runtime) then reads
+    // instead of downloading it. The key is BrowserFetch.cpp's recordingCacheKey(); any error counts as not kept.
+    async function isRecordingKept(url, sha256) {
+      if (!sha256 || typeof caches === 'undefined') {
+        return false;
+      }
+      try {
+        const key = `/pj-recording-cache/${sha256}?source=${encodeURIComponent(url)}`;
+        return (await (await caches.open('pj-recordings-v1')).keys(key)).length > 0;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    // For a ?preset=<id> deep link, downloads that preset's recordings while the app boots, from the moment the module
+    // has downloaded (so boot does not share the link with them). BrowserFetch (pj_runtime) takes each one from
+    // globalThis.pjPrefetch (url -> {response, abort()}) instead of fetching it: a recording crosses the network once,
+    // as it must, since a second request for a URL still downloading stalls on Chromium's cache lock. Only absolute
+    // http(s) URLs in canonical form are prefetched, the form the app asks for them by, and none the browser already
+    // keeps. Whatever fails here leaves the app to fetch as usual.
+    async function prefetchPresetRecordings(wasmDownloaded) {
+      const ids = new URLSearchParams(location.search).getAll('preset');
+      if (ids.length !== 1) {
+        return;
+      }
+      const indexUrl = new URL('presets/index.json', location.href);
+      const preset = (await (await fetch(indexUrl)).json()).presets.find(entry => entry.id === ids[0]);
+      if (!preset) {
+        return;
+      }
+      const layout = await (await fetch(new URL(preset.layout, indexUrl))).text();
+      const sources = [...new DOMParser().parseFromString(layout, 'application/xml').querySelectorAll('fileInfo')]
+        .map(info => ({ url: info.getAttribute('filename') ?? '', sha256: info.getAttribute('content_sha256') }))
+        .filter(({ url }) => /^https?:/.test(url) && URL.canParse(url) && new URL(url).href === url);
+      const kept = await Promise.all(sources.map(({ url, sha256 }) => isRecordingKept(url, sha256)));
+      const urls = [...new Set(sources.filter((source, index) => !kept[index]).map(({ url }) => url))];
+      if (urls.length === 0) {
+        return;
+      }
+      const worker = new Worker(URL.createObjectURL(new Blob([`(${prefetchWorker})()`], { type: 'text/javascript' })));
+      const answers = new Map();
+      globalThis.pjPrefetch = new Map(urls.map((url) => {
+        const response = new Promise((resolve, reject) => answers.set(url, { resolve, reject }));
+        response.catch(() => {});
+        // Cancelling the page's end of the stream also releases what the worker buffered.
+        const abort = () => {
+          worker.postMessage({ abort: url });
+          response.then(answer => answer.body?.cancel(), () => {}).catch(() => {});
+        };
+        return [url, { response, abort }];
+      }));
+      worker.onmessage = ({ data }) => {
+        const answer = answers.get(data.url);
+        try {
+          if (data.error) {
+            throw new Error(data.error);
+          }
+          answer.resolve(new Response(data.body ?? null,
+            { status: data.status, statusText: data.statusText, headers: data.headers }));
+        } catch (error) {
+          answer.reject(error);
+        }
+      };
+      worker.onerror = () => answers.forEach(answer => answer.reject(new Error('the prefetch worker failed')));
+      await wasmDownloaded;
+      worker.postMessage({ urls, maxBytes: MAX_PRESET_DATA_BYTES });
+    }
+
+    // Drops the prefetched recordings the app has not taken, so their buffers do not outlive their use.
+    function dropUnusedPrefetches() {
+      globalThis.pjPrefetch?.forEach(entry => entry.abort());
+      globalThis.pjPrefetch?.clear();
+    }
+
+    // The module downloads and compiles while the scripts below load; a failure reaches init through qtLoad.
+    function start() {
+      body.dataset.state = 'loading';
+      let downloaded;
+      const wasmDownloaded = new Promise((resolve) => {
+        downloaded = resolve;
+      });
+      prefetchPresetRecordings(wasmDownloaded).catch(() => {});
+      const wasmModule = compileWithProgress(downloaded);
+      wasmModule.then(() => setPhase('preparing', 'Starting'), () => {});
+      pageLoaded.then(() => init(wasmModule));
+    }
+
+    async function init(wasmModule) {
+      const screen = document.querySelector('#screen');
+      try {
+        await qtLoad({
+          qt: {
+            module: wasmModule,
+            onLoaded: () => {
+              body.dataset.state = 'ready';
+              setTimeout(dropUnusedPrefetches, PREFETCH_UNUSED_MS);
+              setTimeout(() => {
+                if (body.dataset.state === 'ready') {
+                  loader.style.display = 'none';
+                }
+              }, 450);
+            },
+            onExit: exitData => fail('Application exit'
+              + (exitData.code !== undefined ? ` with code ${exitData.code}` : '')
+              + (exitData.text !== undefined ? ` (${exitData.text})` : '')),
+            entryFunction: window.pj_app_entry,
+            containerElements: [screen],
+          },
+        });
+      } catch (error) {
+        fail(`PlotJuggler could not start: ${error?.message || error}`);
+      }
+    }
+
+    // A secure page the server asked to isolate, but that is not, runs in a browser without cross-origin isolation
+    // (an Android WebView, as in DuckDuckGo): no header can fix that. A failed check keeps the server explanation.
+    async function isolationFailureMessage() {
+      if (window.isSecureContext) {
+        try {
+          const headers = (await fetch(location.href, { method: 'HEAD', cache: 'no-store' })).headers;
+          if (headers.get('Cross-Origin-Opener-Policy') === 'same-origin'
+              && headers.get('Cross-Origin-Embedder-Policy') === 'require-corp') {
+            return 'PlotJuggler cannot start in this browser: it does not isolate the page as the app needs, although '
+              + 'the server asks it to. Open it in a current Chrome, Edge, Firefox or Safari.';
+          }
+        } catch (error) {
+        }
+      }
+      return isolationFailure;
+    }
+
+    if (isolationFailure) {
+      Promise.all([isolationFailureMessage(), pageLoaded]).then(([message]) => fail(message));
+    } else if (smallTouchScreen) {
+      body.dataset.state = 'confirm';
+      document.querySelector('#continue').addEventListener('click', start, { once: true });
+    } else {
+      start();
+    }
+  </script>
+  <script src="@BUNDLE@/plotjuggler4.js"></script>
+  <script src="@BUNDLE@/qtloader.js"></script>
+</body>
+</html>

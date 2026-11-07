@@ -9,9 +9,10 @@
 
 namespace PJ {
 
-const ScalarFieldPayload* markerSeriesField(const CatalogItem& item, const std::string& key) {
+const ScalarFieldPayload* markerSeriesField(const CatalogItem& item, const std::string& key, bool strings_too) {
   const ScalarFieldPayload* scalar = asScalarField(item);
-  if (scalar == nullptr || !isPlottablePrimitive(scalar->logical_type)) {
+  if (scalar == nullptr || !(isPlottablePrimitive(scalar->logical_type) ||
+                             (strings_too && scalar->logical_type == PrimitiveType::kString))) {
     return nullptr;
   }
   const std::string topic = item.topic_name.toStdString();

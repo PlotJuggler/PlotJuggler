@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <memory>
 #include <optional>
 
 #include "pj_plotting/DockWidget.h"
@@ -14,6 +15,7 @@
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/IDataWidget.h"
 
 using namespace Qt::StringLiterals;
 
@@ -33,11 +35,22 @@ Unexpected<std::string> noOwnedTabError(const QString& tab_id) {
   return unexpected("no tab '" + tab_id.toStdString() + "' belonging to this plugin");
 }
 
+/// The ABI error for a plot-only operation aimed at a scene tab.
+Unexpected<std::string> sceneTabError(const QString& tab_id, const QString& kind) {
+  return unexpected(("tab '" + tab_id + "' is a " + kind + " scene tab: use attach_topic/detach_topic").toStdString());
+}
+
+/// The ABI error for a scene-only operation aimed at a plot tab; `slot` is the plot twin.
+Unexpected<std::string> plotTabError(const QString& tab_id, const char* slot) {
+  return unexpected(("tab '" + tab_id + "' is a plot tab: use " + QString::fromUtf8(slot)).toStdString());
+}
+
 }  // namespace
 
 PluginPlotTabsController::PluginPlotTabsController(
-    TabbedPlotWidget& tabs, CatalogModel& catalog, ExtensionCatalogService& extensions)
-    : tabs_(tabs), catalog_(catalog), extensions_(extensions) {}
+    TabbedPlotWidget& tabs, CatalogModel& catalog, SessionManager& session, ExtensionCatalogService& extensions,
+    PluginSceneViewsController::MakeDock make_dock)
+    : tabs_(tabs), catalog_(catalog), extensions_(extensions), scene_views_(catalog, session, std::move(make_dock)) {}
 
 PlotTabsRuntimeHost::Callbacks PluginPlotTabsController::plotTabsCallbacks(const QString& plugin_id) {
   return PlotTabsRuntimeHost::Callbacks{
@@ -63,6 +76,21 @@ PlotTabsRuntimeHost::Callbacks PluginPlotTabsController::plotTabsCallbacks(const
                 QString::fromUtf8(dataset_source));
           },
       .clear_tab = [this, plugin_id](std::string_view id) { return clearTab(plugin_id, QString::fromUtf8(id)); },
+      .create_tab_v2 =
+          [this, plugin_id](std::string_view id, std::string_view kind, std::string_view title) {
+            return createTabOfKind(plugin_id, QString::fromUtf8(id), QString::fromUtf8(kind), QString::fromUtf8(title));
+          },
+      .attach_topic =
+          [this, plugin_id](std::string_view id, std::string_view topic, std::string_view dataset_source) {
+            return attachTopic(
+                plugin_id, QString::fromUtf8(id), QString::fromUtf8(topic), QString::fromUtf8(dataset_source));
+          },
+      .detach_topic =
+          [this, plugin_id](std::string_view id, std::string_view topic, std::string_view dataset_source) {
+            return detachTopic(
+                plugin_id, QString::fromUtf8(id), QString::fromUtf8(topic), QString::fromUtf8(dataset_source));
+          },
+      .focus_tab = [this, plugin_id](std::string_view id) { return focusTab(plugin_id, QString::fromUtf8(id)); },
   };
 }
 
@@ -138,38 +166,74 @@ PlotDocker* PluginPlotTabsController::ownedTab(const QString& plugin_id, const Q
 }
 
 Status PluginPlotTabsController::createTab(const QString& plugin_id, const QString& tab_id, const QString& title) {
-  if (PlotDocker* existing = ownedTab(plugin_id, tab_id); existing != nullptr) {
-    if (auto status = clearTab(plugin_id, tab_id); !status) {
-      return status;
-    }
-    existing->setName(title.isEmpty() ? existing->name() : title);
-    return okStatus();
-  }
+  return createTabOfKind(plugin_id, tab_id, u"plot"_s, title);
+}
+
+PlotDocker* PluginPlotTabsController::newOwnedTab(
+    const QString& plugin_id, const QString& tab_id, const QString& title) {
   PlotDocker* docker = tabs_.addTab(title);
   if (docker == nullptr) {
-    return unexpected("the workspace refused a new tab");
+    return nullptr;
   }
   docker->setStateId(ownedTabKey(plugin_id, tab_id));
   // Plugin composition has no history step: the tab is outside undo/redo even
   // though it is durable in a full layout file.
   docker->setHistoryExempt(true);
   docker->setOwnerMetadata(plugin_id, tab_id);
-  docker->setOwnerBadge(toolboxBadge(plugin_id));
-  return okStatus();
+  docker->setOwnerBadge(extensions_.toolboxBadge(plugin_id));
+  return docker;
 }
 
-QString PluginPlotTabsController::toolboxBadge(const QString& plugin_id) const {
-  const LoadedToolbox* toolbox = extensions_.findToolbox(plugin_id);
-  if (toolbox == nullptr) {
-    return {};
+void PluginPlotTabsController::clearPlotCurves(PlotDocker* docker) {
+  const int plot_count = docker->plotCount();
+  for (int index = 0; index < plot_count; ++index) {
+    DockWidget* dock = docker->plotAt(index);
+    if (PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget()) {
+      plot->removeAllCurves();
+      plot->replot();
+    }
   }
-  return toolbox->name.empty() ? plugin_id : QString::fromStdString(toolbox->name);
+}
+
+Status PluginPlotTabsController::createTabOfKind(
+    const QString& plugin_id, const QString& tab_id, const QString& kind, const QString& title) {
+  const bool is_plot = kind == u"plot"_s;
+  PlotDocker* existing = ownedTab(plugin_id, tab_id);
+  if (existing != nullptr && sceneKindOf(existing) == (is_plot ? QString() : kind)) {
+    if (is_plot) {
+      clearPlotCurves(existing);
+    }
+    existing->setName(title.isEmpty() ? existing->name() : title);
+    return okStatus();
+  }
+  // Built before anything is replaced: a kind this build cannot show leaves the old tab as it was.
+  std::unique_ptr<IDataWidget> scene_widget;
+  if (!is_plot) {
+    scene_widget = scene_views_.makeSceneWidget(kind);
+    if (scene_widget == nullptr) {
+      return unexpected(("this host cannot show '" + kind + "' tabs in this build").toStdString());
+    }
+  }
+  if (existing != nullptr) {
+    tabs_.closeTab(existing);
+  }
+  PlotDocker* docker = newOwnedTab(plugin_id, tab_id, title);
+  if (docker == nullptr) {
+    return unexpected("the workspace refused a new tab");
+  }
+  if (scene_widget != nullptr) {
+    PluginSceneViewsController::adoptSceneWidget(docker, std::move(scene_widget));
+  }
+  if (owned_tab_created_) {
+    owned_tab_created_(plugin_id, docker);
+  }
+  return okStatus();
 }
 
 void PluginPlotTabsController::refreshAvailability() {
   tabs_.forEachDocker([this](PlotDocker* docker) {
     if (!docker->ownerPlugin().isEmpty()) {
-      docker->setOwnerBadge(toolboxBadge(docker->ownerPlugin()));
+      docker->setOwnerBadge(extensions_.toolboxBadge(docker->ownerPlugin()));
     }
   });
 }
@@ -197,6 +261,9 @@ Expected<std::string> PluginPlotTabsController::tabConfig(const QString& plugin_
   PlotDocker* docker = ownedTab(plugin_id, tab_id);
   if (docker == nullptr) {
     return noOwnedTabError(tab_id);
+  }
+  if (!sceneKindOf(docker).isEmpty()) {
+    return scene_views_.viewConfig(docker);
   }
   QJsonArray curves;
   const int plot_count = docker->plotCount();
@@ -238,6 +305,9 @@ Status PluginPlotTabsController::addCurve(
   if (docker == nullptr) {
     return noOwnedTabError(tab_id);
   }
+  if (const QString kind = sceneKindOf(docker); !kind.isEmpty()) {
+    return sceneTabError(tab_id, kind);
+  }
   const std::optional<QString> key =
       catalog_.resolveCurveKey(0, dataset_source, {}, topic, field, SeriesCapability::kPlottable);
   if (!key.has_value()) {
@@ -264,6 +334,9 @@ Status PluginPlotTabsController::removeCurve(
   PlotDocker* docker = ownedTab(plugin_id, tab_id);
   if (docker == nullptr) {
     return noOwnedTabError(tab_id);
+  }
+  if (const QString kind = sceneKindOf(docker); !kind.isEmpty()) {
+    return sceneTabError(tab_id, kind);
   }
   const std::optional<QString> key =
       catalog_.resolveCurveKey(0, dataset_source, {}, topic, field, SeriesCapability::kPlottable);
@@ -293,14 +366,43 @@ Status PluginPlotTabsController::clearTab(const QString& plugin_id, const QStrin
   if (docker == nullptr) {
     return noOwnedTabError(tab_id);
   }
-  const int plot_count = docker->plotCount();
-  for (int index = 0; index < plot_count; ++index) {
-    DockWidget* dock = docker->plotAt(index);
-    if (PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget()) {
-      plot->removeAllCurves();
-      plot->replot();
-    }
+  if (!sceneKindOf(docker).isEmpty()) {
+    return scene_views_.clearView(docker);
   }
+  clearPlotCurves(docker);
+  return okStatus();
+}
+
+Status PluginPlotTabsController::attachTopic(
+    const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& dataset_source) {
+  PlotDocker* docker = ownedTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  if (sceneKindOf(docker).isEmpty()) {
+    return plotTabError(tab_id, "add_curve");
+  }
+  return scene_views_.attachTopic(docker, topic, dataset_source);
+}
+
+Status PluginPlotTabsController::detachTopic(
+    const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& dataset_source) {
+  PlotDocker* docker = ownedTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  if (sceneKindOf(docker).isEmpty()) {
+    return plotTabError(tab_id, "remove_curve");
+  }
+  return scene_views_.detachTopic(docker, topic, dataset_source);
+}
+
+Status PluginPlotTabsController::focusTab(const QString& plugin_id, const QString& tab_id) {
+  PlotDocker* docker = ownedTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  tabs_.focusTab(docker);
   return okStatus();
 }
 

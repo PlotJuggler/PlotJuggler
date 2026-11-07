@@ -2,12 +2,6 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#ifdef PJ_TARGET_WASM
-
-#include "pj_scene3d_widgets/Scene3DDockWidget_wasm.h"
-
-#else
-
 #include <QByteArray>
 #include <QDomDocument>
 #include <QList>
@@ -26,33 +20,37 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
-#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_widgets/layers/trail_layer.h"  // TrailSource: a slot argument, so moc needs it complete
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
+#include "pj_tf/tf_buffer.h"
 
+class QLabel;
 class QResizeEvent;
 class QSettings;
 class QToolButton;
 class QWidget;
 
 namespace pj::scene3d {
+class FixedFrameMemory;
+class Scene3DLayer;
 class SceneViewWidget;
-class TransformService;
 class UrdfPackageResolver;
-struct TrailSource;
 class TrailLayer;
 }  // namespace pj::scene3d
 
 namespace PJ {
 
 class ComboBox;
+class TransformService;
 
-// Dock content for 3D scene topics. Generic layer lifetime, ordering,
-// visibility, tracker-time dispatch, and XML layer persistence live in
-// SceneDockWidget; this subclass owns 3D-only state: the OpenGL view, the
-// per-dataset TF buffer, the fixed-frame overlay, fallback frames, and orphan
-// detection.
+// Dock content for 3D scene topics, on every platform. Generic layer
+// lifetime, ordering, visibility, tracker-time dispatch, and XML layer
+// persistence live in SceneDockWidget; this subclass owns 3D-only state: the
+// view, the per-dataset TF buffer, the fixed-frame overlay, fallback frames, and
+// the per-row warning (frame orphan state combined with each layer's
+// Scene3DLayer::statusWarning()). Browser-only policy sits behind PJ_TARGET_WASM.
 class Scene3DDockWidget : public SceneDockWidget {
   Q_OBJECT
  public:
@@ -63,9 +61,15 @@ class Scene3DDockWidget : public SceneDockWidget {
   // messages into the TF buffer (see reconnectLiveSamples). Must call the base.
   void setSessionManager(SessionManager* session) override;
 
-  void setTransformService(pj::scene3d::TransformService* service);
+  void setTransformService(PJ::TransformService* service);
 
-  // The owned GL view, for the app's scene-controls panel (grid/gizmo/look
+  // Optional: without it the dock neither records nor seeds from the user's
+  // manual fixed-frame choice. Not owned; must outlive the dock.
+  void setFixedFrameMemory(pj::scene3d::FixedFrameMemory* memory) {
+    fixed_frame_memory_ = memory;
+  }
+
+  // The owned view, for the app's scene-controls panel (grid/gizmo/look
   // setters live on SceneViewWidget). Null until the dock realizes its view.
   [[nodiscard]] pj::scene3d::SceneViewWidget* sceneView() {
     return view_;
@@ -79,6 +83,15 @@ class Scene3DDockWidget : public SceneDockWidget {
 
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
 
+  /// Fits the first content to arrive once: the fixed frame becomes the layer's own frame and the camera frames
+  /// its bounds, so content far from the default frame's origin is not hidden. For a view the user fills (a drop
+  /// into an empty view, a plugin scene); cancelled by user camera input, a fixed-frame pick and a layout restore.
+  void frameInitialContent();
+  /// Whether a frameInitialContent() still waits for content.
+  [[nodiscard]] bool initialContentFramingPending() const {
+    return initial_content_framing_;
+  }
+
   void setSettings(QSettings* settings);
   void setEmbeddedAssets(QMap<QString, QByteArray> assets);
 
@@ -90,6 +103,9 @@ class Scene3DDockWidget : public SceneDockWidget {
   void setSourcePath(const QString& path);
 
   bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
+  [[nodiscard]] bool canAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type) const override;
+  /// The FrameTransforms topics the view takes as its TF tree, by topic id.
+  [[nodiscard]] std::vector<SceneLayerInfo> configTopics() const override;
   void onTrackerTime(double time) override;
 
   QDomElement xmlSaveState(QDomDocument& doc) const override;
@@ -97,7 +113,7 @@ class Scene3DDockWidget : public SceneDockWidget {
 
   enum class FixedFrameMode { kAutoRoot, kExplicit };
 
-  [[nodiscard]] QList<pj::scene3d::FrameRow> availableFrames() const {
+  [[nodiscard]] QList<pj::tf::FrameRow> availableFrames() const {
     return available_frames_;
   }
   [[nodiscard]] QString currentFixedFrame() const;
@@ -114,7 +130,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   // Cached per-row warning state. `is_orphan` is true when the row should show a
   // warning — either an unresolved/disconnected source frame OR a layer-reported
   // statusWarning() (e.g. a model that failed to fetch/import); `reason` is the
-  // tooltip text. recomputeOrphanStates() OR-combines the two sources.
+  // tooltip text. updateLayerWarning() OR-combines the two sources.
   struct OrphanSnapshot {
     bool is_orphan = false;
     QString reason;
@@ -132,20 +148,27 @@ class Scene3DDockWidget : public SceneDockWidget {
 #ifdef PJ_SCENE3D_TEST_HOOKS
   // The dataset the dock's TF buffer is currently bound to (0 = unbound), and
   // whether a TF buffer is bound at all. Lets tests assert the M.17 rebind/reset
-  // logic without spinning the GL view up.
+  // logic without spinning the view up.
   [[nodiscard]] DatasetId boundDatasetIdForTest() const {
     return dataset_id_;
   }
   [[nodiscard]] bool hasTransformBufferForTest() const {
-    return tf_buffer_ != nullptr;
+    return tf_buffer_ != nullptr && !tf_buffer_is_local_;
   }
   // The last tracker instant forwarded to the layers/view (raw ns), already
   // converted display->absolute and clamped. Lets tests assert the "Use time
-  // offset" shift is recovered for a layer-less (TF-only) dock without an
-  // OpenGL view; reaches the protected base accessor.
+  // offset" shift is recovered for a layer-less (TF-only) dock without a
+  // view; reaches the protected base accessor.
   [[nodiscard]] std::optional<int64_t> lastTrackerNsForTest() const {
     return lastTrackerNs();
   }
+#endif
+
+#ifdef PJ_TARGET_WASM
+  // Browser route for a local URDF: the sandbox grants the file's bytes, never a
+  // path. The bytes live only in this layer and are not saved in the layout, so
+  // a restored layer asks the user to select the file again.
+  ObjectTopicId addRobotModelLayerFromContent(QString filename, QByteArray bytes);
 #endif
 
  public slots:
@@ -171,7 +194,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   void recenterOnFollowFrame();
 
  signals:
-  void availableFramesChanged(const QList<pj::scene3d::FrameRow>& frames);
+  void availableFramesChanged(const QList<pj::tf::FrameRow>& frames);
   void currentFixedFrameChanged(const QString& frame);
   void fixedFrameModeChanged(bool is_auto_root);
   void followFrameChanged(const QString& frame);
@@ -188,6 +211,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] DeferredElementKind deferredElementKind(sdk::BuiltinObjectType object_type) const override;
   bool handleSceneConfigTopic(
       ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
+  bool removeSceneConfigTopic(ObjectTopicId topic_id) override;
   // Also prunes evicted FrameTransforms config topics (no render layer) and resets
   // the TF binding when its dataset is gone; the base adds the keep-if-never-
   // populated rule, so this only reports whether live layers/config remain.
@@ -206,9 +230,11 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] uint64_t viewRenderKey(PJ::Timepoint time) const override;
   [[nodiscard]] QString xmlTag() const override;
   void resizeEvent(QResizeEvent* event) override;
+  // User camera input on the view cancels a pending frameInitialContent().
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  private slots:
-  void onAvailableFrames(const QList<pj::scene3d::FrameRow>& frames);
+  void onAvailableFrames(const QList<pj::tf::FrameRow>& frames);
   // TransformService::datasetTransformsReady handler. A dataset's TF buffer can
   // be filled AFTER this dock already bound (and read) it empty — the cloud
   // toolbox ingests /tf post-download, unlike the file-open path which ingests
@@ -219,6 +245,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   void onDatasetTransformsReady(DatasetId dataset_id);
 
  private:
+  // kConsumed: a valid element the dock deliberately dropped (a foreign dataset's
+  // topic, already reported through topicRefused); the restore carries on.
   enum class ElementRestoreResult { kRestored, kConsumed, kDeferred, kInvalid };
   // Shared body of addTopic(). enforce_image_gate runs the kImage depth-encoding
   // gate (firstSampleIsDepthEncoded) — true for interactive adds (drop / family
@@ -239,12 +267,13 @@ class Scene3DDockWidget : public SceneDockWidget {
   // (interactive addTrailLayer, restore's unconfigured layer).
   ObjectTopicId addTrailLayerImpl(ObjectTopicId topic_id, std::unique_ptr<pj::scene3d::TrailLayer> layer);
   // Saved-topic resolution ladder shared by restoreLayerElement and
-  // restoreTrailElement: reads topic_name/dataset_* attributes off `el` and
+  // restoreConfigTopicElement: reads topic_name/dataset_* attributes off `el` and
   // yields the live topic id (kRestored), a deferral (kDeferred, with the
-  // topic name for the pending queue), or kInvalid.
+  // topic name for the pending queue), kConsumed (the element's dataset lost the
+  // restore's dataset choice), or kInvalid.
   [[nodiscard]] ElementRestoreResult resolveSavedTopicRef(
       const QDomElement& el, QString* deferred_topic_name, sdk::BuiltinObjectType expected_type,
-      std::optional<ObjectTopicId>& out_topic) const;
+      std::optional<ObjectTopicId>& out_topic);
   [[nodiscard]] ElementRestoreResult restoreConfigTopicElement(const QDomElement& config_el);
   void applyRestoredLayerOrder();
   // Per-element restore hook the base SceneDockWidget's shared pending-retry loop calls:
@@ -252,10 +281,14 @@ class Scene3DDockWidget : public SceneDockWidget {
   // <layer> -> restoreLayerElement).
   bool restoreOnePending(const QDomElement& element) override;
   void prepareTransformBufferForTopic(ObjectTopicId topic_id);
-  // Fans the current TF binding out to every TrailLayer (which capture the
-  // buffer at attach and would otherwise never see a later bind/unbind — the
-  // restore path binds TF AFTER the layers replay).
-  void pushTransformBufferToTrailLayers();
+  // Fans the current TF binding out to every TrailLayer and RobotModelLayer
+  // (which capture the buffer at attach and would otherwise never see a later
+  // bind/unbind — the restore path binds TF AFTER the layers replay).
+  void pushTransformBufferToLayers();
+  // Gives a dock whose only content is local robot layers (no dataset) a private
+  // TF buffer: the robots inject their fixed-joint bridges into it and the view
+  // poses links through it. A dataset binding replaces it.
+  void ensureLocalTransformBuffer();
   // After a tracked topic is dropped, reset the TF binding (tf_buffer_/dataset_id_
   // → null/0, push the empty buffer to the view) when no remaining tracked topic
   // belongs to the bound dataset. This is what lets the dock rebind to a second
@@ -282,18 +315,19 @@ class Scene3DDockWidget : public SceneDockWidget {
   void applyRestoredFixedFrame(FixedFrameMode mode, const QString& frame);
   void resetDatasetBindingForRestore();
   // The fixed frame to adopt in auto mode: the dataset's remembered manual choice
-  // (TransformService::rememberedFixedFrame) when it is still present in `frames`,
+  // (FixedFrameMemory::remembered) when it is still present in `frames`,
   // else the map/world/odom heuristic (pickFixedFrame). This is what makes a
   // freshly-created dock default to the last frame the user picked by hand for the
   // same TransformBuffer. Read-only w.r.t. the memory — seeding never records, so
   // there is no feedback loop with the setFixedFrame() recording path.
-  [[nodiscard]] QString resolveAutoFixedFrame(const QList<pj::scene3d::FrameRow>& frames) const;
+  [[nodiscard]] QString resolveAutoFixedFrame(const QList<pj::tf::FrameRow>& frames) const;
   void refreshFrameOverlayCombo();
   void onOverlayFramePicked(int index);
   void layoutFrameOverlayCombo();
   // Transform each layer's source-frame worldBounds() into the current fixed frame,
   // union them, and push the result to the camera (adaptive near/far + framing).
-  // Cheap; called on layer changes and tracker-time changes.
+  // Cheap; called on layer changes and on every refreshView() (tracker ticks and
+  // async layer pushes). Hidden layers count; the camera is never fitted to it.
   void updateSceneBounds();
   // Re-evaluate each layer's frame-resolvability and emit layerWarningChanged on
   // flips. force=false (the hot live-ingest path only) early-returns when neither
@@ -301,12 +335,23 @@ class Scene3DDockWidget : public SceneDockWidget {
   // the per-tick orphan walk is skipped when nothing TF-related moved. Every other
   // call site forces a full recompute.
   void recomputeOrphanStates(bool force = true);
+  // Combine one layer's frame-orphan check with its statusWarning() into its
+  // row state; emits layerWarningChanged on change. `known_frames` = knownFrames().
+  void updateLayerWarning(
+      ObjectTopicId topic_id, const pj::scene3d::Scene3DLayer& layer,
+      const std::unordered_set<std::string>& known_frames);
+  // Every frame in the bound TF buffer (empty when none is bound).
+  [[nodiscard]] std::unordered_set<std::string> knownFrames() const;
   [[nodiscard]] bool isLocalLayerId(ObjectTopicId topic_id) const;
   ObjectTopicId allocateLocalLayerId();
 
-  pj::scene3d::TransformService* transform_service_ = nullptr;
+  bool initial_content_framing_ = false;  // see frameInitialContent()
+  PJ::TransformService* transform_service_ = nullptr;
+  pj::scene3d::FixedFrameMemory* fixed_frame_memory_ = nullptr;
   pj::scene3d::SceneViewWidget* view_ = nullptr;
-  std::shared_ptr<pj::scene3d::TransformBuffer> tf_buffer_;
+  std::shared_ptr<pj::tf::TransformBuffer> tf_buffer_;
+  // tf_buffer_ is ensureLocalTransformBuffer()'s private buffer, not a dataset's.
+  bool tf_buffer_is_local_ = false;
   // Dataset that owns tf_buffer_, cached when the buffer is first bound so the
   // live-samples slot can drive incremental TF ingest without re-deriving it.
   DatasetId dataset_id_ = 0;
@@ -341,15 +386,18 @@ class Scene3DDockWidget : public SceneDockWidget {
   std::unordered_map<int64_t, int> restored_layer_orders_;
   bool xml_rollback_in_progress_ = false;
 
-  QList<pj::scene3d::FrameRow> available_frames_;
+  QList<pj::tf::FrameRow> available_frames_;
   std::vector<std::string> fallback_frames_;
   FixedFrameMode fixed_frame_mode_ = FixedFrameMode::kAutoRoot;
   ComboBox* frame_overlay_combo_ = nullptr;
-  // Top-right overlay controls (children of `this`, not the QOpenGLWidget — z-order):
+  // Top-right overlay controls (children of `this`, not the view — z-order):
   // the camera-model selector and a Home (reset-to-default-view) button, anchored
   // to the left of the orientation gizmo.
   ComboBox* camera_model_combo_ = nullptr;
   QToolButton* home_button_ = nullptr;
+  // Bottom overlay for the view's renderingWarningChanged (a quality stage or
+  // budget the renderer had to drop).
+  QLabel* rendering_warning_label_ = nullptr;
 
   /// Cached per-topic orphan/warning state (keyed by topicKey), so
   /// recomputeOrphanStates() only emits layerWarningChanged when a layer's
@@ -364,5 +412,3 @@ class Scene3DDockWidget : public SceneDockWidget {
 };
 
 }  // namespace PJ
-
-#endif  // PJ_TARGET_WASM

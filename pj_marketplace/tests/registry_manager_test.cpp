@@ -23,7 +23,11 @@
 #include <QString>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QUrl>
+
+#include "pj_marketplace/extension_manager.hpp"
+#include "pj_marketplace/marketplace_window.hpp"
 
 // ---------------------------------------------------------------------------
 // Minimal HTTP/1.1 server — serves one fixed JSON body per connection
@@ -145,6 +149,40 @@ class RegistryManagerTest : public ::testing::Test {
 // [3] Signals — fetchStarted
 // ---------------------------------------------------------------------------
 
+// url() names the fetch by the time fetchStarted fires, so a listener needs no
+// other source for it.
+TEST_F(RegistryManagerTest, UrlIsSetBeforeFetchStartedAndNamesTheLastFetch) {
+  RegistryManager mgr;
+  EXPECT_TRUE(mgr.url().isEmpty());
+
+  QUrl url_at_started;
+  QObject::connect(&mgr, &RegistryManager::fetchStarted, &mgr, [&]() { url_at_started = mgr.url(); });
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+  server_->setResponseBody(kMultiExtensionJson);
+  mgr.fetchRegistry(server_->url());
+  EXPECT_EQ(url_at_started, server_->url());
+  EXPECT_EQ(mgr.url(), server_->url());
+
+  ASSERT_TRUE(spy_finished.wait(3000));
+  EXPECT_EQ(mgr.url(), server_->url());  // still there when the answer arrives
+}
+
+// A host connects to registryManager() once the constructor has returned, so a
+// fetch started inside the constructor would never be reported to it.
+TEST_F(RegistryManagerTest, MarketplaceWindowStartsItsFirstFetchAfterConstruction) {
+  QTemporaryDir root;
+  ASSERT_TRUE(root.isValid());
+  ExtensionManager manager(nullptr, root.filePath("extensions"), root.filePath("pending"));
+  server_->setResponseBody(kEmptyExtensionsJson);
+  MarketplaceWindow window(&manager, server_->url());
+  QSignalSpy spy_started(window.registryManager(), &RegistryManager::fetchStarted);
+  QSignalSpy spy_finished(window.registryManager(), &RegistryManager::fetchFinished);
+
+  ASSERT_TRUE(spy_finished.wait(3000));
+  EXPECT_EQ(spy_started.count(), 1);
+  EXPECT_EQ(window.registryManager()->url(), server_->url());
+}
+
 // fetchStarted is emitted synchronously, before any I/O takes place
 TEST_F(RegistryManagerTest, EmitsFetchStartedImmediatelyOnCall) {
   RegistryManager mgr;
@@ -233,6 +271,24 @@ TEST_F(RegistryManagerTest, ParsesOptionalStringFields) {
   EXPECT_EQ(ext.category, "data_loader");
   EXPECT_EQ(ext.min_sdk_required, "0.21.0");
   EXPECT_EQ(ext.min_plotjuggler_version, "3.8.0");
+}
+
+// [2] entry_point: the optional "where to find it" override the feature catalog
+// forwards. Absent means undeclared, read as empty so the host derives a default.
+TEST_F(RegistryManagerTest, ParsesEntryPointAndLeavesItEmptyWhenAbsent) {
+  RegistryManager mgr;
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"with","name":"With","version":"1.0.0","entry_point":"Toolbox menu \u2192 With"},
+    {"id":"without","name":"Without","version":"1.0.0"}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+  ASSERT_TRUE(spy_finished.wait(3000));
+  ASSERT_EQ(spy_finished.at(0).at(0).toBool(), true);
+
+  EXPECT_EQ(mgr.findById("with").entry_point, QString::fromUtf8("Toolbox menu \xe2\x86\x92 With"));
+  EXPECT_TRUE(mgr.findById("without").entry_point.isEmpty());
 }
 
 // [2] Tags array

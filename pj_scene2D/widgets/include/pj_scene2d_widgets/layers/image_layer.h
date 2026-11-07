@@ -12,6 +12,7 @@ namespace PJ {
 
 class MediaSource;
 class ImagePipelineSource;
+class ToggleSwitch;
 
 // Scene2DLayer for a single Image topic: contributes an image MediaSource to the
 // composite. Images always magnify with nearest sampling (crisp pixels). Exposes one
@@ -36,6 +37,8 @@ class ImageLayer final : public Scene2DLayer {
  private:
   void setRectifyEnabled(bool enabled);
   void applyOptions();
+  /// Keep the control's eligibility and explanation in sync with the displayed image.
+  void updateRectifyControl(ToggleSwitch* toggle) const;
 
   bool rectify_enabled_ = true;  ///< true = undistort with CameraInfo (default), false = raw passthrough
   ImagePipelineSource* image_source_ = nullptr;  ///< borrowed; valid between attach and detach

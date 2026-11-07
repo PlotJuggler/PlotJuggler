@@ -12,6 +12,10 @@
 #include <QUrl>
 #include <QVariantMap>
 
+#include "pj_runtime/HttpUrl.h"
+
+using namespace Qt::StringLiterals;
+
 namespace pj::scene3d {
 
 namespace {
@@ -30,6 +34,64 @@ QString joinPath(const QString& root, const std::string& rel) {
     tail.remove(0, 1);
   }
   return r + '/' + tail;
+}
+
+// Whether references may reach host files: never in the browser, which grants no
+// host-file access, nor for a web-hosted layout's robot on the desktop.
+bool allowsLocalFiles(bool remote_only) {
+#ifdef PJ_TARGET_WASM
+  (void)remote_only;
+  return false;
+#else
+  return !remote_only;
+#endif
+}
+
+// Whether a package's network root may be fetched. The desktop honors one only where the model
+// already reaches the network, a URL URDF or a web-hosted layout's robot, so a layout file cannot
+// send a topic or file URDF's meshes there; the browser reaches meshes no other way.
+bool allowsNetworkRoot(bool source_is_url, bool remote_only) {
+#ifdef PJ_TARGET_WASM
+  (void)source_is_url;
+  (void)remote_only;
+  return true;
+#else
+  return source_is_url || remote_only;
+#endif
+}
+
+// `rel` under the directory `root` names: a URL, a local path for a file root,
+// or "" when the root is unusable (a file root without `local_files`) or `rel`
+// climbs out of it.
+std::string resolveUnderRoot(const QUrl& root, const std::string& rel, bool local_files) {
+  const bool local = root.isLocalFile();
+  if (local ? !local_files : !PJ::isHttpUrl(root)) {
+    return {};
+  }
+  QUrl directory = root.adjusted(QUrl::NormalizePathSegments);
+  if (!directory.path().endsWith('/')) {
+    directory.setPath(directory.path() + '/');
+  }
+  QString tail = QString::fromStdString(rel);
+  while (tail.startsWith('/')) {
+    tail.remove(0, 1);
+  }
+  // An encoded separator or a backslash turns into a separator only when the filesystem or the
+  // server decodes the path, after any check made here.
+  if (tail.contains('\\') || tail.contains("%2f"_L1, Qt::CaseInsensitive) ||
+      tail.contains("%5c"_L1, Qt::CaseInsensitive)) {
+    return {};
+  }
+  // A path-only reference: a ':' or "//" in `rel` can never become a scheme or
+  // an authority, so the target keeps the root's origin.
+  QUrl relative;
+  relative.setPath(tail, QUrl::TolerantMode);
+  const QUrl target = directory.resolved(relative);
+  // Contained as the filesystem or the server sees the path: decoded and normalized.
+  if (!QDir::cleanPath(target.path(QUrl::FullyDecoded)).startsWith(directory.path(QUrl::FullyDecoded))) {
+    return {};
+  }
+  return (local ? target.toLocalFile() : target.toString(QUrl::FullyEncoded)).toStdString();
 }
 }  // namespace
 
@@ -85,24 +147,26 @@ void UrdfPackageResolver::autoSeedSearchRoots(const QString& urdf_dir) {
   }
 }
 
-ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::string& urdf_dir, bool source_is_url) {
+ResolvedMesh UrdfPackageResolver::resolveUri(
+    const std::string& uri, const std::string& urdf_dir, bool source_is_url,
+    const QMap<QString, QUrl>& package_url_roots, bool remote_only) {
   ResolvedMesh out;
   const QString quri = QString::fromStdString(uri);
+  // A browser file picker grants bytes for the selected URDF only, not a capability
+  // to arbitrary host paths named by its contents; a web-hosted layout grants none.
+  const bool local_files = allowsLocalFiles(remote_only);
 
   if (quri.startsWith("file://")) {
-#ifdef PJ_TARGET_WASM
-    // A browser file picker grants bytes for the selected URDF only, not a
-    // capability to arbitrary host paths named by its contents.
-    out.issue = MeshResolveIssue::kMissingFile;
-    return out;
-#else
+    if (!local_files) {
+      out.issue = MeshResolveIssue::kMissingFile;
+      return out;
+    }
     // Absolute local path; skip the package chain entirely. QUrl::toLocalFile
     // percent-decodes (e.g. %20 -> space) and strips an optional localhost
     // authority — a raw mid(7) slice would mangle encoded paths.
     out.resolved = true;
     out.path = QUrl(quri).toLocalFile().toStdString();
     return out;
-#endif
   }
 
   if (quri.startsWith("http://") || quri.startsWith("https://")) {
@@ -126,11 +190,11 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
     }
     const std::string pkg = rest.left(slash).toStdString();
     const std::string rel = rest.mid(slash + 1).toStdString();
-    const std::string path = resolve(pkg, rel, urdf_dir, source_is_url);
+    const std::string path = resolve(pkg, rel, urdf_dir, source_is_url, package_url_roots, remote_only);
     if (!path.empty()) {
       out.resolved = true;
       out.path = path;
-      // A URL ancestor hit (step 2 URL variant) returns an http(s) URL.
+      // An http(s) root or a URL ancestor hit (step 2 URL variant) returns a URL.
       out.is_url = path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0;
     } else {
       out.package = pkg;
@@ -145,16 +209,12 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
   // same existence-check-else-unresolved policy as the package steps so a
   // missing file surfaces in the status instead of resolving to a dead path.
   if (QDir::isAbsolutePath(quri)) {
-#ifdef PJ_TARGET_WASM
-    out.issue = MeshResolveIssue::kMissingFile;
-#else
-    if (QFileInfo::exists(quri)) {
+    if (local_files && QFileInfo::exists(quri)) {
       out.resolved = true;
       out.path = uri;
     } else {
       out.issue = MeshResolveIssue::kMissingFile;
     }
-#endif
     return out;
   }
 
@@ -165,18 +225,35 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
     return out;  // Topic source with no dir: a bare path has nothing to anchor.
   }
   const QString base = QString::fromStdString(urdf_dir);
+  const bool url_base = source_is_url || base.startsWith("http://") || base.startsWith("https://");
+  if (remote_only && !url_base) {
+    out.issue = MeshResolveIssue::kMissingFile;
+    return out;
+  }
   out.resolved = true;
   out.path = joinPath(base, uri).toStdString();
-  out.is_url = source_is_url || base.startsWith("http://") || base.startsWith("https://");
+  out.is_url = url_base;
   return out;
 }
 
 std::string UrdfPackageResolver::resolve(
-    const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url) {
+    const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url,
+    const QMap<QString, QUrl>& package_url_roots, bool remote_only) {
+  // An explicit root is the model author's answer for this package: authoritative,
+  // so a miss under it never falls back to a heuristic that might find another copy.
+  // A network root this model may not fetch is skipped: the package resolves here.
+  if (const auto root = package_url_roots.constFind(QString::fromStdString(pkg));
+      root != package_url_roots.cend() && (!PJ::isHttpUrl(*root) || allowsNetworkRoot(source_is_url, remote_only))) {
+    return resolveUnderRoot(*root, rel, allowsLocalFiles(remote_only));
+  }
   // Step 0 — embedded-asset exact-name lookup.
   const std::string uri = "package://" + pkg + "/" + rel;
   if (std::string p = stepEmbeddedAsset(uri); !p.empty()) {
     return p;
+  }
+  // The rest of the chain finds packages on this host, except the URL ancestor walk.
+  if (remote_only) {
+    return source_is_url ? stepAncestor(pkg, rel, urdf_dir, source_is_url) : std::string{};
   }
   // Step 1 — remembered per-source map.
   if (std::string p = stepRememberedMap(pkg, rel); !p.empty()) {

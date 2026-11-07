@@ -12,6 +12,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <cstddef>
+#include <cstdint>
 #ifdef PJ_TARGET_WASM
 #include <functional>
 #endif
@@ -38,9 +39,23 @@ class SessionManager;
 class PlotMarkersItem;
 struct MarkerTarget;  // pj_plotting/PlotMarkersItem.h
 
-// Identifies one dataset's marker scope — the CurveEditor pseudo-row unit and
-// the hidden-flag key.
-using MarkerScopeKey = std::pair<DatasetId, MarkerScope>;
+/// The run state of one marker rule, as the plot's host reports it.
+struct MarkerRuleStatus {
+  QString rule_id;
+  bool computing = false;
+  QString error;  ///< why the rule's last run failed; empty when it did not
+
+  bool operator==(const MarkerRuleStatus&) const = default;
+};
+
+/// An on-demand series that is not computed (yet), as the plot's host reports it.
+struct SeriesCurveStatus {
+  DatasetId dataset_id = 0;
+  QString topic_name;
+  std::optional<int> computing_percent;  ///< its replay's progress; nullopt: it does not compute
+
+  bool operator==(const SeriesCurveStatus&) const = default;
+};
 
 class PlotWidget : public PlotWidgetBase {
   Q_OBJECT
@@ -100,10 +115,11 @@ class PlotWidget : public PlotWidgetBase {
   bool revalidate();
 
   void setZoomRectangle(QRectF rect, bool emit_signal);
-  // Applies [x0, x1] as the visible X window, leaving Y exactly as it was, and
-  // replots. Never emits the zoom-changed signal: the linked-X paths that use
+  // Applies [x0, x1] as the visible X window, leaving Y as it was until a fit
+  // still waiting for first rows runs, and replots. Never emits the zoom-changed signal: the linked-X paths that use
   // it are already propagating a peer's change or an explicit command.
   void setVisibleXRange(double x0, double x1);
+  using PlotWidgetBase::hasUsableCurveData;
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
@@ -197,6 +213,22 @@ class PlotWidget : public PlotWidgetBase {
   // Independent of every curve's own show_markers and of the other scope.
   // No-op (no replot/undo) if the value doesn't change.
   void setDatasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope scope, bool visible);
+  /// Replaces the run state of the marker rules this plot shows (the host decides which:
+  /// the plot knows no engine). While a rule computes the plot draws "Computing
+  /// markers…" in its top-left corner (top-right when the legend is there), and "Marker rule failed" when only failures
+  /// remain; the tooltip of the note lists the errors. The markers stay drawn. An entry
+  /// that neither computes nor failed is ignored. Repaints only when the note's text
+  /// changes, so a host may call it on every engine event.
+  void setMarkerStatus(std::vector<MarkerRuleStatus> statuses);
+  /// Replaces the status of the series this plot may show (the host's, as for setMarkerStatus): a curve on one of
+  /// these topics reads "(not computed)" or "(computing N%)" after its legend title, which stays its identity. Replots
+  /// only when a legend changes, so a host may call it on every progress event.
+  void setSeriesStatus(std::vector<SeriesCurveStatus> statuses);
+  /// The text of the note `setMarkerStatus` put up; empty when none.
+  [[nodiscard]] QString markerStatusNote() const;
+  /// Where the note sits, in canvas coordinates; empty when there is none. A hover on
+  /// it shows the errors as a tooltip.
+  [[nodiscard]] QRectF markerStatusNoteRect() const;
   // Re-resolves the hidden <marker_scope> entries whose dataset was not loaded
   // at xmlLoadState time (kept as pending saved identities, visible meanwhile)
   // and moves the ones that now name a live dataset into the hidden set —
@@ -210,6 +242,9 @@ class PlotWidget : public PlotWidgetBase {
 
  signals:
   void rectChanged(PlotWidget* modified, QRectF rect);
+  /// The time (x) axis' range changed, whatever moved it: a gesture, a linked or programmatic zoom, an autoscale.
+  /// Unlike rectChanged, it does not drive the zoom link.
+  void visibleXRangeChanged();
   void undoableChange();
   void trackerMoved(QPointF point);
   /// A successful curve drop; was_empty identifies the first curves in this plot.
@@ -223,6 +258,9 @@ class PlotWidget : public PlotWidgetBase {
   // NOT emitted for a curve-list change: curveListChanged already reaches every
   // listener that rebuilds rows, so emitting both would rebuild twice.
   void datasetMarkerScopesChanged();
+  /// What `markerTargets()` returns may have changed: a curve was added or removed, a curve's own
+  /// markers or a dataset's marker scope was shown or hidden. The host re-derives the plot's marker status.
+  void markerTargetsChanged();
   // One (dataset, scope) row's visibility flag flipped (a toggle, or undo/redo).
   // Only that row's check state changes — no row set change.
   void markerScopeVisibilityChanged(DatasetId dataset_id, MarkerScope scope, bool visible);
@@ -323,6 +361,8 @@ class PlotWidget : public PlotWidgetBase {
   // the pending entries verbatim so a snapshot taken mid-restore keeps them.
   void saveHiddenMarkerScopes(QDomDocument& doc, QDomElement& plot_element) const;
   void loadHiddenMarkerScopes(const QDomElement& plot_element);
+  // The errors of the failing rules, one line each, as the note's rich-text tooltip.
+  [[nodiscard]] QString markerStatusToolTip() const;
   // Recomputes markerScopeRows(); true when it differs from the previous set.
   // The caller decides whether to announce it — markersChanged fires on every
   // streaming tick regardless of whether a topic actually appeared/disappeared.
@@ -368,6 +408,12 @@ class PlotWidget : public PlotWidgetBase {
   double last_tracker_time_sec_ = 0.0;
   bool show_points_ = true;
   bool loading_state_ = false;
+  // A zoomOut that found no curve data (an on-demand series computes only once
+  // shown) stays armed and re-runs on every non-live ingest, so a series computed
+  // in chunks stays framed whole until the user frames the view. An external X
+  // window (zoom link) narrows it to Y. Never armed when data existed at fit time.
+  enum class PendingFit : std::uint8_t { kNone, kFull, kVertical };
+  PendingFit pending_fit_ = PendingFit::kNone;
   // Trailing-edge coalescer for gesture-driven history snapshots: wheel-zoom and
   // pan emit per input event, but serializing the whole workspace per event is
   // wasteful — one undoableChange fires when the gesture goes quiet.
@@ -408,6 +454,11 @@ class PlotWidget : public PlotWidgetBase {
   // of markerScopeRows() so a layout can restore "hidden" before the producing
   // rule has published the topic (see pruneHiddenMarkerScopes / xmlLoadState).
   std::set<MarkerScopeKey> hidden_marker_scopes_;
+  // Sorted by rule id; see setMarkerStatus.
+  std::vector<MarkerRuleStatus> marker_status_;
+  // See setSeriesStatus; applied again to the curves whenever they change.
+  std::vector<SeriesCurveStatus> series_status_;
+  void applySeriesStatus();
   // A hidden <marker_scope> whose dataset was not loaded when the layout was
   // read: the saved identity, re-resolved by resolvePendingMarkerScopes() once
   // the dataset (possibly reminted) exists. Pending means visible.

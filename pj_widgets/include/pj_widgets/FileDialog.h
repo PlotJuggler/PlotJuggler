@@ -4,9 +4,11 @@
 
 #include <QCheckBox>
 #include <QFileDialog>
+#include <QLabel>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <functional>
 #include <vector>
 
 #include "pj_widgets/ChromeMetrics.h"
@@ -19,6 +21,12 @@ namespace PJ {
 // rest of the app (custom title bar, drag-to-move, edge resize) instead
 // of the native GTK frame. Most call sites should use the static
 // getOpenFileName / getSaveFileName helpers below.
+//
+// Start-folder guard: a folder on a dead network share blocks QFileDialog's
+// GUI thread for ~80 s, so setDirectory() first gives it 2 s to answer
+// off-thread and otherwise stays at the home folder with a notice. Only the
+// start folder is guarded; navigating into a dead location from inside the
+// dialog still blocks (Qt's file system model is synchronous).
 class FileDialog : public Dialog {
   Q_OBJECT
  public:
@@ -29,6 +37,8 @@ class FileDialog : public Dialog {
   void setAcceptMode(QFileDialog::AcceptMode mode);
   void setFileMode(QFileDialog::FileMode mode);
   void setNameFilter(const QString& filter);
+  // Falls back to the home folder (with a visible notice) when `directory` does
+  // not answer within ~2 s.
   void setDirectory(const QString& directory);
   void setDefaultSuffix(const QString& suffix);
   void selectFile(const QString& filename);
@@ -38,17 +48,48 @@ class FileDialog : public Dialog {
   [[nodiscard]] QString selectedFile() const;
 
   // Drop-in replacements for QFileDialog::getOpenFileName / getSaveFileName.
-  static QString getOpenFileName(QWidget* parent, const QString& caption, const QString& dir, const QString& filter);
+  // A non-empty `selected_name` (a bare file name) is filled in as the
+  // suggestion, the way QFileDialog pre-selects a `dir` that names a file.
+  static QString getOpenFileName(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
+      const QString& selected_name = QString());
   // Multi-select open (QFileDialog::ExistingFiles). Returns every chosen path,
   // empty on cancel.
   static QStringList getOpenFileNames(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter);
   static QString getSaveFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
-      const QString& default_suffix = QString());
+      const QString& default_suffix = QString(), const QString& selected_name = QString());
   // Drop-in replacement for QFileDialog::getExistingDirectory (Directory mode +
   // ShowDirsOnly). Returns the chosen directory, empty on cancel.
   static QString getExistingDirectory(QWidget* parent, const QString& caption, const QString& dir = QString());
+
+  // Opt in to the platform's own picker for the open, save and folder helpers
+  // (not getSaveFileNameWithOptions, whose checkboxes need the embedded
+  // picker). Unlike the Qt-drawn picker, it lists drives without waiting on
+  // disconnected network drives, at the cost of the app's styling. Process
+  // wide; the app applies its Preferences value. No effect unless
+  // systemDialogSupported().
+  static void setUseSystemDialog(bool enabled);
+  // Windows and macOS only: on Linux the native GTK picker crashes on this
+  // app's libpng ABI skew (pj_app/CMakeLists.txt, --exclude-libs), and the
+  // browser has its own picker.
+  [[nodiscard]] static constexpr bool systemDialogSupported() {
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  // Test-only: replace the reachability probe run by setDirectory() and for
+  // the persisted sidebar shortcuts (empty restores the default,
+  // QFileInfo::exists). The probe runs on a detached
+  // thread, so it must not touch Qt objects.
+  static void setStartFolderProbeForTest(std::function<bool(const QString&)> probe);
+  // Test-only: override how long setDirectory() waits for the probe, in ms
+  // (negative restores the default).
+  static void setStartFolderTimeoutForTest(int timeout_ms);
 
   struct ExtraOption {
     QString label;
@@ -104,13 +145,25 @@ class FileDialog : public Dialog {
   // empty vector) when `extras` is empty.
   std::vector<QCheckBox*> embedExtras(const std::vector<ExtraOption>& extras);
 
+  // True when the helpers should hand over to runSystemDialog().
+  [[nodiscard]] static bool useSystemDialog();
+  // Runs the platform picker modally; the chosen paths, empty on cancel.
+  static QStringList runSystemDialog(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter, QFileDialog::FileMode mode,
+      QFileDialog::AcceptMode accept, const QString& default_suffix = QString(),
+      const QString& selected_name = QString());
+
   QFileDialog* inner_;
+  QLabel* start_folder_notice_;
   ChromeMetrics chrome_metrics_;
 };
 
 template <typename SignalSourceT>
 QString FileDialog::getOpenFileName(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, SignalSourceT* metrics_source) {
+  if (useSystemDialog()) {
+    return runSystemDialog(parent, caption, dir, filter, QFileDialog::ExistingFile, QFileDialog::AcceptOpen).value(0);
+  }
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);
@@ -136,6 +189,9 @@ QString FileDialog::getOpenFileName(
 template <typename SignalSourceT>
 QStringList FileDialog::getOpenFileNames(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, SignalSourceT* metrics_source) {
+  if (useSystemDialog()) {
+    return runSystemDialog(parent, caption, dir, filter, QFileDialog::ExistingFiles, QFileDialog::AcceptOpen);
+  }
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);
@@ -162,6 +218,10 @@ template <typename SignalSourceT>
 QString FileDialog::getSaveFileName(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
     SignalSourceT* metrics_source) {
+  if (useSystemDialog()) {
+    return runSystemDialog(parent, caption, dir, filter, QFileDialog::AnyFile, QFileDialog::AcceptSave, default_suffix)
+        .value(0);
+  }
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);

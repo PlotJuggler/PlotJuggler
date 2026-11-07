@@ -209,7 +209,6 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_SCENE2D_CORE_TESTS ../tests/video_playback_bench_test.cpp)
 
     # Relative video fixtures need the repository root as the working directory.
-    # WARNINGS: all 4 merged tests carried PJ_WARNING_FLAGS before
     pj_add_test_runner(pj_scene2d_core_source_dir_tests
       MAIN core WARNINGS
       SOURCES ${PJ_SCENE2D_CORE_SOURCE_DIR_TESTS}
@@ -221,7 +220,6 @@ if(PJ_BUILD_TESTS)
   endif()
 
   # Share the dependency closure while ctest runs each case in its own process.
-  # WARNINGS: all 22 merged tests carried PJ_WARNING_FLAGS before
   pj_add_test_runner(pj_scene2d_core_tests
     MAIN core WARNINGS
     SOURCES ${PJ_SCENE2D_CORE_TESTS}

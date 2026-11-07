@@ -1,0 +1,41 @@
+<RCC>
+  <qresource prefix="/scene3d_rhi">
+    <file>scene.vert.qsb</file>
+    <file>scene.frag.qsb</file>
+    <file>grid.vert.qsb</file>
+    <file>point.vert.qsb</file>
+    <file>point.frag.qsb</file>
+    <file>point_list.vert.qsb</file>
+    <file>point_list.frag.qsb</file>
+    <file>cube.vert.qsb</file>
+    <file>cube.frag.qsb</file>
+    <file>pose.vert.qsb</file>
+    <file>pose.frag.qsb</file>
+    <file>occupancy.vert.qsb</file>
+    <file>occupancy.frag.qsb</file>
+    <file>voxel.vert.qsb</file>
+    <file>voxel.frag.qsb</file>
+    <file>marker.vert.qsb</file>
+    <file>marker.frag.qsb</file>
+    <file>marker_edge.vert.qsb</file>
+    <file>model.vert.qsb</file>
+    <file>model.frag.qsb</file>
+    <file>mesh_mask.frag.qsb</file>
+    <file>ssao.frag.qsb</file>
+    <file>shadow.vert.qsb</file>
+    <file>shadow.frag.qsb</file>
+    <file>grid_cell.vert.qsb</file>
+    <file>grid_cell.frag.qsb</file>
+    <file>grid_cell_shadow.frag.qsb</file>
+    <file>present.vert.qsb</file>
+    <file>present_flip_y.vert.qsb</file>
+    <file>present.frag.qsb</file>
+    <file>overlay.vert.qsb</file>
+    <file>overlay.frag.qsb</file>
+    <file>gizmo.frag.qsb</file>
+    <file>gridmap.vert.qsb</file>
+    <file>gridmap.frag.qsb</file>
+    <file>trail.vert.qsb</file>
+    <file>trail.frag.qsb</file>
+  </qresource>
+</RCC>

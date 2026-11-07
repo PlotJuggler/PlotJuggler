@@ -17,6 +17,8 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QHostAddress>
+#include <QList>
+#include <QNetworkReply>
 #include <QString>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -24,6 +26,9 @@
 #include <QUrl>
 #include <functional>
 #include <memory>
+
+#include "mock_parser_support.h"
+
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -68,6 +73,7 @@ TEST(UrlFetcherTest, LocalFileUrlDeliversBytesAsynchronously) {
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_TRUE(result.ok) << result.error.toStdString();
   EXPECT_EQ(result.bytes, payload);
+  EXPECT_TRUE(result.final_url.isEmpty()) << "a local read has no served-from URL";
 }
 
 TEST(UrlFetcherTest, SchemelessBarePathReadsLocalFile) {
@@ -142,11 +148,9 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
   // A server that accepts the connection but never responds keeps the request
   // in flight for as long as the test wants.
   QTcpServer server;
-  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
-
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
   bool called = false;
-  const QUrl url(u"http://127.0.0.1:%1/never"_s.arg(server.serverPort()));
+  const QUrl url(pj::scene3d::test::silentServerUrl(server, u"never"_s));
   fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; });
 
   // Let the connection actually establish, then kill the fetcher mid-flight.
@@ -157,6 +161,35 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
   EXPECT_FALSE(called) << "callback fired after the fetcher was destroyed";
 }
 
+// Destroying the fetcher mid-request cancels the request while the fetcher is still whole: the
+// reply finishes during the fetcher's destruction, and the callback still never runs.
+TEST(UrlFetcherTest, DestructionCancelsInFlightRequestsWhileTheFetcherIsWhole) {
+  QTcpServer server;
+  auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
+  bool called = false;
+  fetcher->fetch(QUrl(pj::scene3d::test::silentServerUrl(server, u"never"_s)), [&called](pj::scene3d::FetchResult) {
+    called = true;
+  });
+  ASSERT_TRUE(pumpUntil([&server]() { return server.hasPendingConnections(); }, 2000));
+  const QList<QNetworkReply*> replies = fetcher->findChildren<QNetworkReply*>();
+  ASSERT_EQ(replies.size(), 1);
+  bool reply_finished = false;
+  QObject::connect(replies.front(), &QNetworkReply::finished, [&reply_finished]() { reply_finished = true; });
+
+  fetcher.reset();
+
+  EXPECT_TRUE(reply_finished) << "the request was not cancelled while the fetcher was alive";
+  pumpUntil([]() { return false; }, 300);
+  EXPECT_FALSE(called);
+}
+
+namespace {
+// A Content-Length one byte over the cap, which differs per renderer build.
+QByteArray overCapLength() {
+  return QByteArray::number(pj::scene3d::UrlFetcher::kMaxFetchBytes + 1);
+}
+}  // namespace
+
 // Size cap: a response whose declared Content-Length exceeds kMaxFetchBytes is
 // aborted instead of buffered.
 TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
@@ -166,9 +199,9 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
     QTcpSocket* socket = server.nextPendingConnection();
     QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
       socket->readAll();  // consume the request; the content is irrelevant
-      // 100 MiB declared > the 64 MiB cap: the fetcher must abort on the
+      // One byte over the cap declared: the fetcher must abort on the
       // headers (metaDataChanged) without waiting for the body to stream.
-      socket->write("HTTP/1.1 200 OK\r\nContent-Length: 104857600\r\n\r\n");
+      socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + overCapLength() + "\r\n\r\n");
       socket->write(QByteArray(4096, 'x'));
       socket->flush();
     });
@@ -283,6 +316,35 @@ TEST(UrlFetcherTest, StaleEntryServedFromCacheWhenOffline) {
   EXPECT_EQ(second.bytes, body);
 }
 
+// A redirected response reports where it was finally served, so a URDF's
+// relative meshes and package roots anchor at that location.
+TEST(UrlFetcherTest, FinalUrlFollowsRedirect) {
+  clearModelCache();
+  QTcpServer server;
+  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&server]() {
+    QTcpSocket* socket = server.nextPendingConnection();
+    QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
+      const QByteArray request = socket->readAll();
+      if (request.startsWith("GET /start/robot.urdf ")) {
+        socket->write("HTTP/1.1 302 Found\r\nLocation: /served/v2/robot.urdf\r\nContent-Length: 0\r\n\r\n");
+      } else {
+        socket->write("HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Length: 5\r\n\r\nrobot");
+      }
+      socket->flush();
+    });
+  });
+
+  pj::scene3d::UrlFetcher fetcher;
+  const pj::scene3d::FetchResult result =
+      fetchSync(fetcher, QUrl(u"http://127.0.0.1:%1/start/robot.urdf"_s.arg(server.serverPort())));
+  ASSERT_TRUE(result.ok) << result.error.toStdString();
+  EXPECT_EQ(result.bytes, QByteArray("robot"));
+  EXPECT_EQ(
+      result.final_url.toString().toStdString(),
+      u"http://127.0.0.1:%1/served/v2/robot.urdf"_s.arg(server.serverPort()).toStdString());
+}
+
 // A size-capped (aborted) response must not leave a usable cache entry: a later
 // fetch re-hits the network rather than being served truncated bytes as success.
 TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
@@ -295,8 +357,9 @@ TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
     QTcpSocket* socket = server.nextPendingConnection();
     QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
       socket->readAll();
-      // 100 MiB declared (> 64 MiB cap) but cacheable headers: the fetcher aborts.
-      socket->write("HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nContent-Length: 104857600\r\n\r\n");
+      // Over-cap length declared but cacheable headers: the fetcher aborts.
+      socket->write(
+          "HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nContent-Length: " + overCapLength() + "\r\n\r\n");
       socket->write(QByteArray(4096, 'x'));
       socket->flush();
     });

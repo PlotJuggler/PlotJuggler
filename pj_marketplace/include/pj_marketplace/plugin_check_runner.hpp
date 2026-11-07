@@ -10,6 +10,7 @@
 // crashes on load never reaches the caller's process image.
 
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QString>
 #include <QVector>
 #include <chrono>
@@ -74,6 +75,14 @@ class PluginCheckRunner {
   /// Resolve the path of the helper binary the runner would invoke. Exposed for
   /// tests and diagnostics; production callers rely on the auto-locate default.
   [[nodiscard]] static QString locateHelper(const QString& override_path = QString());
+
+  /// Environment the helper child runs with: `base` with `qt_libraries_dir` put first on the
+  /// dynamic-library search path (LD_LIBRARY_PATH on Linux, PATH on Windows; untouched elsewhere).
+  /// The helper is Qt-free but dlopen()s every candidate, and a Widget plugin links Qt: outside the
+  /// AppImage (a development tree, a .deb) nothing else tells the loader where libQt6Widgets lives,
+  /// and a failed load there is read as a rejected plugin. Exposed for tests.
+  [[nodiscard]] static QProcessEnvironment childEnvironment(
+      const QProcessEnvironment& base, const QString& qt_libraries_dir);
 
  private:
   PluginCheckOptions options_;

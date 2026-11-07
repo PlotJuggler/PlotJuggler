@@ -41,8 +41,8 @@ class CurveTreeView : public QTreeWidget {
     bool selectable = true;
     // false = the row never starts a drag and is excluded from any drag payload.
     // Curve leaves: a value-only leaf (string fields today — they can't be
-    // plotted) keeps its Value cell but is drag-inert. Object topics: a type no
-    // view can display (the caller's policy) — pair with `tooltip` to say why.
+    // plotted) keeps its Value cell but is drag-inert. Object topics: a type
+    // nothing can take (the caller's policy) — pair with `tooltip` to say why.
     bool draggable = true;
     // Optional name-cell tooltip. Empty = none.
     QString tooltip = {};
@@ -60,11 +60,21 @@ class CurveTreeView : public QTreeWidget {
     // setUnsubscribedKeys() rather than a rebuild, so a subscribe/unsubscribe
     // toggle only repaints, never restructures.
     bool is_unsubscribed = false;
+    // Non-empty: the row is ONE flat top-level row labelled `display_name`
+    // (verbatim, never split on '/'), instead of the dataset/topic groups — an
+    // object topic's terminal, or a curve leaf (still draggable). The row's search
+    // path (filter, glyph matching) stays the full dataset/topic path, so a filter
+    // on the dataset name still finds it.
+    QString display_name = {};
+    // Short grey tag the delegate paints after the name (e.g. "AI"). Presentation
+    // only: not part of the item text, the catalog key, the search path or a drag.
+    QString badge = {};
   };
 
   // Plain-typed, per-dataset load progress retained by the tree view. The
-  // state is stored on dataset rows only; topic and scalar-field rows are
-  // never decorated.
+  // state is stored on dataset rows and on flat top-level curve rows (a
+  // replaying series); topic and scalar-field rows under a dataset are never
+  // decorated.
   struct DatasetProgress {
     // The current controller-owned lifecycle state for the row decoration.
     // kStopping is latched the moment the user's stop is ACCEPTED, not when the
@@ -150,6 +160,9 @@ class CurveTreeView : public QTreeWidget {
   // placeholder), or empty for pure group/folder rows — lets a context-menu
   // host map the clicked row back to a CatalogModel item.
   [[nodiscard]] static QString catalogKeyOf(const QTreeWidgetItem* item);
+  // The badge text the delegate paints after the row's name (CurvePath::badge), or
+  // empty for a row without one.
+  [[nodiscard]] static QString badgeOf(const QTreeWidgetItem* item);
   // Every catalog key in `item`'s subtree, including `item`'s own (depth-first;
   // keyless group rows contribute nothing). Lets a context-menu host act on a
   // GROUP row — e.g. a promoted scalar topic, whose keys live on its field
@@ -221,6 +234,25 @@ class CurveTreeView : public QTreeWidget {
   // Test read-back: whether the topic node at `topic_path` carries the forced
   // mark right now.
   [[nodiscard]] bool isTopicPathForced(const QString& topic_path);
+
+  // State of a derived (on-demand) topic's row: a display-only mirror of the host's
+  // node state. `kIdle` and `kReady` paint no glyph.
+  enum class DerivedGlyphState { kIdle, kPending, kReady, kMissingInput, kError };
+  struct DerivedGlyph {
+    DerivedGlyphState state = DerivedGlyphState::kIdle;
+    QString tooltip;
+  };
+  // Full-set replace of the derived-topic glyphs, each keyed by its TOPIC
+  // tree-path (dataset/topic, see treePathFromCurvePath with an empty field),
+  // mirroring setForcedTopicPaths: a small dot at the Name cell's trailing edge
+  // (none for `kIdle`/`kReady`) plus the row's native tooltip, which the entry
+  // writes whatever its state: pass the row's whole tooltip, so one pass writes it.
+  // A row whose entry left the set loses both. Retained and re-applied across
+  // rebuilds. An entry equal to what its row shows touches nothing, so a host may
+  // re-send the set on every state change without invalidating a hover.
+  void setDerivedTopicGlyphs(const QHash<QString, DerivedGlyph>& by_topic_path);
+  // Test read-back: the glyph state at `topic_path` right now (kIdle if none).
+  [[nodiscard]] DerivedGlyphState derivedGlyphStateAt(const QString& topic_path);
   // Arms a one-shot intent: once a placeholder leaf at `tree_path` promotes to a
   // field-bearing topic (its fields materialize as child rows), expand that
   // topic's node and its ancestors so the field breakdown is revealed, then
@@ -453,6 +485,9 @@ class CurveTreeView : public QTreeWidget {
   QTreeWidgetItem* findTopicNode(const QString& topic_path);
   // Re-stamps kForcedRole from forced_topic_paths_ (clear-all then set).
   void applyForcedTopicMarks();
+  // Re-stamps the derived-glyph role + tooltip from derived_topic_glyphs_
+  // (clear-all then set), mirroring applyForcedTopicMarks.
+  void applyDerivedTopicGlyphs();
   // The FULL progress pass, in four steps that callers depend on as one
   // contract: STAMP the retained progress onto the dataset rows that resolve,
   // BUILD a ghost for every entry whose tree path has no row (sorting them into
@@ -473,7 +508,7 @@ class CurveTreeView : public QTreeWidget {
   // The row's normalized tree path rebuilt from its ancestry (group rows carry
   // no kSearchRole); equals treePathFromCurvePath() for the row's CurvePath.
   [[nodiscard]] static QString treePathOfItem(const QTreeWidgetItem* item);
-  // Drops a row's selection while it shows live progress; shared by both passes.
+  // Drops a dataset row's selection while it shows live progress (a curve row keeps it); shared by both passes.
   void deselectProgressRow(QTreeWidgetItem* row, DatasetProgress::State state);
   // Starts or stops the marquee/flash timer from whether any row still animates.
   void refreshAnimationTimer();
@@ -513,6 +548,8 @@ class CurveTreeView : public QTreeWidget {
   // ancestor, never the matching topic or field row.
   QTreeWidgetItem* findDatasetNode(const QString& dataset_tree_path);
   QTreeWidgetItem* ensureGroupSegments(const QStringList& segments);
+  // A new top-level row labelled `label` verbatim (CurvePath::display_name); never merged.
+  QTreeWidgetItem* newFlatRow(const QString& label);
   QTreeWidgetItem* ensureGroup(const QString& path);
   // Walks the tree; for every pending_expand_paths_ entry whose group node now
   // exists, expands that node and its ancestors and drops the entry. No-op when
@@ -613,6 +650,9 @@ class CurveTreeView : public QTreeWidget {
   // Topics currently marked as force-streamed (see setForcedTopicPaths);
   // retained so rebuilds re-stamp the marks.
   QSet<QString> forced_topic_paths_;
+  // Derived-topic glyphs currently set (see setDerivedTopicGlyphs); retained so
+  // rebuilds re-stamp them.
+  QHash<QString, DerivedGlyph> derived_topic_glyphs_;
   // Full progress set retained across clearCurves() + re-add rebuilds.
   QHash<quint64, DatasetProgress> dataset_progress_;
   // The catalog tree path each live row key is filed under — the direction every

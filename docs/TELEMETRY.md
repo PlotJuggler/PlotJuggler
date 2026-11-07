@@ -63,11 +63,12 @@ WebAssembly build does not ping at all: `getenv` under Emscripten reads a
 synthetic table that never inherits the host process environment, so `CI` is
 invisible to the running module. The browser suites in `tests/wasm/` boot the
 application dozens of times per run on US-hosted CI runners; they would have
-been indistinguishable from real users. `tests/wasm/support/browser.js` forces
-every non-localhost name to fail resolution (`MAP * ~NOTFOUND`) as a second,
-independent barrier — note that mapping to `0.0.0.0` would NOT do this, since
-the kernel rewrites a connect to the unspecified address as a connect to
-loopback, quietly serving a foreign origin from the fixture server.
+been indistinguishable from real users. `tests/wasm/support/browser.js` adds a
+second, independent barrier: Chromium fails resolution of every non-localhost
+name (`MAP * ~NOTFOUND`) — note that mapping to `0.0.0.0` would NOT do this,
+since the kernel rewrites a connect to the unspecified address as a connect to
+loopback, quietly serving a foreign origin from the fixture server — and
+Firefox sends every non-localhost request to a dead proxy on port 9.
 
 Because a browser has neither guard nor a durable machine id, the Preferences
 switch is hidden in that build rather than offering control over nothing.

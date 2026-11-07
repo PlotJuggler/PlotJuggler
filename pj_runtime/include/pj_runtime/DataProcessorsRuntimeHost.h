@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -17,8 +19,11 @@ class ServiceRegistryBuilder;
 /// Host-side bridge that exposes the unified `pj.data_processors.v1` SDK service to
 /// ONE plugin and delegates to a `DataProcessorService`. This bridge serves only
 /// kind="transform" (per-sample numeric series materialized into the DataEngine via
-/// the DerivedEngine) — kind="markers" is routed to a separate bridge
-/// (`MarkersRuntimeHost`), so anything else is rejected.
+/// the IncrementalEngine) — kind="markers" is routed to a separate bridge
+/// (`MarkersRuntimeHost`), so anything else is rejected. `create_data_processor_v2`
+/// takes no time flags, typed outputs or `dataset_id` (each refused naming the kind),
+/// then runs the legacy create; the evaluation slots are absent (the router refuses a
+/// submit on this kind).
 ///
 /// DATA-ONLY: it marshals the C ABI (only strings cross) into transform
 /// upsert/remove/list/config calls; the host owns all execution. Per-plugin: every
@@ -32,8 +37,9 @@ class ServiceRegistryBuilder;
 /// LIFETIME — the bridge is INDEPENDENT of the transforms it creates. Destroying
 /// it (the ordinary case on plugin DSO unload) tears down only this object; the
 /// transform nodes KEEP RUNNING because the host owns the script + VM. Transforms
-/// are torn down only by an explicit `remove` or `DataProcessorService::
-/// clearTransformsForPlugin` (uninstall) / `clearAllTransforms` (session close).
+/// are torn down only by an explicit `remove`, `clearAllTransforms` (session close)
+/// or, for a preview this bridge created, the end of its plugin instance:
+/// `DerivedRuntimeHosts` (the owner of this bridge) removes its `previews()`.
 /// Not movable: the vtable fat pointer stores `this`.
 class DataProcessorsRuntimeHost {
  public:
@@ -57,6 +63,17 @@ class DataProcessorsRuntimeHost {
     return raw_;
   }
 
+  /// Whether this plugin has a transform `local_id`, previews included: the router's
+  /// ownership probe. Reads only.
+  [[nodiscard]] bool owns(std::string_view local_id) const;
+
+  /// The namespaced keys of the previews (ephemeral transforms) created through this
+  /// bridge and not removed through it. One may since have gone another way (a
+  /// cascade): `DataProcessorService::removeEphemerals` skips it.
+  [[nodiscard]] const std::unordered_set<std::string>& previews() const noexcept {
+    return previews_;
+  }
+
  private:
   static bool onCreate(
       void* ctx, PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t language, const PJ_string_view_t* inputs,
@@ -71,6 +88,13 @@ class DataProcessorsRuntimeHost {
   static bool onValidate(
       void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
       PJ_string_view_t params_json, PJ_error_t* out_error) noexcept;
+  /// Always decides: an unknown kind or language is refused (false), a script then VALID or INVALID.
+  static bool onCheck(
+      void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
+      PJ_string_view_t params_json, uint32_t* out_status, PJ_error_t* out_error) noexcept;
+  static bool onCreateV2(
+      void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+      uint64_t* out_topics_count, PJ_error_t* out_error) noexcept;
 
   DataProcessorService& service_;
   std::string plugin_id_;
@@ -81,6 +105,7 @@ class DataProcessorsRuntimeHost {
   std::vector<std::string> list_storage_;
   std::string config_storage_;
   std::vector<std::string> create_topics_storage_;  ///< backs onCreate's borrowed out_topics until the next call
+  std::unordered_set<std::string> previews_;        ///< see previews()
 };
 
 }  // namespace PJ

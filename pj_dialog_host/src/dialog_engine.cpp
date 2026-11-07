@@ -40,12 +40,16 @@
 #include <utility>
 #include <vector>
 
+#include "host_info.hpp"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 DialogEngine::DialogEngine(PJ::DialogHandle handle, DialogEngineConfig config)
-    : handle_(std::move(handle)), config_(config) {}
+    : handle_(std::move(handle)), config_(config) {
+  // A modal dialog embeds no scene view (panels only), so it announces no capability.
+  detail::announceHostInfo(handle_, /*capabilities=*/0);
+}
 
 namespace {
 
@@ -321,6 +325,7 @@ struct DialogEngine::AsyncRunner {
     }
 
     auto clamp_to_browser_screen = [dialog]() {
+      Q_UNUSED(dialog);  // captured for the browser branch only
 #ifdef Q_OS_WASM
       // A browser canvas is the whole available desktop. Authored plugin
       // dialogs can be taller than it (MCAP is 732 px before its title bar),
@@ -336,6 +341,8 @@ struct DialogEngine::AsyncRunner {
         dialog->setMaximumSize(maximum);
         dialog->resize(dialog->size().boundedTo(maximum));
       }
+#else
+      Q_UNUSED(dialog);
 #endif
     };
 
@@ -543,8 +550,9 @@ struct DialogEngine::AsyncRunner {
       Q_UNUSED(target_memo)
       qWarning("DialogEngine: no browser content picker was provided for this plugin file request");
 #else
+      const FilePickerStart start = filePickerStart(view, widget_name);
       QString path = PJ::FileDialog::getOpenFileName(
-          dialog, QString::fromStdString(title), QString(), QString::fromStdString(filter));
+          dialog, QString::fromStdString(title), start.dir, QString::fromStdString(filter), start.name);
       if (!path.isEmpty()) {
         apply_selected_path(path.toStdString());
       }
@@ -566,7 +574,8 @@ struct DialogEngine::AsyncRunner {
       qWarning("DialogEngine: plugin folder pickers are unavailable on WebAssembly");
 #else
       auto title = view.folderPickerTitle(widget_name).value_or(QObject::tr("Select Folder").toStdString());
-      QString path = PJ::FileDialog::getExistingDirectory(dialog, QString::fromStdString(title));
+      QString path = PJ::FileDialog::getExistingDirectory(
+          dialog, QString::fromStdString(title), filePickerStart(view, widget_name).dir);
       if (!path.isEmpty()) {
         if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()))) {
           std::string raw = handle->widget_data();
@@ -603,9 +612,10 @@ struct DialogEngine::AsyncRunner {
       auto filter = view.filePickerFilter(widget_name).value_or("");
       auto title = view.filePickerTitle(widget_name).value_or(QObject::tr("Save File").toStdString());
       auto suffix = view.saveFilePickerDefaultSuffix(widget_name).value_or("");
+      const FilePickerStart start = filePickerStart(view, widget_name);
       QString path = PJ::FileDialog::getSaveFileName(
-          dialog, QString::fromStdString(title), QString(), QString::fromStdString(filter),
-          QString::fromStdString(suffix));
+          dialog, QString::fromStdString(title), start.dir, QString::fromStdString(filter),
+          QString::fromStdString(suffix), start.name);
       if (!path.isEmpty()) {
         if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()))) {
           std::string raw = handle->widget_data();

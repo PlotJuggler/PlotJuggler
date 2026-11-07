@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include "pj_scripting/marker_engine.h"
 #include "pj_scripting/script_engine.h"
 
 using namespace PJ::scripting;
@@ -82,4 +83,58 @@ TEST(LuauSandbox, LegitimateFilterStillWorks) {
   auto inst = engine->createInstance(classes->front(), "{}");
   ASSERT_TRUE(inst.has_value());
   EXPECT_DOUBLE_EQ((*inst)->calculate(0.0, 4.0).value, 12.0);
+}
+
+// A call that writes a global or reaches for the string metatable leaves nothing the next call can see:
+// both engines build a fresh VM per call, and this pins it so VM reuse cannot regress it silently.
+TEST(LuauSandbox, LuauCallCannotLeakSharedState) {
+  // Filter engine: instance 1 writes a global (allowed: its own per-VM table) and tries the string
+  // metatable; instance 2 must see neither.
+  constexpr const char* kWriter = R"LUAU(
+    leaked = {1}
+    pcall(function() getmetatable("").__index.leaked = true end)
+    return { id="writer", name="W", create = function(p) return { calculate = function(t, v)
+      return leaked ~= nil and 1 or 0
+    end } end }
+  )LUAU";
+  constexpr const char* kReader = R"LUAU(
+    return { id="reader", name="R", create = function(p) return { calculate = function(t, v)
+      return (leaked ~= nil or string.leaked ~= nil or getmetatable("").__index.leaked ~= nil) and 1 or 0
+    end } end }
+  )LUAU";
+  auto engine = makeLuauEngine();
+  // -1 when the module does not load or the call fails, so the checks below fail.
+  auto calculate = [&](const char* source) {
+    auto classes = engine->inspectModule(source, "test");
+    if (!classes.has_value()) {
+      return -1.0;
+    }
+    auto inst = engine->createInstance(classes->front(), "{}");
+    if (!inst.has_value()) {
+      return -1.0;
+    }
+    const auto result = (*inst)->calculate(0.0, 0.0);
+    return (result.suppress || (*inst)->failed()) ? -1.0 : result.value;
+  };
+  EXPECT_DOUBLE_EQ(calculate(kWriter), 1.0);  // the write landed in the writer's own VM
+  EXPECT_DOUBLE_EQ(calculate(kReader), 0.0);
+
+  // Marker engine: globals and the string table are read-only there, so the writes are rejected;
+  // the second run must still see nothing.
+  constexpr const char* kMarkerWriter = R"LUAU(
+    pcall(function() leaked = {1} end)
+    pcall(function() getmetatable("").__index.leaked = true end)
+  )LUAU";
+  constexpr const char* kMarkerReader = R"LUAU(
+    if leaked ~= nil or string.leaked ~= nil or getmetatable("").__index.leaked ~= nil then
+      createVerticalMarker(0, {label="leaked"})
+    end
+  )LUAU";
+  const SeriesProvider no_series;
+  std::string error;
+  EXPECT_TRUE(runMarkerScript(kMarkerWriter, no_series, &error).empty());
+  ASSERT_TRUE(error.empty()) << error;
+  const auto markers = runMarkerScript(kMarkerReader, no_series, &error);
+  ASSERT_TRUE(error.empty()) << error;
+  EXPECT_TRUE(markers.empty());
 }

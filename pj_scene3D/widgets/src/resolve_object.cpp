@@ -14,7 +14,7 @@
 #include "pj_base/builtin/poses_in_frame_codec.hpp"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/builtin/voxel_grid_codec.hpp"
-#include "pj_scene3d_widgets/parse_locked.h"  // parseLocked
+#include "pj_runtime/parse_locked.h"  // parseLocked
 
 namespace pj::scene3d {
 namespace {
@@ -63,7 +63,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> resolveObject(
   const auto size = payload.bytes.size();
   switch (type) {
     case BT::kPointCloud:
-      return wrapCanonical(PJ::deserializePointCloud(data, size));
+      // The store's payload is immutable and anchored: alias the point bytes.
+      return wrapCanonical(PJ::deserializePointCloudView(data, size, payload.anchor));
     case BT::kCompressedPointCloud:
       return wrapCanonical(PJ::deserializeCompressedPointCloud(data, size));
     case BT::kFrameTransforms:

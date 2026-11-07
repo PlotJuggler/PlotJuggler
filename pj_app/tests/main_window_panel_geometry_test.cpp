@@ -5,13 +5,18 @@
 
 #include <QApplication>
 #include <QLabel>
+#include <QPointer>
 #include <QSettings>
 #include <QSplitter>
 #include <QStandardPaths>
 #include <string_view>
 
 #include "MainWindow.h"
+#include "ToolboxPresenter.h"
+#include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_plotting/TabbedPlotWidget.h"
 #include "support/gui_test_env.h"
 
 using namespace Qt::StringLiterals;
@@ -24,18 +29,50 @@ namespace PJ {
 // ui_MainWindow.h is internal to the shell library.
 class MainWindowPanelGeometryTestPeer {
  public:
+  static void reconnectDock(MainWindow& window, PlotDocker* docker) {
+    window.onPlotTabAdded(docker);
+  }
   [[nodiscard]] static bool presentPanel(MainWindow& window, QWidget* panel) {
-    return window.presentPanel(panel);
+    window.presentPanel(panel);
+    return window.current_panel_ == panel;
   }
 
   static void restoreCentralArea(MainWindow& window) {
     window.restoreCentralArea();
+  }
+
+  // A bare (engine-less) toolbox presenter for `container`, not yet presented.
+  static ToolboxPresenter& registerToolbox(MainWindow& window, const QString& plugin_id, QWidget* container) {
+    return window.registerToolbox(
+        plugin_id, ToolboxPresenter::Spec{
+                       .container = container,
+                       .engine = nullptr,
+                       .session = {},
+                       .host = nullptr,
+                       .title = u"Toolbox"_s,
+                       .save_config = []() { return u"{}"_s; },
+                       .apply_chrome = {}});
   }
 };
 
 }  // namespace PJ
 
 namespace {
+
+// Counts the ParentChange events the watched widget receives.
+class ParentChangeCounter : public QObject {
+ public:
+  ParentChangeCounter(int* count, QObject* parent) : QObject(parent), count_(count) {}
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (event->type() == QEvent::ParentChange) {
+      ++*count_;
+    }
+    return QObject::eventFilter(watched, event);
+  }
+
+ private:
+  int* count_;
+};
 
 // The left column's width is the user's setting: they drag the separator to a
 // width that suits their data, and only another drag may change it.
@@ -124,6 +161,24 @@ TEST(MainWindowPanelGeometryTest, PresentingAndDismissingAPanelLeavesTheLeftPane
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth) << "dismissing a toolbox panel resized the left panel";
 }
 
+TEST(MainWindowPanelGeometryTest, SettingsActionOpensAndClosesTheSidebar) {
+  PJ::MainWindow window;
+  openAtUserChosenWidth(window);
+  auto* tabs = window.findChild<PJ::TabbedPlotWidget*>();
+  ASSERT_NE(tabs, nullptr);
+  auto* dock = tabs->dockerAt(0)->plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  PJ::MainWindowPanelGeometryTestPeer::reconnectDock(window, tabs->dockerAt(0));
+  PJ::MainWindowPanelGeometryTestPeer::reconnectDock(window, tabs->dockerAt(0));
+  rightPanel(window).hide();
+  dock->settingsPanelToggleRequested(dock);
+  settle();
+  EXPECT_FALSE(rightPanel(window).isHidden());
+  dock->settingsPanelToggleRequested(dock);
+  settle();
+  EXPECT_TRUE(rightPanel(window).isHidden());
+}
+
 // Launching a toolbox while another one is open dismisses the first and
 // presents the second. That round trip puts the chart back into the splitter
 // and takes it out again, and the sidebar must not pick up a slice on the way.
@@ -142,6 +197,78 @@ TEST(MainWindowPanelGeometryTest, ReplacingAnOpenPanelLeavesTheLeftPanelWidthAlo
   PJ::MainWindowPanelGeometryTestPeer::restoreCentralArea(window);
   settle();
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth) << "dismissing the replacement resized the left panel";
+}
+
+// Presenting and dismissing a panel switch pages of the chart slot instead of
+// moving the chart in and out of the window: every reparent re-polishes a whole
+// widget tree against the app stylesheet, which froze a browser page for
+// hundreds of ms on each toolbox close. The dismissed panel is not reparented
+// either, only deleted.
+TEST(MainWindowPanelGeometryTest, PresentingAndDismissingAPanelNeverReparentsTheChartOrThePanel) {
+  PJ::MainWindow window;
+  openAtUserChosenWidth(window);
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  QWidget* chart_parent = tabbed->parentWidget();
+  ASSERT_NE(chart_parent, nullptr);
+
+  QPointer<QLabel> panel = new QLabel(u"toolbox"_s);
+  ASSERT_TRUE(PJ::MainWindowPanelGeometryTestPeer::presentPanel(window, panel));
+  settle();
+  EXPECT_EQ(tabbed->parentWidget(), chart_parent);
+  EXPECT_FALSE(tabbed->isVisible());
+  QWidget* panel_parent = panel->parentWidget();
+  int panel_parent_changes = 0;
+  panel->installEventFilter(new ParentChangeCounter(&panel_parent_changes, panel));
+
+  PJ::MainWindowPanelGeometryTestPeer::restoreCentralArea(window);
+  EXPECT_EQ(tabbed->parentWidget(), chart_parent);
+  ASSERT_FALSE(panel.isNull()) << "the dismissed panel is deleted later, not on the spot";
+  EXPECT_EQ(panel->parentWidget(), panel_parent);
+  EXPECT_EQ(panel_parent_changes, 0);
+  settle();
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_TRUE(tabbed->isVisible());
+  EXPECT_TRUE(panel.isNull());
+}
+
+// A toolbox moving between presentations is reparented once per move, at its
+// destination (a release leaves its parent alone), and closing its tab deletes
+// it where it is.
+TEST(MainWindowPanelGeometryTest, ToolboxMovesReparentOnceAndItsTabCloseDeletesInPlace) {
+  PJ::MainWindow window;
+  openAtUserChosenWidth(window);
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  QPointer<QLabel> panel = new QLabel(u"toolbox"_s);
+  int parent_changes = 0;
+  panel->installEventFilter(new ParentChangeCounter(&parent_changes, panel));
+  PJ::ToolboxPresenter& presenter =
+      PJ::MainWindowPanelGeometryTestPeer::registerToolbox(window, u"test.toolbox"_s, panel);
+
+  using Presentation = PJ::ToolboxPresenter::Presentation;
+  presenter.moveToDock();
+  EXPECT_EQ(presenter.presentation(), Presentation::kTakeover);
+  EXPECT_EQ(parent_changes, 1);
+  presenter.moveToTab(/*transient=*/false);
+  EXPECT_EQ(presenter.presentation(), Presentation::kTab);
+  EXPECT_EQ(parent_changes, 2);
+  presenter.moveToFloating();
+  EXPECT_EQ(presenter.presentation(), Presentation::kFloating);
+  EXPECT_EQ(parent_changes, 3);
+  presenter.moveToDock();
+  EXPECT_EQ(presenter.presentation(), Presentation::kTakeover);
+  EXPECT_EQ(parent_changes, 4);
+  presenter.moveToTab(/*transient=*/false);
+  settle();  // the floating window's deferred delete runs; the panel had left it
+  ASSERT_FALSE(panel.isNull());
+  EXPECT_TRUE(panel->isVisible());
+  EXPECT_EQ(parent_changes, 5);
+
+  tabbed->closeWidgetTab(panel);
+  EXPECT_EQ(parent_changes, 5);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_TRUE(panel.isNull());
 }
 
 // Putting the chart back has to restore its width-absorbing role too, not just

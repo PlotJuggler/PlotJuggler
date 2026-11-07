@@ -6,15 +6,24 @@
 #include <QSignalSpy>
 #include <QString>
 #include <QStringList>
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "on_demand_test_utils.h"
+#include "pj_base/builtin/plot_markers.hpp"
+#include "pj_base/sdk/platform.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 using namespace Qt::StringLiterals;
@@ -50,6 +59,223 @@ TEST(CatalogModelTest, TopicLookupRejectsDuplicateDatasets) {
   catalog.removeDataset(*first, /*tombstone=*/false);
   session.dataEngine().removeDataset(*first);
   EXPECT_EQ(catalog.datasetForTopic(u"/speed"_s), *second);
+}
+
+// The plugin scene-tab lookup: object topics only, by topic name, narrowed to one
+// dataset by its source NAME.
+TEST(CatalogModelTest, ObjectTopicsNamedFiltersByNameAndDatasetSource) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run-a.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run-b.mcap"});
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  const auto register_object_topic = [&session](PJ::DatasetId dataset, const char* name) {
+    ASSERT_TRUE(session.objectStore()
+                    .registerTopic({.dataset_id = dataset, .topic_name = name, .metadata_json = "{}"})
+                    .has_value());
+  };
+  register_object_topic(*first, "/cloud");
+  register_object_topic(*first, "/only-a");
+  register_object_topic(*second, "/cloud");
+  ASSERT_NE(addScalarTopic(session, *second, "/scalar"), 0u);
+  catalog.rebuildFromDatastore();
+
+  const auto both = catalog.objectTopicsNamed(u"/cloud"_s, {});
+  ASSERT_EQ(both.size(), 2U);
+  EXPECT_EQ(both[0].dataset_id, *first);
+  EXPECT_EQ(both[1].dataset_id, *second);
+
+  const auto in_second = catalog.objectTopicsNamed(u"/cloud"_s, u"run-b.mcap"_s);
+  ASSERT_EQ(in_second.size(), 1U);
+  EXPECT_EQ(in_second.front().dataset_id, *second);
+
+  EXPECT_EQ(catalog.objectTopicsNamed(u"/only-a"_s, {}).size(), 1U);
+  EXPECT_TRUE(catalog.objectTopicsNamed(u"/only-a"_s, u"run-b.mcap"_s).empty());
+  EXPECT_TRUE(catalog.objectTopicsNamed(u"/cloud"_s, u"no-such-run"_s).empty());
+  EXPECT_TRUE(catalog.objectTopicsNamed(u"/scalar"_s, {}).empty()) << "a scalar topic is not an object topic";
+
+  const auto second_cloud = session.objectStore().findTopic(*second, "/cloud");
+  ASSERT_TRUE(second_cloud);
+  const auto by_id = catalog.objectTopicItem(*second_cloud);
+  ASSERT_TRUE(by_id);
+  EXPECT_EQ(by_id->dataset_id, *second);
+  EXPECT_EQ(by_id->topic_name, u"/cloud"_s);
+  EXPECT_FALSE(catalog.objectTopicItem(PJ::ObjectTopicId{999'999}));
+}
+
+// The marker-input lookup: a series key resolves to its scalar field within the
+// dataset asked for, never in another dataset carrying the same topic.
+TEST(CatalogModelTest, FindScalarForMarkerKeyLooksInOneDataset) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  const PJ::TopicId speed = addScalarTopic(session, *first, "/speed");
+  ASSERT_NE(speed, 0u);
+  const std::string key = PJ::sdk::markerSeriesKey("/speed", "value");
+
+  const std::optional<PJ::ScalarFieldPayload> found = catalog.findScalarForMarkerKey(*first, key);
+  ASSERT_TRUE(found.has_value());
+  EXPECT_EQ(found->topic_id, speed);
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*second, key).has_value()) << "not in that dataset";
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*first, "/speed").has_value()) << "a topic is not a series";
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*first, "/speed/val").has_value());
+}
+
+// The lookup remembers what it found only until the items change, and forgets it before any slot hears of the
+// change: a slot of itemsRemoved, and every later lookup, no longer find the removed field.
+TEST(CatalogModelTest, FindScalarForMarkerKeyForgetsAFieldTheCatalogDropped) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset);
+  ASSERT_NE(addScalarTopic(session, *dataset, "/speed"), 0u);
+  const std::string key = PJ::sdk::markerSeriesKey("/speed", "value");
+  ASSERT_NE(addScalarTopic(session, *dataset, "/other"), 0u);  // keeps the catalog non-empty
+  ASSERT_TRUE(catalog.findScalarForMarkerKey(*dataset, key).has_value());
+  ASSERT_TRUE(catalog.findScalarForMarkerKey(*dataset, key).has_value()) << "remembered";
+
+  std::optional<bool> seen_by_slot;
+  QObject::connect(&catalog, &PJ::CatalogModel::itemsRemoved, &catalog, [&](const QStringList&) {
+    seen_by_slot = catalog.findScalarForMarkerKey(*dataset, key).has_value();
+  });
+  std::vector<QString> speed_keys;
+  for (const PJ::CatalogItem& item : catalog.items()) {
+    if (item.topic_name == u"/speed"_s) {
+      speed_keys.push_back(item.key);
+    }
+  }
+  catalog.removeItems(speed_keys);
+  ASSERT_TRUE(seen_by_slot.has_value());
+  EXPECT_FALSE(*seen_by_slot);
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*dataset, key).has_value());
+}
+
+// An on-demand input may read a string field (D4); a marker rule may not, its resolver reading numeric series only.
+// The two answers are remembered apart: the string field found for an input stays refused to a marker rule.
+TEST(CatalogModelTest, FindScalarForMarkerKeyFindsAStringFieldOnlyWhenAsked) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset);
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  const auto schema = writer.registerSchema(
+      "status", PJ::makeStruct("status", {PJ::makePrimitive("mode", PJ::PrimitiveType::kString)}));
+  ASSERT_TRUE(schema.has_value()) << schema.error();
+  PJ::TopicDescriptor descriptor;
+  descriptor.name = "/robot/status";
+  descriptor.schema_id = *schema;
+  const auto topic = writer.registerTopic(*dataset, descriptor);
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_TRUE(writer.beginRow(*topic, 1'000'000'000).has_value());
+  writer.set(*topic, 0, std::string_view{"idle"});
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  const std::string key = PJ::sdk::markerSeriesKey("/robot/status", "mode");
+
+  const std::optional<PJ::ScalarFieldPayload> input = catalog.findScalarForMarkerKey(*dataset, key, true);
+  ASSERT_TRUE(input.has_value());
+  EXPECT_EQ(input->topic_id, *topic);
+  EXPECT_EQ(input->logical_type, PJ::PrimitiveType::kString);
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*dataset, key).has_value()) << "a marker rule reads numbers only";
+}
+
+// What a plugin panel receives for a dragged row: an object topic by its topic name, a scalar field by its series key;
+// a key the catalog does not list maps to nothing (the drop then hands the plugin the raw key).
+TEST(CatalogModelTest, PluginDropNameNamesObjectTopicsAndScalarSeries) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset);
+  const auto cloud =
+      session.objectStore().registerTopic({.dataset_id = *dataset, .topic_name = "/cloud", .metadata_json = "{}"});
+  ASSERT_TRUE(cloud.has_value()) << cloud.error();
+  const PJ::TopicId speed = addScalarTopic(session, *dataset, "/speed");
+  ASSERT_NE(speed, 0u);
+  catalog.rebuildFromDatastore();
+
+  const std::optional<QString> cloud_key = catalog.objectTopicKey(*dataset, *cloud);
+  ASSERT_TRUE(cloud_key.has_value());
+  EXPECT_EQ(catalog.pluginDropName(*cloud_key), std::optional<std::string>{"/cloud"});
+
+  const std::optional<QString> speed_key = catalog.scalarColumnKey(*dataset, speed, 0);
+  ASSERT_TRUE(speed_key.has_value());
+  EXPECT_EQ(catalog.pluginDropName(*speed_key), PJ::sdk::markerSeriesKey("/speed", "value"));
+
+  EXPECT_FALSE(catalog.pluginDropName(u"dataset:999/object_topic:1"_s).has_value());
+}
+
+// A bare name stops identifying the row once another dataset has the topic too: the plugin reads it as ambiguous.
+TEST(CatalogModelTest, PluginDropNameQualifiesAnObjectTopicTwoDatasetsShare) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto registerCloud = [&session](std::string source) -> std::pair<PJ::DatasetId, PJ::ObjectTopicId> {
+    const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = std::move(source)});
+    const auto cloud =
+        session.objectStore().registerTopic({.dataset_id = *dataset, .topic_name = "/cloud", .metadata_json = "{}"});
+    return {*dataset, *cloud};
+  };
+  const auto [run_a, cloud_a] = registerCloud("a.mcap");
+  const auto [run_b, cloud_b] = registerCloud("b.mcap");
+  catalog.rebuildFromDatastore();
+
+  EXPECT_EQ(
+      catalog.pluginDropName(*catalog.objectTopicKey(run_a, cloud_a)), std::optional<std::string>{"a.mcap:/cloud"});
+  EXPECT_EQ(
+      catalog.pluginDropName(*catalog.objectTopicKey(run_b, cloud_b)), std::optional<std::string>{"b.mcap:/cloud"});
+
+  // A source loaded twice cannot be addressed by name, so a qualifier would only name the wrong one.
+  const auto [run_c, cloud_c] = registerCloud("b.mcap");
+  catalog.rebuildFromDatastore();
+  EXPECT_EQ(catalog.pluginDropName(*catalog.objectTopicKey(run_c, cloud_c)), std::optional<std::string>{"/cloud"});
+}
+
+// A paused topic has no stored data yet, but its name still tells the plugin what was dropped.
+TEST(CatalogModelTest, PluginDropNameOfAPausedTopicIsItsTopicName) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/odom", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                    {.topic_name = "/camera/image", .classification = PJ::sdk::BuiltinObjectType::kImage},
+                });
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 2U);
+  for (const auto& item : items) {
+    EXPECT_EQ(catalog.pluginDropName(item.key), std::optional<std::string>{item.topic_name.toStdString()});
+  }
+}
+
+// A string field is a series too; a plugin decides whether it can use one.
+TEST(CatalogModelTest, PluginDropNameNamesAStringField) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset);
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  const auto schema = writer.registerSchema(
+      "status", PJ::makeStruct("status", {PJ::makePrimitive("mode", PJ::PrimitiveType::kString)}));
+  ASSERT_TRUE(schema.has_value()) << schema.error();
+  PJ::TopicDescriptor descriptor;
+  descriptor.name = "/robot/status";
+  descriptor.schema_id = *schema;
+  const auto topic = writer.registerTopic(*dataset, descriptor);
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_TRUE(writer.beginRow(*topic, 1'000'000'000).has_value());
+  writer.set(*topic, 0, std::string_view{"idle"});
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  catalog.rebuildFromDatastore();
+
+  const std::optional<QString> key = catalog.scalarColumnKey(*dataset, *topic, 0);
+  ASSERT_TRUE(key.has_value());
+  EXPECT_EQ(catalog.pluginDropName(*key), PJ::sdk::markerSeriesKey("/robot/status", "mode"));
 }
 
 TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
@@ -266,6 +492,129 @@ TEST(CatalogModelTest, KeepsDuplicateDatasetObjectTopicsVisibleUnderDatasetRoot)
   ASSERT_TRUE(PJ::isObjectTopic(*second_descriptor));
   EXPECT_EQ(PJ::asObjectTopic(*second_descriptor)->object_topic_id, *second_object_topic);
   EXPECT_FALSE(catalog.curveDescriptor(items[1].key).has_value());
+}
+
+// Marker topics are hidden because their metadata says so; a media topic whose name
+// merely looks like one stays listed.
+TEST(CatalogModelTest, MarkerTopicsAreHiddenByMetadataNotByName) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto& store = session.objectStore();
+  ASSERT_TRUE(store
+                  .registerTopic(
+                      {.dataset_id = *dataset,
+                       .topic_name = "opaque-id",
+                       .metadata_json = PJ::markerTopicMetadataJson({PJ::MarkerScopeKind::kDataset})})
+                  .has_value());
+  ASSERT_TRUE(store.registerTopic({.dataset_id = *dataset, .topic_name = "__markers__/legacy", .metadata_json = "{}"})
+                  .has_value());
+  ASSERT_TRUE(store
+                  .registerTopic(
+                      {.dataset_id = *dataset,
+                       .topic_name = "__markers__/camera",
+                       .metadata_json = R"({"builtin_object_type":"kImage"})"})
+                  .has_value());
+
+  catalog.rebuildFromDatastore();
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  EXPECT_EQ(items[0].topic_name, u"__markers__/camera"_s);
+}
+
+// An on-demand install registers its output topics and the catalog lists them without a caller rebuild; a
+// preview's topic stays in the catalog (its panel attaches it through the catalog) but is reported, so the user
+// facing trees can leave it out; a removal announced through the session drops it.
+TEST(CatalogModelTest, OnDemandTopicsAreListedOnInstallAndPreviewsAreReported) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_TRUE(session.objectStore()
+                  .registerTopic(
+                      {.dataset_id = *dataset,
+                       .topic_name = "cloud",
+                       .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                  .has_value());
+  catalog.rebuildFromDatastore();
+  const PJ::scripting::OutputSpec cropped{
+      "cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud};
+  PJ::RecipeGraph::Recipe preview = PJ::test::onDemandRecipe("preview", {"cloud"}, {cropped});
+  preview.ephemeral = true;
+  ASSERT_TRUE(session.onDemandService().install(PJ::test::onDemandRecipe("crop", {"cloud"}, {cropped})).has_value());
+  ASSERT_TRUE(session.onDemandService().install(preview).has_value());
+
+  const auto key_of = [&catalog](const QString& topic) {
+    for (const PJ::CatalogItem& item : catalog.items()) {
+      if (item.topic_name == topic) {
+        return item.key;
+      }
+    }
+    return QString{};
+  };
+  const QString persistent_key = key_of(u"owner/crop/cropped"_s);
+  const QString preview_key = key_of(u"owner/preview/cropped"_s);
+  ASSERT_FALSE(persistent_key.isEmpty()) << "an install relists the catalog";
+  ASSERT_FALSE(preview_key.isEmpty()) << "a preview stays resolvable in the catalog";
+  EXPECT_EQ(catalog.ephemeralPreviewKeys(), QSet<QString>{preview_key});
+
+  const std::vector<PJ::ObjectTopicId> crop_topics = session.onDemandService().history().topicsOf("owner/crop");
+  ASSERT_EQ(crop_topics.size(), 1U);
+  EXPECT_EQ(catalog.objectTopicKey(*dataset, crop_topics.front()), persistent_key);
+  EXPECT_FALSE(catalog.objectTopicKey(*dataset + 1, crop_topics.front()).has_value())
+      << "a dataset lists only its own topics";
+
+  ASSERT_FALSE(session.onDemandService().remove(preview.key()).empty());
+  session.notifyObjectTopicsChanged();
+  EXPECT_TRUE(key_of(u"owner/preview/cropped"_s).isEmpty());
+  EXPECT_TRUE(catalog.ephemeralPreviewKeys().isEmpty());
+  EXPECT_FALSE(key_of(u"owner/crop/cropped"_s).isEmpty());
+}
+
+// PJ_BENCH=1: what classifying the previews costs each Datasets-tree rebuild and catalog addition, at 10,000 raw
+// object topics and 1,000 persistent recipes (no preview: the common case).
+TEST(CatalogModelTest, EphemeralPreviewKeysBench) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kTopics = 10'000;
+  constexpr int kRecipes = 1'000;
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  for (int i = 0; i < kTopics; ++i) {
+    ASSERT_TRUE(session.objectStore()
+                    .registerTopic(
+                        {.dataset_id = *dataset,
+                         .topic_name = "cloud" + std::to_string(i),
+                         .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                    .has_value());
+  }
+  const PJ::scripting::OutputSpec cropped{
+      "cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud};
+  for (int i = 0; i < kRecipes; ++i) {
+    ASSERT_TRUE(session.onDemandService()
+                    .install(PJ::test::onDemandRecipe("crop" + std::to_string(i), {"cloud0"}, {cropped}))
+                    .has_value());
+  }
+  PJ::CatalogModel catalog(&session);  // made after the installs, so they do not relist it one by one
+  catalog.rebuildFromDatastore();
+  ASSERT_EQ(catalog.items().size(), static_cast<size_t>(kTopics + kRecipes));
+
+  std::vector<double> samples;
+  for (int run = 0; run < 21; ++run) {
+    const auto start = std::chrono::steady_clock::now();
+    const QSet<QString> previews = catalog.ephemeralPreviewKeys();
+    samples.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
+    ASSERT_TRUE(previews.isEmpty());
+  }
+  std::sort(samples.begin(), samples.end());
+  std::printf(
+      "[PJ_BENCH] ephemeralPreviewKeys, %d object topics x %d recipes: %.0f us\n", kTopics + kRecipes, kRecipes,
+      samples[samples.size() / 2]);
 }
 
 TEST(CatalogModelTest, RemovedObjectTopicStaysHiddenAcrossRebuild) {

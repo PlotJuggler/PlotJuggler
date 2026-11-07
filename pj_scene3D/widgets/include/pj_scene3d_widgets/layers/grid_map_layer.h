@@ -17,7 +17,6 @@
 #include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId, PJ::SequentialUID
 #include "pj_runtime/SessionManager.h"    // PJ::DatasetId
 #include "pj_scene3d_core/grid_map_view.h"
-#include "pj_scene3d_widgets/passes/grid_map_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_widgets/Colormap.h"
 
@@ -32,9 +31,10 @@ inline constexpr std::string_view kGridMapElevationNone = "<none>";
 
 // Scene3DLayer for an sdk::GridMap topic: the sample at-or-before the tracker time
 // is resolved (parser or canonical codec), validated, de-interleaved into an
-// elevation + a color channel, and staged into a GridMapRenderPass ONCE per new
-// sample / selector change. The requested field names are kept apart from the
-// effective ones so a persisted request is honoured again once its field reappears.
+// elevation + a color channel, and staged ONCE per new sample / selector change;
+// the view reads the staged grid through prepareForRender()/stagedGrid(). The
+// requested field names are kept apart from the effective ones so a persisted
+// request is honoured again once its field reappears.
 class GridMapLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -44,10 +44,10 @@ class GridMapLayer : public Scene3DLayer {
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
-  [[nodiscard]] QString sourceFrame() const override;
-  [[nodiscard]] QString statusWarning() const override {
-    return status_warning_;
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.grid_map = this};
   }
+  [[nodiscard]] QString sourceFrame() const override;
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
@@ -59,10 +59,45 @@ class GridMapLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
   [[nodiscard]] std::optional<AABB> worldBounds() const override;
+
+  // QRhi view hook, called once per frame for a visible layer: decodes and packs
+  // the sample at the last tracker time when a tracker move or selector change is
+  // pending. The result is stagedGrid(); stagedRevision() bumps on every change.
+  void prepareForRender();
+  // The grid to draw, nullopt when none (before the first sample, a refused one).
+  [[nodiscard]] const std::optional<GridMapUpload>& stagedGrid() const {
+    return staged_grid_;
+  }
+  [[nodiscard]] std::uint64_t stagedRevision() const {
+    return staged_revision_;
+  }
+  // The last decoded sample's frame id (empty before the first sample).
+  [[nodiscard]] const std::string& renderFrameId() const override {
+    return source_frame_;
+  }
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return render_stamp_;
+  }
+  // Display params as set (the persisted values).
+  [[nodiscard]] PJ::Colormap colormap() const {
+    return colormap_;
+  }
+  [[nodiscard]] bool autoRange() const {
+    return auto_range_;
+  }
+  [[nodiscard]] std::pair<double, double> manualRange() const {
+    return {manual_lo_, manual_hi_};
+  }
+  [[nodiscard]] bool lighting() const {
+    return lighting_;
+  }
+  [[nodiscard]] double opacity() const {
+    return opacity_;
+  }
+  [[nodiscard]] bool visible() const {
+    return visible_;
+  }
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
@@ -90,10 +125,12 @@ class GridMapLayer : public Scene3DLayer {
     return cached_grid_.has_value();
   }
   [[nodiscard]] bool passHasStagedGridForTest() const {
-    return pass_.hasStagedGridForTest();
+    return staged_grid_.has_value();
   }
+  // An empty upload when nothing is staged (a reset optional holds no arrays).
   [[nodiscard]] const GridMapUpload& stagedGridForTest() const {
-    return pass_.stagedGridForTest();
+    static const GridMapUpload kNone;
+    return staged_grid_.has_value() ? *staged_grid_ : kNone;
   }
   [[nodiscard]] int packCountForTest() const {
     return pack_count_;
@@ -117,6 +154,9 @@ class GridMapLayer : public Scene3DLayer {
   // Fetch the sample at time_ns, pack the selected fields, stage the upload. Cheap
   // no-op when the same sample + selectors are already staged (the scrub path).
   void renderAt(int64_t time_ns);
+  // Hand a packed grid to the view (stagedGrid()).
+  void stageGrid(GridMapUpload upload);
+  void clearStagedGrid();
   // Forget everything learned from the topic's bytes (parse/upload memos, bounds,
   // frame, field list, effective picks, warnings); the persisted requests and
   // display settings survive.
@@ -127,7 +167,6 @@ class GridMapLayer : public Scene3DLayer {
   // Returns false when the grid offers no usable color field.
   bool resolveFields(const PJ::sdk::GridMap& grid);
   void pushDisplayParamsToPass();
-  void setStatusWarning(const QString& reason);
   // Bounds change inside renderAt, i.e. during the paint that follows the dock's
   // bounds union, so a changed extent requests another repaint to re-fit the camera.
   void setBounds(std::optional<AABB> bounds);
@@ -155,10 +194,10 @@ class GridMapLayer : public Scene3DLayer {
   PJ::SequentialUID uploaded_uid_{};
 
   std::string source_frame_;
+  std::optional<PJ::Timepoint> render_stamp_;  // objectStamp() of the staged sample
   QString fixed_frame_;
   bool tracker_dirty_ = false;
   bool visible_ = true;
-  QString status_warning_;
   int pack_count_ = 0;
 
   // Requested (persisted) vs effective field names.
@@ -182,7 +221,9 @@ class GridMapLayer : public Scene3DLayer {
   bool lighting_ = true;
   double opacity_ = 1.0;
 
-  GridMapRenderPass pass_;
+  std::optional<GridMapUpload> staged_grid_;
+  std::uint64_t staged_revision_ = 0;
+  std::optional<PJ::Timepoint> requested_time_;  // the last tracker time, drained by prepareForRender()
 };
 
 }  // namespace pj::scene3d

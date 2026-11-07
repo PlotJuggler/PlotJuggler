@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QString>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -16,12 +17,14 @@
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/Time.h"
 
 class QTimer;
 
 namespace PJ {
 
 class DataEngine;
+class CustomWidgetDockWidget;
 class DataProcessorService;
 class PendingDisplayBinder;
 class PlotWidget;
@@ -44,9 +47,13 @@ class TopicDemandTracker;
 class TopicDemandController : public QObject {
   Q_OBJECT
  public:
+  /// Where a plot's view start goes: SessionManager::setSeriesVisibleStart in the app.
+  using VisibleStartSink = std::function<void(DatasetId dataset_id, DisplaySeconds start)>;
+
   TopicDemandController(
       CatalogModel& catalog, TopicDemandTracker& tracker, DataProcessorService& processors,
-      PendingDisplayBinder& pending_binder, DataEngine& engine, QObject* parent = nullptr);
+      PendingDisplayBinder& pending_binder, DataEngine& engine, VisibleStartSink visible_start = {},
+      QObject* parent = nullptr);
   ~TopicDemandController() override;
 
   TopicDemandController(const TopicDemandController&) = delete;
@@ -61,6 +68,11 @@ class TopicDemandController : public QObject {
   // Call once per plot; safe to call on an already-populated plot (the initial
   // diff against an empty "last seen" set references everything already shown,
   // covering the layout-restore case where curves exist before this is wired).
+  // The plot's view start is also each of its datasets' on-demand series visible
+  // start (the VisibleStartSink), set before the demand on every
+  // curve change, so a series it starts computes the visible range first, and on
+  // every move of its time axis (PlotWidget::visibleXRangeChanged: a gesture, a
+  // linked or programmatic zoom), so the last plot to move wins its datasets.
   void registerPlot(PlotWidget* plot);
 
   // Starts tracking `dock`'s scene layers via layerAdded/layerRemoved, resolved
@@ -73,6 +85,10 @@ class TopicDemandController : public QObject {
   // its (dataset, topic) set on every seriesListChanged, mirroring registerPlot
   // (the initial sync covers rows restored before this call). Idempotent.
   void registerStateTransitionsDock(StateTransitionsDockWidget* dock);
+
+  // Same for a Custom Widget panel: holds one reference per distinct (dataset, topic) its resolved
+  // wires read, diffed on every bindingsChanged() and released when the panel is destroyed.
+  void registerCustomWidgetDock(CustomWidgetDockWidget* dock);
 
   // M3-UI placeholder drop path: `plot` (a curve-less or already-populated
   // PlotWidget) had an advertised SCALAR placeholder dropped on it. Stages a
@@ -107,8 +123,12 @@ class TopicDemandController : public QObject {
   // Rebuilds `plot`'s current topic multiset and diffs it against
   // plot_topics_[plot], add/removeReference-ing exactly the delta.
   void syncPlot(PlotWidget* plot);
+  // Tells the session where `plot`'s time view starts, for each dataset among `topics`.
+  void reportVisibleStart(PlotWidget* plot, const std::vector<std::pair<DatasetId, QString>>& topics);
   // Same delta sync for a state-transitions strip, against state_dock_topics_.
   void syncStateTransitionsDock(StateTransitionsDockWidget* dock);
+  // Same delta sync for a Custom Widget panel, against custom_dock_topics_.
+  void syncCustomWidgetDock(CustomWidgetDockWidget* dock);
   // The shared tail of both syncs: multiset-diff `current` against `previous`
   // (a reference into the per-widget map), add/removeReference the delta, and
   // store `current` as the new previous.
@@ -120,7 +140,7 @@ class TopicDemandController : public QObject {
   void appendTopicRefs(
       std::vector<std::pair<DatasetId, QString>>& out, DatasetId dataset_id, const QString& topic_name,
       TopicId topic_id) const;
-  // Linear catalog scan: ObjectTopicId -> (dataset, topic_name), or nullopt if
+  // In-place catalog scan: ObjectTopicId -> (dataset, topic_name), or nullopt if
   // no live object-topic entry matches (evicted between the signal and this
   // lookup — treated as "nothing to reference").
   [[nodiscard]] std::optional<std::pair<DatasetId, QString>> resolveObjectTopic(ObjectTopicId topic_id) const;
@@ -161,6 +181,7 @@ class TopicDemandController : public QObject {
   // Storage engine, used ONLY to disown preview-originated samples
   // (evictTopicHistory) — all normal demand flow goes through the tracker.
   DataEngine& engine_;
+  VisibleStartSink visible_start_;
 
   // Last-seen flattened (dataset, topic) multiset per tracked plot — see
   // syncPlot(). Erased when the plot is destroyed.
@@ -173,6 +194,8 @@ class TopicDemandController : public QObject {
   // Last-seen (dataset, topic) set per tracked state-transitions strip — see
   // syncStateTransitionsDock(). Erased when the strip is destroyed.
   std::unordered_map<StateTransitionsDockWidget*, std::vector<std::pair<DatasetId, QString>>> state_dock_topics_;
+  // Last-seen (dataset, topic) set per tracked Custom Widget panel — see syncCustomWidgetDock().
+  std::unordered_map<CustomWidgetDockWidget*, std::vector<std::pair<DatasetId, QString>>> custom_dock_topics_;
 
   // --- bounded field-preview subscriptions (census + double-click peek) ---
   // Preview identity is (DatasetId, topic_name), matching TopicDemandTracker.

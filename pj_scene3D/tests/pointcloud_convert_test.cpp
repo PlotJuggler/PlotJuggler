@@ -11,13 +11,20 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <random>
+#include <string_view>
 #include <vector>
 
 #include "pj_base/span.hpp"
+#include "pj_scene3d_core/grid_map_view.h"  // finiteRange
 
 namespace {
 
@@ -26,6 +33,12 @@ using pj::scene3d::ColorLayout;
 using pj::scene3d::convertCanonical;
 using pj::scene3d::ConvertedPointCloud;
 using pj::scene3d::detectColorLayout;
+using pj::scene3d::PackedPointVertices;
+using pj::scene3d::packPointVertices;
+using pj::scene3d::planPointVertices;
+using pj::scene3d::PointVertex;
+using pj::scene3d::PointVertexFormat;
+using pj::scene3d::PointVertexPlan;
 using pj::scene3d::readFloat32At;
 using pj::scene3d::readFloat64At;
 using pj::scene3d::readScalarAt;
@@ -392,6 +405,275 @@ TEST(PointCloudConvert, MalformedScalarOffsetDoesNotPoisonHugeAdversarialValue) 
 
   const ConvertedPointCloud out = convertCanonical(cloud, "intensity");
   EXPECT_TRUE(out.cloud.positions.empty());
+}
+
+// --- packPointVertices: equivalence with convertCanonical + packing ------------
+
+// The two-step path packPointVertices replaces: convertCanonical, then every point
+// with a finite position packed with its scalar or colour in the format they need,
+// the scalar range taken over every decoded scalar.
+void expectPackMatches(const PointCloud& cloud, std::string_view scalar_field, bool extract_rgba, bool store_scalar) {
+  SCOPED_TRACE(
+      ::testing::Message() << "scalar='" << scalar_field << "' rgba=" << extract_rgba << " store=" << store_scalar);
+  const ConvertedPointCloud reference = convertCanonical(cloud, scalar_field, extract_rgba);
+  const auto& decoded = reference.cloud;
+  const bool has_scalar = !decoded.positions.empty() && decoded.scalar.size() == decoded.positions.size();
+  const bool has_rgba = !decoded.positions.empty() && decoded.rgba.size() == decoded.positions.size();
+  const PointVertexFormat format = has_rgba                     ? PointVertexFormat::kXyzRgba
+                                   : has_scalar && store_scalar ? PointVertexFormat::kXyzScalar
+                                                                : PointVertexFormat::kXyz;
+  const std::size_t stride = pj::scene3d::pointVertexStride(format);
+  std::vector<std::byte> expected;
+  for (std::size_t index = 0; index < decoded.positions.size(); ++index) {
+    const auto& position = decoded.positions[index];
+    if (std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z)) {
+      const PointVertex vertex{
+          .x = position.x,
+          .y = position.y,
+          .z = position.z,
+          .attribute = has_rgba     ? decoded.rgba[index]
+                       : has_scalar ? std::bit_cast<uint32_t>(decoded.scalar[index])
+                                    : 0u};
+      const auto* bytes = reinterpret_cast<const std::byte*>(&vertex);
+      expected.insert(expected.end(), bytes, bytes + stride);
+    }
+  }
+
+  const std::size_t points = static_cast<std::size_t>(cloud.width) * cloud.height;
+  const std::optional<PointVertexPlan> plan = planPointVertices(cloud, scalar_field, extract_rgba, store_scalar);
+  EXPECT_EQ(plan.has_value(), !decoded.positions.empty());
+  if (!plan.has_value()) {
+    return;
+  }
+  EXPECT_EQ(plan->format, format);
+  EXPECT_EQ(plan->maxBytes(), points * stride);
+  std::vector<std::byte> out(plan->maxBytes());
+  const PackedPointVertices packed = packPointVertices(cloud, *plan, out);
+  EXPECT_EQ(packed.format, format);
+  ASSERT_EQ(packed.count * stride, expected.size());
+  if (!expected.empty()) {
+    EXPECT_EQ(std::memcmp(out.data(), expected.data(), expected.size()), 0) << "vertices differ bitwise";
+  }
+  EXPECT_EQ(packed.bounds, reference.bounds);
+  const pj::scene3d::FiniteRange range = pj::scene3d::finiteRange(decoded.scalar);
+  ASSERT_EQ(packed.scalar_range.has_value(), range.valid);
+  if (range.valid) {
+    EXPECT_EQ(packed.scalar_range->first, range.lo);
+    EXPECT_EQ(packed.scalar_range->second, range.hi);
+  }
+}
+
+void expectPackMatchesConvert(const PointCloud& cloud, std::string_view scalar_field, bool extract_rgba) {
+  expectPackMatches(cloud, scalar_field, extract_rgba, true);
+  expectPackMatches(cloud, scalar_field, extract_rgba, false);
+}
+
+// Random point bytes under every coordinate type, scalar type and colour layout:
+// random float bits hit NaN/Inf, and every few points get an explicit NaN, Inf or
+// -0.0 coordinate or a NaN scalar.
+TEST(PointCloudPack, MatchesConvertOnRandomClouds) {
+  constexpr uint32_t kStep = 40;  // xyz up to 24 bytes, scalar at 24 (8), colour at 32
+  constexpr uint32_t kPoints = 257;
+  std::mt19937 random(11);
+  std::uniform_int_distribution<int> byte(0, 255);
+  const DT coord_types[] = {DT::kFloat32, DT::kFloat64, DT::kUint16, DT::kInt32};
+  const DT scalar_types[] = {DT::kInt8,   DT::kUint8,   DT::kInt16,   DT::kUint16, DT::kInt32,
+                             DT::kUint32, DT::kFloat32, DT::kFloat64, DT::kUnknown};
+  enum class Colour { kNone, kPackedRgba, kPackedRgb, kChannels, kChannelsNoAlpha };
+  const Colour colours[] = {
+      Colour::kNone, Colour::kPackedRgba, Colour::kPackedRgb, Colour::kChannels, Colour::kChannelsNoAlpha};
+  for (const DT coord : coord_types) {
+    for (const DT scalar_type : scalar_types) {
+      for (const Colour colour : colours) {
+        const uint32_t width = PJ::sdk::bytesPerElement(coord);
+        std::vector<PointField> fields = {
+            {"x", 0, coord, 1}, {"y", width, coord, 1}, {"z", 2 * width, coord, 1}, {"intensity", 24, scalar_type, 1}};
+        if (colour == Colour::kPackedRgba || colour == Colour::kPackedRgb) {
+          fields.push_back({colour == Colour::kPackedRgba ? "rgba" : "rgb", 32, DT::kUint32, 1});
+        } else if (colour != Colour::kNone) {
+          fields.push_back({"red", 33, DT::kUint8, 1});
+          fields.push_back({"green", 32, DT::kUint8, 1});
+          fields.push_back({"blue", 35, DT::kUint8, 1});
+          if (colour == Colour::kChannels) {
+            fields.push_back({"alpha", 34, DT::kUint8, 1});
+          }
+        }
+        std::vector<uint8_t> bytes(static_cast<std::size_t>(kPoints) * kStep);
+        for (uint8_t& value : bytes) {
+          value = static_cast<uint8_t>(byte(random));
+        }
+        for (uint32_t index = 0; index < kPoints; ++index) {
+          uint8_t* point = bytes.data() + static_cast<std::size_t>(index) * kStep;
+          const auto put_coord = [&](uint32_t axis, double value) {
+            if (coord == DT::kFloat32) {
+              const auto stored = static_cast<float>(value);
+              std::memcpy(point + axis * width, &stored, sizeof(stored));
+            } else if (coord == DT::kFloat64) {
+              std::memcpy(point + axis * width, &value, sizeof(value));
+            }
+          };
+          if (index % 7 == 0) {
+            put_coord(0, std::numeric_limits<double>::quiet_NaN());
+          }
+          if (index % 11 == 0) {
+            put_coord(2, -std::numeric_limits<double>::infinity());
+          }
+          if (index % 13 == 0) {
+            put_coord(1, -0.0);
+          }
+          if (index % 5 == 0 && (scalar_type == DT::kFloat32 || scalar_type == DT::kFloat64)) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            const auto nan32 = static_cast<float>(nan);
+            std::memcpy(
+                point + 24, scalar_type == DT::kFloat32 ? static_cast<const void*>(&nan32) : &nan,
+                PJ::sdk::bytesPerElement(scalar_type));
+          }
+        }
+        const PointCloud cloud = makeCloud(kPoints, kStep, fields, std::move(bytes));
+        SCOPED_TRACE(
+            ::testing::Message() << "coord " << static_cast<int>(coord) << " scalar " << static_cast<int>(scalar_type)
+                                 << " colour " << static_cast<int>(colour));
+        expectPackMatchesConvert(cloud, "", false);
+        expectPackMatchesConvert(cloud, "intensity", false);
+        expectPackMatchesConvert(cloud, "missing", false);
+        expectPackMatchesConvert(cloud, "", true);
+        expectPackMatchesConvert(cloud, "intensity", true);
+      }
+    }
+  }
+}
+
+TEST(PointCloudPack, AllNonFiniteCloudIsAcceptedEmpty) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  std::vector<uint8_t> bytes;
+  for (int index = 0; index < 3; ++index) {
+    putBytes(bytes, leBytes(nan).data(), 4);
+    putBytes(bytes, leBytes(1.0f).data(), 4);
+    putBytes(bytes, leBytes(2.0f).data(), 4);
+  }
+  const PointCloud cloud =
+      makeCloud(3, 12, {{"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}}, bytes);
+  const std::optional<PointVertexPlan> plan = planPointVertices(cloud, "", false, true);
+  ASSERT_TRUE(plan.has_value());
+  std::vector<std::byte> out(plan->maxBytes());
+  const PackedPointVertices packed = packPointVertices(cloud, *plan, out);
+  EXPECT_EQ(packed.count, 0u);
+  EXPECT_FALSE(packed.bounds.valid);
+  expectPackMatchesConvert(cloud, "", false);
+}
+
+// Every cloud convertCanonical rejects has no plan.
+TEST(PointCloudPack, RejectsWhatConvertRejects) {
+  const std::vector<PointField> xyz = {{"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}};
+  std::vector<std::pair<const char*, PointCloud>> clouds;
+  PointCloud big_endian = makeCloud(1, 12, xyz, std::vector<uint8_t>(12, 0));
+  big_endian.is_bigendian = true;
+  clouds.emplace_back("big-endian", big_endian);
+  clouds.emplace_back("short buffer", makeCloud(4, 12, xyz, std::vector<uint8_t>(24, 0)));
+  clouds.emplace_back("no z", makeCloud(1, 8, {xyz[0], xyz[1]}, std::vector<uint8_t>(8, 0)));
+  clouds.emplace_back("z past step", makeCloud(1, 10, xyz, std::vector<uint8_t>(10, 0)));
+  clouds.emplace_back("zero width", makeCloud(0, 12, xyz, std::vector<uint8_t>(12, 0)));
+  std::vector<PointField> scalar_past = xyz;
+  scalar_past.push_back({"intensity", 14, DT::kFloat32, 1});
+  clouds.emplace_back("scalar past step", makeCloud(1, 16, scalar_past, std::vector<uint8_t>(16, 0)));
+  std::vector<PointField> scalar_huge = xyz;
+  scalar_huge.push_back({"intensity", 0xFFFFFFFCu, DT::kFloat32, 1});
+  clouds.emplace_back("adversarial scalar offset", makeCloud(1, 12, scalar_huge, std::vector<uint8_t>(12, 0)));
+  std::vector<PointField> colour_past = xyz;
+  colour_past.insert(
+      colour_past.end(), {{"red", 16, DT::kUint8, 1},
+                          {"green", 17, DT::kUint8, 1},
+                          {"blue", 18, DT::kUint8, 1},
+                          {"alpha", 19, DT::kUint8, 1}});
+  clouds.emplace_back("colour past step", makeCloud(1, 19, colour_past, std::vector<uint8_t>(19, 0)));
+  for (const auto& [name, cloud] : clouds) {
+    SCOPED_TRACE(name);
+    int rejections = 0;
+    for (const bool rgba : {false, true}) {
+      if (!convertCanonical(cloud, "intensity", rgba).cloud.positions.empty()) {
+        continue;  // this mode does not read the malformed field
+      }
+      ++rejections;
+      EXPECT_FALSE(planPointVertices(cloud, "intensity", rgba, true).has_value());
+    }
+    EXPECT_GT(rejections, 0);
+    expectPackMatchesConvert(cloud, "intensity", true);
+    expectPackMatchesConvert(cloud, "intensity", false);
+  }
+}
+
+TEST(PointCloudPack, TooSmallOutputWritesNothing) {
+  const PointCloud cloud = makeCloud(
+      2, 12, {{"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}},
+      std::vector<uint8_t>(24, 0));
+  const std::optional<PointVertexPlan> plan = planPointVertices(cloud, "", false, true);
+  ASSERT_TRUE(plan.has_value());
+  std::vector<std::byte> out(plan->maxBytes() - 1, std::byte{42});
+  EXPECT_EQ(packPointVertices(cloud, *plan, out).count, 0u);
+  EXPECT_EQ(out[0], std::byte{42});
+}
+
+// Chunked packing (run here in reverse chunk order) gives the serial pass's bytes,
+// count, bounds and scalar range, with dropped points inside and across chunks.
+TEST(PointCloudPack, ChunkedMatchesSerial) {
+  constexpr uint32_t kStep = 16;
+  const uint32_t points = static_cast<uint32_t>(pj::scene3d::kPackChunkPoints * 3 + 12345);
+  std::mt19937 random(5);
+  std::uniform_real_distribution<float> value(-50.0f, 50.0f);
+  std::vector<uint8_t> bytes(static_cast<std::size_t>(points) * kStep);
+  for (uint32_t index = 0; index < points; ++index) {
+    float point[4] = {value(random), value(random), value(random), value(random)};
+    if (index % 3 == 0 || (index > points / 5 && index < points / 2)) {  // sparse drops, and a whole chunk
+      point[index % 2 == 0 ? 0 : 2] = std::numeric_limits<float>::quiet_NaN();
+    }
+    if (index % 17 == 0) {
+      point[3] = std::numeric_limits<float>::infinity();
+    }
+    std::memcpy(bytes.data() + static_cast<std::size_t>(index) * kStep, point, sizeof(point));
+  }
+  const PointCloud cloud = makeCloud(
+      points, kStep,
+      {{"x", 0, DT::kFloat32, 1},
+       {"y", 4, DT::kFloat32, 1},
+       {"z", 8, DT::kFloat32, 1},
+       {"intensity", 12, DT::kFloat32, 1}},
+      std::move(bytes));
+  const std::optional<PointVertexPlan> plan = planPointVertices(cloud, "intensity", false, true);
+  ASSERT_TRUE(plan.has_value());
+  std::vector<std::byte> serial(plan->maxBytes());
+  std::vector<std::byte> chunked(plan->maxBytes());
+  const PackedPointVertices expected = packPointVertices(cloud, *plan, serial);
+  std::size_t calls = 0;
+  const PackedPointVertices actual =
+      packPointVertices(cloud, *plan, chunked, [&](std::size_t count, const std::function<void(std::size_t)>& body) {
+        calls = count;
+        for (std::size_t chunk = count; chunk-- > 0;) {
+          body(chunk);
+        }
+      });
+  EXPECT_GT(calls, 1u);
+  ASSERT_EQ(actual.count, expected.count);
+  EXPECT_LT(actual.count, static_cast<std::size_t>(points));
+  EXPECT_EQ(actual.format, PointVertexFormat::kXyzScalar);
+  EXPECT_EQ(std::memcmp(chunked.data(), serial.data(), expected.count * sizeof(PointVertex)), 0);
+  EXPECT_EQ(actual.bounds, expected.bounds);
+  EXPECT_EQ(actual.scalar_range, expected.scalar_range);
+  expectPackMatchesConvert(cloud, "intensity", false);
+
+  // A lower chunk cap packs the same bytes in fewer, larger chunks.
+  std::vector<std::byte> capped(plan->maxBytes());
+  const PackedPointVertices two = packPointVertices(
+      cloud, *plan, capped,
+      [&](std::size_t count, const std::function<void(std::size_t)>& body) {
+        calls = count;
+        for (std::size_t chunk = 0; chunk < count; ++chunk) {
+          body(chunk);
+        }
+      },
+      /*max_chunks=*/2);
+  EXPECT_EQ(calls, 2u);
+  ASSERT_EQ(two.count, expected.count);
+  EXPECT_EQ(std::memcmp(capped.data(), serial.data(), expected.count * sizeof(PointVertex)), 0);
 }
 
 }  // namespace

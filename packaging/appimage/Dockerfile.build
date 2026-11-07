@@ -9,7 +9,7 @@
 #     linuxdeploy/appimagetool. NO Qt and NO Conan closure baked in: the CI
 #     container job provisions those per-run from actions/cache + the JFrog
 #     Conan remote (see .github/workflows/linux-appimage-release.yml).
-#     Published to ghcr.io/plotjuggler/pj4-appimage-builder by
+#     Published to ghcr.io/<owner>/<repository>-appimage-builder by
 #     .github/workflows/appimage-builder-image.yml.
 #
 #   * default final stage: FULLY-BAKED local builder for
@@ -36,14 +36,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
         libxcb-xkb1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
         libva-dev libdrm-dev \
-        build-essential cmake ninja-build ccache git ca-certificates \
+        build-essential ninja-build ccache git ca-certificates \
         wget curl file pkg-config python3 python3-pip \
         patchelf unzip zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# 2) Python tooling: aqt (Qt installer) + conan. Installing aqt up front means
+# 2) Qt requires a newer CMake than Ubuntu 22.04 provides. Keep CMake below 4
+#    while the dependency recipes still require compatibility with older policies.
+#    Installing aqt up front means
 #    scripts/install_qt6.sh finds it (command -v aqt) and SKIPS its own bare `pip install`.
-RUN python3 -m pip install --no-cache-dir 'aqtinstall>=3.3' 'conan>=2,<3'
+RUN python3 -m pip install --no-cache-dir 'cmake>=3.25,<4' 'aqtinstall>=3.3' 'conan>=2,<3'
 
 ARG PJ_APPIMAGE_ARCH
 RUN test -n "$PJ_APPIMAGE_ARCH"

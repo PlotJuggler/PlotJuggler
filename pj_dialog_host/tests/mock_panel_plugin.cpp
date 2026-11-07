@@ -24,6 +24,7 @@ constexpr const char* kUiContent = R"(<?xml version="1.0" encoding="UTF-8"?>
    <item><widget class="QLabel" name="labelHello"><property name="text"><string>Hello</string></property></widget></item>
    <item><widget class="QLineEdit" name="textBox"/></item>
    <item><widget class="QFrame" name="chartPreview"/></item>
+   <item><widget class="QFrame" name="scenePreview"/></item>
    <item><widget class="QPushButton" name="buttonClose"><property name="text"><string>Close</string></property></widget></item>
    <item><widget class="QDialogButtonBox" name="buttonBox"><property name="standardButtons"><set>QDialogButtonBox::Close</set></property></widget></item>
   </layout>
@@ -49,6 +50,7 @@ class MockPanelPlugin : public PJ::DialogPluginTyped {
     return R"({"id":"mock-panel","name":"Mock Panel","version":"0.0.1"})";
   }
   std::string ui_content() const override {
+    g_state.host_info.record(hostInfo());
     return kUiContent;
   }
   std::string widget_data() override {
@@ -59,6 +61,9 @@ class MockPanelPlugin : public PJ::DialogPluginTyped {
     if (g_state.chart_enabled) {
       wd.setChartSeries("chartPreview", {{"input", {{0.0, 1.0}, {1.0, 2.0}, {2.0, 3.0}}, "#4c9aff", false}});
     }
+    if (!g_state.scene_view.kind.empty()) {
+      wd.setSceneView("scenePreview", g_state.scene_view);
+    }
     if (g_state.close_on_next_tick) {
       wd.requestClose(g_state.close_reason);
       g_state.close_on_next_tick = false;
@@ -66,6 +71,10 @@ class MockPanelPlugin : public PJ::DialogPluginTyped {
     if (g_state.sub_dialog_on_next_tick) {
       wd.requestSubDialog(g_state.sub_dialog_ui);
       g_state.sub_dialog_on_next_tick = false;
+    }
+    if (g_state.sub_panel_on_next_tick) {
+      wd.requestSubPanel(g_state.sub_panel_ui);
+      g_state.sub_panel_on_next_tick = false;
     }
     return wd.toJson();
   }
@@ -77,6 +86,19 @@ class MockPanelPlugin : public PJ::DialogPluginTyped {
       return true;
     }
     return false;
+  }
+
+  bool onSceneViewError(std::string_view widget_name, const PJ::SceneViewError& error) override {
+    g_state.scene_view_errors.push_back(
+        std::string(widget_name) + "|" + error.kind + "|" + error.topic + "|" + error.dataset + "|" + error.reason);
+    if (g_state.close_on_scene_error) {
+      g_state.close_on_next_tick = true;
+      g_state.close_reason = "scene error";
+    }
+    if (g_state.label_counts_scene_errors) {
+      g_state.label = "errors:" + std::to_string(g_state.scene_view_errors.size());
+    }
+    return true;
   }
 
   bool onClicked(std::string_view widget_name) override {

@@ -38,6 +38,8 @@ std::string familyToString(PJ::PluginFamily family) {
       return "toolbox";
     case PJ::PluginFamily::kDialog:
       return "dialog";
+    case PJ::PluginFamily::kWidget:
+      return "widget";
     case PJ::PluginFamily::kUnknown:
       break;
   }

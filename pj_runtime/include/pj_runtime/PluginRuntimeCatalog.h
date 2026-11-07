@@ -5,10 +5,10 @@
 /**
  * @file PluginRuntimeCatalog.h
  * @brief Shared host-side catalog that discovers, loads, and indexes plugin
- *        DSOs across all four families.
+ *        DSOs across the DataSource, MessageParser, Toolbox and Widget families.
  *
  * Wraps scanPluginDsos() discovery plus the per-family loaders; exposes the
- * loaded DataSource/MessageParser/Toolbox sets and lookup helpers (by file
+ * loaded DataSource/MessageParser/Toolbox/Widget sets and lookup helpers (by file
  * extension, by parser encoding). reload() reconciles loaded state with disk.
  */
 
@@ -24,8 +24,18 @@
 #include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_plugins/host/toolbox_library.hpp"
+#include "pj_plugins/host/widget_library.hpp"
 
 namespace PJ {
+
+/// Reads the Qt minor a library asked for out of a dynamic-loader failure such as
+/// "version `Qt_6.13' not found (required by libfoo.so)" and words it for the user:
+/// "needs Qt 6.13 (PlotJuggler uses 6.12)". Empty when the message is about anything else.
+/// A Widget plugin built against a newer Qt fails this way before its build_info() can be read,
+/// so this is the only place that failure can be explained. Linux loader wording; Windows reports
+/// an error code without the version, which stays as is.
+[[nodiscard]] std::string describeQtVersionLoadFailure(
+    std::string_view loader_message, int host_qt_major, int host_qt_minor);
 
 // Loaded DataSource plugin plus metadata used by host UIs and sessions.
 struct RuntimeDataSourcePlugin {
@@ -61,7 +71,29 @@ struct RuntimeToolboxPlugin {
   std::string name;
   std::string id;
   std::string version;
+  std::string badge;  ///< the manifest's optional short label for what it creates; empty when undeclared
+  /// The manifest lists `custom_topics_editor` in its `capabilities` tags: the editor of the host's Custom Topics.
+  bool custom_topics_editor = false;
   uint64_t capabilities = 0;
+  std::filesystem::file_time_type loaded_mtime;
+};
+
+// Loaded Widget plugin plus the metadata the "Custom Widget" picker and the dock need.
+// Once loaded it stays in the catalog until the user disables it (see reload()); the
+// SDK loader keeps its library mapped for the life of the process.
+struct RuntimeWidgetPlugin {
+  WidgetLibrary library;
+  std::string path;
+  std::string name;
+  std::string id;
+  std::string version;
+  std::vector<WidgetTypeDescriptor> widgets;  ///< one entry per widget type the library offers
+  // False when build_info() says the library was built against a Qt this host
+  // cannot share (other major.minor, other compiler family, or a debug/release
+  // mix on MSVC). The library stays registered so the dock can explain why its
+  // widget is missing; create_qwidget() must NOT be called for it.
+  bool qt_compatible = true;
+  std::string qt_mismatch_reason;  ///< user-facing sentence when !qt_compatible
   std::filesystem::file_time_type loaded_mtime;
 };
 
@@ -85,6 +117,7 @@ struct StaticPluginSet {
   std::vector<StaticPluginEntry<PJ_data_source_vtable_t>> data_sources;
   std::vector<StaticPluginEntry<PJ_message_parser_vtable_t>> message_parsers;
   std::vector<StaticPluginEntry<PJ_toolbox_vtable_t>> toolboxes;
+  std::vector<StaticPluginEntry<PJ_widget_vtable_t>> widgets;  ///< `dialog` is unused for widgets
 };
 
 // One scan folder plus its duplicate-resolution tier. Authoritative folders
@@ -135,7 +168,12 @@ class PluginRuntimeCatalog {
   void scanDirectory();
 
   // Reconciles the DSO-backed plugin set with disk and returns true if it
-  // changed. Statically registered plugins are never evicted.
+  // changed. Statically registered plugins are never evicted. Widget plugins
+  // are never evicted either, whether the file vanished or was rewritten: a
+  // changed file reports "updated on disk; restart required" and keeps the
+  // loaded copy. A Widget library that appears for the first time is loaded.
+  // A Widget plugin (static or not) whose id is now disabled leaves widgets();
+  // panels that already run it keep working.
   [[nodiscard]] bool reload();
 
   // --- Static plugin registration (WASM/static builds; no dlopen) -------------
@@ -152,6 +190,10 @@ class PluginRuntimeCatalog {
   bool registerStaticMessageParser(
       const PJ_message_parser_vtable_t* vtable, const PJ_dialog_vtable_t* dialog_vtable = nullptr);
   bool registerStaticToolbox(const PJ_toolbox_vtable_t* vtable, const PJ_dialog_vtable_t* dialog_vtable = nullptr);
+  // Widget plugins have no companion dialog. A second registration of the same
+  // id is rejected, and so is an id already loaded from a DSO (a loaded Widget
+  // library cannot be superseded: it is never unloaded).
+  bool registerStaticWidget(const PJ_widget_vtable_t* vtable);
 
   // Registers one application-composed static set. Attempts every entry so a
   // bad optional plugin does not hide diagnostics for the remaining entries.
@@ -171,6 +213,11 @@ class PluginRuntimeCatalog {
   // Returns loaded Toolbox plugins.
   [[nodiscard]] const std::vector<RuntimeToolboxPlugin>& toolboxes() const {
     return toolbox_plugins_;
+  }
+
+  // Returns loaded Widget plugins, including those with qt_compatible == false.
+  [[nodiscard]] const std::vector<RuntimeWidgetPlugin>& widgets() const {
+    return widget_plugins_;
   }
 
   // Returns file-import capable DataSource plugins.
@@ -227,6 +274,15 @@ class PluginRuntimeCatalog {
   // Loads and records one Toolbox plugin.
   bool loadAndRegisterToolbox(const PluginDescriptor& descriptor);
 
+  // Loads and records one Widget plugin. A library whose id or path is already
+  // loaded is skipped: Widget libraries are never replaced at runtime.
+  bool loadAndRegisterWidget(const PluginDescriptor& descriptor);
+
+  // Fills the Qt-build fields of `loaded` from the library's build_info() and,
+  // when the build is compatible, cross-checks the declared qt_modules against
+  // the modules PlotJuggler ships. Reports the diagnostics.
+  void admitWidgetBuild(RuntimeWidgetPlugin& loaded, const PluginDescriptor& descriptor) const;
+
   // True if id is provided by a statically registered plugin in any family.
   [[nodiscard]] bool isStaticallyRegisteredId(const std::string& id) const;
 
@@ -259,6 +315,9 @@ class PluginRuntimeCatalog {
   std::vector<RuntimeDataSourcePlugin> data_sources_;
   std::vector<RuntimeMessageParserPlugin> message_parsers_;
   std::vector<RuntimeToolboxPlugin> toolbox_plugins_;
+  std::vector<RuntimeWidgetPlugin> widget_plugins_;
+  // Widget "restart required" notices already reported, so a periodic reload() says each once.
+  std::unordered_set<std::string> widget_notices_;
 };
 
 }  // namespace PJ

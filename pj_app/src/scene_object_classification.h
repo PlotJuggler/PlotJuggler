@@ -39,8 +39,9 @@ namespace PJ {
 
 // True when a drop of `type` resolves to a dock that accepts it — so the curve
 // list never offers a drag that could only end in the "cannot display"
-// fallback. Types outside every claim (kCameraInfo, kOccupancyGridUpdate, ...)
-// are consumed indirectly or have no viewer yet.
+// fallback. Types outside every claim (kOccupancyGridUpdate, ...) are consumed
+// indirectly or have no viewer yet; kCameraInfo is also outside, but a plugin
+// panel reads it (isPanelOnlyObjectType).
 [[nodiscard]] bool isDroppableObjectType(sdk::BuiltinObjectType type);
 
 }  // namespace PJ

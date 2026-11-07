@@ -11,6 +11,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QString>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -22,21 +23,27 @@
 
 namespace PJ {
 
+class CustomWidgetDockWidget;
 class TopicDemandTracker;
 
 // One staged display intent waiting for its topic to materialize: either a plot
-// curve (kCurve — from a layout restore or a placeholder drop on a plot) or a
-// scene layer (kSceneLayer — a placeholder drop on a scene dock, completed once
-// the real ObjectTopicId exists).
+// curve (kCurve — from a layout restore or a placeholder drop on a plot, which
+// the binder completes itself) or a dock-owned intent (kDockIntent — a scene
+// layer deferred by its dock's queue, a Custom Widget wire waiting to resolve),
+// which its dock completes with its own retry while the binder only holds the
+// demand reference.
 struct PendingDisplayEntry {
-  enum class Kind { kCurve, kSceneLayer };
+  enum class Kind { kCurve, kDockIntent };
 
   Kind kind = Kind::kCurve;
-  QPointer<PlotWidget> plot;             ///< kCurve target; null means the plot was destroyed.
-  QPointer<SceneDockWidget> scene_dock;  ///< kSceneLayer target; null means the dock was destroyed.
-  /// The staged widget (plot or scene_dock) as a plain QObject*, recorded while
+  QPointer<PlotWidget> plot;       ///< kCurve target; null means the plot was destroyed.
+  QPointer<QObject> intent_owner;  ///< kDockIntent target; null means the dock was destroyed.
+  /// kDockIntent: true while the owner still holds the intent. Called only while
+  /// the owner is alive; false = the dock completed or dropped it.
+  std::function<bool()> still_pending;
+  /// The staged widget (plot or intent owner) as a plain QObject*, recorded while
   /// it was alive. The destroyed() sweep matches on it: inside destroyed() the
-  /// widget is already a bare QWidget, so reading plot/scene_dock through
+  /// widget is already a bare QWidget, so reading plot through
   /// QPointer<T>::data() would be an invalid downcast. Identity only.
   QObject* target = nullptr;
   layout_xml::SeriesPath path;    ///< Topic (+field for curves; XY: the Y source).
@@ -67,31 +74,16 @@ struct PendingDisplayEntry {
 
   /// True once the widget this entry completes against has been destroyed.
   [[nodiscard]] bool targetIsNull() const {
-    return kind == Kind::kCurve ? plot.isNull() : scene_dock.isNull();
+    return kind == Kind::kCurve ? plot.isNull() : intent_owner.isNull();
   }
 };
-
-// Resolves a stable layout SeriesPath to a concrete catalog key, never guessing by
-// load order. Thin adapter that unpacks the SeriesPath's qualifiers into
-// CatalogModel::resolveCurveKey, which owns the shared three-tier algorithm (exact
-// id while qualifiers agree → unique full-path match → unique raw-source match, then
-// confirm topic+field; unqualified path binds only when topic+field is globally
-// unique). Kept as a free function so layout/undo restore call sites read the same
-// as before; see resolveCurveKey for the full resolution + ambiguity semantics.
-[[nodiscard]] std::optional<QString> resolveSeriesPath(const CatalogModel& catalog, const layout_xml::SeriesPath& path);
-
-// `resolveSeriesPath` followed by the catalog's descriptor for the resolved key:
-// the exact source dataset when the qualifiers still agree, a unique fallback
-// otherwise, never a same-topic sibling by load order. Empty when no loaded
-// dataset matches (a filter input, say, that only a later restore step creates).
-[[nodiscard]] std::optional<CurveDescriptor> resolveSeriesDescriptor(
-    const CatalogModel& catalog, const layout_xml::SeriesPath& path);
 
 // GUI-thread-only registry for display intents whose topics were not in the catalog
 // when they were staged: plot curves from a progressive layout restore (collect()) or
 // a placeholder drop on a plot (addPendingCurve()), plus demand references for
-// scene intents owned by dock queues (addPendingSceneLayer()). It owns no widgets
-// or scene intents; a
+// intents a dock owns and completes itself (scene layers in a dock's deferred
+// queue, Custom Widget wires that did not resolve). It owns
+// no widgets or dock intents; a
 // target widget's destruction releases its entries (and their references) eagerly —
 // a dead pend must not keep its topic subscribed while the stream stays quiet.
 //
@@ -127,14 +119,22 @@ class PendingDisplayBinder : public QObject {
   void addPendingSceneLayer(
       SceneDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset);
 
+  // Tracks demand for the pending wires of `dock` on `topic_name` (one of its
+  // pendingDemands()). The dock resolves its wires itself; the reference is
+  // released once no pending wire of the dock names the topic any more, checked
+  // whenever the dock emits bindingsChanged() and on every flush(). A topic the
+  // dock does not wait for is ignored.
+  void addPendingCustomWidgetWire(
+      CustomWidgetDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset);
+
   // Attempts pending entries whose topics arrived; an empty set is the drain pass and tries all entries.
   // Returns the number of pending intents COMPLETED this pass — not curves added: a
   // topic that materializes with zero numeric fields terminally fulfills its intent.
   [[nodiscard]] int flush(const QSet<QString>& topics);
 
   // Remaining unresolved stable paths for a final missing-curve prompt; dead plots
-  // and scene entries are omitted (the prompt is layout-restore-scoped, and scene
-  // pends only come from interactive drops).
+  // and dock intents are omitted (the prompt is about curves; a dock keeps and
+  // reports its own pending intents).
   [[nodiscard]] QList<layout_xml::SeriesPath> unresolved() const;
 
   void clear();
@@ -152,7 +152,7 @@ class PendingDisplayBinder : public QObject {
   void refreshDemandRefs(PendingDisplayEntry& entry);
   // Releases exactly the references refreshDemandRefs recorded for this entry.
   void releaseDemandRefs(const PendingDisplayEntry& entry);
-  // resolveSeriesPath honoring `preferred`: exact match in that dataset first,
+  // CatalogModel::resolveCurveKey honoring `preferred`: exact match in that dataset first,
   // then the global load-order scan (the preferred id may have vanished — stream
   // reconnects mint fresh dataset ids).
   [[nodiscard]] std::optional<QString> resolveEntryPath(
@@ -162,8 +162,20 @@ class PendingDisplayBinder : public QObject {
   // with no numeric fields and terminally fulfills the scalar-shaped intent.
   [[nodiscard]] std::optional<std::vector<QString>> scalarKeysForTopic(
       const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred) const;
-  /// True once the authoritative dock queue no longer contains this entry.
-  [[nodiscard]] bool sceneEntryCompleted(const PendingDisplayEntry& entry) const;
+  // Stages a kDockIntent entry: demand for ONE intent `owner` holds and completes
+  // itself. `still_pending` (called only while `owner` lives) says whether the
+  // owner still holds it; it is consulted on every flush() pass that names the
+  // topic. The reference is released exactly once: when `still_pending` turns
+  // false, when `owner` is destroyed, or on clear()/collect(). False when the
+  // arguments are empty or an identical intent (same owner, topic and preferred
+  // dataset) is already staged.
+  bool stageDockIntent(
+      QObject* owner, const QString& topic_name, std::optional<DatasetId> preferred_dataset,
+      std::function<bool()> still_pending);
+  // Releases the kDockIntent entries of `owner` it no longer holds.
+  void releaseCompletedDockIntents(const QObject* owner);
+  /// True once the owner died or no longer holds this kDockIntent entry.
+  [[nodiscard]] static bool dockIntentCompleted(const PendingDisplayEntry& entry);
   // True when an identical intent (same kind, same live target widget, same
   // topic/field path) is already staged — the dedup gate for interactive drops.
   [[nodiscard]] bool hasEntryFor(

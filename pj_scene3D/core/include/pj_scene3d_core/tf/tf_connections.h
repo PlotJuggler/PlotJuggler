@@ -6,11 +6,16 @@
 #include <string>
 #include <vector>
 
-#include "pj_scene3d_core/tf/transform.h"  // TimePoint
+#include "pj_tf/transform.h"  // TimePoint
+
+namespace pj::tf {
+class TransformBuffer;
+}  // namespace pj::tf
 
 namespace pj::scene3d {
 
-class TransformBuffer;
+using pj::tf::TimePoint;
+using pj::tf::TransformBuffer;
 
 // One drawn TF parent-connection edge: the world-space origins (expressed in the
 // fixed frame) of a child frame and its parent. Endpoints are float — GL-ready
@@ -22,7 +27,8 @@ struct TfConnectionSegment {
 };
 
 // Append one segment per NON-root frame in `tf`: a line from the frame's origin
-// to its parent's origin, both resolved into `fixed_frame` at `time`. A frame is
+// to its parent's origin, both resolved into `fixed_frame` at `time`, the cursor
+// (looked up in the entry clock, like the TF triads they connect). A frame is
 // skipped when it has no parent (a forest root) or when EITHER endpoint fails to
 // resolve at `time` (no sample yet, disconnected, …) — a half-resolved edge is
 // never emitted. `out` is cleared first, then reused, so a per-paint caller

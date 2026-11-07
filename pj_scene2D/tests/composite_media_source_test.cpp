@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -292,6 +294,186 @@ TEST(CompositeMediaSourceTest, InvalidateFansOutThroughBorrowedToSources) {
   composite.invalidate();
   EXPECT_EQ(a.invalidate_calls, 1);  // composite -> BorrowedMediaSource -> source
   EXPECT_EQ(b.invalidate_calls, 1);
+}
+
+// SCN-11 (changed by D30: no readiness gate): a derived overlay whose node computes publishes nothing new, so at
+// the next cursor the composite keeps its previous overlay beside the fresh image.
+TEST(CompositeMediaSourceTest, PendingDerivedLayerKeepsItsPreviousOverlay) {
+  MockSource image;
+  image.emit_base = true;
+  image.base_w = 640;
+  MockSource overlay;
+  overlay.n_overlays = 1;
+  CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&image), 1.0f, &image);
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&overlay), 1.0f, &overlay);
+  composite.setTimestamp(100);
+  ASSERT_TRUE(composite.takeFrame().has_value());
+
+  composite.setTimestamp(200);
+  (void)overlay.takeFrame();  // the pending node's ring shows nothing new at 200
+  const auto frame = composite.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_FALSE(frame->pixel_layers.empty());
+  EXPECT_EQ(frame->overlays.size(), 1u) << "the previous result stays shown while the next computes";
+}
+
+// SCN-12 (changed by D30): a missing input or an error publishes an empty tombstone, which replaces the overlay:
+// the image stays, with no overlay.
+TEST(CompositeMediaSourceTest, ATombstoneShowsTheImageWithAnEmptyOverlay) {
+  MockSource image;
+  image.emit_base = true;
+  image.base_w = 640;
+  MockSource overlay;
+  overlay.n_overlays = 1;
+  CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&image), 1.0f, &image);
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&overlay), 1.0f, &overlay);
+  composite.setTimestamp(100);
+  ASSERT_TRUE(composite.takeFrame().has_value());
+
+  overlay.n_overlays = 0;  // the tombstone: an empty annotation set
+  composite.setTimestamp(200);
+  const auto frame = composite.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_FALSE(frame->pixel_layers.empty());
+  EXPECT_TRUE(frame->overlays.empty());
+}
+
+// ---- pairing (MED-23) ----
+
+/// Hands out `next` once.
+class PairingSource final : public MediaSource {
+ public:
+  std::optional<MediaFrame> next;
+  void setTimestamp(int64_t /*ts_ns*/) override {}
+  std::optional<MediaFrame> takeFrame() override {
+    return std::exchange(next, std::nullopt);
+  }
+};
+
+TEST(CompositeMediaSource, PairingUsesDeliveredPixelsAndRechecksCachedAnnotations) {
+  auto image = std::make_unique<PairingSource>();
+  auto annotations = std::make_unique<PairingSource>();
+  auto* image_source = image.get();
+  auto* annotation_source = annotations.get();
+  CompositeMediaSource composite;
+  composite.addLayer(std::move(image), 1, image_source);
+  composite.addLayer(std::move(annotations), 1, annotation_source);
+  std::string warning;
+  composite.setLayerPairing(image_source, "/cam", false, [](int64_t) { return 200'000'000; }, {});
+  composite.setLayerPairing(annotation_source, "", true, {}, [&](const std::string& text) { warning = text; });
+  ImageAnnotation annotation;
+  annotation.image_topic = "/cam";
+  annotation.timestamp = 1'000'000'000;
+  annotation.circles.emplace_back();
+  annotation_source->next.emplace();
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
+  auto result = composite.takeFrame();
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->overlays.empty());  // no image delivered yet: never paired with the tracker's instant
+  EXPECT_FALSE(warning.empty());
+
+  image_source->next.emplace();
+  image_source->next->base.emplace();
+  image_source->next->base->pts = 1'200'000'000;  // exactly one cadence away
+  result = composite.takeFrame();
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->overlays.size(), 1u);  // the retained annotation is checked again once the image arrives
+  EXPECT_TRUE(warning.empty());
+
+  image_source->next.emplace();
+  image_source->next->base.emplace();
+  image_source->next->base->pts = 1'200'000'001;
+  result = composite.takeFrame();
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->overlays.empty());
+  EXPECT_NE(warning.find("/cam"), std::string::npos) << warning;
+
+  annotation.image_topic = "/other";  // another camera's annotations, at the shown image's time
+  annotation.timestamp = 1'200'000'001;
+  annotation_source->next.emplace();
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
+  result = composite.takeFrame();
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->overlays.empty());
+  EXPECT_FALSE(warning.empty());
+
+  // An annotation that names no image is never checked; an empty (cleared) overlay still clears.
+  annotation.image_topic.clear();
+  annotation_source->next.emplace();
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {}});
+  result = composite.takeFrame();
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->overlays.size(), 2u);
+  EXPECT_TRUE(warning.empty());
+}
+
+// A layer not set to pair its annotations (a parser's, whose image_topic is informational) shows them as they are.
+TEST(CompositeMediaSource, AnnotationsOfALayerNotPairingThemAreNeverChecked) {
+  auto image = std::make_unique<PairingSource>();
+  auto annotations = std::make_unique<PairingSource>();
+  auto* image_source = image.get();
+  auto* annotation_source = annotations.get();
+  CompositeMediaSource composite;
+  composite.addLayer(std::move(image), 1, image_source);
+  composite.addLayer(std::move(annotations), 1, annotation_source);
+  std::string warning = "unset";
+  composite.setLayerPairing(image_source, "/cam", false, {}, {});
+  composite.setLayerPairing(annotation_source, "", false, {}, [&](const std::string& text) { warning = text; });
+  image_source->next.emplace();
+  image_source->next->base.emplace();
+  image_source->next->base->pts = 1'000'000'000;
+  ImageAnnotation annotation;
+  annotation.image_topic = "frame_7";  // a header frame id, not the shown image's topic
+  annotation.timestamp = 9'000'000'000;
+  annotation.circles.emplace_back();
+  annotation_source->next.emplace();
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
+  const auto result = composite.takeFrame();
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->overlays.size(), 1u);
+  EXPECT_TRUE(warning.empty());
+}
+
+// Annotations made from an image carry its own stamp, which may differ from its store entry's time: pairing compares
+// that stamp, while the cadence is looked up around the entry (not the frame's pts, a parser's record stamp).
+TEST(CompositeMediaSource, PairingComparesTheImagesOwnStampAndLooksUpCadenceAtTheEntry) {
+  auto image = std::make_unique<PairingSource>();
+  auto annotations = std::make_unique<PairingSource>();
+  auto* image_source = image.get();
+  auto* annotation_source = annotations.get();
+  CompositeMediaSource composite;
+  composite.addLayer(std::move(image), 1, image_source);
+  composite.addLayer(std::move(annotations), 1, annotation_source);
+  std::vector<int64_t> cadence_at;
+  composite.setLayerPairing(
+      image_source, "/cam", false,
+      [&](int64_t entry_ts) {
+        cadence_at.push_back(entry_ts);
+        return 100'000'000;
+      },
+      {});
+  composite.setLayerPairing(annotation_source, "", true, {}, {});
+  image_source->next.emplace();
+  image_source->next->base.emplace();
+  image_source->next->base->pts = 4'000'000'000;  // what a parser reported
+  image_source->next->base->entry_ts = 5'000'000'000;
+  image_source->next->base->stamp = 3'000'000'000;  // the image's own stamp
+  for (const int64_t stamp : {3'000'000'000, 5'000'000'000}) {
+    SCOPED_TRACE(stamp);
+    ImageAnnotation annotation;
+    annotation.image_topic = "/cam";
+    annotation.timestamp = stamp;
+    annotation.circles.emplace_back();
+    annotation_source->next.emplace();
+    annotation_source->next->overlays.push_back(SceneFrame{stamp, {annotation}});
+    const auto result = composite.takeFrame();
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->overlays.size(), stamp == 3'000'000'000 ? 1u : 0u);
+  }
+  EXPECT_EQ(cadence_at, (std::vector<int64_t>{5'000'000'000, 5'000'000'000}));
 }
 
 }  // namespace

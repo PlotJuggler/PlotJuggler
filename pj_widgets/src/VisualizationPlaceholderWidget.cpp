@@ -15,29 +15,43 @@
 #include <QMimeData>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QResizeEvent>
 #include <QSize>
 #include <QToolButton>
+#include <algorithm>
 
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
 
+/// Side of a family button at its natural size and at the narrowest the row may shrink to.
+constexpr int kButtonSide = 66;
+constexpr int kMinButtonSide = 44;
+/// Icon side inside a kButtonSide button; smaller buttons scale it by the same ratio.
+constexpr int kIconSide = 48;
+
+/// Width of a row of `count` buttons of `side`, with the layout's spacing and margins.
+int rowWidth(const QLayout* layout, int count, int side) {
+  const QMargins margins = layout->contentsMargins();
+  return count * side + std::max(count - 1, 0) * layout->spacing() + margins.left() + margins.right();
+}
+
 QToolButton* makeIconButton(const QString& icon_path, const QString& tooltip, QWidget* parent) {
   auto* button = new QToolButton(parent);
   // Icon is theme-tinted by the caller via LoadSvg+setIcon after the
   // button is created; the placeholder also re-tints on theme changes.
   Q_UNUSED(icon_path);
-  button->setIconSize(QSize(48, 48));
-  button->setFixedSize(66, 66);
+  button->setIconSize(QSize(kIconSide, kIconSide));
+  button->setFixedSize(kButtonSide, kButtonSide);
   button->setAutoRaise(true);
   button->setFocusPolicy(Qt::NoFocus);
   button->setToolTip(tooltip);
-  // All three families are selectable now (the 3D icon used to be disabled, so
-  // it rendered greyed). The pointing-hand cursor signals that they're clickable.
+  // The pointing-hand cursor signals that every family icon is clickable.
   button->setCursor(Qt::PointingHandCursor);
   return button;
 }
@@ -93,6 +107,9 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
       theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
       theme::space(theme::Space::None));
   layout->setSpacing(theme::space(theme::Space::Comfortable));
+  // The buttons' current fixed size must not become the widget's minimum: minimumSizeHint
+  // reports the narrowest row, and fitButtonsToWidth shrinks the buttons down to it.
+  layout->setSizeConstraint(QLayout::SetNoConstraint);
   layout->addStretch(1);
   const struct {
     const char* path;
@@ -105,6 +122,10 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
        VisualizationKind::kStateTransitions},
       {":/resources/svg/image.svg", QT_TR_NOOP("2D"), "buttonVizScene2D", VisualizationKind::kScene2D},
       {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::kScene3D},
+      // Always offered, even with no Widget plugin installed: the host's picker then says so and
+      // points at the Marketplace, which is how the feature is discovered.
+      {":/resources/svg/custom_widget.svg", QT_TR_NOOP("Custom Widget"), "buttonVizCustomWidget",
+       VisualizationKind::kCustomWidget},
   };
   icon_buttons_.reserve(std::size(specs));
   for (const auto& spec : specs) {
@@ -138,15 +159,54 @@ void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
   backdrop_color_ = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(light));
   update();
 
+  theme_ = theme;
+  renderIcons();
+}
+
+void VisualizationPlaceholderWidget::renderIcons() {
   // RenderSvgPixmap (not LoadSvg) so the central icons rasterize at
   // exactly their display size (with DPR baked in) and stay crisp. The
   // shared LoadSvg cache always renders to 64x64, which is downsampled
   // to 48x48 here -- visible blur on the larger placeholder buttons.
   for (const auto& entry : icon_buttons_) {
     const QSize icon_size = entry.button->iconSize();
-    const QPixmap pixmap = renderSvgPixmap(entry.icon_path, theme, icon_size, devicePixelRatioF());
+    const QPixmap pixmap = renderSvgPixmap(entry.icon_path, theme_, icon_size, devicePixelRatioF());
     entry.button->setIcon(QIcon(pixmap));
   }
+}
+
+void VisualizationPlaceholderWidget::fitButtonsToWidth() {
+  const auto count = static_cast<int>(icon_buttons_.size());
+  const QMargins margins = layout()->contentsMargins();
+  const int available = width() - margins.left() - margins.right();
+  const int side = std::clamp((available - (count - 1) * layout()->spacing()) / count, kMinButtonSide, kButtonSide);
+  if (icon_buttons_.front().button->width() == side) {
+    return;
+  }
+  const int icon = qRound(side * double(kIconSide) / double(kButtonSide));
+  for (const auto& entry : icon_buttons_) {
+    entry.button->setFixedSize(side, side);
+    entry.button->setIconSize(QSize(icon, icon));
+  }
+  renderIcons();
+}
+
+QSize VisualizationPlaceholderWidget::rowSize(int side) const {
+  const QMargins margins = layout()->contentsMargins();
+  return {rowWidth(layout(), static_cast<int>(icon_buttons_.size()), side), side + margins.top() + margins.bottom()};
+}
+
+QSize VisualizationPlaceholderWidget::sizeHint() const {
+  return rowSize(kButtonSide);
+}
+
+QSize VisualizationPlaceholderWidget::minimumSizeHint() const {
+  return rowSize(kMinButtonSide);
+}
+
+void VisualizationPlaceholderWidget::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  fitButtonsToWidth();
 }
 
 void VisualizationPlaceholderWidget::paintEvent(QPaintEvent* event) {
@@ -212,14 +272,14 @@ void VisualizationPlaceholderWidget::showSplitContextMenu(const QPoint& global_p
   emit contextMenuAboutToShow();
   updateSplitActionIcons(currentTheme());
 
-  QMenu menu(this);
-  menu.setObjectName(u"PJMenu"_s);
-  menu.setProperty("categorySeparators", true);
-  menu.addAction(action_paste_);
-  menu.addSeparator();
-  menu.addAction(action_split_horizontal_);
-  menu.addAction(action_split_vertical_);
-  menu.exec(global_pos);
+  auto* menu = new QMenu(this);
+  menu->setObjectName(u"PJMenu"_s);
+  menu->setProperty("categorySeparators", true);
+  menu->addAction(action_paste_);
+  menu->addSeparator();
+  menu->addAction(action_split_horizontal_);
+  menu->addAction(action_split_vertical_);
+  showOwnedMenu(menu, global_pos);
 }
 
 void VisualizationPlaceholderWidget::updateSplitActionIcons(const QString& theme) {

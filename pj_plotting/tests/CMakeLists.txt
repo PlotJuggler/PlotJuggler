@@ -22,6 +22,7 @@ pj_add_test_runner(pj_plotting_widget_tests
         state_transitions_dock_widget_test.cpp
         dock_widget_placeholder_test.cpp
         dock_widget_context_menu_test.cpp
+        dock_widget_discard_test.cpp
         dock_fullscreen_test.cpp
         tabbed_widget_tab_test.cpp
         plot_widget_replace_curve_test.cpp
@@ -29,12 +30,14 @@ pj_add_test_runner(pj_plotting_widget_tests
         plot_widget_default_style_test.cpp
         plot_widget_xy_marker_test.cpp
         plot_widget_global_markers_test.cpp
+        plot_widget_marker_status_test.cpp
         curve_editor_global_markers_test.cpp
         legend_text_diagnostics_test.cpp
-        raster_text_engine_test.cpp
+        plot_widget_legend_toggle_test.cpp
         plot_widget_range_offset_test.cpp
         plot_widget_max_zoom_offset_test.cpp
         plot_widget_flat_curve_range_test.cpp
+        plot_widget_first_rows_fit_test.cpp
         plot_magnifier_clamp_test.cpp
         plot_state_transaction_test.cpp
         # Links pj_resources so :/filters/builtin_filters.luau is embedded and
@@ -50,33 +53,16 @@ pj_add_test_runner(pj_plotting_widget_tests
 )
 set_target_properties(pj_plotting_widget_tests PROPERTIES AUTOMOC ON)
 
-# These regressions need QApplication on a real GL platform and force the GL
-# canvas. Keep their startup separate from the offscreen-capable GUI runner
-# and its raster-only test environments.
-add_executable(plot_canvas_context_recreation_gl_test
-    plot_canvas_context_recreation_gl_test.cpp
+# PlotRhiCanvas against Qwt's own rendering, on every QRhi backend of the
+# platform plus OpenGL at device-pixel ratio 2 (RHI_BACKENDS, see
+# cmake/PjTests.cmake). Needs an RHI-capable QPA (wayland/xcb/windows/cocoa;
+# xvfb in Linux CI), never `offscreen`, where every case skips (fails under
+# PJ_REQUIRE_GPU_TESTS=1). OpenGLWidgets: a QOpenGLWidget sibling pins a window
+# to OpenGL in one case.
+find_package(Qt6 REQUIRED COMPONENTS OpenGLWidgets)
+pj_add_test_runner(plot_rhi_render_test
+    MAIN gui WARNINGS RHI_BACKENDS DPR2
+    SOURCES plot_rhi_render_test.cpp
+    LIBS pj_plotting pj_widgets pj_resources Qt6::OpenGLWidgets Qt6::Test
+    TIMEOUT 60
 )
-
-target_compile_options(plot_canvas_context_recreation_gl_test PRIVATE ${PJ_WARNING_FLAGS})
-pj_ensure_gpu_test_gate()
-target_link_libraries(plot_canvas_context_recreation_gl_test PRIVATE
-    pj_plotting
-    GTest::gtest
-    pj_gpu_test_gate
-)
-
-add_test(NAME PlotCanvasContextRecreationGlTest COMMAND plot_canvas_context_recreation_gl_test)
-
-add_executable(raster_text_gl_test
-    raster_text_gl_test.cpp
-)
-
-target_compile_options(raster_text_gl_test PRIVATE ${PJ_WARNING_FLAGS})
-pj_ensure_gpu_test_gate()
-target_link_libraries(raster_text_gl_test PRIVATE
-    pj_plotting
-    GTest::gtest
-    pj_gpu_test_gate
-)
-
-add_test(NAME RasterTextGlTest COMMAND raster_text_gl_test)

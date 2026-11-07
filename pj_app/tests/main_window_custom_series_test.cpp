@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The Custom Series panel lists derived series, but only DataProcessorService knows
+// The Custom Topics panel lists derived series, but only DataProcessorService knows
 // which catalog topics are transform outputs. These tests pin that the panel is
 // DERIVED from the service rather than accumulated from announcements, on the two
 // paths that announce nothing: a layout restore, which rebuilds the whole processor
@@ -20,6 +20,7 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DerivedObjects.h"
 #include "pj_runtime/SessionManager.h"
 #include "ui/CurveListPanel.h"
 
@@ -38,12 +39,12 @@ class MainWindowCustomSeriesTestPeer {
   }
 
   [[nodiscard]] static QDomElement saveDataProcessors(MainWindow& window, QDomDocument& doc) {
-    return window.saveDataProcessors(doc, SnapshotScope::kFull);
+    return window.derivedObjects().save(doc, SnapshotScope::kFull);
   }
 
   // The production hook every recipe-set change goes through.
-  static void syncCustomSeriesPanel(MainWindow& window) {
-    window.syncCustomSeriesPanel();
+  static void syncCustomTopicsPanel(MainWindow& window) {
+    window.syncCustomTopicsPanel();
   }
 };
 
@@ -134,7 +135,7 @@ TEST(MainWindowCustomSeriesTest, RestoredTransformIsListed) {
   RestoredSession fx;
   ASSERT_TRUE(fx.setUp());
 
-  EXPECT_EQ(fx.panel->customSeriesNames(), QStringList{QString::fromLatin1(kOutputTopic)});
+  EXPECT_EQ(fx.panel->customTopicNames(), QStringList{QString::fromLatin1(kOutputTopic)});
 }
 
 // A withdrawal through the ABI: the transform is gone from the service, so the row
@@ -144,12 +145,12 @@ TEST(MainWindowCustomSeriesTest, RestoredTransformIsListed) {
 TEST(MainWindowCustomSeriesTest, WithdrawnTransformLeavesNoRow) {
   RestoredSession fx;
   ASSERT_TRUE(fx.setUp());
-  ASSERT_EQ(fx.panel->customSeriesNames().size(), 1);
+  ASSERT_EQ(fx.panel->customTopicNames().size(), 1);
 
   ASSERT_TRUE(fx.processors().removeTransform(kTransformKey).has_value());
-  PJ::MainWindowCustomSeriesTestPeer::syncCustomSeriesPanel(fx.window);
+  PJ::MainWindowCustomSeriesTestPeer::syncCustomTopicsPanel(fx.window);
 
-  EXPECT_TRUE(fx.panel->customSeriesNames().isEmpty());
+  EXPECT_TRUE(fx.panel->customTopicNames().isEmpty());
 }
 
 // The same withdrawal seen only through the catalog: retiring the output makes the
@@ -158,12 +159,12 @@ TEST(MainWindowCustomSeriesTest, WithdrawnTransformLeavesNoRow) {
 TEST(MainWindowCustomSeriesTest, CatalogRemovalAlonePrunesTheRow) {
   RestoredSession fx;
   ASSERT_TRUE(fx.setUp());
-  ASSERT_EQ(fx.panel->customSeriesNames().size(), 1);
+  ASSERT_EQ(fx.panel->customTopicNames().size(), 1);
 
   ASSERT_TRUE(fx.processors().removeTransform(kTransformKey).has_value());
   fx.app().catalogModel().rebuildFromDatastore();
 
-  EXPECT_TRUE(fx.panel->customSeriesNames().isEmpty());
+  EXPECT_TRUE(fx.panel->customTopicNames().isEmpty());
 }
 
 // A transform chain (downstream reads upstream's output) must survive a full
@@ -204,11 +205,11 @@ TEST(MainWindowCustomSeriesTest, RestoreReplaysTransformChainInDependencyOrder) 
 TEST(MainWindowCustomSeriesTest, ClearedCatalogEmptiesCustomSeries) {
   RestoredSession fx;
   ASSERT_TRUE(fx.setUp());
-  ASSERT_EQ(fx.panel->customSeriesNames().size(), 1);
+  ASSERT_EQ(fx.panel->customTopicNames().size(), 1);
 
   fx.app().catalogModel().clearAll();
 
-  EXPECT_TRUE(fx.panel->customSeriesNames().isEmpty());
+  EXPECT_TRUE(fx.panel->customTopicNames().isEmpty());
 }
 
 }  // namespace

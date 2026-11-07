@@ -10,7 +10,8 @@ The `build/AppDir` this produces is also the payload of the Debian package — s
 artifacts, so check that side too when changing what gets bundled.
 
 `smoke_test.sh` runs the finished AppImage on a machine that did not build it
-(`--selftest-python` + a GUI startup under Xvfb) — release CI runs it in the
+(`--selftest-python`, a GUI startup under Xvfb and the
+[render check](../README.md#render-check)) — release CI runs it in the
 same clean containers as `packaging/deb/smoke_test.sh`, right after it, so the runtime
 libraries come from the `.deb`'s `Depends`. See the header comment for
 standalone use.
@@ -91,6 +92,15 @@ normally and the read-only bundle stays a seed source. Kept out of
 own platform plugins that `linuxdeploy-plugin-qt` deploys there. `AppRun.sh`
 does **not** pass `--plugin-dir`; that flag stays a user-facing option,
 forwarded verbatim if the user supplies one.
+
+### Native Wayland
+
+The bundle includes Qt's `wayland` platform plugin, its shell/decoration and
+client graphics integration plugins, and their library dependencies, alongside
+`xcb`. Select it with `QT_QPA_PLATFORM=wayland` in a Wayland session. The same
+AppDir supplies the Debian package. Release smoke checks render both on Xvfb
+and on a headless Weston compositor with `DISPLAY` unset; install `weston` for
+standalone smoke runs.
 
 ## Retro payload (`--retro-wad <path>`)
 

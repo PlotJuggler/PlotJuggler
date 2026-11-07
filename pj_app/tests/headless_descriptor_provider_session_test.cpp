@@ -35,11 +35,15 @@
 
 #include "FileLoader.h"
 #include "HeadlessDescriptorProviderSession.h"
+#include "dataset_test_helpers.h"
 #include "pj_base/descriptor_import_protocol.h"
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_base/plugin_data_api.h"
 #include "pj_base/sdk/descriptor_import.hpp"
+#include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/toolbox_protocol.h"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
@@ -86,6 +90,9 @@ FakeEventLog g_events;
 std::atomic<int> g_created{0};
 std::atomic<int> g_destroyed{0};
 std::atomic<bool> g_promotion_service_found{false};
+// The pj.data_processors.v1 service the bound instance resolved (captured at bind,
+// GUI thread).
+PJ_service_t g_data_processors_service{};
 
 // Promotion-blocking instrumentation (the shutdown-before-join regression
 // test). `g_worker_promotes` switches the fake worker into a provider that
@@ -305,6 +312,12 @@ bool fakeBind(void* ctx, PJ_service_registry_t registry, PJ_error_t* out_error) 
     // beyond the thread-creation happens-before.
     g_promotion_service = service;
   }
+  PJ_service_t data_processors{};
+  if (registry.vtable != nullptr &&
+      registry.vtable->get_service(
+          registry.ctx, sv(PJ::sdk::DataProcessorsHostService::kName), 1, &data_processors, &error)) {
+    g_data_processors_service = data_processors;
+  }
   g_events.add("plugin.bind");
   return true;
 }
@@ -392,6 +405,7 @@ class HeadlessDescriptorProviderSessionTest : public ::testing::Test {
     g_promotion_service_found.store(false);
     g_worker_promotes.store(false);
     g_promotion_service = PJ_service_t{};
+    g_data_processors_service = PJ_service_t{};
     g_promotion_accepted.store(false);
     g_promotion_result_ok.store(true);
     g_instance = nullptr;
@@ -575,6 +589,72 @@ TEST_F(HeadlessDescriptorProviderSessionTest, CreationResolvesBindsAndRegistersP
 
   session->reset();
   EXPECT_EQ(g_destroyed.load(), 1);
+}
+
+// The provider sees the derived surface an interactive toolbox sees: the one
+// pj.data_processors.v1 service creates a kind=markers rule as well as a transform.
+TEST_F(HeadlessDescriptorProviderSessionTest, ProviderCreatesAMarkerRule) {
+  const PJ::DatasetId dataset = pj_test::createDataset(*app_session_, "headless");
+  ASSERT_NE(pj_test::addScalarTopic(*app_session_, dataset, "/sensor"), 0U);
+  auto session = makeSession(kProviderId);
+  ASSERT_TRUE(session.has_value()) << session.error();
+  const auto* vtable = static_cast<const PJ_data_processors_host_vtable_t*>(g_data_processors_service.vtable);
+  ASSERT_NE(vtable, nullptr) << "the bound instance must be able to resolve pj.data_processors.v1";
+
+  const PJ_string_view_t input = sv("/sensor/value");
+  const PJ_string_view_t output = sv("__global__");
+  PJ_error_t error{};
+  const bool created = vtable->create_data_processor(
+      g_data_processors_service.ctx, sv("rule"), sv("markers"), sv("luau"), &input, 1, &output, 1,
+      sv("local s = series(\"/sensor/value\")\ncreateMarker(s:at(0).t)\n"), sv("{}"), 0, nullptr, 0, nullptr, &error);
+  EXPECT_TRUE(created) << error.message;
+  EXPECT_NE(app_session_->sessionManager().batchEngine().firstBinding("fake-import-provider/rule"), nullptr);
+}
+
+// ABI-41: the routed service validates an on-demand script in a headless session, and
+// rejects one that does not compile.
+TEST_F(HeadlessDescriptorProviderSessionTest, DataProcessorsServiceIsRoutedByKind) {
+  auto session = makeSession(kProviderId);
+  ASSERT_TRUE(session.has_value()) << session.error();
+  const auto* vtable = static_cast<const PJ_data_processors_host_vtable_t*>(g_data_processors_service.vtable);
+  ASSERT_NE(vtable, nullptr);
+  PJ_error_t error{};
+  EXPECT_TRUE(vtable->validate_data_processor_script(
+      g_data_processors_service.ctx, sv("on_demand"), sv("luau"), sv("return {}"), sv("{}"), &error))
+      << error.message;
+  EXPECT_FALSE(vtable->validate_data_processor_script(
+      g_data_processors_service.ctx, sv("on_demand"), sv("luau"), sv("return {"), sv("{}"), &error));
+  EXPECT_FALSE(vtable->validate_data_processor_script(
+      g_data_processors_service.ctx, sv("unknown"), sv("luau"), sv("return {}"), sv("{}"), &error));
+}
+
+// A preview belongs to the session that made it: ending the session ends the
+// previews its provider created and keeps the rules it created persistent.
+TEST_F(HeadlessDescriptorProviderSessionTest, TeardownEndsTheProvidersEphemeralPreviews) {
+  const PJ::DatasetId dataset = pj_test::createDataset(*app_session_, "headless");
+  ASSERT_NE(pj_test::addScalarTopic(*app_session_, dataset, "/sensor"), 0U);
+  const PJ::BatchEngine& markers = app_session_->sessionManager().batchEngine();
+  {
+    auto session = makeSession(kProviderId);
+    ASSERT_TRUE(session.has_value()) << session.error();
+    const auto* vtable = static_cast<const PJ_data_processors_host_vtable_t*>(g_data_processors_service.vtable);
+    ASSERT_NE(vtable, nullptr);
+    const PJ_string_view_t input = sv("/sensor/value");
+    const PJ_string_view_t output = sv("__global__");
+    const std::string script = "local s = series(\"/sensor/value\")\ncreateMarker(s:at(0).t)\n";
+    PJ_error_t error{};
+    ASSERT_TRUE(vtable->create_data_processor(
+        g_data_processors_service.ctx, sv("rule"), sv("markers"), sv("luau"), &input, 1, &output, 1, sv(script.c_str()),
+        sv("{}"), 0, nullptr, 0, nullptr, &error))
+        << error.message;
+    ASSERT_TRUE(vtable->create_data_processor(
+        g_data_processors_service.ctx, sv("preview"), sv("markers"), sv("luau"), &input, 1, nullptr, 0,
+        sv(script.c_str()), sv("{}"), PJ_DATA_PROCESSOR_FLAG_EPHEMERAL, nullptr, 0, nullptr, &error))
+        << error.message;
+    ASSERT_NE(markers.firstBinding("fake-import-provider/preview"), nullptr);
+  }
+  EXPECT_EQ(markers.firstBinding("fake-import-provider/preview"), nullptr);
+  EXPECT_NE(markers.firstBinding("fake-import-provider/rule"), nullptr);
 }
 
 // Scenario 2a: unknown manifest id — a distinct, precise failure, and the

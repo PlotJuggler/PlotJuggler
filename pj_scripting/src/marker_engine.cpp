@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -28,6 +29,7 @@
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
+#include "luau_sandbox_state.h"
 
 namespace PJ::scripting {
 
@@ -69,58 +71,33 @@ double SeriesView::atTime(double t) const {
 
 namespace {
 
-// ---- sandbox: memory cap + instruction-budget watchdog (mirrors luau_engine) --
-
-constexpr std::size_t kMaxSourceBytes = 1u << 20;  // 1 MiB
-
-struct BudgetState {
-  std::size_t used = 0;
-  std::size_t max_bytes = 0;
-  std::int64_t fuel = 0;
-  bool tripped = false;
-};
-
-void* budgetAlloc(void* ud, void* ptr, std::size_t osize, std::size_t nsize) {
-  auto* b = static_cast<BudgetState*>(ud);
-  if (nsize == 0) {
-    std::free(ptr);
-    if (ptr != nullptr) {
-      b->used = (osize <= b->used) ? b->used - osize : 0;
-    }
-    return nullptr;
-  }
-  const std::size_t base = (ptr == nullptr) ? b->used : ((osize <= b->used) ? b->used - osize : 0);
-  if (nsize > b->max_bytes || base > b->max_bytes - nsize) {
-    return nullptr;
-  }
-  void* np = std::realloc(ptr, nsize);
-  if (np != nullptr) {
-    b->used = base + nsize;
-  }
-  return np;
-}
-
-void budgetInterrupt(lua_State* L, int gc) {
-  if (gc >= 0) {
-    return;
-  }
-  auto* b = static_cast<BudgetState*>(lua_callbacks(L)->userdata);
-  if (b != nullptr && --b->fuel <= 0) {
-    b->tripped = true;
-    luaL_error(L, "script exceeded its instruction budget");
-  }
-}
+using namespace detail;
 
 // ---- per-run context (carried into the bound primitives as an upvalue) -----
 
 struct RunContext {
   const SeriesProvider* provider = nullptr;
+  BudgetState* budget = nullptr;
   std::vector<PJ::sdk::PlotMarker> emitted;
+  std::size_t max_output_bytes = 0;
+  std::size_t output_bytes = 0;
   std::optional<std::int64_t> open_region;  // startMarker -> closeMarker
 };
 
 RunContext* ctxFromUpvalue(lua_State* L) {
   return static_cast<RunContext*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
+}
+
+// Every emitted marker goes through here, so the native result is bounded independently of the
+// VM's memory cap. A marker counts its sizeof plus its strings; vector slack is not counted.
+void appendMarker(lua_State* L, RunContext* ctx, PJ::sdk::PlotMarker&& marker) {
+  const std::size_t bytes =
+      sizeof(PJ::sdk::PlotMarker) + marker.label.size() + marker.description.size() + marker.category.size();
+  if (bytes > ctx->max_output_bytes - ctx->output_bytes) {
+    tripRun(L, *ctx->budget, "marker output exceeds the byte ceiling");
+  }
+  ctx->output_bytes += bytes;
+  ctx->emitted.push_back(std::move(marker));
 }
 
 // ---- opts parsing (label/color/severity/status/category/description) -------
@@ -332,7 +309,7 @@ int l_closeMarker(lua_State* L) {
   m.severity = PJ::sdk::MarkerSeverity::kWarning;
   m.category = "anomaly";
   applyOpts(L, 2, m);
-  ctx->emitted.push_back(std::move(m));
+  appendMarker(L, ctx, std::move(m));
   ctx->open_region.reset();
   return 0;
 }
@@ -349,7 +326,7 @@ void emitVline(RunContext* ctx, double x, int opts_idx, lua_State* L) {
   m.t_start = finiteToNs(L, x);
   m.severity = PJ::sdk::MarkerSeverity::kError;
   applyOpts(L, opts_idx, m);
-  ctx->emitted.push_back(std::move(m));
+  appendMarker(L, ctx, std::move(m));
 }
 
 // A horizontal line at y: a degenerate value band [y, y].
@@ -361,7 +338,7 @@ void emitHline(RunContext* ctx, double y, int opts_idx, lua_State* L) {
   m.value_high = y;
   m.severity = PJ::sdk::MarkerSeverity::kWarning;
   applyOpts(L, opts_idx, m);
-  ctx->emitted.push_back(std::move(m));
+  appendMarker(L, ctx, std::move(m));
 }
 
 // A point at (x, y): an event carrying a value.
@@ -374,7 +351,7 @@ void emitPoint(RunContext* ctx, double x, double y, int opts_idx, lua_State* L) 
   m.has_value = true;
   m.severity = PJ::sdk::MarkerSeverity::kError;
   applyOpts(L, opts_idx, m);
-  ctx->emitted.push_back(std::move(m));
+  appendMarker(L, ctx, std::move(m));
 }
 
 // createMarker(x?, y?, opts?): only x -> vertical line | only y -> horizontal line |
@@ -421,7 +398,7 @@ int l_createBandMarker(lua_State* L) {
   m.severity = PJ::sdk::MarkerSeverity::kInfo;
   m.category = "anomaly";
   applyOpts(L, 3, m);
-  ctx->emitted.push_back(std::move(m));
+  appendMarker(L, ctx, std::move(m));
   return 0;
 }
 
@@ -489,7 +466,8 @@ void bindGlobal(lua_State* L, RunContext* ctx, const char* name, lua_CFunction f
 }  // namespace
 
 std::vector<PJ::sdk::PlotMarker> runMarkerScript(
-    const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits) {
+    const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits,
+    const std::function<bool()>& cancelled, std::size_t max_output_bytes, std::size_t* output_bytes) {
   if (error != nullptr) {
     error->clear();
   }
@@ -502,10 +480,13 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
 
   RunContext ctx;
   ctx.provider = &provider;
+  ctx.max_output_bytes = max_output_bytes;
 
   BudgetState budget;
   budget.max_bytes = std::numeric_limits<std::size_t>::max();  // open during trusted setup
   budget.fuel = std::numeric_limits<std::int64_t>::max();
+  budget.cancelled = cancelled ? &cancelled : nullptr;
+  ctx.budget = &budget;
   lua_State* L = lua_newstate(budgetAlloc, &budget);
   if (L == nullptr) {
     if (error != nullptr) {
@@ -566,12 +547,19 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
     lua_close(L);
     return {};
   }
-  if (budget.tripped && error != nullptr && error->empty()) {
-    *error = "script exceeded its instruction budget";
+  if (budget.trip != nullptr) {
+    if (error != nullptr && error->empty()) {
+      *error = budget.trip;
+    }
+    lua_close(L);
+    return {};
   }
 
   std::vector<PJ::sdk::PlotMarker> markers = std::move(ctx.emitted);
   lua_close(L);
+  if (output_bytes != nullptr) {
+    *output_bytes = ctx.output_bytes;
+  }
   return markers;
 }
 

@@ -2,153 +2,200 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <QByteArray>
 #include <QColor>
+#include <QMetaObject>
 #include <QString>
 #include <QStringList>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_datastore/sequential_uid.hpp"
-#include "pj_scene3d_widgets/passes/marker_render_pass.h"
-#include "pj_scene3d_widgets/passes/mesh_render_pass.h"
+#include "pj_scene3d_core/scene_entities_model_state.h"
+#include "pj_scene3d_core/scene_entities_render.h"
+#include "pj_scene3d_core/tf/object_placement.h"
+#include "pj_scene3d_widgets/latest_wins_worker.h"
+#include "pj_scene3d_widgets/marker_geometry.h"
+#include "pj_scene3d_widgets/mesh_data.h"
+#include "pj_scene3d_widgets/model_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 
 class QWidget;
 
 namespace pj::scene3d {
 
-class MeshLoader;
-class MeshLoadSet;
-struct MeshLoadEntry;
-class UrlFetcher;
+class MeshLoadQueue;
 
 // Concrete Scene3DLayer for a single visualization_msgs/MarkerArray-equivalent
-// topic (canonical sdk::SceneEntities, type kSceneEntities). Renders two
-// primitive families through two render passes:
+// topic (canonical sdk::SceneEntities, type kSceneEntities). Two primitive
+// families:
 //
-// - **Markers** (cube/sphere/cylinder/arrow/line/triangle primitives): owns a
-//   MarkerRenderPass and decodes the latest batch at/before the tracker time
-//   from the ObjectStore. Mirrors PointCloudEntity's
-//   "decode-from-store-at-tracker-time" lifecycle.
-// - **Models** (ModelPrimitive — embedded glTF bytes or a file/http URL): owns
-//   a MeshRenderPass plus an assimp MeshLoader. Model state is *stateful*: all
-//   batches up to the tracker time are replayed into an id-keyed entity map
-//   (replace-by-id, deletions, lifetime expiry, per SceneUpdate semantics) and
-//   mesh bytes load asynchronously with signature-based caching. URL sources
-//   are fetched asynchronously (UrlFetcher, which caches fetched bytes on disk);
-//   DATA-SUPPLIED http(s) URLs are policy-gated behind the QSettings bool
-//   "pj_scene3d/allow_remote_model_fetch" (default ON; set false to opt OUT of
-//   dataset-driven network egress), while local file URLs / bare paths always
-//   work. Blocked, failed-to-fetch, or failed-to-load models surface through
-//   remoteFetchNotice() (the per-topic status shown by the config widget).
+// - **Markers** (cube/sphere/cylinder/arrow/line/triangle primitives): the
+//   latest batch at/before the tracker time (stateless), expanded into
+//   MarkerGeometry on a worker thread (latest wins, stale results dropped
+//   by generation), which the view reads through geometry().
+// - **Models** (ModelPrimitive, embedded glTF bytes or a file/http URL): all
+//   batches up to the tracker time are replayed into an id-keyed entity state
+//   (SceneEntitiesModelState: replace-by-id, deletions, lifetime expiry), and
+//   the models' bytes load asynchronously through a MeshLoadQueue, a few at a
+//   time (fetch, then import off the GUI thread; one in the browser), each
+//   admitted against kSceneLimits' model budgets as it lands. Imported meshes are
+//   retained as MeshData and exposed with frame-local ModelDrawCalls through
+//   ModelRenderable (the view applies TF).
+//   DATA-SUPPLIED http(s) model URLs are policy-gated behind the QSettings bool
+//   "pj_scene3d/allow_remote_model_fetch" (default ON; set false to opt OUT);
+//   local file URLs / bare paths always load. Failures surface through
+//   remoteFetchNotice() and statusWarning().
 //
 // Known divergence (follow-up): the marker path shows only the latest batch,
 // so markers from earlier batches with different entity ids disappear, while
-// their models persist. Unifying markers onto the stateful entity map changes
-// shipped behavior and deserves its own review.
+// their models persist.
 //
-// Exposes a per-instance config widget with the viewer-side display overrides
-// (opacity / color-override / wireframe). These are a per-topic preference, NOT
-// marker data — the marker protocol has no such fields. Opacity and the color
-// override also apply to model draws; wireframe is marker-only (MeshRenderPass
-// has no edge mode).
-class SceneEntitiesLayer : public Scene3DLayer {
+// Viewer-side display overrides (opacity / color override / wireframe) are a
+// per-topic preference, not marker data. Opacity and the color override also
+// apply to model draws; wireframe is marker-only.
+class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   Q_OBJECT
  public:
   SceneEntitiesLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
   ~SceneEntitiesLayer() override;
 
-  // Scene3DLayer / ISceneLayer
   // Identity row for the dock's layer list (family "Markers").
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   // First/last sample timestamps of the topic in the ObjectStore.
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   // The marker batch's source frame plus every distinct model-entity frame.
   [[nodiscard]] QStringList fallbackFrames() const override;
-  // Frame of the latest decoded marker batch (first entity's frame_id).
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.markers = this, .models = this};
+  }
+  // Frame of the latest selected marker batch (first entity's frame_id).
   [[nodiscard]] QString sourceFrame() const override;
   // Persist / restore the viewer-side display overrides (tag "markers").
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  // Session-free check that `element` is a loadable "markers" payload.
+  [[nodiscard]] static bool validateXml(const QDomElement& element);
 
-  // Bind to the session: resolve parser + time range, decode the first batch,
-  // and replay the initial model state. Safe to call before any GL init.
+  // Bind to the session (a parser binding or a canonical codec is required),
+  // select the first batch and replay the initial model state.
   bool attach(const PJ::SceneLayerContext& ctx) override;
-  // Drop parser/session bindings and all decoded marker + model state.
+  // Drop session bindings and all marker + model state.
   void detach() override;
 
-  // Re-decode markers and re-replay model state at the new playhead (no-op
-  // while hidden; the next un-hide refreshes both paths).
+  // Select the marker batch and advance the model state to the new playhead
+  // (no-op while hidden; the dock re-delivers the time on un-hide).
   void setTrackerTime(PJ::Timepoint time) override;
-  // Toggle both render paths; un-hiding re-decodes at the current playhead.
+  // The tracker time with the active entry's SequentialUID: a same-stamp replacement at an unchanged time still
+  // reopens the dock's gate. Never coalesces across times (a lifetime can expire with no new entry).
+  [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
+  // A finding's real stamp (D26: its entry sits at kFindingTimestamp), so it stays where it was measured in a
+  // moving frame; nullopt otherwise: entities are placed at the cursor.
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return finding_stamp_;
+  }
+  [[nodiscard]] PlacementHold* placementHoldFor(const std::string& frame) const override;
   void setVisible(bool visible) override;
-
-  // GL lifecycle for both passes (per-context resources; see module CLAUDE.md).
-  void initializeGL() override;
-  // Draw markers, then drain finished mesh loads and draw model primitives.
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-  // Scene-entity MODEL meshes (ModelPrimitive) cast shadows; marker primitives
-  // (arrows/cubes/lines via MarkerRenderPass) do not. Both hooks operate on
-  // modelDrawCallsForFrame only, so markers are excluded by construction.
-  [[nodiscard]] std::optional<AABB> meshShadowBounds(const FrameContext& frame_ctx) override;
-  void renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) override;
 
   // Opacity / color-override / wireframe controls bound to this instance.
   QWidget* createConfigWidget(QWidget* parent) override;
 
-  // Per-instance display-override accessors used by the config widget. Kept on
-  // the concrete class so the abstract base doesn't carry marker concepts.
-  [[nodiscard]] float opacity() const {
+  [[nodiscard]] float opacity() const override {
     return overrides_.opacity;
   }
-  [[nodiscard]] bool colorOverrideEnabled() const {
+  [[nodiscard]] bool colorOverrideEnabled() const override {
     return overrides_.color_override;
   }
-  [[nodiscard]] QColor overrideColor() const {
+  [[nodiscard]] QColor overrideColor() const override {
     return QColor::fromRgbF(overrides_.override_color.r, overrides_.override_color.g, overrides_.override_color.b);
   }
-  [[nodiscard]] bool wireframe() const {
+  [[nodiscard]] bool wireframe() const override {
     return overrides_.wireframe;
   }
 
-  // Display-override setters: update overrides_, push them to the passes, and
-  // request a repaint. Opacity ∈ [0,1] multiplies every primitive's alpha.
+  // Display-override setters: update overrides_, request a repaint. Opacity ∈
+  // [0,1] multiplies every primitive's alpha.
   void setOpacity(float opacity);
   void setColorOverrideEnabled(bool enabled);
   void setOverrideColor(QColor color);
   void setWireframe(bool enabled);
 
-  // Model-path introspection for tests and diagnostics: the id-keyed entity map
-  // accumulated at the last rebuilt tracker time, and the mesh draw calls the
-  // layer would submit for a frame (fixed-frame TF × entity pose × scale).
+  // The id-keyed model-entity state at the last replayed tracker time. Entities
+  // keep identity, frame, timing and models only (marker primitives are dropped).
   [[nodiscard]] const std::map<std::string, PJ::sdk::SceneEntity>& currentEntities() const {
-    return entities_;
+    return model_state_.entities();
   }
-  [[nodiscard]] std::vector<MeshRenderPass::DrawCall> modelDrawCallsForFrame(const FrameContext& frame_ctx) const;
 
-  // Human-readable status of the model load path: URLs blocked by the
-  // remote-fetch policy gate, failed fetches (with the URL + network error), and
-  // models whose bytes failed to import (with the importer's message). One line
-  // per failure; empty when there is nothing to surface. Shown by the config
-  // widget; remoteFetchNoticeChanged tracks it.
+  // Model load failures: URLs blocked by the remote-fetch policy gate (one
+  // summary line), failed fetches (URL + network error) and rejected imports
+  // (source + importer/budget message). Empty when there is nothing to surface.
   [[nodiscard]] QString remoteFetchNotice() const {
     return remote_fetch_notice_;
   }
 
-  // Scene3DLayer warning surface: the model-load notice doubles as the layer-row
-  // warning (icon + tooltip in the config panel's layer list), so a failed model
-  // is visible without selecting the layer's config widget.
-  [[nodiscard]] QString statusWarning() const override {
-    return remote_fetch_notice_;
+  // ModelRenderable (read by the view):
+  // frame-local draws (frame_id + pose × scale), no TF applied.
+  [[nodiscard]] const std::vector<ModelDrawCall>& modelDrawCalls() const override {
+    return model_draw_calls_;
+  }
+  [[nodiscard]] const std::unordered_map<std::string, std::shared_ptr<const MeshData>>& modelMeshes() const override {
+    return model_meshes_;
+  }
+  [[nodiscard]] std::uint64_t modelRevision() const override {
+    return model_revision_;
+  }
+  [[nodiscard]] bool visible() const override {
+    return visible_;
+  }
+  [[nodiscard]] const std::string& renderFrameId() const override {
+    return source_frame_;
+  }
+  [[nodiscard]] bool contributesToSceneBounds() const override {
+    return true;
+  }
+  [[nodiscard]] Scene3DLayer& modelLayer() override {
+    return *this;
+  }
+
+  // Model imports whose worker has not finished yet, superseded ones included.
+  [[nodiscard]] std::size_t modelImportsOutstandingForTest() const;
+  // Re-selects the marker batch when live samples arrived since the last tick;
+  // called by the view before it reads geometry(). Returns true when the
+  // geometry changed synchronously (cleared).
+  bool prepareForRender();
+  [[nodiscard]] const MarkerGeometry& geometry() const {
+    return geometry_;
+  }
+  [[nodiscard]] std::uint64_t geometryRevision() const {
+    return geometry_revision_;
+  }
+
+  [[nodiscard]] std::uint64_t modelRetainedBytes() const {
+    return model_retained_bytes_;
+  }
+  [[nodiscard]] std::size_t readyModelCountForTest() const {
+    return model_meshes_.size();
+  }
+  [[nodiscard]] std::size_t liveModelCountForTest() const {
+    return model_draw_calls_.size();
+  }
+  [[nodiscard]] bool decodeInFlightForTest() const {
+    return decode_worker_.busy();
+  }
+  [[nodiscard]] std::uint64_t decodeStartsForTest() const {
+    return decode_worker_.starts();
+  }
+  [[nodiscard]] std::uint64_t decodeCompletionsForTest() const {
+    return decode_worker_.completions();
+  }
+  [[nodiscard]] std::uint64_t decodeOffMainCompletionsForTest() const {
+    return decode_worker_.offMainCompletions();
   }
 
  signals:
@@ -156,163 +203,176 @@ class SceneEntitiesLayer : public Scene3DLayer {
   void remoteFetchNoticeChanged(const QString& notice);
 
  private:
-  // Decode the first sample once at attach so we know the source frame and time
-  // range before render is called.
-  bool bootstrap();
-  // Reset every replay/bootstrap artifact — decoded entities, the active marker
-  // batch in pass_, replay cursors (last_marker_uid_ / last_applied_uid_ /
-  // state_built_at_), snapshot cache, source-frame/time-range bookkeeping, mesh
-  // loads — to the post-construction baseline. attach() runs it because a
-  // dataset reload (SessionManager::replaceDataset) re-attaches a layer WITHOUT
-  // an intervening detach(): prior-generation UIDs/timestamps must never skip or
-  // anchor the new generation's replay, and a stale marker batch must not keep
-  // drawing. detach() shares it for its state teardown.
-  void resetReplayState();
-  // Decode + push the batch at/before time_ns into the render pass. No-op when
-  // there's no parser or the store has no sample at/before time_ns.
-  void renderAt(int64_t time_ns);
-  // Push the current overrides to the pass and request a repaint.
-  void applyOverrides();
+  // A checked "markers" payload (validateXml()).
+  struct ParsedSettings {
+    float opacity = 1.0F;
+    bool color_override = false;
+    bool wireframe = false;
+    std::optional<QColor> override_color;
+  };
+  [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
 
-  // Model path: full replay of every batch up to `time` into entities_ (clears
-  // first; replace-by-id, deletions, lifetime expiry), then kick async mesh loads
-  // for the survivors. O(history) — used for the first build and backward scrubs.
+  struct CachedSnapshot {
+    std::shared_ptr<const PJ::sdk::SceneEntities> batch;
+    std::uint64_t bytes = 0;
+    // ObjectStore entry timestamp; restores the expiry anchor on a cache-hit re-fold.
+    std::int64_t store_ns = 0;
+  };
+
+  // One model primitive's load record, keyed by "topic:entity:index". Its
+  // identity is the source signature (content hash / URL), so a re-published
+  // model with new bytes replaces the record and cancels its queue job.
+  struct ModelLoad {
+    enum class Phase { kLoading, kReady, kFailed, kBlocked };
+
+    std::string identity;
+    QString source_label;
+    QString error;
+    std::uint64_t job = 0;  // MeshLoadQueue job while kLoading
+    Phase phase = Phase::kLoading;
+    bool fetch_failed = false;
+  };
+
+  enum class MarkerPick { kUnchanged, kNoSample, kRejected, kBatch };
+
+  // Reset every replay artifact (marker selection, model state, snapshot cache,
+  // model loads, frames) to the post-construction baseline. attach() runs it
+  // because a dataset reload may re-attach without an intervening detach().
+  void resetReplayState();
+  void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
+  // Select the batch at/before time_ns and hand it to the renderer's sink.
+  void renderAt(std::int64_t time_ns);
+  // Shared selection: metadata-first skip of the unchanged batch, payload
+  // admission BEFORE parsing, cache-first parse. A rejected or failed sample is
+  // memoized by UID and not retried. kBatch fills `batch`.
+  MarkerPick selectMarkerBatch(std::int64_t time_ns, std::shared_ptr<const PJ::sdk::SceneEntities>& batch);
+  // Parse one store entry through its parser binding or the canonical codec.
+  std::shared_ptr<PJ::sdk::SceneEntities> decodeEntry(
+      std::int64_t timestamp, const PJ::sdk::PayloadView& payload, QString& error) const;
+  void setSourceFrame(std::string frame);
+
+  // Model path. rebuildModelStateAt replays every batch up to `time` (first
+  // build, backward scrubs, retroactive inserts); ensureModelStateAt folds only
+  // newly-appended batches for forward playback.
   void rebuildModelStateAt(PJ::Timepoint time);
-  // Bring entities_ to `time`. Skips when unchanged; folds only newly-appended
-  // batches for forward playback (O(delta)); falls back to rebuildModelStateAt for
-  // the first build, backward scrubs, or jumps. This keeps sustained playback from
-  // re-parsing (and re-hashing heavy embedded models in) the whole history per frame.
   void ensureModelStateAt(PJ::Timepoint time);
-  // Parse+fold every retained batch with lo_ns < ts <= hi_ns into entities_ via
-  // applySnapshot, in ASCENDING timestamp order (equal stamps keep arrival order).
-  // Backed by ObjectStore::rangeByTime — a decode-free, eviction-safe, out-of-order-
-  // safe window — so a late (older-ts, newest-UID) batch that lands inside the window
-  // is folded at its timestamp position, never skipped or mis-ordered by a UID walk.
-  // Cache-first, parse on miss. Returns true if a snapshot was applied.
-  bool applyWindow(int64_t lo_ns, int64_t hi_ns);
-  // Fold one decoded batch into entities_: apply the batch's deletions FIRST
-  // (against the pre-batch map), then upsert by entity id. Order matters:
-  // the SDK contract says deletions remove PRIOR entities; applying them first
-  // lets the DELETEALL+re-add republish pattern work (deletion and new entities
-  // in the same batch at the same timestamp → deletions clear old, upserts add
-  // new). kAll / kMatchingId branches are gated on the deletion timestamp.
-  // ingest_ns is the ObjectStore entry timestamp the batch came from (the
-  // tracker's clock); it becomes each upserted entity's lifetime-expiry anchor.
-  void applySnapshot(const PJ::sdk::SceneEntities& snapshot, int64_t ingest_ns);
-  // Erase entities whose lifetime elapsed before `time`. Returns true when at
-  // least one entity was erased (the caller owes a repaint).
-  bool dropExpiredEntities(PJ::Timepoint time);
-  // Erase an entity and its lifetime-expiry anchor in lockstep — the single owner
-  // of the "entities_ and entity_expiry_anchor_ns_ never drift" invariant. Returns
-  // the iterator following the erased element (like std::map::erase).
-  std::map<std::string, PJ::sdk::SceneEntity>::iterator eraseEntity(
-      std::map<std::string, PJ::sdk::SceneEntity>::iterator it);
-  // Insert a decoded batch into snapshot_cache_, tracking the byte estimate and
-  // evicting lowest-UID batches once the budget is exceeded. No-op when the UID
-  // is invalid or already cached. store_ns is the entry timestamp, kept so a
-  // cache-hit re-fold can restore each entity's expiry anchor.
-  void cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch, int64_t store_ns);
-  // Drop cached batches below the store's first retained UID (retention pruning).
+  // Fold every retained batch with lo_ns < ts <= hi_ns (ascending timestamp),
+  // cache-first; a batch over the model-state budget is refused with a warning.
+  bool applyModelWindow(std::int64_t lo_ns, std::int64_t hi_ns);
+  // Fold one store entry into the model state, cache-first; counts a lost lazy re-read in `failed_fetches`.
+  bool foldEntry(const PJ::ObjectStore::TimeRangeEntry& reference, std::size_t& failed_fetches);
+  // Apply one decoded batch, refused over the model-state budget. Its lifetimes count from `store_ns`, except a
+  // finding's (D26), which never expire.
+  bool applySnapshot(const PJ::sdk::SceneEntities& snapshot, std::int64_t store_ns);
+  void cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch, std::int64_t store_ns);
   void pruneSnapshotCacheBelow(PJ::SequentialUID first_retained_uid);
   // Recompute the distinct entity frames feeding fallbackFrames().
   void updateModelFrames();
-  // Kick startMeshLoadIfNeeded for every model of every live entity.
-  void startMeshLoadsForCurrentEntities();
-  // Start an async mesh load for `key` unless its source bytes (signature) are
-  // already loaded, loading, fetching, or recorded as blocked/failed; a changed
-  // signature blanks the mesh and reloads. URL sources go through url_fetcher_
-  // (never synchronously); remote http(s) URLs are consent-gated (see class doc).
-  void startMeshLoadIfNeeded(const std::string& key, const PJ::sdk::ModelPrimitive& primitive);
-  // Kick the assimp import of `bytes` on the entry: creates the future and the
-  // #PR183 completion watcher that drives pollMeshLoads -> repaintRequested.
-  void startRecordImport(MeshLoadEntry& entry, const QByteArray& bytes, const QString& format_hint);
-  // Recompute remote_fetch_notice_ from the current records and emit
-  // remoteFetchNoticeChanged when the text actually changed.
+  // Reconcile load records with the live entities (drop records and meshes of
+  // gone models, add records for new/changed ones) and pump the load queue.
+  void syncModelSources();
+  // Admission: a new or changed source is recorded, then refused (no source,
+  // oversized embedded bytes, remote fetch not allowed) or queued.
+  void startModelLoad(
+      const std::string& key, const std::string& entity_id, std::size_t model_index,
+      const PJ::sdk::ModelPrimitive& primitive);
+  // A queued load of the current record settled: admit it against the budget.
+  void admitModel(const std::string& key, MeshData mesh, bool fetch_failed);
+  // Renderer sink for an admitted mesh / a dropped one.
+  void storeModelMesh(const std::string& key, MeshData mesh, std::uint64_t bytes);
+  void releaseModelMesh(const std::string& key);
   void updateRemoteFetchNotice();
-  // Drain finished async loads into the mesh pass and request a repaint when
-  // anything landed. Called from render() and from each load's QFutureWatcher,
-  // so a completed mesh shows up without waiting for an unrelated repaint.
-  void pollMeshLoads();
+  void setBatchWarning(QString warning);
+  // Data part of statusWarning(): the batch, model-state, model-draw and model
+  // load warnings, one per line.
+  void updateWarning();
+  void applyOverrides();
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
   Scene3DLayerContext ctx_;
-  // Parsers are deliberately NOT cached: every decode resolves a fresh
-  // ParserBinding through ctx_.session (see parseLocked()), so a file reload
-  // that re-registers the topic's parser slot can never leave us dangling.
+  // Parsers are deliberately NOT cached: every decode resolves a fresh binding
+  // through ctx_.session, so a file reload that re-registers the topic's parser
+  // slot can never leave us dangling.
+  QMetaObject::Connection reload_connection_;
 
   std::string source_frame_;
-  // Identity of the marker batch last decoded by renderAt; lets it skip
-  // re-decoding the same message while scrubbing within one message's time window.
+  // Every entry is a complete snapshot (pj_snapshot, D27): the model state is the shown entry alone.
+  bool snapshot_stream_ = false;
+  std::optional<PJ::Timepoint> finding_stamp_;  // see renderStamp()
+  // Store stamp of the entry shown at the cursor: with nothing at or before a later cursor it was evicted and stays;
+  // before it, nothing is there and the layer clears.
+  std::optional<std::int64_t> shown_store_ns_;
+  // One placement hold per entity frame (placementHoldFor): a finding drawn in several frames.
+  mutable std::map<std::string, PlacementHold, std::less<>> frame_holds_;
+  // UID of the marker batch last selected (applied, rejected or in flight).
   PJ::SequentialUID last_marker_uid_;
-
+  std::optional<PJ::Timepoint> requested_time_;
   bool visible_ = true;
-  // Timestamp of the topic's first entry, set by attach() only when the store
-  // already holds a sample. std::optional (not a 0 sentinel): 0 is a legitimate
-  // first timestamp under ROS sim time, so absence must be distinct from t=0.
-  std::optional<int64_t> ts_first_;
 
-  // Viewer-side display overrides pushed wholesale to the pass. The override
-  // color lives here as a normalized vec4; the config widget derives a QColor
-  // from it on demand (overrideColor()) — single source of truth. 0.6 opacity +
-  // red are the design-spec defaults (the pass struct's opaque white is its
-  // minimum-change fallback).
-  MarkerRenderPass::DisplayOverrides overrides_{.opacity = 0.6F, .override_color = glm::vec4(1.0F, 0.0F, 0.0F, 1.0F)};
+  // Viewer-side display overrides. 0.6 opacity + red are the design defaults.
+  MarkerDisplayOverrides overrides_{.opacity = 0.6F, .override_color = glm::vec4(1.0F, 0.0F, 0.0F, 1.0F)};
 
-  MarkerRenderPass pass_;
-
-  // Model path (ModelPrimitive meshes). entities_ is the replayed id-keyed
-  // state at state_built_at_; model_frames_ caches the distinct entity frames
-  // merged into fallbackFrames().
+  // Model path. model_frames_ caches the distinct entity frames merged into
+  // fallbackFrames().
+  SceneEntitiesModelState model_state_;
   std::optional<PJ::Timepoint> state_built_at_;
-  // High-water ObjectStore arrival UID folded into entities_ at state_built_at_ —
-  // maxUidAtOrBefore(state_built_at_) captured at the last build. UID 0 is the
-  // invalid sentinel (real entries start at 1). Two jobs: the same-playhead
-  // early-return compares it against the current high-water to skip re-folding, and
-  // the forward path re-reads maxUidAtOrBefore(state_built_at_) and rebuilds if it
-  // grew — that signals a retroactive (out-of-order) batch landed at/below the
-  // cursor time, which a forward window fold cannot reach.
+  // High-water ObjectStore arrival UID folded into model_state_ at
+  // state_built_at_ (invalid = nothing folded); for a snapshot stream, the shown entry's. The same-playhead early
+  // return compares it to the live high-water; a grown value at/below the build time means a retroactive insert, which
+  // forces a full rebuild.
   PJ::SequentialUID applied_uid_high_;
-  // One decoded batch shared between the marker pass seed and the model fold.
-  // `bytes` is the estimate recorded at insert, so eviction subtracts exactly
-  // what was added.
-  struct CachedSnapshot {
-    std::shared_ptr<const PJ::sdk::SceneEntities> batch;
-    std::size_t bytes = 0;
-    int64_t store_ns = 0;  // ObjectStore entry timestamp; restores the expiry anchor on a cache-hit re-fold.
-  };
-  // Decoded-batch cache keyed by ObjectStore SequentialUID, so a full rebuild
-  // (backward scrub / jump) re-folds retained entities WITHOUT re-parsing the
-  // history. Ordered map: pruning below the store's first retained UID and
-  // evicting oldest-first past kSnapshotCacheMaxBytes are both range operations.
+  // Decoded batches keyed by store UID, shared by the marker selection and the
+  // model fold, bounded by kSceneLimits.max_model_snapshot_cache_bytes (oldest
+  // UIDs evicted first).
   std::map<PJ::SequentialUID, CachedSnapshot> snapshot_cache_;
-  // Estimated heap bytes held by snapshot_cache_ (dominated by embedded model
-  // bytes and line/triangle geometry). File sessions never evict from the store,
-  // so without this budget the cache would grow with the whole topic history.
-  std::size_t snapshot_cache_bytes_ = 0;
-  std::map<std::string, PJ::sdk::SceneEntity> entities_;
-  // Per-entity lifetime-expiry anchor = the ObjectStore entry timestamp the entity
-  // was folded from (the tracker's clock). Decouples expiry from the entity's
-  // embedded sensor timestamp, which under streaming is host-stamped on a different
-  // epoch — comparing the two clocks expired every finite-lifetime entity instantly.
-  // A parallel map (not a field on the stored SceneEntity) keeps this host-side anchor
-  // out of the SDK value type and matches the sibling layers' id-keyed parallel-container
-  // style; eraseEntity() is the single owner that keeps it in lockstep with entities_.
-  std::map<std::string, int64_t> entity_expiry_anchor_ns_;
+  std::uint64_t snapshot_cache_bytes_ = 0;
   QStringList model_frames_;
-  std::unique_ptr<MeshLoader> mesh_loader_;
-  std::unique_ptr<MeshRenderPass> mesh_pass_;
-  // Async mesh loads keyed by meshKey() ("topic:entity:index"); each entry's
-  // identity is the model source signature (a re-published model with new bytes
-  // replaces the entry). Held by unique_ptr so this header can forward-declare
-  // MeshLoadSet (its definition lives in the private src/).
-  std::unique_ptr<MeshLoadSet> mesh_loads_;
-  // Async fetcher for URL-sourced models, owned by the layer: destroying the
-  // layer (or resetReplayState) aborts in-flight fetches and drops their
-  // callbacks, so a completion can never touch a dead record list.
-  std::unique_ptr<UrlFetcher> url_fetcher_;
-  // Cached remoteFetchNotice() text (see accessor).
+
+  // Owned so destroying the layer aborts in-flight fetches and drops pending
+  // completions.
+  std::unique_ptr<MeshLoadQueue> model_queue_;
+  std::unordered_map<std::string, ModelLoad> model_loads_;
+  // Retained estimate of each admitted mesh; the key set is the ready set.
+  std::unordered_map<std::string, std::uint64_t> model_mesh_bytes_;
+  std::uint64_t model_retained_bytes_ = 0;
+
+  QString batch_warning_;        // marker batch admission / decode
+  QString model_state_warning_;  // model snapshot fold (budget, decode, lost batch)
+  QString model_draw_warning_;   // QRhi model draw admission (refreshModelDrawCalls)
   QString remote_fetch_notice_;
+
+  // What the view reads (ModelRenderable, geometry()).
+  std::unordered_map<std::string, std::shared_ptr<const MeshData>> model_meshes_;
+  std::vector<ModelDrawCall> model_draw_calls_;
+  std::uint64_t model_revision_ = 0;
+
+  struct DecodeRequest {
+    std::shared_ptr<const PJ::sdk::SceneEntities> scene;
+    PJ::SequentialUID uid;
+  };
+  struct DecodeResult {
+    PJ::SequentialUID uid;
+    MarkerGeometryResult built;
+  };
+
+  // The worker job: expands a batch into MarkerGeometry (pure).
+  [[nodiscard]] static DecodeResult expandBatch(const DecodeRequest& request);
+  void onDecodeFinished(DecodeResult result);
+  // Drop queued/in-flight results and forget the selected batch.
+  void invalidateDecodeState();
+  void clearGeometry();
+  // Frame-local ModelDrawCalls from the model state, admitted against the
+  // per-layer draw budget.
+  void refreshModelDrawCalls();
+
+  QMetaObject::Connection samples_connection_;
+  // Live samples arrived: prepareForRender re-selects at requested_time_.
+  bool decode_dirty_ = false;
+  MarkerGeometry geometry_;
+  std::uint64_t geometry_revision_ = 0;
+  LatestWinsWorker<DecodeRequest, DecodeResult> decode_worker_{
+      this, &SceneEntitiesLayer::expandBatch, [this](DecodeResult result) { onDecodeFinished(std::move(result)); }};
 };
 
 }  // namespace pj::scene3d

@@ -48,6 +48,10 @@ class PlaybackEngine : public QObject {
   bool isLooping() const {
     return looping_;
   }
+  /// The cursor parks at the range's end while playing (live streaming follows its newest sample).
+  bool holdsAtRangeMax() const {
+    return hold_at_range_max_;
+  }
 
   // Compute the clamped cursor time for one playback tick. Pure + static so the
   // branch precedence is unit-testable. While `hold_at_max` is set (live streaming),

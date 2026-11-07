@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene3d_widgets/passes/grid_geometry.h"
+#include "pj_scene3d_widgets/grid_geometry.h"
 
 #include <gtest/gtest.h>
 

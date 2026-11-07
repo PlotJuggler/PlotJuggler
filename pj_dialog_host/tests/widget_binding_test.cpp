@@ -61,6 +61,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QWidgetAction>
+#include <algorithm>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
@@ -2857,6 +2858,326 @@ TEST(WidgetBindingTableDelta, UpdateCellsRewritesSortKeyNotJustText) {
   tw->sortItems(1, Qt::AscendingOrder);
   EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"r1a", "r0a"})) << "100 must now sort before 200";
   EXPECT_EQ(columnTexts(tw, 1), (std::vector<std::string>{"100", "200"}));
+}
+
+// A structured picker's initial_directory and suggested_name reach the file
+// dialog (GitHub #1453); a legacy or invalid picker leaves both empty.
+TEST(WidgetBindingFilePicker, StartComesFromStructuredOptions) {
+  PJ::FilePickerOptions save;
+  save.mode = PJ::FilePickerMode::SaveFile;
+  save.initial_directory = "/data/test";
+  save.suggested_name = "FT0017-AV.html";
+  PJ::FilePickerOptions invalid = save;
+  invalid.filters = {{"", "HTML", {"*.html"}}};  // an empty filter id fails validation
+
+  PJ::WidgetData wd;
+  wd.setFilePicker("save", "Save", save);
+  wd.setFilePicker("invalid", "Save", invalid);
+  wd.setFilePicker("legacy", "Open", "CSV (*.csv)", "Open");
+  const PJ::WidgetDataView view(wd.toJson());
+
+  const PJ::FilePickerStart start = PJ::filePickerStart(view, "save");
+  EXPECT_EQ(start.dir, u"/data/test"_s);
+  EXPECT_EQ(start.name, u"FT0017-AV.html"_s);
+  for (const char* name : {"invalid", "legacy"}) {
+    const PJ::FilePickerStart none = PJ::filePickerStart(view, name);
+    EXPECT_TRUE(none.dir.isEmpty() && none.name.isEmpty()) << name;
+  }
+}
+
+// --- Embedded scene view (scene_view on a QFrame) ---
+
+namespace {
+
+/// An EmbeddedViewHost that logs every call ("create:<kind>", "attach:<ds>/<topic>",
+/// "detach:<ds>/<topic>") and refuses the topics in `refused`.
+struct FakeEmbeddedViews {
+  std::vector<std::string> calls;
+  std::vector<QPointer<QWidget>> views;
+  std::vector<std::string> refused;
+  bool can_create = true;
+  PJ::EmbeddedViewHost host() {
+    PJ::EmbeddedViewHost host;
+    host.create = [this](const QString& kind, QWidget* parent) -> QWidget* {
+      calls.push_back("create:" + kind.toStdString());
+      if (!can_create) {
+        return nullptr;
+      }
+      auto* view = new QWidget(parent);
+      views.emplace_back(view);
+      return view;
+    };
+    host.attach = [this](QWidget*, const QString& topic, const QString& dataset, std::string* error) {
+      calls.push_back("attach:" + dataset.toStdString() + "/" + topic.toStdString());
+      if (std::find(refused.begin(), refused.end(), topic.toStdString()) != refused.end()) {
+        *error = "no object topic '" + topic.toStdString() + "' is loaded";
+        return false;
+      }
+      return true;
+    };
+    host.detach = [this](QWidget*, const QString& topic, const QString& dataset) {
+      calls.push_back("detach:" + dataset.toStdString() + "/" + topic.toStdString());
+    };
+    return host;
+  }
+};
+
+/// A frame named "view" under a root, as a plugin .ui would declare it.
+struct SceneFrameFixture {
+  QWidget root;
+  QFrame* frame = new QFrame(&root);
+  SceneFrameFixture() {
+    qapp();
+    frame->setObjectName("view");
+  }
+  [[nodiscard]] int embeddedViews() const {
+    return static_cast<int>(frame->findChildren<QWidget*>("pjEmbeddedView", Qt::FindDirectChildrenOnly).size());
+  }
+};
+
+std::vector<PJ::EmbeddedViewFailure> applyScene(
+    QWidget* root, const PJ::WidgetData& data, const PJ::EmbeddedViewHost* host) {
+  return PJ::applyWidgetData(root, PJ::WidgetDataView(data.toJson()), nullptr, nullptr, host);
+}
+
+PJ::WidgetData sceneData(const std::string& kind, const std::vector<PJ::SceneTopic>& topics) {
+  PJ::WidgetData data;
+  data.setSceneView("view", PJ::SceneView{kind, topics});
+  return data;
+}
+
+/// "<frame>|<kind>|<topic>|<dataset>|<reason>", one per failure.
+std::vector<std::string> describe(const std::vector<PJ::EmbeddedViewFailure>& failures) {
+  std::vector<std::string> out;
+  for (const auto& failure : failures) {
+    out.push_back(
+        failure.frame + "|" + failure.error.kind + "|" + failure.error.topic + "|" + failure.error.dataset + "|" +
+        failure.error.reason);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST(WidgetBindingEmbeddedView, CreatesOnceAndReconcilesTopics) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  const auto host = fake.host();
+
+  const auto first = sceneData("3d", {{"/a", "ds"}, {"/b", ""}});
+  EXPECT_TRUE(applyScene(&fixture.root, first, &host).empty());
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"create:3d", "attach:ds//a", "attach://b"}));
+  EXPECT_EQ(fixture.embeddedViews(), 1);
+  ASSERT_EQ(fake.views.size(), 1U);
+  EXPECT_EQ(fake.views[0]->parent(), fixture.frame);
+
+  fake.calls.clear();
+  applyScene(&fixture.root, first, &host);  // unchanged: no calls
+  EXPECT_TRUE(fake.calls.empty());
+
+  applyScene(&fixture.root, sceneData("3d", {{"/b", ""}, {"/c", "ds"}}), &host);
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"detach:ds//a", "attach:ds//c"}));
+  EXPECT_EQ(fixture.embeddedViews(), 1);
+
+  fake.calls.clear();  // the same set in another order is no change
+  applyScene(&fixture.root, sceneData("3d", {{"/c", "ds"}, {"/b", ""}}), &host);
+  EXPECT_TRUE(fake.calls.empty());
+}
+
+TEST(WidgetBindingEmbeddedView, KindChangeRecreatesAndReattaches) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  const auto host = fake.host();
+
+  applyScene(&fixture.root, sceneData("3d", {{"/a", "ds"}}), &host);
+  fake.calls.clear();
+  applyScene(&fixture.root, sceneData("2d", {{"/a", "ds"}}), &host);
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"detach:ds//a", "create:2d", "attach:ds//a"}));
+  EXPECT_EQ(fixture.embeddedViews(), 1);
+  ASSERT_EQ(fake.views.size(), 2U);
+  EXPECT_TRUE(fake.views[0].isNull());
+}
+
+TEST(WidgetBindingEmbeddedView, ClearDeletesTheView) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  const auto host = fake.host();
+
+  applyScene(&fixture.root, sceneData("3d", {{"/a", "ds"}}), &host);
+  fake.calls.clear();
+  PJ::WidgetData clear;
+  clear.clearSceneView("view");
+  EXPECT_TRUE(applyScene(&fixture.root, clear, &host).empty());
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"detach:ds//a"}));
+  EXPECT_EQ(fixture.embeddedViews(), 0);
+  EXPECT_TRUE(fake.views[0].isNull());
+
+  fake.calls.clear();  // the same request after a clear builds the view again
+  applyScene(&fixture.root, sceneData("3d", {{"/a", "ds"}}), &host);
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"create:3d", "attach:ds//a"}));
+}
+
+TEST(WidgetBindingEmbeddedView, FailedAttachIsNotRetriedNorDetached) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  fake.refused = {"/bad"};
+  const auto host = fake.host();
+
+  const auto request = sceneData("3d", {{"/bad", "ds"}});
+  applyScene(&fixture.root, request, &host);
+  fake.calls.clear();
+  EXPECT_TRUE(applyScene(&fixture.root, request, &host).empty());
+  EXPECT_TRUE(fake.calls.empty());
+
+  applyScene(&fixture.root, sceneData("3d", {}), &host);
+  EXPECT_TRUE(fake.calls.empty()) << "a topic that never attached must not be detached";
+  EXPECT_EQ(fixture.embeddedViews(), 1);
+}
+
+// GAP-45: each refused topic is returned once, in request order, with the entry as
+// sent; a changed set retries every topic that is not attached.
+TEST(WidgetBindingEmbeddedView, FailedAttachIsReportedOnceUntilTheSetChanges) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  fake.refused = {"/bad", "/worse"};
+  const auto host = fake.host();
+
+  const auto request = sceneData("3d", {{"/bad", "ds"}, {"/good", ""}, {"/worse", ""}, {"/bad", "ds"}});
+  EXPECT_EQ(
+      describe(applyScene(&fixture.root, request, &host)),
+      (std::vector<std::string>{
+          "view|3d|/bad|ds|no object topic '/bad' is loaded", "view|3d|/worse||no object topic '/worse' is loaded"}));
+  EXPECT_TRUE(applyScene(&fixture.root, request, &host).empty());
+  EXPECT_TRUE(
+      applyScene(&fixture.root, sceneData("3d", {{"/worse", ""}, {"/good", ""}, {"/bad", "ds"}}), &host).empty())
+      << "the same set in another order is no change";
+
+  fake.calls.clear();
+  EXPECT_EQ(
+      describe(applyScene(&fixture.root, sceneData("3d", {{"/good", ""}, {"/worse", ""}, {"/new", ""}}), &host)),
+      (std::vector<std::string>{"view|3d|/worse||no object topic '/worse' is loaded"}));
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"attach://worse", "attach://new"}));
+}
+
+TEST(WidgetBindingEmbeddedView, AttachFailureWithoutAReasonStillNamesOne) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  auto host = fake.host();
+  host.attach = [](QWidget*, const QString&, const QString&, std::string*) { return false; };
+
+  const auto failures = applyScene(&fixture.root, sceneData("3d", {{"/a", ""}}), &host);
+  ASSERT_EQ(failures.size(), 1U);
+  EXPECT_EQ(failures[0].error.reason, "could not attach topic '/a'");
+}
+
+TEST(WidgetBindingEmbeddedView, UnservableKindIsReportedWithoutATopic) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  fake.can_create = false;
+  const auto host = fake.host();
+
+  const auto request = sceneData("4d", {{"/a", "ds"}});
+  EXPECT_EQ(
+      describe(applyScene(&fixture.root, request, &host)),
+      (std::vector<std::string>{"view|4d|||scene view kind '4d' is not available"}));
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"create:4d"}));
+  EXPECT_EQ(fixture.embeddedViews(), 0);
+
+  fake.calls.clear();
+  EXPECT_TRUE(applyScene(&fixture.root, request, &host).empty()) << "the same request is reported once";
+  EXPECT_TRUE(fake.calls.empty());
+}
+
+TEST(WidgetBindingEmbeddedView, MalformedRequestIsReportedAndLeavesTheView) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  const auto host = fake.host();
+  applyScene(&fixture.root, sceneData("3d", {{"/a", "ds"}}), &host);
+  fake.calls.clear();
+
+  nlohmann::json malformed;
+  malformed["view"]["scene_view"] = {{"kind", "3d"}, {"topics", {{{"topic", ""}}}}};
+  const auto failures =
+      PJ::applyWidgetData(&fixture.root, PJ::WidgetDataView(malformed.dump()), nullptr, nullptr, &host);
+  EXPECT_EQ(
+      describe(failures), (std::vector<std::string>{"view||||scene_view topic entries need a non-empty string topic"}));
+  EXPECT_TRUE(fake.calls.empty());
+  EXPECT_EQ(fixture.embeddedViews(), 1);
+}
+
+// An unchanged malformed request is reported once, like an unchanged refused topic;
+// another document, or the same one after a valid request, is reported again.
+TEST(WidgetBindingEmbeddedView, MalformedRequestIsReportedOnceUntilItChanges) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  const auto host = fake.host();
+  const auto apply_scene_view = [&fixture, &host](const nlohmann::json& scene_view) {
+    nlohmann::json data;
+    data["view"]["scene_view"] = scene_view;
+    return describe(PJ::applyWidgetData(&fixture.root, PJ::WidgetDataView(data.dump()), nullptr, nullptr, &host));
+  };
+  const nlohmann::json no_kind = {{"topics", nlohmann::json::array()}};
+  const nlohmann::json bad_topics = {{"kind", "3d"}, {"topics", 1}};
+  const std::vector<std::string> no_kind_error{"view||||scene_view must be an object with a non-empty string kind"};
+
+  const std::vector<std::string> bad_topics_error{"view||||scene_view topics must be an array"};
+
+  EXPECT_EQ(apply_scene_view(no_kind), no_kind_error);
+  EXPECT_TRUE(apply_scene_view(no_kind).empty()) << "an unchanged malformed request is not reported again";
+  EXPECT_EQ(apply_scene_view(bad_topics), bad_topics_error);
+  EXPECT_TRUE(apply_scene_view({{"kind", "3d"}}).empty());
+  EXPECT_EQ(fixture.embeddedViews(), 1);
+  EXPECT_EQ(apply_scene_view(bad_topics), bad_topics_error) << "a valid request in between re-arms the report";
+  EXPECT_EQ(fixture.embeddedViews(), 1) << "a malformed request leaves the view";
+}
+
+// The embedded view's own controls (Scene3D's camera and fixed-frame combos) belong to
+// the view: no plugin event is wired to them and no declarative rule governs them.
+TEST(WidgetBindingEmbeddedView, ViewControlsAreNotPanelWidgets) {
+  SceneFrameFixture fixture;
+  FakeEmbeddedViews fake;
+  const auto host = fake.host();
+  applyScene(&fixture.root, sceneData("3d", {}), &host);
+  ASSERT_EQ(fake.views.size(), 1U);
+  auto* combo = new QComboBox(fake.views[0]);
+  combo->setObjectName("cameraModelCombo");
+  combo->addItems({"Orbit", "Free"});
+  auto* field = new QWidget(fake.views[0]);
+  field->setObjectName("orbitDistance");
+  field->setProperty("pj_enable_when", "cameraModelCombo:1");
+
+  PJ::installDeclarativeRules(&fixture.root);
+  std::vector<std::string> events;
+  PJ::connectWidgetSignals(
+      &fixture.root, [&events](const std::string& name, const std::string&) { events.push_back(name); });
+  EXPECT_TRUE(field->isEnabled()) << "a rule inside the view must not be installed";
+  combo->setCurrentIndex(1);
+  EXPECT_TRUE(events.empty()) << "the view's combo must not reach the plugin";
+}
+
+TEST(WidgetBindingEmbeddedView, WithoutHostFrameIsUntouched) {
+  SceneFrameFixture fixture;
+  const auto request = sceneData("3d", {{"/a", "ds"}});
+  EXPECT_TRUE(applyScene(&fixture.root, request, nullptr).empty());
+  const PJ::EmbeddedViewHost unset;
+  EXPECT_TRUE(applyScene(&fixture.root, request, &unset).empty());
+  EXPECT_TRUE(fixture.frame->children().isEmpty());
+}
+
+TEST(WidgetBindingEmbeddedView, ChartFrameUnaffected) {
+  SceneFrameFixture fixture;
+  auto* chart = new QFrame(&fixture.root);
+  chart->setObjectName("chart");
+  FakeEmbeddedViews fake;
+  const auto host = fake.host();
+
+  auto data = sceneData("3d", {});
+  data.setChartSeries("chart", {{"s", {{0.0, 1.0}, {1.0, 2.0}}, "", false}});
+  applyScene(&fixture.root, data, &host);
+  EXPECT_EQ(fake.calls, (std::vector<std::string>{"create:3d"}));
+  EXPECT_NE(chart->findChild<QWidget*>(), nullptr) << "the chart still builds its widget";
+  EXPECT_TRUE(chart->findChildren<QWidget*>("pjEmbeddedView").isEmpty());
+  EXPECT_EQ(fixture.embeddedViews(), 1);
 }
 
 #include "widget_binding_test.moc"

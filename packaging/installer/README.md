@@ -10,7 +10,9 @@ default to `PlotJuggler-<version>-Windows-x64.<short-commit>.exe`, stamped
 with the built commit's short hash so otherwise-identical-looking dev
 artifacts stay distinguishable.
 
-There is **no portable-zip path** — the deployment target is this installer.
+The Windows release job also produces a portable ZIP from the same staged
+application payload. Users extract it and run `bin\PlotJuggler4.exe` without
+installing anything; see [Portable ZIP](#portable-zip).
 
 ## Layout
 
@@ -18,6 +20,7 @@ There is **no portable-zip path** — the deployment target is this installer.
 packaging/installer/
 ├── config.xml                                     # installer identity — version tokenised as __PJ_VERSION__
 ├── build_windows_installer.ps1                    # staging + binarycreator orchestrator (run on Windows)
+├── build_windows_portable.ps1                     # ZIP of the staged payload + licence files
 └── packages/
     └── io.plotjuggler.application/
         └── meta/
@@ -67,7 +70,7 @@ modules there too.
   The `cpython/*:shared=True` override matches Windows CI and produces
   `python3XX.dll` — the local default is static on MSVC and the installer
   would then fail to find the runtime.
-- **Qt 6.11.1 msvc2022_64** — for `windeployqt.exe`. Auto-detected under `.qt`
+- **Qt 6.12.0 msvc2022_64** — for `windeployqt.exe`. Auto-detected under `.qt`
   (the `scripts/install_qt6.sh` / aqt layout); otherwise pass `-QtDir`.
 - **Qt Installer Framework tools** — for `binarycreator.exe`. Install via the Qt
   Maintenance Tool, or `aqt install-tool --outputdir .qt windows desktop tools_ifw`.
@@ -154,6 +157,34 @@ The default whitelist bundles these 18 published plugins:
 `plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
 `json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
 `toolbox-transform-editor`, `toolbox-mosaico`, and `arrow-parser`.
+
+## Portable ZIP
+
+After building the installer, package its staged payload with:
+
+```powershell
+$stage = Join-Path $env:TEMP "pj4-package-stage"
+.\packaging\installer\build_windows_installer.ps1 -StageDir $stage
+.\packaging\installer\build_windows_portable.ps1 `
+    -StageDir $stage -OutFile ".\PlotJuggler4-Windows-x64-portable.zip"
+```
+
+The ZIP contains `bin/`, `lib/plotjuggler/plugins/`, and copies of the MPL and
+LGPL licence texts under `licenses/`. Qt, MSVC, FFmpeg, Python (including its
+standard library), the plugin-check helper and bundled extensions all come
+from the installer's validated staging tree. Installer metadata and its
+maintenance tool are not part of the archive.
+
+Extract the whole ZIP and run `bin\PlotJuggler4.exe`. Settings and downloaded
+extensions use the normal per-user storage; this package does not move them
+beside the executable. To update the application, extract a newer portable ZIP.
+
+`windows-release.yml` builds both packages. The portable filename uses the
+installer's version and optional commit stamp, with `-portable.zip` replacing
+`.exe`. The job extracts it into a path containing spaces and runs the D3D11
+render check and embedded-Python self-test with only System32 on the app's
+`PATH`, before installing anything. Both packages are uploaded as workflow
+artifacts; version-tag builds attach both to the GitHub Release.
 
 ## Install-time behaviour
 

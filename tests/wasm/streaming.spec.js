@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 const { test, expect } = require('@playwright/test');
-const { waitForQtApp } = require('./support/app');
+const { bootApp, waitForQtApp } = require('./support/app');
 const { dragQtCanvas } = require('./support/canvas');
+const { count, latest } = require('./support/console');
+const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
+const { requestMultiPlotState } = require('./support/plot_probes');
+const {
+  datasetCount, dismissDialogs, openPreset, startPresetServer, streamPreset,
+} = require('./support/preset_server');
+const { downloadSourceLayoutFromFileMenu } = require('./support/source_layout');
 
 function decodeBase64(value) {
   return value ? Buffer.from(value, 'base64').toString('utf8') : '';
@@ -11,29 +18,50 @@ function point(x, y) {
   return { x: Number(x), y: Number(y) };
 }
 
-async function requestStreamingState(page, consoleMessages) {
-  const previous = consoleMessages.filter(message => message.includes('PJ_WASM_STREAM_STATE sequence=')).length;
-  await page.evaluate(() => window.pjWasmReportStreamingStateProbe());
-  await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_WASM_STREAM_STATE sequence=')).length,
-    { timeout: 10000 },
-  ).toBeGreaterThan(previous);
+const STREAM_REPORT_MARKERS = [
+  'PJ_WASM_STREAM_STATE sequence=',
+  'PJ_WASM_STREAM_CONTROLS sequence=',
+  'PJ_WASM_STREAM_TREE sequence=',
+  'PJ_WASM_STREAM_CURVE sequence=',
+];
 
-  const stateMessage = consoleMessages.filter(
-    message => message.includes('PJ_WASM_STREAM_STATE sequence='),
-  ).at(-1) || '';
+// One probe call prints four console lines tagged with the same sequence.
+// Firefox occasionally never delivers one of them (seen on the P8 build too:
+// a main-thread line lost while the streamer worker logs at the same moment);
+// the app stays responsive and the next call reports normally. A report whose
+// four lines do not all arrive is requested again, so one lost console line
+// cannot fail the test; the state checks themselves are unchanged.
+async function awaitStreamingReport(page, consoleMessages) {
+  let report;
+  await expect(async () => {
+    const first = consoleMessages.length;
+    await page.evaluate(() => window.pjWasmReportStreamingStateProbe());
+    await expect.poll(() => {
+      const bySequence = new Map();
+      for (const message of consoleMessages.slice(first)) {
+        const marker = STREAM_REPORT_MARKERS.find(candidate => message.includes(candidate));
+        const sequence = marker && message.match(/sequence=(\d+) /);
+        if (sequence) {
+          bySequence.set(sequence[1], (bySequence.get(sequence[1]) || new Map()).set(marker, message));
+        }
+      }
+      const complete = [...bySequence].find(([, lines]) => lines.size === STREAM_REPORT_MARKERS.length);
+      report = complete && { sequence: Number(complete[0]), lines: complete[1] };
+      return report !== undefined;
+    }, { timeout: 3500 }).toBe(true);
+  }, 'streaming state probe produced no complete report').toPass({ timeout: 12000 });
+  return report;
+}
+
+async function requestStreamingState(page, consoleMessages) {
+  const report = await awaitStreamingReport(page, consoleMessages);
+  const stateMessage = report.lines.get('PJ_WASM_STREAM_STATE sequence=');
   const state = stateMessage.match(
     /sequence=(\d+) sources=(\d+) source_b64=([^ ]*) active=(\d+) datasets=(\d+) catalog=(\d+) paused=(\d+) playing=(\d+) range=([^,]+),([^ ]+) current=([^ ]+)/,
   );
   expect(state, `unparseable stream state: ${stateMessage}`).not.toBeNull();
-  const sequence = Number(state[1]);
-
-  const messageFor = marker => consoleMessages.filter(
-    message => message.includes(marker) && message.includes(`sequence=${sequence} `),
-  ).at(-1) || '';
-  await expect.poll(() => messageFor('PJ_WASM_STREAM_CONTROLS sequence='), { timeout: 10000 }).not.toBe('');
-  await expect.poll(() => messageFor('PJ_WASM_STREAM_TREE sequence='), { timeout: 10000 }).not.toBe('');
-  await expect.poll(() => messageFor('PJ_WASM_STREAM_CURVE sequence='), { timeout: 10000 }).not.toBe('');
+  const sequence = report.sequence;
+  const messageFor = marker => report.lines.get(marker);
 
   const controlsMessage = messageFor('PJ_WASM_STREAM_CONTROLS sequence=');
   const controls = controlsMessage.match(
@@ -188,9 +216,10 @@ test('dummy stream runs, plots, pauses, resumes, stops, and shuts down cleanly',
     quit: typeof window.pjWasmReportQuitActionProbe,
   }))).toEqual({ stream: 'function', quit: 'function' });
 
+  // The built-in streams are the Dummy Streamer, selected first, and the PlotJuggler Bridge.
   let state = await requestStreamingState(page, consoleMessages);
   expect(state).toMatchObject({
-    sources: 1,
+    sources: 2,
     source: 'Dummy Streamer',
     active: false,
     datasets: 0,
@@ -212,7 +241,7 @@ test('dummy stream runs, plots, pauses, resumes, stops, and shuts down cleanly',
     consoleMessages,
     value => value.active && value.datasets === 1 && value.catalog === 11 && value.range.max > value.range.min,
   );
-  expect(state).toMatchObject({ sources: 1, source: 'Dummy Streamer', active: true, datasets: 1, catalog: 11 });
+  expect(state).toMatchObject({ sources: 2, source: 'Dummy Streamer', active: true, datasets: 1, catalog: 11 });
   expect(state.tree.datasetName).toBe('[stream] Dummy Streamer');
   expect(state.tree.topicName).toBe('dummy/sin_cos');
   expect(state.tree.fieldName).toBe('sin');
@@ -281,7 +310,7 @@ test('dummy stream runs, plots, pauses, resumes, stops, and shuts down cleanly',
     consoleMessages,
     value => !value.active && value.datasets === 0 && value.catalog === 0 && !value.curve.plotted,
   );
-  expect(state.sources).toBe(1);
+  expect(state.sources).toBe(2);
 
   // Start once more, then close through the real File -> Quit action. The
   // WASM close boundary must cooperatively stop and join the worker even
@@ -311,4 +340,83 @@ test('dummy stream runs, plots, pauses, resumes, stops, and shuts down cleanly',
   expect(errors).toEqual([]);
   expect(consoleMessages.some(message => message.includes('PJ_WASM_STREAM_STATE_FAILED'))).toBe(false);
   expect(consoleMessages.some(message => message.includes('PJ_WASM_MENU_ACTION_FAILED quit'))).toBe(false);
+});
+
+// Each plot's drawn curve titles, or null when the probe's summary line never arrived (Firefox can
+// drop a line the main thread prints while a stopping stream thread logs), so a poll asks again.
+async function plotTitles(page, messages) {
+  try {
+    const state = await requestMultiPlotState(page, messages, count(messages, 'PJ_WASM_MULTI_SUMMARY'));
+    return state.plots.filter(plot => plot.vertices > 0).map(plot => plot.titles);
+  } catch (error) {
+    return null;
+  }
+}
+
+test('a stream preset starts its saved streams with no dialog and binds their curves as topics arrive', async ({ page }) => {
+  test.setTimeout(180000);
+  const { messages, errors, screen } = await bootApp(page);
+
+  // The deployment origin is filled in from this page; a re-save keeps the template.
+  const template = '{"url":"${deployment.ws_origin}/bridge"}';
+  const sawtooth = [{ id: 'plot_c', curves: [['dummy/sawtooth', 'value', 'c']] }];
+  const server = await startPresetServer({
+    'live/layout.pj4.xml': streamPreset(
+      [{ id: 'a', config: template }, { id: 'b', config: '{}' }],
+      [{ id: 'plot_a', curves: [['dummy/sin_cos', 'sin', 'a']] }, { id: 'plot_b', curves: [['dummy/sin_cos', 'cos', 'b']] }]),
+    'missing/layout.pj4.xml': streamPreset(
+      [{ id: 'c', config: '{}', plugin: '<plugin ID="Missing Stream" manifest_id="missing-stream">' }], sawtooth),
+    'typo/layout.pj4.xml': streamPreset([{ id: 'c', config: '{"url":"${deployment.wsorigin}"}' }], sawtooth),
+    'next/layout.pj4.xml': streamPreset([{ id: 'c', config: '{}' }], sawtooth),
+  });
+  try {
+    const started = count(messages, 'Dummy streamer started');
+    expect(await openPreset(page, messages, server.url('live/layout.pj4.xml'))).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(count(messages, 'PJ_WASM_SOURCE_LAYOUT_DECISION')).toBe(0);
+    await expect.poll(() => count(messages, 'Dummy streamer started'), { timeout: 15000 }).toBe(started + 2);
+    // Each curve waits for its own stream's topic, then draws it.
+    await expect.poll(() => plotTitles(page, messages), { timeout: 30000 })
+      .toEqual([['dummy/sin_cos/sin'], ['dummy/sin_cos/cos']]);
+    expect(await datasetCount(page, messages)).toBe(2);
+    await page.evaluate(() => window.pjWasmReportLayoutDialogProbe());
+    await expect.poll(() => latest(messages, 'PJ_WASM_LAYOUT_DIALOG present=')).toContain('present=0');
+
+    // Save Layout with Sources writes each stream's record, its template unexpanded;
+    // a generic save carries no stream at all.
+    const saved = (await downloadSourceLayoutFromFileMenu(page, screen, messages)).bytes.toString('utf8');
+    expect(saved).toContain('<previouslyLoaded_StreamingSources>');
+    expect(saved).toContain(template);
+    expect(saved).not.toContain('ws://127.0.0.1');
+    expect([...saved.matchAll(/<streamInfo\b[^>]*\bid="([^"]*)"/g)].map(match => match[1])).toEqual(['a', 'b']);
+    expect([...saved.matchAll(/<curve\b[^>]*\bdataset_path="([^"]*)"/g)].map(match => match[1]).sort())
+      .toEqual(['pj-stream://a', 'pj-stream://b']);
+    const generic = (await downloadLayoutFromFileMenu(page, screen, messages)).bytes.toString('utf8');
+    expect(generic).not.toContain('streamInfo');
+    expect(generic).not.toContain('pj-stream://');
+
+    // A preset whose stream cannot start fails with its reason and leaves both running.
+    // Stops are counted on the main thread's line, printed before the stream thread exits:
+    // Firefox can drop the plugin's own "stopped", which that exiting thread prints.
+    const STOPPING = 'pj.app.streamingmanager: stopping stream';
+    const stopped = count(messages, STOPPING);
+    for (const [folder, reason] of [['missing', 'stream'], ['typo', 'stream-config']]) {
+      const outcome = await openPreset(page, messages, server.url(`${folder}/layout.pj4.xml`));
+      expect(outcome, folder).toContain('PJ_WASM_LAYOUT_LOAD_FAILED');
+      expect(outcome, folder).toContain(`reason=${reason}`);
+      await dismissDialogs(page, messages);
+      expect(await datasetCount(page, messages), folder).toBe(2);
+      expect(count(messages, STOPPING), folder).toBe(stopped);
+    }
+    await expect.poll(() => plotTitles(page, messages), { timeout: 30000 })
+      .toEqual([['dummy/sin_cos/sin'], ['dummy/sin_cos/cos']]);
+
+    // The next preset that loads replaces this one's streams.
+    expect(await openPreset(page, messages, server.url('next/layout.pj4.xml'))).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    await expect.poll(() => count(messages, STOPPING)).toBe(stopped + 2);
+    await expect.poll(() => plotTitles(page, messages), { timeout: 30000 }).toEqual([['dummy/sawtooth/value']]);
+    expect(await datasetCount(page, messages)).toBe(1);
+    expect(errors).toEqual([]);
+  } finally {
+    await server.close();
+  }
 });

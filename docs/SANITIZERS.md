@@ -64,10 +64,11 @@ environment; Conan paths embedded by a container build need that container at
 test time too.
 
 CI runs the three lanes as one matrix job in `.github/workflows/sanitizers.yml`,
-off the pull-request path: nightly, on every push to `main`, and on manual
+off the pull-request path: nightly on the default branch, skipped when it has
+not moved since the previous nightly run (`main-changed.yml`), and on manual
 dispatch. It uses the same `depot-ubuntu-22.04-4` runner as `linux-ci.yml`,
 restoring its Qt and Conan caches; each lane has its own ccache key so
-instrumented objects cannot seed another lane.
+instrumented objects cannot seed another lane, and only nightly runs save it.
 
 Modern host kernels can give sanitizer runtimes an incompatible address-space
 layout, causing startup aborts before any test runs. The sanitizer CI job
@@ -111,6 +112,23 @@ Always run this suite through `test.sh`: it selects `build/asan` and installs
 the runtime environment and suppression paths. Bare CTest neither selects
 that tree nor supplies those defaults. Extra arguments pass through to CTest,
 for example `./test.sh --sanitize asan -R '^pj_scripting\.'`.
+
+`test.sh` runs offscreen, where every QRhi display case skips, and no CI lane
+runs them instrumented. Before merging a change to QRhi resource lifetimes or
+failure handling, run the GPU lifetime and failure runners under ASan locally, on
+Mesa's software rasterizers: llvmpipe for the `.opengl` passes, lavapipe (via
+`VK_ICD_FILENAMES`) for the `.vulkan` ones. `--display` keeps the caller's display
+instead of `offscreen`, and `PJ_REQUIRE_GPU_TESTS=1` turns a skip into a failure.
+They need a session bus (`dbus-run-session`): without one, Qt's D-Bus client on
+xcb leaks a libdbus read buffer in every process and LeakSanitizer fails each
+case:
+
+```bash
+./build.sh --sanitize asan
+PJ_REQUIRE_GPU_TESTS=1 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  dbus-run-session -- xvfb-run -a ./test.sh --sanitize asan --display --timeout 300 \
+  -R '^(scene3d_rhi_failure_test|scene3d_rhi_marker_cache_test|scene3d_rhi_model_cache_test|rhi_dock_lifecycle_test|rhi_mixed_dock_test|plot_rhi_render_test)\.(opengl|vulkan)\.'
+```
 
 [`PjSanitizers.cmake`](../cmake/PjSanitizers.cmake) enables
 `-fsanitize=address`, `-fsanitize=undefined`, frame pointers, and
@@ -185,9 +203,10 @@ counts, not only the first per test process:
 GCC 11's runtime added double-lock reports on every timed condition-variable
 wait, because it has no `pthread_cond_clockwait` interceptor; Clang 22 reports
 none. Where the hand-off is a join on a worker PJ4 owns, the code tells TSan
-about it instead of suppressing: `FileLoader` calls `__tsan_release` as its
-ingest worker's last access to shared state and `__tsan_acquire` after each
-`QThread::wait()`, compiled only under TSan.
+about it instead of suppressing: `FileLoader` and `EnginePool` use
+`PJ::tsan::release/acquire` (`pj_runtime/TsanAnnotations.h`) to pair the two sides
+(a worker's last access with the `QThread::wait()` return; a task's submission
+with its start on a `QThreadPool` thread), compiled only under TSan.
 
 Read `cmake/sanitizers/tsan.supp` before adding an entry. Each `called_from_lib`
 must resolve to exactly ONE loaded library, and a pattern that matches several

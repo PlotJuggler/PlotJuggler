@@ -2,7 +2,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QMouseEvent>
 #include <QSlider>
+#include <QStyle>
+#include <QStyleOptionSlider>
 #include <algorithm>
 #include <cmath>
 
@@ -59,6 +62,27 @@ class RealSlider : public QSlider {
 
  signals:
   void realValueChanged(double value);
+
+ protected:
+  /// Clicking the groove seeks immediately and starts a normal handle drag.
+  void mousePressEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && isEnabled()) {
+      QStyleOptionSlider option;
+      initStyleOption(&option);
+      const QPoint press = event->position().toPoint();
+      const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+      if (!handle.contains(press)) {
+        const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+        const bool horizontal = orientation() == Qt::Horizontal;
+        const int length = horizontal ? handle.width() : handle.height();
+        const int start = horizontal ? groove.left() : groove.top();
+        const int span = (horizontal ? groove.width() : groove.height()) - length;
+        const int position = (horizontal ? press.x() : press.y()) - start - length / 2;
+        setValue(QStyle::sliderValueFromPosition(minimum(), maximum(), position, span, option.upsideDown));
+      }
+    }
+    QSlider::mousePressEvent(event);
+  }
 
  private slots:
   void onValueChanged(int value) {

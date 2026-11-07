@@ -14,6 +14,9 @@
 #include <QDomDocument>
 #include <QString>
 #include <atomic>
+#include <chrono>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -22,9 +25,12 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/voxel_grid.hpp"
+#include "pj_base/builtin/voxel_grid_codec.hpp"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -65,6 +71,61 @@ void registerVoxelParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id
                                       return new CountingObjectParser(
                                           kSchema, PJ::sdk::BuiltinObjectType::kVoxelGrid, &g_parser_calls, &emitVoxel);
                                     }));
+}
+
+// Pushes world<-map as a pure +x translation at `stamp_ns`.
+void pushWorldFromMap(pj::tf::TransformBuffer& buffer, int64_t stamp_ns, double x) {
+  pj::tf::StampedTransform st;
+  st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(stamp_ns)};
+  st.parent_frame = "world";
+  st.child_frame = "map";
+  st.transform.t = glm::dvec3{x, 0.0, 0.0};
+  st.transform.q = glm::dquat{1.0, 0.0, 0.0, 0.0};
+  ASSERT_TRUE(buffer.setTransform(st).has_value());
+}
+
+// TF R6: the layer reports the grid's own header stamp, which the view places it
+// at, not the store (log) time it was found at (canonical route, no parser).
+TEST(VoxelGridLayer, RenderStampIsTheGridsOwnHeaderStamp) {
+  PJ::SessionManager session;
+  const auto topic_id = registerObjectTopic(session, "/voxels");
+  const auto record = emitVoxel(/*ts=*/960, PJ::sdk::PayloadView{});
+  ASSERT_TRUE(record.has_value());
+  const auto* grid = record->object.get<PJ::sdk::VoxelGrid>();
+  ASSERT_NE(grid, nullptr);
+  ASSERT_TRUE(session.objectStore().pushOwned(topic_id, /*logged=*/1000, PJ::serializeVoxelGrid(*grid)).has_value());
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.renderAtForTest(1000);
+  EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(960));
+}
+
+// A static grid in a moving frame must re-key when world<-map moves (and when it
+// first resolves), or the dock's repaint gate freezes it at its first placement.
+TEST(VoxelGridLayer, RenderKeyFollowsSourceFrameTransform) {
+  PJ::SessionManager session;
+  const auto topic_id = registerObjectTopic(session, "/voxels");
+  ASSERT_TRUE(session.objectStore().pushOwned(topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
+  registerVoxelParser(session, topic_id);
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setFixedFrame(u"world"_s);
+  layer.renderAtForTest(100);
+
+  const uint64_t unresolved = layer.renderKey(PJ::fromRaw(250));
+  pushWorldFromMap(*ctx.tf_buffer, 200, 1.0);
+  pushWorldFromMap(*ctx.tf_buffer, 300, 2.0);
+  const uint64_t at_first = layer.renderKey(PJ::fromRaw(200));
+  const uint64_t at_second = layer.renderKey(PJ::fromRaw(300));
+  EXPECT_NE(unresolved, at_first) << "resolving world<-map did not change the key";
+  EXPECT_NE(at_first, at_second) << "moving world<-map did not change the key";
 }
 
 TEST(VoxelGridLayer, RescrubToSameGridDoesNoReparse) {

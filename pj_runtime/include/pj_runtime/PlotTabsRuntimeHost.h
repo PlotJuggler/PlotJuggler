@@ -15,17 +15,19 @@ namespace PJ {
 class ServiceRegistryBuilder;
 
 /// Host-side bridge exposing the `pj.plot_tabs.v1` SDK service: create/close a
-/// plugin-owned plotting tab, place and remove curves in it, and read back what
-/// it holds. Composing the tab itself is shell (MainWindow) business, so this is
-/// a pure callback bridge — the `ToolboxRuntimeHost::Callbacks` idiom — keeping
-/// pj_runtime free of Qt6::Widgets. All vtable slots are `[main-thread]` (the
-/// ABI contract); the callbacks run on the calling thread, unmarshalled.
+/// plugin-owned plot or scene ("3d"/"2d") tab, place and remove curves or object
+/// topics in it, focus it, and read back what it holds. Composing the tab itself
+/// is shell (MainWindow) business, so this is a pure callback bridge — the
+/// `ToolboxRuntimeHost::Callbacks` idiom — keeping pj_runtime free of Qt6::Widgets.
+/// All vtable slots are `[main-thread]` (the ABI contract); the callbacks run on the
+/// calling thread, unmarshalled.
 ///
 /// Scoping a tab id to the plugin that created it is NOT this class's job — the
 /// shell's lambdas capture the plugin identity and enforce it, exactly as
 /// `ViewportRuntimeHost`'s lambdas do. This bridge only validates that an
 /// argument is well-formed (non-empty id, non-empty topic/field) before handing
-/// it to a callback; ownership rejection is a callback-level `Status` failure.
+/// it to a callback (plus, on `create_tab_v2`, an id without '/' and a known kind);
+/// ownership rejection is a callback-level `Status` failure.
 ///
 /// `list_tab_ids` and `tab_config` hand the caller borrowed `PJ_string_view_t`s
 /// per the ABI contract: valid only until the next call on this vtable. The
@@ -52,6 +54,17 @@ class PlotTabsRuntimeHost {
         remove_curve;
     /// [main-thread] Remove every curve from the tab under `id`, keeping the tab.
     std::function<Status(std::string_view id)> clear_tab;
+
+    /// The tail slots of 0.38. Each one is in the vtable only when its callback is
+    /// set, so a plugin's `PJ_HAS_TAIL_SLOT` probe sees exactly what this host serves.
+    /// [main-thread] Create or update a tab of `kind`, one of "plot", "3d" or "2d" (the
+    /// bridge refuses any other, naming it). A kind the shell cannot show in this build
+    /// is the shell's refusal, which must name the kind and leave a tab under `id` as it was.
+    std::function<Status(std::string_view id, std::string_view kind, std::string_view title)> create_tab_v2;
+    std::function<Status(std::string_view id, std::string_view topic, std::string_view dataset_source)> attach_topic;
+    std::function<Status(std::string_view id, std::string_view topic, std::string_view dataset_source)> detach_topic;
+    /// [main-thread] Bring the tab under `id` (any kind) to the front.
+    std::function<Status(std::string_view id)> focus_tab;
   };
 
   explicit PlotTabsRuntimeHost(Callbacks callbacks);
@@ -83,6 +96,15 @@ class PlotTabsRuntimeHost {
       void* ctx, PJ_string_view_t id, PJ_string_view_t topic, PJ_string_view_t field, PJ_string_view_t dataset_source,
       PJ_error_t* out_error) noexcept;
   static bool onClearTab(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept;
+  static bool onCreateTabV2(
+      void* ctx, PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t title, PJ_error_t* out_error) noexcept;
+  static bool onAttachTopic(
+      void* ctx, PJ_string_view_t id, PJ_string_view_t topic, PJ_string_view_t dataset_source,
+      PJ_error_t* out_error) noexcept;
+  static bool onDetachTopic(
+      void* ctx, PJ_string_view_t id, PJ_string_view_t topic, PJ_string_view_t dataset_source,
+      PJ_error_t* out_error) noexcept;
+  static bool onFocusTab(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept;
 
   Callbacks callbacks_;
   PJ_plot_tab_host_vtable_t vtable_;

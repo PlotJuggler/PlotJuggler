@@ -71,8 +71,11 @@ class TabbedPlotWidget : public QWidget {
   // deletes the widget. No-op if absent.
   void closeWidgetTab(QWidget* content);
   // Removes a widget tab without consulting its close veto or running teardown.
-  // Returns the hidden, parentless content with its original size policy; the
-  // caller takes ownership. Returns nullptr if content is not a widget tab.
+  // Returns the hidden content with its original size policy; the caller takes
+  // ownership. It stays a child of this widget until the caller reparents it
+  // (into another tab or window) or deletes it — a reparent re-polishes the whole
+  // tree against the app stylesheet, so it must happen once, at the destination.
+  // Returns nullptr if content is not a widget tab.
   [[nodiscard]] QWidget* takeWidgetTab(QWidget* content);
   // Close a plot tab programmatically. Honours the same path as the tab's
   // close button, including the last-serializable-tab rule.
@@ -108,6 +111,9 @@ class TabbedPlotWidget : public QWidget {
   void forEachDocker(const std::function<void(PlotDocker*)>& operation) const;
   // First PlotDocker tab satisfying `predicate`, or nullptr.
   [[nodiscard]] PlotDocker* findDocker(const std::function<bool(PlotDocker*)>& predicate) const;
+  // Selects `docker`'s tab, exactly like clicking its tab frame. No-op if
+  // `docker` is null or hosts no tab here (e.g. a stale pointer).
+  void focusTab(PlotDocker* docker);
 
   // Panel-toggle buttons. Created here but relocated by the MainWindow
   // shell into the title bar (it reparents them after construction).

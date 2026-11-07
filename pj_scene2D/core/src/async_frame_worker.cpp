@@ -24,7 +24,16 @@ void AsyncFrameWorker::start(DecodeFn decode, OnDecodeError on_error, Options op
   on_error_ = std::move(on_error);
   options_ = options;
   running_.store(true);
-  worker_ = std::thread(&AsyncFrameWorker::workerLoop, this);
+  worker_ = std::thread([gate = start_gate_, this] {
+    {
+      std::lock_guard lock(gate->mutex);
+      if (gate->abandoned) {
+        return;
+      }
+      gate->started = true;
+    }
+    workerLoop();
+  });
 }
 
 void AsyncFrameWorker::stop() {
@@ -39,8 +48,19 @@ void AsyncFrameWorker::stop() {
     }
   }
   request_cv_.notify_one();
-  if (worker_.joinable()) {
+  if (!worker_.joinable()) {
+    return;
+  }
+  bool started = false;
+  {
+    std::lock_guard lock(start_gate_->mutex);
+    started = start_gate_->started;
+    start_gate_->abandoned = !started;
+  }
+  if (started) {
     worker_.join();
+  } else {
+    worker_.detach();
   }
 }
 

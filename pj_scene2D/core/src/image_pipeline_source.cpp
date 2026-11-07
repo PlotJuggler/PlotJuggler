@@ -328,11 +328,10 @@ ImagePipelineSource::ImagePipelineSource(
         // invalidate() asked for a fresh decode even at an unchanged entry:
         // clear the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
-          last_entry_ts_ = INT64_MIN;
+          last_entry_uid_ = {};
         }
-        auto result = decodeAt(req.target_ns);
-        if (result.has_value() && !result->isNull()) {
-          worker.deposit(std::move(*result));
+        if (auto result = decodeAt(req.target_ns)) {
+          worker.deposit(std::move(*result));  // a null frame is a clear
         }
       },
       [this](const char* what) {
@@ -352,11 +351,10 @@ ImagePipelineSource::ImagePipelineSource(
         // invalidate() asked for a fresh decode even at an unchanged entry:
         // clear the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
-          last_entry_ts_ = INT64_MIN;
+          last_entry_uid_ = {};
         }
-        auto result = decodeAt(req.target_ns);
-        if (result.has_value() && !result->isNull()) {
-          worker.deposit(std::move(*result));
+        if (auto result = decodeAt(req.target_ns)) {
+          worker.deposit(std::move(*result));  // a null frame is a clear
         }
       },
       [this](const char* what) {
@@ -375,11 +373,10 @@ ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic
         // invalidate() asked for a fresh decode even at an unchanged entry:
         // clear the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
-          last_entry_ts_ = INT64_MIN;
+          last_entry_uid_ = {};
         }
-        auto result = decodeAt(req.target_ns);
-        if (result.has_value() && !result->isNull()) {
-          worker.deposit(std::move(*result));
+        if (auto result = decodeAt(req.target_ns)) {
+          worker.deposit(std::move(*result));  // a null frame is a clear
         }
       },
       [this](const char* what) {
@@ -419,6 +416,9 @@ std::optional<MediaFrame> ImagePipelineSource::takeFrame() {
     return std::nullopt;
   }
   MediaFrame mf;
+  if (frame->isNull()) {
+    return mf;  // a clear: no pixels, which the compositor and the viewer drop
+  }
   mf.base = std::move(*frame);
   // Images always magnify with nearest sampling (crisp pixels); linear is not offered.
   mf.base->mag_filter = MagFilter::kNearest;
@@ -432,39 +432,42 @@ void ImagePipelineSource::setFrameReadyCallback(std::function<void()> cb) {
 std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   // store_ non-null is a constructor precondition; downstream code unconditionally
   // dereferences it (entryTimestamps, at, indexAt).
-  auto index = store_->indexAt(topic_, ts_ns);
-  if (!index.has_value()) {
-    // Expected on scrub-before-data; silent.
-    return std::nullopt;
-  }
-
-  {
-    const auto timestamps = store_->entryTimestamps(topic_);
-    if (*index >= timestamps.size()) {
-      return std::nullopt;
+  // Dedup metadata-first by the entry's UID (latestEntryIdAt never resolves the bytes): no timestamp can mean
+  // "none", since a derived finding sits at INT64_MIN, and a same-stamp replacement still decodes.
+  const auto entry_id = store_->latestEntryIdAt(topic_, ts_ns);
+  if (!entry_id.has_value()) {
+    if (last_entry_stamp_ && ts_ns < *last_entry_stamp_) {
+      // A seek before the shown entry, with nothing there (a derived image computed only later): clear it. At or
+      // after it, the entry was evicted under the cursor and stays.
+      last_entry_stamp_.reset();
+      last_entry_uid_ = {};
+      rectification_status_.store(RectificationStatus::kWaitingForImage, std::memory_order_relaxed);
+      return DecodedFrame{};
     }
-    if (timestamps[*index] == last_entry_ts_) {
-      return std::nullopt;
-    }
+    return std::nullopt;  // scrub-before-data (silent)
   }
-
-  auto entry = store_->at(topic_, *index);
+  if (entry_id->uid == last_entry_uid_) {
+    return std::nullopt;  // the entry already delivered
+  }
+  auto entry = store_->latestAt(topic_, ts_ns);
   if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
     warnOnce(
         warningKey(source_key_, "empty-resolved-entry"),
-        "{} request_ts={} index={} empty-resolved-entry (viewer will show no frame)", source_key_, ts_ns, *index);
+        "{} request_ts={} empty-resolved-entry (viewer will show no frame)", source_key_, ts_ns);
     return std::nullopt;
   }
-  if (entry->timestamp == last_entry_ts_) {
+  if (entry->sequential_uid == last_entry_uid_) {
     return std::nullopt;
   }
-  last_entry_ts_ = entry->timestamp;
+  last_entry_uid_ = entry->sequential_uid;
+  last_entry_stamp_ = entry->timestamp;
 
   if (parser_ != nullptr || canonical_image_codec_) {
     // Resolve the entry's bytes into a canonical sdk::Image (via the parser, or by
     // deserializing a pj_image_v1 blob), then run the shared decode + rectify path.
     // resolveImage is the single source of truth, shared with DepthPipelineSource.
-    auto resolved = resolveImage(parser_, parser_mutex_, canonical_image_codec_, entry->timestamp, entry->payload);
+    auto resolved = resolveImage(
+        parser_, parser_mutex_, canonical_image_codec_, entry->timestamp, entry->payload, entry->payload_stamp_shift);
     if (!resolved.has_value()) {
       const ParserObjectError& error = resolved.error();
       switch (error.kind) {
@@ -482,9 +485,18 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
       }
       return std::nullopt;
     }
+    if (resolved->image.data.empty()) {
+      // An empty image (a derived topic's tombstone) clears what was shown.
+      rectification_status_.store(RectificationStatus::kWaitingForImage, std::memory_order_relaxed);
+      DecodedFrame clear;
+      clear.pts = resolved->pts;
+      return clear;
+    }
     auto df = decodeCanonicalImage(resolved->image, resolved->pts);
     if (df.has_value()) {
       df->frame_id = resolved->image.frame_id;  // carry the source frame so the viewer can find its CameraInfo.
+      df->stamp = resolved->stamp;
+      df->entry_ts = entry->timestamp;
       rectifyIfCalibrated(*df);
     }
     return df;
@@ -502,7 +514,11 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     warnOnce(warningKey(source_key_, "pipeline-decode"), "{} pipeline decode failed: {}", source_key_, result.error());
     return std::nullopt;
   }
+  if (result->isNull()) {
+    return std::nullopt;  // only an empty image clears
+  }
   result->pts = entry->timestamp;
+  result->entry_ts = entry->timestamp;
   return std::move(*result);
 }
 
@@ -530,15 +546,22 @@ const sdk::CameraInfo* ImagePipelineSource::cameraInfoFor(const std::string& fra
 }
 
 void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
-  if (!rectify_enabled_.load(std::memory_order_relaxed)) {
-    return;  // operator override: show the raw image even when calibration exists.
-  }
   if (df.frame_id.empty() || df.width <= 0 || df.height <= 0) {
+    rectification_status_.store(RectificationStatus::kMissingFrameId, std::memory_order_relaxed);
     return;
   }
   const sdk::CameraInfo* ci = cameraInfoFor(df.frame_id);
-  if (ci == nullptr || !isRectifiable(*ci)) {
+  if (ci == nullptr) {
+    rectification_status_.store(RectificationStatus::kMissingCalibration, std::memory_order_relaxed);
     return;  // no calibration for this frame -> leave the raw image as decoded.
+  }
+  if (!isRectifiable(*ci)) {
+    rectification_status_.store(RectificationStatus::kInvalidCalibration, std::memory_order_relaxed);
+    return;
+  }
+  rectification_status_.store(RectificationStatus::kReady, std::memory_order_relaxed);
+  if (!rectify_enabled_.load(std::memory_order_relaxed)) {
+    return;
   }
   // Build (cached per camera) a reverse map that outputs at the native calibration
   // resolution, so the rectified image, the annotation pixel coords, and the

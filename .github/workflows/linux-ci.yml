@@ -2,10 +2,19 @@ name: Linux CI
 
 on:
   pull_request:
-    branches: [main, main-4.x, development]
+    branches: [main, main-4.x, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
+    # Skip pull requests that only touch files nothing here builds or tests;
+    # pre-commit.yml still lints them. packaging/smoke/ is scene3d_rhi_app_smoke's
+    # script, run only by this lane. Later patterns override earlier ones.
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      - '!packaging/**'
+      - 'packaging/smoke/**'
   push:
-    branches: [main, main-4.x, development]
+    branches: [main, main-4.x, development, 'release-*']
   workflow_dispatch:
 
 concurrency:
@@ -15,12 +24,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  pre-commit:
-    if: github.event.pull_request.draft == false
-    uses: ./.github/workflows/pre-commit.yml
-    permissions:
-      contents: read
-
   build:
     if: github.event.pull_request.draft == false
     runs-on: depot-ubuntu-22.04-4
@@ -146,7 +149,8 @@ jobs:
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
             libxcb-xkb1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
             libva-dev libdrm-dev \
-            xvfb ccache zstd
+            xvfb ccache zstd \
+            mesa-vulkan-drivers libvulkan-dev
 
       - name: Configure ccache
         # Compiler-output cache for our own C++ — complementary to the Conan
@@ -155,8 +159,11 @@ jobs:
         # `ccache-linux-` catch-all selected the newer ccache-linux-tsan-* entry
         # and produced 0/810 hits because sanitizer objects are incompatible.
         # On Depot runners actions/cache is backed by Depot Cache storage (not
-        # GitHub's shared 10 GB quota), so PR runs save as well as restore —
-        # repeat pushes to a PR recompile only their own edits.
+        # GitHub's shared 10 GB quota). Only pushes save (see Save ccache); a pull
+        # request restores its head branch's newest cache (there is one when the
+        # head is itself a pushed branch, e.g. a release-* merged into main: main's
+        # cache hit 3.5% there), then its target branch's, then main's, since a
+        # release-* PR restoring main's cache hits under 5%.
         id: ccache_restore
         uses: actions/cache/restore@v5
         with:
@@ -166,6 +173,8 @@ jobs:
           # builds explicitly by ref and cannot match ccache-linux-tsan-*.
           restore-keys: |
             ccache-linux-build-${{ github.ref_name }}-
+            ccache-linux-build-${{ github.head_ref }}-
+            ccache-linux-build-${{ github.base_ref }}-
             ccache-linux-build-main-
             ccache-linux-${{ github.ref_name }}-
             ccache-linux-main-
@@ -253,8 +262,8 @@ jobs:
         # deletes — and Depot Cache is billed per GB-month, unlike GitHub's
         # free-but-LRU-evicted 10 GB quota. Saving from PR runs at this repo's
         # velocity wrote ~40 GB/day of never-reclaimed storage. PR runs still
-        # RESTORE (via the main-branch restore-keys below), and hash_dir=false
-        # + base_dir make a main-based restore hit across workspace paths, so
+        # RESTORE (their target branch's, else main's: restore-keys above), and
+        # hash_dir=false + base_dir make that restore hit across workspace paths, so
         # the cost is a few minutes on repeat pushes to the same PR.
         if: always() && github.event_name == 'push' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
@@ -270,9 +279,81 @@ jobs:
         # --timeout kills any single test after 2 min (the suite normally
         # finishes in well under that), so one deadlocked test fails loudly
         # with its name in the log instead of stalling the whole job.
+        # The whole suite runs here, including every QRhi display runner's .opengl (llvmpipe),
+        # .opengl_dpr2 and .vulkan (lavapipe) pass.
         env:
-          # This lane runs under xvfb + Mesa llvmpipe, which is expected to
-          # provide a real GL >= 4.5 context: turn the GL-availability self-skips
-          # into hard failures so a broken GL stack can't go quietly green here.
+          # xvfb + Mesa provide real GL and Vulkan: turn the GPU-availability
+          # self-skips into hard failures so a broken stack can't go quietly green.
           PJ_REQUIRE_GPU_TESTS: "1"
-        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
+          PJ_POINTCLOUD_GOLDEN_OUT: ${{ runner.temp }}/golden-out
+          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump
+        run: |
+          mkdir -p "${PJ_POINTCLOUD_GOLDEN_OUT}"
+          # Mesa's software Vulkan driver (the manifest name carries the arch on
+          # Ubuntu).
+          VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          test -f "${VK_ICD_FILENAMES}"
+          export VK_ICD_FILENAMES
+          # Parallel except the QRhi display passes, which share the one xvfb
+          # screen and include frame benchmarks (as scripts/perf/gate_par.sh).
+          status=0
+          xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 -j"$(nproc)" -LE qrhi || status=1
+          xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 -L qrhi || status=1
+          exit "${status}"
+
+      - name: Test the QRhi renderer at the OpenGL floor (3.3 core)
+        # Every pack's lowest desktop GLSL is 330, and Qt's GL backend never picks
+        # a GLSL above the context's: Mesa capped to OpenGL 3.3 runs the render
+        # harness, the dock lifecycle and the media viewer's pixel checks, which
+        # draw the viewer's 330 image pack and 150 overlay packs.
+        env:
+          PJ_REQUIRE_GPU_TESTS: "1"
+          MESA_GL_VERSION_OVERRIDE: "3.3"
+          MESA_GLSL_VERSION_OVERRIDE: "330"
+          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump-gl33
+        run: |
+          xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error \
+            -R '^(scene3d_rhi_render_test|rhi_dock_lifecycle_test|media_viewer_render_test)\.opengl\.'
+
+      - name: Test floating docks moved to a screen of another pixel ratio
+        # Needs two screens with different device-pixel ratios, which xvfb cannot
+        # give Qt: its RandR outputs are all named "screen", so
+        # QT_SCREEN_SCALE_FACTORS cannot tell them apart, and two X screens turn a
+        # move into a hide and re-create, not a live ratio change. A headless
+        # mutter with two virtual monitors gives its Xwayland two named outputs,
+        # between which xcb moves a window live. PJ_REQUIRE_MIXED_DPR turns the
+        # cases' missing-screen skip into a failure.
+        env:
+          PJ_REQUIRE_GPU_TESTS: "1"
+          PJ_REQUIRE_MIXED_DPR: "1"
+          QT_QPA_PLATFORM: xcb
+          QT_SCREEN_SCALE_FACTORS: "1;2"
+        run: |
+          sudo apt-get install -y --no-install-recommends mutter xwayland
+          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/mutter-run"
+          mkdir -p "${XDG_RUNTIME_DIR}"
+          chmod 700 "${XDG_RUNTIME_DIR}"
+          log="${RUNNER_TEMP}/mutter.log"
+          dbus-run-session -- mutter --wayland --headless --virtual-monitor 1024x768 \
+            --virtual-monitor 1024x768 --wayland-display pj-mixed-dpr > "${log}" 2>&1 &
+          for _ in $(seq 60); do grep -q "Using public X11 display" "${log}" && break; sleep 0.5; done
+          DISPLAY="$(grep -o 'Using public X11 display :[0-9]*' "${log}" | grep -o ':[0-9]*$' || true)"
+          if [[ -z "${DISPLAY}" ]]; then cat "${log}"; exit 1; fi
+          export DISPLAY
+          XAUTHORITY="$(ls "${XDG_RUNTIME_DIR}"/.mutter-Xwaylandauth.* | head -n1)"
+          export XAUTHORITY
+          VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          export VK_ICD_FILENAMES
+          ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error \
+            -R '^(rhi_dock_lifecycle_test|rhi_mixed_dock_test)\.(opengl|vulkan)\..*AnotherPixelRatio$'
+
+      - name: Upload point-cloud golden and QRhi failure images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scene3d-linux-failures
+          path: |
+            ${{ runner.temp }}/golden-out
+            ${{ runner.temp }}/rhi-dump
+            ${{ runner.temp }}/rhi-dump-gl33
+          if-no-files-found: ignore

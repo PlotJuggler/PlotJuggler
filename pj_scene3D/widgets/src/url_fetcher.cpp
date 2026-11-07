@@ -4,17 +4,17 @@
 
 #include <QFile>
 #ifndef PJ_TARGET_WASM
+#include <QNetworkAccessManager>
 #include <QNetworkDiskCache>
 #endif
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QStandardPaths>
 #include <QString>
 #include <QTimer>
-#include <QVariant>
-#include <memory>
+#include <chrono>
 #include <optional>
 #include <utility>
+
+#include "pj_runtime/HttpGet.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -32,16 +32,13 @@ FetchResult readLocalFile(const QString& path) {
   // them before QByteArray allocation; native retains its existing unbounded
   // local-file behavior below.
   const qint64 size = file.size();
-  if (size < 0 || size > UrlFetcher::kMaxFetchBytes) {
-    result.error =
-        QString(u"local model exceeds the %1 MiB browser limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
-    return result;
+  const bool fits = size >= 0 && size <= UrlFetcher::kMaxFetchBytes;
+  if (fits) {
+    result.bytes = file.read(size);
   }
-  result.bytes = file.read(size);
-  if (!file.atEnd()) {
+  if (!fits || !file.atEnd()) {
     result.bytes.clear();
-    result.error =
-        QString(u"local model exceeds the %1 MiB browser limit"_s).arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
+    result.error = u"local model exceeds the %1 MiB limit"_s.arg(UrlFetcher::kMaxFetchBytes / (1024 * 1024));
     return result;
   }
 #else
@@ -90,10 +87,11 @@ UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {
   if (cache_dir.isEmpty()) {
     cache_dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + u"/models"_s;
   }
-  auto* cache = new QNetworkDiskCache(this);
+  network_ = new QNetworkAccessManager(this);
+  auto* cache = new QNetworkDiskCache(network_);
   cache->setCacheDirectory(cache_dir);
   cache->setMaximumCacheSize(256LL * 1024 * 1024);
-  manager_.setCache(cache);
+  network_->setCache(cache);
 #endif
 }
 
@@ -109,57 +107,24 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
     deliverLater(std::move(on_done), readLocalFile(*local));
     return;
   }
-  if (url.scheme() != "http"_L1 && url.scheme() != "https"_L1) {
+  if (!PJ::isHttpUrl(url)) {
     FetchResult result;
     result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
     deliverLater(std::move(on_done), std::move(result));
     return;
   }
-
-  QNetworkRequest request(url);
-  // Bounded redirects with no https->http downgrade (see the class contract for
-  // why this is the chosen policy) and a transfer timeout instead of a
-  // hand-rolled wall-clock QTimer.
-  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-  request.setMaximumRedirectsAllowed(4);
-  request.setTransferTimeout(15000);
-
-  QNetworkReply* reply = manager_.get(request);
-  // Size cap: abort as soon as either the declared Content-Length (headers,
-  // metaDataChanged) or the bytes actually buffered (readyRead) exceed
-  // kMaxFetchBytes. Deliberately NOT downloadProgress: Qt throttles it (~100 ms
-  // choke, bypassed only at completion), so a trickling over-cap response could
-  // evade enforcement. `capped` disambiguates our own abort from a genuine
-  // network error in the finished handler. bytesAvailable() counts the whole
-  // buffered body because nothing reads the reply before finished.
-  auto capped = std::make_shared<bool>(false);
-  const auto enforce_cap = [reply, capped]() {
-    if (*capped) {
-      return;
-    }
-    const QVariant declared = reply->header(QNetworkRequest::ContentLengthHeader);
-    if ((declared.isValid() && declared.toLongLong() > kMaxFetchBytes) || reply->bytesAvailable() > kMaxFetchBytes) {
-      *capped = true;
-      reply->abort();
-    }
-  };
-  connect(reply, &QNetworkReply::metaDataChanged, this, enforce_cap);
-  connect(reply, &QNetworkReply::readyRead, this, enforce_cap);
-  // `this` as context: destroying the fetcher severs this connection (and the
-  // reply, a child of manager_, is aborted), so the callback is dropped.
-  connect(reply, &QNetworkReply::finished, this, [reply, capped, on_done = std::move(on_done)]() {
-    reply->deleteLater();
-    FetchResult result;
-    if (*capped) {
-      result.error = tr("response exceeds the %1 MiB limit").arg(kMaxFetchBytes / (1024 * 1024));
-    } else if (reply->error() != QNetworkReply::NoError) {
-      result.error = reply->errorString();
-    } else {
-      result.bytes = reply->readAll();
-      result.ok = true;
-    }
-    on_done(std::move(result));
-  });
+  // `this` as context: destroying the fetcher drops the callback.
+  PJ::fetchBytesWithLimit(
+      url, kMaxFetchBytes, std::chrono::seconds(15), this,
+      [on_done = std::move(on_done)](PJ::FetchedBytes fetched) {
+        FetchResult result;
+        result.ok = fetched.error.isEmpty();
+        result.error = std::move(fetched.error);
+        result.bytes = std::move(fetched.bytes);
+        result.final_url = std::move(fetched.final_url);
+        on_done(std::move(result));
+      },
+      network_);
 }
 
 }  // namespace pj::scene3d
