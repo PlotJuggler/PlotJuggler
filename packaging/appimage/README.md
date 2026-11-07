@@ -93,6 +93,15 @@ own platform plugins that `linuxdeploy-plugin-qt` deploys there. `AppRun.sh`
 does **not** pass `--plugin-dir`; that flag stays a user-facing option,
 forwarded verbatim if the user supplies one.
 
+### Native Wayland
+
+The bundle includes Qt's `wayland` platform plugin, its shell/decoration and
+client graphics integration plugins, and their library dependencies, alongside
+`xcb`. Select it with `QT_QPA_PLATFORM=wayland` in a Wayland session. The same
+AppDir supplies the Debian package. Release smoke checks render both on Xvfb
+and on a headless Weston compositor with `DISPLAY` unset; install `weston` for
+standalone smoke runs.
+
 ## Retro payload (`--retro-wad <path>`)
 
 `3rdparty/retro/` inside the bundle holds an **independent, separately

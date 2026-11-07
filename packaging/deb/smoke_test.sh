@@ -102,13 +102,11 @@ echo "OK: pj-plugin-check present, resolves standalone and runs"
 echo "--- selftest-python ---"
 plotjuggler4 --selftest-python
 
-# The bundled Qt ships only the xcb platform plugin, so constructing a
-# QApplication needs a real X server. Xvfb provides one without a GPU or a seat,
-# and exercises the shipped code path rather than a substitute platform plugin.
+# Exercise X11 and native Wayland with the platform plugins in the package.
 echo "--- GUI startup under Xvfb ---"
 # Mesa's DRI drivers give Xvfb's GLX the software rasterizer (llvmpipe) the
 # render check below draws with; a user's machine has its own GPU driver.
-apt-get install -y -qq xvfb libgl1-mesa-dri >/dev/null
+apt-get install -y -qq xvfb weston libgl1-mesa-dri libegl-mesa0 >/dev/null
 set +e
 xvfb-run -a --server-args="-screen 0 1280x800x24" \
   timeout 25 plotjuggler4 --test-data --nosplash >"${WORK}/gui.log" 2>&1
@@ -128,6 +126,9 @@ fi
 echo "--- render check under Xvfb ---"
 xvfb-run -a --server-args="-screen 0 1280x800x24" \
   sh "$(dirname "$0")/../smoke/render_check.sh" plotjuggler4
+
+echo "--- render check under native Wayland ---"
+sh "$(dirname "$0")/../smoke/wayland_check.sh" plotjuggler4
 
 echo "--- removal ---"
 apt-get remove -y -qq plotjuggler4 >/dev/null

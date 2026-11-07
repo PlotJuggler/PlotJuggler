@@ -344,6 +344,12 @@ export QMAKE="${QT_DIR}/bin/qmake6"
 export PATH="${QT_DIR}/bin:${PATH}"
 export LD_LIBRARY_PATH="${QT_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
+[[ -f "${QT_DIR}/plugins/platforms/libqwayland.so" ]] || {
+  echo "ERROR: Qt Wayland platform plugin is missing from ${QT_DIR}" >&2
+  exit 1
+}
+export EXTRA_PLATFORM_PLUGINS="${EXTRA_PLATFORM_PLUGINS:+${EXTRA_PLATFORM_PLUGINS};}libqwayland.so"
+
 # ---------------------------------------------------------------------------
 # 5. Deploy, then bundle plugins, then package — in that order.
 #
@@ -392,6 +398,25 @@ restore_build_executable() {
   echo "Restored the build executable with the deployed RPATH/RUNPATH: ${deployed_rpath}"
 }
 
+# The Qt deployer follows the platform plugin's ELF dependencies and copies its
+# decoration/shell plugins. Graphics integrations are discovered dynamically, so
+# deploy their dependency closure explicitly, before adding PJ extensions whose
+# external ROS dependencies must remain outside the bundle.
+wayland_src="${QT_DIR}/plugins/wayland-graphics-integration-client"
+wayland_dst="${APPDIR}/usr/plugins/wayland-graphics-integration-client"
+mkdir -p "${wayland_dst}"
+install -m 755 "${wayland_src}"/*.so "${wayland_dst}/"
+"./${LD}" --appdir "${APPDIR}" --deploy-deps-only "${wayland_dst}"
+# Qt only warns when a shell or EGL integration fails to load, so a missing one
+# could still pass the render check: require them here.
+for wayland_plugin in platforms/libqwayland.so wayland-shell-integration/libxdg-shell.so \
+    wayland-graphics-integration-client/libqt-plugin-wayland-egl.so; do
+  [[ -f "${APPDIR}/usr/plugins/${wayland_plugin}" ]] || {
+    echo "ERROR: ${wayland_plugin} was not deployed into the AppDir" >&2
+    exit 1
+  }
+done
+
 if [[ "${PJ_SANITIZE}" == asan ]]; then
   if ! has_debug_lines "${deployed_app}"; then
     echo "Sanitizers: linuxdeploy stripped .debug_line despite NO_STRIP=1"
@@ -403,8 +428,7 @@ if [[ "${PJ_SANITIZE}" == asan ]]; then
   }
   echo "Sanitizers: verified .debug_line in deployed usr/bin/plotjuggler4"
 
-  # linuxdeploy-plugin-qt deploys only the platform plugin the app actually used
-  # at deploy time, which is xcb. Running this artifact headlessly
+  # The bundled platform plugins (xcb, wayland) all need a display. Running this artifact headlessly
   # with no display — in CI and on a developer machine where starting an X server
   # is not an option — so add Qt's offscreen platform plugin. Instrumented builds
   # ONLY: the shipped release artifact is deliberately left byte-identical.
