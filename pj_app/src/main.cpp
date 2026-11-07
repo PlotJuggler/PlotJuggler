@@ -64,8 +64,12 @@
 #ifdef PJ_WITH_SCENE3D
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
 #endif
+#include <QUuid>
+
 #include "pj_version.h"
 #include "pj_widgets/Style.h"
+#include "spike/McpProtocol.h"
+#include "spike/McpSpikeServer.h"
 #if defined(_WIN32)
 #include <windows.h>  // backward.hpp already pulls it in (with NOMINMAX)
 #endif
@@ -274,6 +278,9 @@ int main(int argc, char* argv[]) {
     if (std::strcmp(argv[i], "--selftest-python") == 0) {
       return selftestPython();
     }
+    if (std::strcmp(argv[i], "--mcp-bridge") == 0) {  // SPIKE: MCP over stdio, needs no display
+      return PJ::mcp::runBridge(argc, argv);
+    }
   }
 #endif
 
@@ -403,6 +410,15 @@ int main(int argc, char* argv[]) {
                          "Start looping playback automatically once a data source provides a time range "
                          "(useful with --layout / --test-data for demos and profiling)."));
   parser.addOption(autoplay_option);
+  // SPIKE: MCP-over-HTTP experiment.
+  const QCommandLineOption mcp_option(u"mcp"_s, u"SPIKE: serve MCP on a free 127.0.0.1 port (see --mcp-bridge)."_s);
+  parser.addOption(mcp_option);
+  const QCommandLineOption mcp_port_option(u"mcp-port"_s, u"SPIKE: serve MCP on 127.0.0.1:<port>."_s, u"port"_s);
+  parser.addOption(mcp_port_option);
+  const QCommandLineOption mcp_bridge_option(u"mcp-bridge"_s, u"SPIKE: MCP over stdio for agents (no window)."_s);
+  parser.addOption(mcp_bridge_option);
+  const QCommandLineOption mcp_token_option(u"mcp-token"_s, u"SPIKE: bearer token for --mcp-port."_s, u"token"_s);
+  parser.addOption(mcp_token_option);
   const QCommandLineOption nosplash_option(
       QStringList() << u"n"_s << u"nosplash"_s, u"Don't display the splashscreen on startup."_s);
   parser.addOption(nosplash_option);
@@ -559,6 +575,11 @@ int main(int argc, char* argv[]) {
   // Arm autoplay BEFORE any data loads, so its one-shot listener catches the first
   // range — whether --test-data sets it synchronously below or --layout's async
   // load sets it once the worker finishes.
+  if (parser.isSet(mcp_option) || parser.isSet(mcp_port_option)) {  // SPIKE
+    const QString token = parser.isSet(mcp_token_option) ? parser.value(mcp_token_option)
+                                                         : QUuid::createUuid().toString(QUuid::WithoutBraces);
+    new PJ::McpSpikeServer(window, static_cast<quint16>(parser.value(mcp_port_option).toUInt()), token);
+  }
   if (parser.isSet(autoplay_option)) {
     window.enableAutoplay();
   }

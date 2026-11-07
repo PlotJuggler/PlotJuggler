@@ -71,6 +71,11 @@ add_library(pj_app_shell OBJECT
     src/SeriesProgressController.h
     src/IngestProgressWiring.cpp
     src/IngestProgressWiring.h
+    src/spike/McpBridge.cpp
+    src/spike/McpProtocol.cpp
+    src/spike/McpProtocol.h
+    src/spike/McpSpikeServer.cpp
+    src/spike/McpSpikeServer.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/MainWindow.ui
