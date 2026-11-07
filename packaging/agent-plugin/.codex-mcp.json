@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "plotjuggler": {
+      "command": "./bin/plotjuggler-mcp",
+      "cwd": ".",
+      "env_vars": [
+        "PATH",
+        "HOME",
+        "PLOTJUGGLER4",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XAUTHORITY",
+        "XDG_DATA_HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA"
+      ],
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 900,
+      "default_tools_approval_mode": "approve",
+      "tools": {
+        "export_series": {
+          "approval_mode": "prompt"
+        },
+        "unload_file": {
+          "approval_mode": "prompt"
+        }
+      }
+    }
+  }
+}

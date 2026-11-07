@@ -1,0 +1,9 @@
+{
+  "name": "plotjuggler",
+  "version": "0.1.0",
+  "description": "Drive PlotJuggler 4 (timeseries and robotics log viewer) from Claude Code: open files, read and compute over signals, create derived series, plot tabs, 3D/2D scenes, screenshots.",
+  "author": { "name": "PlotJuggler", "url": "https://github.com/PlotJuggler" },
+  "homepage": "https://github.com/PlotJuggler/PlotJuggler",
+  "license": "MPL-2.0",
+  "keywords": ["plotjuggler", "timeseries", "robotics", "ros", "mcap", "plotting"]
+}

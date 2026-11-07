@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "plotjuggler": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/plotjuggler-mcp"
+    }
+  }
+}

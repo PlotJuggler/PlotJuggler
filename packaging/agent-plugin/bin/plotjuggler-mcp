@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-License-Identifier: MPL-2.0
+# Starts `plotjuggler4 --mcp-bridge` (MCP over stdio) for an agent plugin.
+# Finds PlotJuggler 4 in this order: $PLOTJUGGLER4, PATH, the path the app records at every start,
+# then the usual install locations. Nothing else may be printed on stdout: it is the MCP channel.
+
+run() { exec "$1" --mcp-bridge; }
+
+[ -n "${PLOTJUGGLER4:-}" ] && [ -x "$PLOTJUGGLER4" ] && run "$PLOTJUGGLER4"
+exe=$(command -v plotjuggler4 2>/dev/null) && run "$exe"
+
+case "$(uname -s)" in
+  Darwin) data="$HOME/Library/Application Support" ;;
+  *) data="${XDG_DATA_HOME:-$HOME/.local/share}" ;;
+esac
+recorded="$data/PlotJuggler/PlotJuggler4/mcp-instances/executable"
+if [ -f "$recorded" ]; then
+  exe=$(cat "$recorded")
+  [ -x "$exe" ] && run "$exe"
+fi
+
+for exe in /Applications/PlotJuggler.app/Contents/MacOS/plotjuggler4 \
+           "$HOME/Applications/PlotJuggler.app/Contents/MacOS/plotjuggler4" \
+           "$HOME"/Applications/PlotJuggler*.AppImage "$HOME"/Downloads/PlotJuggler*.AppImage; do
+  [ -x "$exe" ] && run "$exe"
+done
+
+echo "PlotJuggler 4 not found. Install it from https://plotjuggler.io and start it once," \
+     "or set PLOTJUGGLER4 to the plotjuggler4 executable." >&2
+exit 1

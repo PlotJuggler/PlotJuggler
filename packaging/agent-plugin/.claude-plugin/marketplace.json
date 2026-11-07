@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "plotjuggler",
+  "description": "Drive PlotJuggler 4 from an AI agent: open logs, inspect signals, derive series, plot, screenshot.",
+  "owner": { "name": "PlotJuggler", "url": "https://github.com/PlotJuggler" },
+  "plugins": [
+    {
+      "name": "plotjuggler",
+      "description": "PlotJuggler 4 MCP server plus a skill on using it well.",
+      "source": "./",
+      "category": "data"
+    }
+  ]
+}
