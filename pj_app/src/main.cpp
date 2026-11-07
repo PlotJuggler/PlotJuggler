@@ -572,14 +572,19 @@ int main(int argc, char* argv[]) {
   qApp->installEventFilter(gesture_watcher);
 #endif
 
-  // Arm autoplay BEFORE any data loads, so its one-shot listener catches the first
-  // range — whether --test-data sets it synchronously below or --layout's async
-  // load sets it once the worker finishes.
-  if (parser.isSet(mcp_option) || parser.isSet(mcp_port_option)) {  // SPIKE
+#ifndef PJ_TARGET_WASM  // SPIKE: test and headless runs must not repoint the agent plugin at a build tree
+  if (!isUnattendedRun(parser, exit_after_layout_option, screenshot_option)) {
+    PJ::mcp::recordExecutable();
+  }
+  if (parser.isSet(mcp_option) || parser.isSet(mcp_port_option)) {
     const QString token = parser.isSet(mcp_token_option) ? parser.value(mcp_token_option)
                                                          : QUuid::createUuid().toString(QUuid::WithoutBraces);
     new PJ::McpSpikeServer(window, static_cast<quint16>(parser.value(mcp_port_option).toUInt()), token);
   }
+#endif
+  // Arm autoplay BEFORE any data loads, so its one-shot listener catches the first
+  // range — whether --test-data sets it synchronously below or --layout's async
+  // load sets it once the worker finishes.
   if (parser.isSet(autoplay_option)) {
     window.enableAutoplay();
   }

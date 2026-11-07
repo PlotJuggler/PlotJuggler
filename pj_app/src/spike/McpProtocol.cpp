@@ -5,6 +5,7 @@
 
 #include "spike/McpProtocol.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QStandardPaths>
@@ -23,7 +24,8 @@ json schema(json props, json required = json::array()) {
 
 constexpr auto kInstructions =
     "PlotJuggler is the user's time-series and 3D data viewer, running on their desktop. Call get_status "
-    "first; open_file loads any format PlotJuggler reads. Find topics with list_topics / describe_topic (exact "
+    "first; open_file loads any format PlotJuggler reads, start_stream starts a live source. Find topics with "
+    "list_topics / describe_topic (exact "
     "paths; a unique suffix also resolves). For numbers use read_series (statistics, min/max buckets, raw "
     "samples) and evaluate (a Luau computation over series or objects that leaves nothing behind) instead of "
     "decoding files yourself; export_series gives aligned CSV for your own tools. create_derived_series, "
@@ -54,7 +56,8 @@ json toolList() {
   json tools = json::array({
       tool(
           "get_status",
-          "Start here. Loaded datasets (id, name, path, loader config), time range, current time, the agent's "
+          "Start here. Loaded datasets (id, name, path, loader config; live streams carry stream), the stream "
+          "sources start_stream can start, time range, current time, the agent's "
           "tabs, whether PlotJuggler has the user's focus and any dialog the user has open.",
           schema(json::object())),
       tool(
@@ -94,8 +97,10 @@ json toolList() {
               {"topic", "field", "filter"})),
       tool(
           "add_script_series",
-          "Create your own derived series with a Luau script (or Python, first line '# pj-script: python', "
-          "class id = name with non-alphanumerics as '_'). A Luau script returns a class: return { name=\"X\", "
+          "Create your own derived series with a Luau or Python script. Python: first line '# pj-script: python', one "
+          "top-level class T (its id is set for you), @staticmethod create(params) returning T(), and calculate(self, "
+          "time, value, *more_inputs); imports limited to math, cmath, statistics. A Luau script returns a class: "
+          "return { name=\"X\", "
           "create = function(params) local s = {}; return { calculate = function(t, v) ... return y end } end } "
           "(the id is set for you). t is seconds, v the input; keep state in the instance (integrators, bias "
           "removal). Several inputs: pass `inputs` [{topic, field, dataset?}], joined on equal timestamps "
@@ -129,7 +134,7 @@ json toolList() {
           schema(json::object())),
       tool(
           "get_values",
-          "Samples of topic/field as [time, value] pairs (display seconds, as in get_status/seek), evenly "
+          "Samples of topic/field as [time, value] pairs (display seconds, as in get_status and playback), evenly "
           "decimated to max_points (default 200). Optional t0/t1 range and dataset (needed when the topic "
           "exists in several datasets). With `at`, only the sample in force at that time.",
           schema(
@@ -170,6 +175,21 @@ json toolList() {
                {"t0", {{"type", "number"}}},
                {"t1", {{"type", "number"}}}},
               {"series"})),
+      tool(
+          "start_stream",
+          "Start a live streaming source (get_status lists stream_sources; about says what each one is). By "
+          "default it uses the settings the user last confirmed in that source's dialog; config passes your own "
+          "(get_status shows a live stream's config, as a template); ask_user=true opens the source's dialog so "
+          "the user sets it up, and the call returns when they finish or cancel. Topics appear as the source "
+          "advertises them.",
+          schema(
+              {{"source", {{"type", "string"}, {"description", "stream source name, from stream_sources"}}},
+               {"ask_user", {{"type", "boolean"}}},
+               {"config", {{"type", "object"}}}},
+              {"source"})),
+      tool(
+          "stop_stream", "Stop a live stream; its data stays loaded. dataset: a live stream from get_status.",
+          schema({{"dataset", dataset}}, {"dataset"})),
       tool(
           "unload_file",
           "Remove a loaded dataset and its data. dataset: id, name or path from get_status. If derived series "
@@ -249,6 +269,23 @@ QString instancesDir() {
     QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
   }
   return dir;
+}
+
+QString selfExecutable() {
+  const QString appimage = qEnvironmentVariable("APPIMAGE");
+  return appimage.isEmpty() ? QCoreApplication::applicationFilePath() : appimage;
+}
+
+void recordExecutable() {
+  const QByteArray exe = QDir::toNativeSeparators(selfExecutable()).toUtf8();
+  QFile file(instancesDir() + u"/executable"_s);
+  if (file.open(QIODevice::ReadOnly) && file.readAll() == exe) {
+    return;
+  }
+  file.close();
+  if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    file.write(exe);
+  }
 }
 
 }  // namespace PJ::mcp

@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QBuffer>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -15,6 +16,7 @@
 #include <QPainter>
 #include <QRhiWidget>
 #include <QSaveFile>
+#include <QSettings>
 #include <QTcpSocket>
 #include <QTimer>
 #include <QUrl>
@@ -33,6 +35,7 @@
 #include "LoadInput.h"
 #include "MainWindow.h"
 #include "PluginPlotTabsController.h"
+#include "StreamingSourceManager.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
@@ -42,6 +45,7 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/FeatureCatalogHost.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PluginRuntimeCatalog.h"
@@ -197,7 +201,7 @@ void McpSpikeServer::onReadyRead(QTcpSocket* socket) {
     }
   }
   const int length = req.headers.value("content-length", "0").toInt();
-  if (length > kMaxBody) {
+  if (length < 0 || length > kMaxBody) {
     writeResponse(socket, 413, {});
     return;
   }
@@ -276,10 +280,15 @@ void McpSpikeServer::handle(QTcpSocket* socket, const Request& req) {
     const QString owner = req.headers.contains("x-pj-owner")
                               ? QString::fromUtf8(req.headers.value("x-pj-owner"))
                               : QString::fromStdString(mcp::ownerFor(mcp::clientName(params)));
-    callTool(name, params.value("arguments", json::object()), owner, [send, timer, name](json result) {
-      std::fprintf(stderr, "[mcp]   %s done in %lld ms\n", name.c_str(), static_cast<long long>(timer->elapsed()));
-      send(result);
-    });
+    // A wrongly typed argument throws out of nlohmann; escaping a Qt slot would abort the app.
+    try {
+      callTool(name, params.value("arguments", json::object()), owner, [send, timer, name](json result) {
+        std::fprintf(stderr, "[mcp]   %s done in %lld ms\n", name.c_str(), static_cast<long long>(timer->elapsed()));
+        send(result);
+      });
+    } catch (const std::exception& e) {
+      send(text(std::string("bad arguments for ") + name + ": " + e.what(), true));
+    }
   } else if (guard) {
     writeResponse(
         guard, 200,
@@ -330,7 +339,21 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
           entry["config"] = json::parse(src.plugin_config_json.toStdString(), nullptr, false);
         }
       }
+      if (const QString stream_id = window_.streaming_manager_->layoutSourceId(id); !stream_id.isEmpty()) {
+        for (const auto& live : window_.streaming_manager_->layoutSources()) {
+          if (live.id == stream_id) {
+            entry["stream"] = live.plugin_id.toStdString();
+            entry["config"] = live.plugin_config_json.isEmpty()
+                                  ? json()
+                                  : json::parse(live.plugin_config_json.toStdString(), nullptr, false);
+          }
+        }
+      }
       datasets.push_back(std::move(entry));
+    }
+    json stream_sources = json::array();
+    for (const LoadedDataSource* source : session.extensionCatalog().streamSources()) {
+      stream_sources.push_back(source->name);
     }
     json tab_ids = json::array();
     if (auto ids = tabs.listTabIds(owner); ids.has_value()) {
@@ -338,6 +361,7 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
     }
     reply(
         ok({{"datasets", datasets},
+            {"stream_sources", stream_sources},
             {"time_range", {playback.rangeMin().value, playback.rangeMax().value}},
             {"current_time", playback.currentTime().value},
             {"playing", playback.isPlaying()},
@@ -493,8 +517,8 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
       }
       lo = std::max(lo, t0);
       hi = std::min(hi, t1);
-      for (double t = lo; t <= hi && grid.size() < 10'000'000; t += 1.0 / rate) {
-        grid.push_back(t);
+      for (std::size_t i = 0; lo + static_cast<double>(i) / rate <= hi && grid.size() < 10'000'000; ++i) {
+        grid.push_back(lo + static_cast<double>(i) / rate);
       }
     } else {
       for (const Series& c : columns) {
@@ -557,6 +581,62 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
             {"rows", grid.size()},
             {"columns", names},
             {"note", "time in display seconds (as seek); values sample-and-hold, empty before a series starts"}}));
+  } else if (name == "start_stream") {
+    StreamingSourceManager& streams = *window_.streaming_manager_;
+    const QString source = qs(args, "source");
+    if (args.value("ask_user", false)) {
+      // The user's own Start: select the source in the Stream combo (the manager follows it) and press
+      // Start once this request has returned, since the plugin's dialog is modal.
+      auto* combo = window_.findChild<QComboBox*>(u"comboStreaming"_s);
+      if (combo == nullptr || combo->findText(source) < 0) {
+        reply(text("unknown stream source (get_status lists stream_sources)", true));
+        return;
+      }
+      combo->setCurrentText(source);
+      QTimer::singleShot(0, this, [&streams, reply] {
+        DatasetId started = 0;
+        QString failure;
+        QObject guard;
+        connect(&streams, &StreamingSourceManager::streamStarted, &guard, [&started](DatasetId id) { started = id; });
+        connect(&streams, &StreamingSourceManager::setupError, &guard, [&failure](const QString& m) { failure = m; });
+        connect(&streams, &StreamingSourceManager::streamError, &guard, [&failure](DatasetId, const QString& m) {
+          failure = m;
+        });
+        streams.onStartRequested();
+        if (started != 0) {
+          reply(ok({{"dataset_id", started}, {"note", "topics appear as the source advertises them: list_topics"}}));
+        } else {
+          reply(text(failure.isEmpty() ? "the user cancelled the stream dialog" : failure.toStdString(), true));
+        }
+      });
+      return;
+    }
+    // No dialog: the agent's config, else what the user last confirmed in this source's dialog.
+    const auto given = args.find("config");
+    const QString config = given != args.end() && given->is_object()
+                               ? QString::fromStdString(given->dump())
+                               : QSettings().value(u"PluginConfig/"_s + source).toString();
+    layout_xml::StreamingSourceRef ref;
+    ref.id = u"stream"_s;
+    ref.plugin_id = source;
+    ref.plugin_config_json = config;
+    QString error;
+    const DatasetId id = streams.startFromLayout(ref, config, error);
+    if (id == 0) {
+      reply(text(error.toStdString(), true));
+      return;
+    }
+    reply(
+        ok({{"dataset_id", id},
+            {"config", config.isEmpty() ? json() : json::parse(config.toStdString(), nullptr, false)},
+            {"note", "topics appear as the source advertises them: list_topics"}}));
+  } else if (name == "stop_stream") {
+    const DatasetId id = resolveDataset(args.value("dataset", json()));
+    if (id == 0 || !window_.streaming_manager_->stopDatasetAndWait(id, u"stopped by the agent"_s)) {
+      reply(text("no live stream matches (get_status marks live ones with stream)", true));
+      return;
+    }
+    reply(ok({{"stopped", id}, {"note", "its data stays loaded; unload_file removes it"}}));
   } else if (name == "open_file") {
     const QFileInfo info(qs(args, "path"));
     if (!info.isAbsolute() || !info.isFile()) {
@@ -651,14 +731,16 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
         outputs.push_back(series + "/" + output);
       }
     }
-    // The transform id must equal the script's class id: derive it from the name and, for
-    // Luau, stamp it onto whatever class the agent's script returns.
+    // The transform id must equal the script's class id: derive it from the name and stamp it
+    // onto whatever class the agent's script defines (Luau: returns; Python: class T).
     std::string transform_id;
     for (const char c : series) {
       transform_id += (std::isalnum(static_cast<unsigned char>(c)) != 0) ? c : '_';
     }
     std::string script = args.value("script", "");
-    if (!script.starts_with("# pj-script: python")) {
+    if (script.starts_with("# pj-script: python")) {
+      script += "\nT.id = \"" + transform_id + "\"\n";
+    } else {
       if (script.starts_with("-- pj-script:")) {
         script = script.substr(script.find('\n') + 1);
       }
@@ -708,6 +790,11 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
       return;
     }
     const std::string filter = args.value("filter", "");
+    if (filter.empty() ||
+        !std::all_of(filter.begin(), filter.end(), [](unsigned char c) { return std::isalnum(c) != 0 || c == '_'; })) {
+      reply(text("unknown built-in filter '" + filter + "'", true));
+      return;
+    }
     const std::string selector = "local classes = (function()\n" + resource.readAll().toStdString() +
                                  "\nend)()\n"
                                  "for _, c in ipairs(classes) do\n"
@@ -945,7 +1032,14 @@ void McpSpikeServer::runAssistantTool(const QString& owner, assistant_agent::Too
       reply(text("PlotJuggler could not build the services this tool needs", true));
       return;
     }
-    runAssistantTool(owner, resume(*context), std::move(reply));
+    assistant_agent::ToolResult next;
+    try {
+      next = resume(*context);
+    } catch (const std::exception& e) {
+      reply(text(std::string("tool failed: ") + e.what(), true));
+      return;
+    }
+    runAssistantTool(owner, std::move(next), std::move(reply));
   });
 }
 

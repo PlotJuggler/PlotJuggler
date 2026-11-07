@@ -165,7 +165,7 @@ class Bridge {
     if (name == "select_instance") {
       const qint64 id = args.value("id", qint64{0});
       for (const Instance& instance : readInstances()) {
-        if (instance.pid == id && post(instance, ping(), owner_)) {
+        if (instance.pid == id && processAlive(id) && post(instance, ping(), owner_)) {
           selected_ = id;
           return textResult(json({{"selected", id}}).dump());
         }
@@ -183,11 +183,12 @@ class Bridge {
     return {{"jsonrpc", "2.0"}, {"id", 0}, {"method", "ping"}};
   }
 
-  /// Live instances; a discovery file whose instance no longer answers is a crash leftover.
+  /// Live instances; a discovery file whose process is gone or no longer answers is a crash leftover.
+  /// The pid check comes first: a later instance may reuse the dead one's port.
   std::vector<Instance> liveInstances() const {
     std::vector<Instance> live;
     for (const Instance& instance : readInstances()) {
-      if (post(instance, ping(), owner_)) {
+      if (processAlive(instance.pid) && post(instance, ping(), owner_)) {
         live.push_back(instance);
       } else {
         QFile::remove(instance.file);
@@ -236,7 +237,7 @@ class Bridge {
 #endif
     const QString log = instancesDir() + u"/launch.log"_s;
     QProcess process;
-    process.setProgram(QCoreApplication::applicationFilePath());
+    process.setProgram(selfExecutable());
     process.setArguments({u"--mcp"_s});
     // stdout is this bridge's MCP channel: the child must never write to it.
     process.setStandardInputFile(QProcess::nullDevice());
@@ -244,7 +245,7 @@ class Bridge {
     process.setStandardErrorFile(log);
     qint64 pid = 0;
     if (!process.startDetached(&pid)) {
-      return textResult("could not start " + QCoreApplication::applicationFilePath().toStdString(), true);
+      return textResult("could not start " + selfExecutable().toStdString(), true);
     }
     // ponytail: poll the discovery folder; a file watcher if startup latency ever matters.
     for (int waited_ms = 0; waited_ms < 60000; waited_ms += 200) {

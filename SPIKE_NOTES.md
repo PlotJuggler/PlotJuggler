@@ -5,7 +5,10 @@ Throwaway code, not the production shape: `pj_app/src/spike/` (`McpSpikeServer`,
 `MainWindow.h`.
 
 ```bash
-# once, per agent (stdio; no URL or token in the config):
+# for users: the agent plugin in packaging/agent-plugin/ (MCP server + skill), see its README:
+claude plugin marketplace add <repo or path> && claude plugin install plotjuggler@plotjuggler
+codex plugin marketplace add <repo or path> && codex plugin add plotjuggler@plotjuggler
+# by hand, per agent (stdio; no URL or token in the config):
 claude mcp add pj -- /path/to/run.sh --mcp-bridge
 codex mcp add pj -- /path/to/run.sh --mcp-bridge
 #   plus, in ~/.codex/config.toml [mcp_servers.pj]: env_vars = ["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"]
@@ -30,12 +33,12 @@ agent ──stdio──> plotjuggler4 --mcp-bridge ──HTTP 127.0.0.1:<port>, 
   server `instructions`, client name to tab owner, the discovery folder.
 - Every tool is a thin call into an existing service; the spike adds no business logic.
 
-## Tools (30)
+## Tools (32)
 
 | Group | Tools | Backed by |
 |---|---|---|
 | Session | `get_status`, `about`, `report_status`* | `CatalogModel`, `SessionManager::loadedSources`, `PlaybackEngine`; `FeatureCatalogHost::document()` (#783) |
-| Data | `open_file` (default / `config` / `ask_user`), `unload_file`, `reload_file`, `list_catalog`, `list_topics`*, `describe_topic`* | `FileLoader::loadFileTicketed`, `MainWindow` remove/reload bodies; catalog snapshot v2 (#766) |
+| Data | `open_file` (default / `config` / `ask_user`), `unload_file`, `reload_file`, `start_stream` (same three modes), `stop_stream`, `list_catalog`, `list_topics`*, `describe_topic`* | `FileLoader::loadFileTicketed`, `MainWindow` remove/reload bodies; `StreamingSourceManager::startFromLayout` / `onStartRequested` / `stopDatasetAndWait`; catalog snapshot v2 (#766) |
 | Values | `statistics`, `get_values`, `export_series` (aligned CSV), `read_series`* (stats / min-max buckets / raw), `evaluate`* (Luau over series or objects, leaves nothing) | `sdk::ToolboxHostView::readSeries`; `pj.data_processors.v1` ephemeral transforms and on-demand evaluations |
 | Derived | `add_filter`, `add_script_series`, `remove_script_series`, `create_derived_series`*, `create_derived_object`* (incl. `pin_at_s` findings), `create_markers`*, `remove_markers`*, `list_created`*, `remove_derived_series`* | `upsertTransform(owner, …)`; `pj.data_processors.v1` under the agent's plugin id |
 | Views | `plot_tab`* (create/add/remove/zoom/close/list), `scene_view`* (create/attach/detach/focus/close/list), `playback`* (state/play/pause/seek/rate), `screenshot` (`tab` brings one of the agent's to the front) | `pj.plot_tabs.v1`, `pj.viewport.v1`, `pj.playback.v1` under the agent's plugin id; `QWidget::grab` + `QRhiWidget::grabFramebuffer` |
@@ -72,7 +75,11 @@ tick does. The spike's own view tools (`create_tab`, `add_curve`, `remove_curve`
 | Agent environments | Codex starts MCP servers with a filtered environment (HOME, PATH, LANG, USER, ...; no `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`). Two failures followed: `launch` started a GUI with no display (it died; the bridge waited 60 s), and Qt's `RuntimeLocation` fell back to `/tmp/runtime-<user>` in the bridge while the GUIs wrote `/run/user/<uid>`, so the bridge saw no instance at all. Fixed: discovery under `AppLocalDataLocation` (needs only HOME); `launch` refuses at once without a display and names the fix (`mcp_servers.<name>.env_vars`); a child that dies during startup is reported in ~1 s with the head of its output (the cause precedes the crash handler's backtrace). Production: the discovery path must depend on nothing an agent may strip. |
 | Bypassing the bridge | With the bridge blind, Codex read the token from the discovery file and called HTTP from Python: same-user access is the trust boundary (owner-only file), and an agent with a shell can always cross it. Not a leak, but the bridge is a convenience, not a security layer. |
 | Multi-input / multi-output scripts | `inputs` of 5 fields of one message (accel + quaternion) joined on their shared timestamps, 3 outputs, 9,879 samples in 74 ms. Outputs are named `<name>/<output>` (bare names would collide across scripts); `remove_script_series` removes all of them. |
-| Assistant tools over MCP | All 14 run unchanged through the host's toolbox services (scripted end to end on the nissan and lidar bags): suffix path resolution, min/max buckets, `evaluate` on series and at an instant (deferred poll, 57 ms), a derived series with its point count, the empty-join refusal (99 Hz IMU + 30 Hz speed), a region marker with `covered_s`, derived objects over a point cloud (crop box, live and pinned), a 3D scene view with the cloud attached, playback, `remove_*` refusing what the agent did not create. The spike's `add_script_series` output appears in `list_created`: both tool sets share the agent's namespace. Ownership is now the host's per-plugin identity for these tools, not a string the server trusts. |
+| Assistant tools over MCP | All 14 run unchanged through the host's toolbox services (scripted end to end on the nissan and lidar bags): suffix path resolution, min/max buckets, `evaluate` on series and at an instant (deferred poll, 57 ms), a derived series with its point count, the empty-join refusal (99 Hz IMU + 30 Hz speed), a region marker with `covered_s`, derived objects over a point cloud (crop box, live and pinned), a 3D scene view with the cloud attached, playback, `remove_*` refusing what the agent did not create. The spike's `add_script_series` output appears in `list_created`: both tool sets share the agent's namespace. Ownership is the host's per-plugin identity, but the identity itself is the unauthenticated `X-PJ-Owner` string: any token holder can claim any namespace, including a real plugin id. |
+| Streams | `get_status` lists the loaded stream sources and marks live datasets with `stream` and their config. `start_stream` reuses the layout-replay start (no dialog): the agent's `config`, else the settings the user last confirmed in that source's dialog. `ask_user` selects the source in the Stream combo and presses Start for the user (the reply waits for the dialog, a cancel or the plugin's error box). `stop_stream` keeps the data, like a stream that ends by itself. Verified: Dummy Streamer started with defaults (5 topics streaming in 2 s), stopped (15 s of data kept), a second start through `ask_user` (no dialog: starts at once); ROS 2 through `ask_user` without ROS sourced: the app's own error box, the agent held off meanwhile. Not reachable yet: toolboxes, marketplace installs, Custom Widget panels; a loader's options are learnt from `get_status` examples only (no schema). |
+| Python | `add_script_series` takes Python (`# pj-script: python`, one class `T`, whose `id` the server stamps, imports limited to math/cmath/statistics; the embedded CPython is in every desktop build). Verified live: `py_kmh` at 30 s = 52.27 (14.52 m/s × 3.6), and a Claude run wrote a correct class from the skill alone. The Assistant's 14 tools are Luau-only. |
+| Agent plugin | `packaging/agent-plugin/`: one folder that is both marketplace and plugin, for Claude Code and Codex (`.claude-plugin/`, `.codex-plugin/`), a skill, and `bin/plotjuggler-mcp` (`.cmd` on Windows) that finds `plotjuggler4`: `$PLOTJUGGLER4`, PATH (deb, conda, nix), the path the app records at every start (`mcp-instances/executable`; the AppImage file via `$APPIMAGE`, which `launch` also starts: the mount dies with the bridge; attended runs only, so tests never repoint it), default install folders (macOS `.app`, Windows installer). Claude Code, empty folder, prompt naming no tool: skill auto-loaded, 21 turns, 73 s, $0.31, Python series + own tab + screenshot check. Codex: installs from the same marketplace; `codex exec` refuses every non-read-only tool ("approval policy is never") unless the plugin sets `default_tools_approval_mode` (now `approve`; `export_series` and `unload_file` still prompt). The Codex config also forwards `XAUTHORITY` (GDM keeps the X cookie under `/run/user`) and `DBUS_SESSION_BUS_ADDRESS`. |
+| Browser (WASM) | Not as is: a page cannot listen on a socket, write the discovery folder or be spawned. The tool layer is transport-free; a browser transport would be the page connecting out to a local bridge's WebSocket (pairing + Chrome's local-network prompt), WebMCP later. `main.cpp` now creates the server only outside WASM, but `pj_app/CMakeLists.txt` still adds the spike sources (`QProcess` is not in Qt for WebAssembly): production must leave them out of the browser build. |
 | Origin / auth | Missing or wrong token 401; any `Origin` header 403; discovery files and folder owner-only. |
 
 ## Real agents on one task
@@ -93,7 +100,7 @@ What changed after the Claude run: `export_series` (its numpy needs aligned arra
 
 ## Product bugs found (outside the spike)
 
-- **Tab title not refreshed.** `PluginPlotTabsController::createTabOfKind` re-creating a tab calls
+- **Tab title not refreshed** (fixed in #1481). `PluginPlotTabsController::createTabOfKind` re-creating a tab calls
   `PlotDocker::setName`, which stores the name but never updates the tab strip (`TabbedPlotWidget` has
   `setWidgetTabName` for widget tabs only). Toolbox plugins on `pj.plot_tabs.v1` hit it too. Fix: a plot-tab
   rename on `TabbedPlotWidget` that updates the frame label, called from the controller.
@@ -113,6 +120,17 @@ What changed after the Claude run: `export_series` (its numpy needs aligned arra
 - **Opt-in UI**: a Preferences toggle and a status-bar "agent connected" indicator; `--mcp` is the only switch
   now. A dialog opened by `ask_user` should say an agent asked for it.
 - **Windows/macOS**: discovery folder paths, port binding, D3D11/Metal framebuffer grabs: untested.
+- **Robustness found by review**: argument type errors threw out of a Qt slot (now caught and returned as a
+  tool error, also in deferred steps); a stale discovery file was taken for a live instance when its port was reused (now the pid
+  is checked first). Still open: `add_script_series` installs inputs that share no timestamps (the
+  Assistant's `create_derived_series` refuses them); any non-200 reply makes the bridge delete a live
+  instance's file; the bridge blocks forever on a hung GUI (`waitForReadyRead(-1)`); `unload_file` replies
+  twice when the user must confirm; `screenshot` is annotated read-only but `tab` focuses one; the bridge's
+  `tools/list` is its own static list, so a different PlotJuggler version on PATH than the running window
+  advertises the wrong tools (forward `tools/list` to the live instance when one answers).
+- **Windows plugin launch is unverified**: both MCP configs name the extension-less launcher; Codex is
+  expected to pick its `.cmd` twin, Claude Code (libuv spawn) may not. If not: the Windows installer puts
+  `bin/` on PATH and the configs name `plotjuggler4`.
 - **Confirm vs act.** `unload_file` / `reload_file` duplicate the bodies behind `MainWindow`'s confirmation
   prompts; split them so the UI and the agent call one function.
 
@@ -126,10 +144,13 @@ The spike answers the requirement questions; nothing found argues against shippi
    path; the protocol and bridge need only QtCore and could move to `pj_runtime` if a second host appears.
 2. **Opt-in**: a Preferences toggle (off by default) next to `--mcp`, a status-bar indicator naming the connected
    agent, and an "an agent asked for this" line on dialogs opened by `ask_user`.
-3. **Keep the 26 tools**, each a thin call into an existing service. Keep `add_filter` next to
+3. **Keep the tools** (30 now, fewer after the overlap trial), each a thin call into an existing service. Keep `add_filter` next to
    `add_script_series`: agents reach for it in the common case, and it runs through the same transform path.
 4. **Settle three product decisions** before writing it: whether agents may touch the user's tabs (now: only their
    own); legend and other view settings; job handles for imports longer than a client's tool timeout.
 5. **Fix outside the MCP work first**: the tab-title bug, and the confirm/act split.
-6. **Test on Windows and macOS** (discovery path, port binding, D3D11/Metal grabs) and add a protocol test that
+6. **Ship the agent plugin** (`packaging/agent-plugin/`) from its own public repository so install is one
+   `marketplace add` + one install per agent; the app records its path so the plugin finds AppImage, `.app`
+   and Windows installs.
+7. **Test on Windows and macOS** (discovery path, port binding, D3D11/Metal grabs) and add a protocol test that
    drives the bridge over stdio (the scripted session in this spike is the model).

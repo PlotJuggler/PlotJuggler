@@ -39,6 +39,15 @@ namespace PJ::mcp {
 /// Created owner-only. Needs the application/organization names set (Windows/macOS paths use them).
 [[nodiscard]] QString instancesDir();
 
+/// The file to start this program again: the AppImage file when run from one (its mount vanishes
+/// with this process), else the binary.
+[[nodiscard]] QString selfExecutable();
+
+/// Records this executable's path in instancesDir()/executable (the AppImage file, not its mount,
+/// when run from one), so an agent plugin's launcher finds PlotJuggler where PATH does not.
+/// Rewrites only on change; call once per GUI start, after the application names are set.
+void recordExecutable();
+
 /// `plotjuggler4 --mcp-bridge`: MCP over stdio, forwarding to a running instance found in
 /// instancesDir(). Runs before any QApplication; returns the process exit code.
 int runBridge(int argc, char* argv[]);
