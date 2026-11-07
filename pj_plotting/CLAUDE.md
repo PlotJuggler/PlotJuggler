@@ -100,8 +100,9 @@ This module is the canonical example of the **wholesale lift**:
   markers. The transaction and legend-diagnostics suites use file-local environments that apply their setup only
   when those suites are selected.
 - `plot_rhi_render_test`: the canvas against Qwt's own QPainter rendering, registered on every backend of the
-  platform plus `.opengl_dpr2` (`RHI_BACKENDS DPR2`). It needs a real display (xvfb or a Wayland compositor on
-  Linux), skips on `offscreen`, and fails instead under `PJ_REQUIRE_GPU_TESTS=1`. What it pins:
+  platform plus `.opengl_dpr2` (`RHI_BACKENDS DPR2`). It needs a real QPA named in `QT_QPA_PLATFORM`
+  (`./test.sh --display`: a private Xvfb on Linux), skips on `offscreen`, and fails instead under
+  `PJ_REQUIRE_GPU_TESTS=1`. What it pins:
   [docs/ARCHITECTURE.md §4](./docs/ARCHITECTURE.md#4-render-tests-and-benchmarks).
 
 ```bash

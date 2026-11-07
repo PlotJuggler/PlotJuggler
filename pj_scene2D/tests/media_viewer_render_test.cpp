@@ -7,7 +7,7 @@
 // presented frame. Expected colours come from the CPU side of the same math
 // (buildYuvMatrix, colorFor), so the checks catch what differs between backends:
 // texture formats, plane layout, uniform layout, orientation and scissor origin.
-// Needs a real QPA (pjPreferRealDisplayQpa); CI runs it under Xvfb on Mesa
+// Needs a real QPA named in QT_QPA_PLATFORM; CI runs it under Xvfb on Mesa
 // llvmpipe and lavapipe, on D3D11 WARP and on Metal, and PJ_REQUIRE_GPU_TESTS=1
 // turns a missing backend into a failure.
 
@@ -41,9 +41,6 @@
 #include "pj_widgets/GraphicsApi.h"
 
 namespace {
-
-// Runs before main(); see pjPreferRealDisplayQpa().
-[[maybe_unused]] const bool kRealDisplayPlatform = pjPreferRealDisplayQpa();
 
 // 8-bit textures and float shader math, against a CPU reference.
 constexpr int kTolerance = 4;

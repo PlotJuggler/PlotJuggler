@@ -2,7 +2,9 @@
 # Windows counterpart of test.sh, reached through test.bat: runs the ctest
 # suite headless with the runtime DLL search path set up (the Test step of
 # windows-ci.yml). Every argument that is not --test-dir/--sanitize/--display
-# goes to ctest; --display keeps the desktop instead of offscreen, as in test.sh. Windows PowerShell 5.1 syntax, ASCII only, no param() block.
+# goes to ctest; --display runs the QRhi display runners on the desktop (Windows
+# has no virtual display), so it is an explicit opt-in. Windows PowerShell 5.1
+# syntax, ASCII only, no param() block.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -59,9 +61,9 @@ if ($TestDir -eq '') {
   $TestDir = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $TestDir))
 }
 
-# Many widget tests create a QApplication without forcing a platform plugin;
-# offscreen keeps their windows off the desktop (test.sh does the same).
-if (-not $KeepDisplay) { $env:QT_QPA_PLATFORM = 'offscreen' }
+# Offscreen unless --display: no test picks the desktop's QPA on its own, so the
+# display runners need it named (test.sh does the same).
+if ($KeepDisplay) { $env:QT_QPA_PLATFORM = 'windows' } else { $env:QT_QPA_PLATFORM = 'offscreen' }
 # The bin-dir files live in the tree being tested.
 Add-PjRuntimeDllDirs $TestDir
 

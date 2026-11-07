@@ -25,7 +25,7 @@
 #include <utility>
 #include <vector>
 
-#include "pj_gpu_test_gate.h"  // pjPreferRealDisplayQpa, PJ_SKIP_ON_HEADLESS_QPA, grab/colour helpers
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_ON_HEADLESS_QPA, grab/colour helpers
 
 #ifdef PJ_WITH_SCENE2D
 #include "pj_scene2d_core/media_source.h"
@@ -33,14 +33,13 @@
 
 namespace pj_rhi_dock_test {
 
-// Runs before main(): the real QPA (pjPreferRealDisplayQpa()), and QRhi's leak
-// report, so a widget that keeps GPU resources past its QRhi's lifetime logs
-// "unreleased resources", which WarningCollector flags.
-inline const bool kRealDisplayPlatform = [] {
+// Runs before main(): QRhi's leak report, so a widget that keeps GPU resources
+// past its QRhi's lifetime logs "unreleased resources", which WarningCollector flags.
+inline const bool kRhiDockTestSetup = [] {
   qputenv("QT_RHI_LEAK_CHECK", "1");
   // As pj_app's main(): see the comment there.
   QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
-  return pjPreferRealDisplayQpa();
+  return true;
 }();
 
 // Collects Qt warnings, so a test can assert none mentions a QRhi problem.

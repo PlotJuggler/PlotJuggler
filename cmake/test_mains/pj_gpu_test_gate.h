@@ -52,28 +52,12 @@ inline bool pjGpuRequiredByEnv() {
 
 // ---- Display tests (GPU widgets on a real window system) ----------------------
 
-// The gui test main defaults to `offscreen`, which composites no GPU widget.
-// Call from a static initializer (before main()) in a display test: with a
-// display, it asks for the platform's real QPA instead (wayland, then xcb, on
-// Linux). An explicit QT_QPA_PLATFORM (test.sh's offscreen) still wins, and
-// PJ_SKIP_ON_HEADLESS_QPA() then skips. Always true.
-inline bool pjPreferRealDisplayQpa() {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-#if defined(Q_OS_WIN)
-    qputenv("QT_QPA_PLATFORM", "windows");
-#elif defined(Q_OS_MACOS)
-    qputenv("QT_QPA_PLATFORM", "cocoa");
-#else
-    if (qEnvironmentVariableIsSet("WAYLAND_DISPLAY")) {
-      qputenv("QT_QPA_PLATFORM", "wayland;xcb");
-    } else if (qEnvironmentVariableIsSet("DISPLAY")) {
-      qputenv("QT_QPA_PLATFORM", "xcb");
-    }
-#endif
-  }
-  return true;
-}
-
+// The gui test main defaults to `offscreen`, which composites no GPU widget, so a
+// display test runs only where the caller names a real QPA in QT_QPA_PLATFORM
+// (`./test.sh --display`: xcb on a private Xvfb on Linux). Nothing picks the
+// session's display on its own: a plain `ctest` from a desktop must never open
+// windows on it.
+//
 // Skips (fails under PJ_REQUIRE_GPU_TESTS=1) on a QPA that cannot composite a GPU widget.
 #define PJ_SKIP_ON_HEADLESS_QPA()                                                                           \
   do {                                                                                                      \
