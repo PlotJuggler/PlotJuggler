@@ -359,6 +359,9 @@ TEST(OnDemandRuntimeHostTest, APythonCreateNeverWaitsForTheInterpreter) {
 #ifndef PJ_PYTHON_TEST_PROBE
   GTEST_SKIP() << "this build has no Python";
 #else
+  // A wait for the held GIL never returns, so any finite slack proves the bound; it only has to cover a loaded CI
+  // runner's scheduling (macOS runners overshoot 100 ms).
+  constexpr auto kSchedulingSlack = std::chrono::milliseconds(1000);
   Fixture fx(/*real_run=*/true);
   auto first = request("first");
   first.language = "python";
@@ -378,7 +381,7 @@ TEST(OnDemandRuntimeHostTest, APythonCreateNeverWaitsForTheInterpreter) {
     EXPECT_TRUE(validated.has_value()) << "unchecked while the GIL is held: " << validated.error();
     EXPECT_LT(
         std::chrono::steady_clock::now() - validate_begin,
-        std::chrono::milliseconds(scripting::kPythonValidateWaitMillis + 100))
+        std::chrono::milliseconds(scripting::kPythonValidateWaitMillis) + kSchedulingSlack)
         << "the validate waits its bound at most";
     // The three-way check says so instead of passing it: the helper is still busy with the abandoned compile.
     const auto check = fx.view.checkScript("on_demand", "python", "def evaluate(inputs, params:\n", "{}");
@@ -392,7 +395,8 @@ TEST(OnDemandRuntimeHostTest, APythonCreateNeverWaitsForTheInterpreter) {
         rawToDisplaySeconds(10 * kSec, offset));
     QCoreApplication::processEvents();
     EXPECT_LT(
-        std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(scripting::kPythonValidateWaitMillis + 150))
+        std::chrono::steady_clock::now() - begin,
+        std::chrono::milliseconds(scripting::kPythonValidateWaitMillis) + kSchedulingSlack)
         << "no wait for the GIL but the validate's bound";
     EXPECT_EQ(fx.config("held")["state"], "pending") << fx.config("held").dump();
   }

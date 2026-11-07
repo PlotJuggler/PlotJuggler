@@ -33,6 +33,8 @@ pj_add_test_runner(pj_widgets_tests
         # Headless: TimelineScene is Qt-free math (no QApplication). Links pj_widgets
         # only for the Timeline.h include path / TimelineScene symbols.
         timeline_scene_test.cpp
+        # Headless: time-label formatting is pure math over QDateTime.
+        time_format_test.cpp
         # Widget test: needs QApplication (xvfb under CI).
         state_transitions_view_test.cpp
         # Widget test: needs QApplication (xvfb under CI).

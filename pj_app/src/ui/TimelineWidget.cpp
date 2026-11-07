@@ -4,14 +4,18 @@
 #include "ui/TimelineWidget.h"
 
 #include <QByteArray>
+#include <QEvent>
 #include <QFile>
 #include <QImage>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
 #include <QShortcut>
+#include <QStyle>
+#include <QStyleOptionFrame>
 #include <QSvgRenderer>
 #include <Qt>
 #include <algorithm>
@@ -32,6 +36,7 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   applyIcons(currentTheme());
 
   ui_->displayTime->setText("0.000");
+  ui_->displayTime->installEventFilter(this);
 
   // 30 Hz throttle window for slider-driven seeks. Synchronous image decode on
   // the GUI thread takes ~30-120 ms per topic; without this window each slider
@@ -50,6 +55,9 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   // the visual swap runs even while updating_from_engine_ is set.
   connect(ui_->buttonPlay, &QPushButton::toggled, this, [this]() { applyPlayPauseIcon(currentTheme()); });
   connect(ui_->playbackLoop, &QPushButton::toggled, this, &TimelineWidget::onLoopToggled);
+  // clicked, not toggled: the host's silent setters must not echo back to it.
+  connect(ui_->buttonUseDateTime, &QPushButton::clicked, this, &TimelineWidget::useDateTimeToggled);
+  connect(ui_->buttonTimeOffset, &QPushButton::clicked, this, &TimelineWidget::useTimeOffsetToggled);
   connect(ui_->playbackRate, &DoubleScrubber::valueChanged, this, &TimelineWidget::onRateChanged);
   connect(ui_->playbackStep, &DoubleScrubber::valueChanged, this, &TimelineWidget::onStepChanged);
   auto* playback_shortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
@@ -95,6 +103,57 @@ void TimelineWidget::setSeekLocked(bool locked) {
   }
 }
 
+void TimelineWidget::setUseDateTime(bool checked) {
+  ui_->buttonUseDateTime->setChecked(checked);
+}
+
+void TimelineWidget::setUseTimeOffset(bool checked) {
+  ui_->buttonTimeOffset->setChecked(checked);
+}
+
+void TimelineWidget::setTimeLabelFormat(TimeLabelFormat format) {
+  if (time_label_format_ == format) {
+    return;
+  }
+  time_label_format_ = format;
+  updateReadoutWidth();
+  if (engine_ != nullptr) {
+    applyEngineTime(toAxisDouble(engine_->currentTime()));
+  }
+}
+
+void TimelineWidget::updateReadoutWidth() {
+  QLineEdit* readout = ui_->displayTime;
+  // A dated wall-clock instant (kMinWallClockSeconds would print a duration);
+  // for the other formats a long negative duration is the widest label.
+  const double sample = isWallClock(time_label_format_) ? 2.0e9 : -359999.999;
+  const QString widest = formatTimeLabel(sample, time_label_format_, 3, /*with_date=*/true);
+  const QFontMetrics fm = readout->fontMetrics();
+  // Same recipe as QLineEdit::sizeHint (text + its 2-px side margins, then the
+  // style's frame and QSS padding), plus one character of slack.
+  const QMargins text_margins = readout->textMargins();
+  const QMargins contents_margins = readout->contentsMargins();
+  const int text_width = fm.horizontalAdvance(widest) + fm.averageCharWidth() + 4 + text_margins.left() +
+                         text_margins.right() + contents_margins.left() + contents_margins.right();
+  QStyleOptionFrame option;
+  option.initFrom(readout);
+  option.lineWidth =
+      readout->hasFrame() ? readout->style()->pixelMetric(QStyle::PM_DefaultFrameWidth, &option, readout) : 0;
+  const int width =
+      readout->style()->sizeFromContents(QStyle::CT_LineEdit, &option, QSize(text_width, fm.height()), readout).width();
+  readout->setMinimumWidth(std::max(80, width));
+  readout->setMaximumWidth(std::max(200, width));
+}
+
+bool TimelineWidget::eventFilter(QObject* watched, QEvent* event) {
+  // The app stylesheet lands after construction and can change the readout's font
+  // or padding at any time: re-measure whenever either changes.
+  if (watched == ui_->displayTime && (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange)) {
+    updateReadoutWidth();
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
 void TimelineWidget::onEngineTimeChanged(double t) {
   // Apply every engine tick immediately — NO display throttle. The Source Timeline
   // needle is also driven directly off currentTimeChanged, so throttling only this
@@ -108,7 +167,7 @@ void TimelineWidget::onEngineTimeChanged(double t) {
 void TimelineWidget::applyEngineTime(double t) {
   updating_from_engine_ = true;
   ui_->timeSlider->setRealValue(t);
-  const QString formatted = QString::number(t, 'f', 3);
+  const QString formatted = formatTimeLabel(t, time_label_format_, 3, /*with_date=*/true);
   if (formatted != ui_->displayTime->text()) {
     ui_->displayTime->setText(formatted);
   }
@@ -287,14 +346,15 @@ void TimelineWidget::applyIcons(QString theme) {
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
   const int band_extent = chrome_metrics_.bandHeight();
+  ui_->buttonTimeOffset->setIcon(loadSvg(":/resources/svg/t0.svg", theme));
+  ui_->buttonUseDateTime->setIcon(loadSvg(":/resources/svg/datetime.svg", theme));
   ui_->playbackLoop->setIcon(loadSvg(":/resources/svg/loop.svg", theme));
-  ui_->playbackLoop->setIconSize(icon_sz);
-  ui_->playbackLoop->setMinimumSize(button_extent, button_extent);
-  ui_->playbackLoop->setMaximumSize(button_extent, button_extent);
   applyPlayPauseIcon(theme);
-  ui_->buttonPlay->setIconSize(icon_sz);
-  ui_->buttonPlay->setMinimumSize(button_extent, button_extent);
-  ui_->buttonPlay->setMaximumSize(button_extent, button_extent);
+  for (QPushButton* button : {ui_->buttonTimeOffset, ui_->buttonUseDateTime, ui_->playbackLoop, ui_->buttonPlay}) {
+    button->setIconSize(icon_sz);
+    button->setMinimumSize(button_extent, button_extent);
+    button->setMaximumSize(button_extent, button_extent);
+  }
   // Override .ui-baked 24-px height caps on the strip's non-button
   // controls so the row grows together when icons scale.
   ui_->displayTime->setMinimumHeight(button_extent);

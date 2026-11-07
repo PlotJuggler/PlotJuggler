@@ -539,6 +539,33 @@ void PlotWidgetBase::setModeXY(bool enable) {
   if (plot_ != nullptr && plot_->magnifier != nullptr) {
     plot_->magnifier->setTimeXAxis(!enable);
   }
+  applyTimeAxisFormat();
+}
+
+void PlotWidgetBase::setTimeLabelFormat(TimeLabelFormat format) {
+  time_label_format_ = format;
+  applyTimeAxisFormat();
+}
+
+void PlotWidgetBase::applyTimeAxisFormat() {
+  const TimeLabelFormat format = xy_mode_ ? TimeLabelFormat::kSeconds : time_label_format_;
+  if (plot_ == nullptr || format == applied_time_format_) {
+    return;
+  }
+  applied_time_format_ = format;
+  QwtScaleEngine* engine = nullptr;
+  if (format == TimeLabelFormat::kSeconds) {
+    engine = new QwtLinearScaleEngine;
+    plot_->setAxisScaleDraw(QwtPlot::xBottom, new PlotScaleDraw);
+  } else {
+    engine = new PlotTimeScaleEngine(format);
+    plot_->setAxisScaleDraw(QwtPlot::xBottom, new PlotTimeScaleDraw(format));
+  }
+  // The visible interval stays as last set by setAxisScale: Qwt keeps the axis
+  // min/max across an engine swap and only re-divides the ticks.
+  engine->setAttribute(QwtScaleEngine::Floating, true);
+  plot_->setAxisScaleEngine(QwtPlot::xBottom, engine);
+  replot();
 }
 
 bool PlotWidgetBase::isXYPlot() const noexcept {

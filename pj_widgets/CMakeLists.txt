@@ -48,6 +48,7 @@ add_library(pj_widgets STATIC
     src/SvgButton.cpp
     src/Scrollbar.cpp
     src/TailFollowOverlay.cpp
+    src/TimeFormat.cpp
     src/Timeline.cpp
     src/ToastManager.cpp
     src/ToastNotification.cpp
@@ -80,6 +81,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/LayerListView.h
     include/pj_widgets/MarkerTimeline.h
+    include/pj_widgets/TimeFormat.h
     include/pj_widgets/MessageBox.h
     include/pj_widgets/Search.h
     include/pj_widgets/ProgressBar.h

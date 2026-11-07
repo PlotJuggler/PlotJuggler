@@ -38,7 +38,9 @@ Derived series (script outputs) reach this module as ordinary datastore topics, 
 ## Rules and pitfalls
 
 - **Qwt is external and never patched** (`3rdparty/qwt/README.PJ4.md`). PJ-specific Qwt behaviour lives here:
-  `PlotScaleDraw` (fixed-notation tick labels, installed on every axis) and the "Lines and Dots" style
+  `PlotScaleDraw` (fixed-notation tick labels, installed on every axis; with the app's date-time toggle on, a time
+  plot's X axis swaps to `PlotTimeScaleDraw` + `PlotTimeScaleEngine`, a seconds adapter over Qwt's millisecond
+  `QwtDateScaleEngine`, via `PlotWidgetBase::setTimeLabelFormat`) and the "Lines and Dots" style
   (`PlotCurve::drawCurve`: Lines plus one batched, pixel-weeded `drawDots` pass, because per-point QPainter calls are
   pathological; `PlotRhiCanvas` reads `PlotCurve::dotWidth()` and draws the same dots as geometry). Never add patches
   under `3rdparty/qwt/src`.

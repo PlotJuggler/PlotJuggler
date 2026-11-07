@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "pj_widgets/TimeFormat.h"
+
 class QLabel;
 class QPushButton;
 class QToolButton;
@@ -342,6 +344,10 @@ class Timeline : public QWidget {
   /// host drives this from its "use time offset" toggle. Pure formatting — bars
   /// and needles never move.
   void setAbsoluteTimeLabels(bool absolute);
+  /// How absolute labels (see setAbsoluteTimeLabels) render: kLocalClock /
+  /// kUtcClock show the wall-clock time of day; any other value keeps the Unix
+  /// timestamp. Elapsed labels ignore it. Pure formatting, like the above.
+  void setAbsoluteClockFormat(TimeLabelFormat format);
   /// Pin the left name column to an exact width (px) and make it the column's
   /// minimum, so the separator can be aligned pixel-perfect under an external
   /// reference (the host aligns it to the playback bar's track start). The user
@@ -457,7 +463,7 @@ class Timeline : public QWidget {
   /// Move the reference needle to reference_ns_ for the current viewport.
   void repositionReference();
   /// Label for a marker pill (playhead / reference) at a display-ns position:
-  /// absolute wall-clock when absolute_time_labels_, else elapsed time relative to
+  /// absolute (absolute_clock_format_) when absolute_time_labels_, else elapsed time relative to
   /// ruler_epoch_ns_. The single seam both needle labels go through.
   [[nodiscard]] QString markerLabel(qint64 display_ns) const;
   /// The scene track with this id, or nullptr — the single lookup all the drag
@@ -594,6 +600,8 @@ class Timeline : public QWidget {
   // elapsed time relative to ruler_epoch_ns_. Pure label choice — never moves
   // anything. Driven by the host's "use time offset" toggle via setAbsoluteTimeLabels.
   bool absolute_time_labels_ = false;
+  // Rendering of the absolute labels: wall clock or the Unix timestamp. See setAbsoluteClockFormat.
+  TimeLabelFormat absolute_clock_format_ = TimeLabelFormat::kSeconds;
   // ns added to playhead/range/reference values supplied via the double setters
   // (host's external/playback frame) to reach the bars' internal frame, and
   // subtracted from emitted seeks. Integer-ns so the needle stays bit-exact with the
