@@ -449,7 +449,7 @@
          <item row="8" column="0">
           <widget class="QLabel" name="labelSystemFileDialog">
            <property name="toolTip">
-            <string>Open and save files with the system's own file dialog instead of PlotJuggler's. It does not stall on disconnected network drives, but does not follow the app's theme.</string>
+            <string>Open and save files with the system's own file dialog instead of PlotJuggler's (Save Layout keeps PlotJuggler's). It does not stall on disconnected network drives, but does not follow the app's theme.</string>
            </property>
            <property name="text">
             <string>System file dialog:</string>

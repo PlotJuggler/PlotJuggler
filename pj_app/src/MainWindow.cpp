@@ -3885,9 +3885,18 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
   }
 }
 
+// Copy, never the proposed Move: a source may delete a file whose move was accepted.
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
   if (event->mimeData() != nullptr && !FileLoader::droppedFilePaths(*event->mimeData()).isEmpty()) {
-    event->acceptProposedAction();
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+  }
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
+  if (event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
   }
 }
 
@@ -3896,8 +3905,11 @@ void MainWindow::dropEvent(QDropEvent* event) {
   if (paths.isEmpty()) {
     return;
   }
-  event->acceptProposedAction();
-  file_loader_->loadFiles(paths, this);
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+  // Load after the drop returns: the file manager waits inside the OS drag
+  // loop until then, and a load can open dialogs.
+  QTimer::singleShot(0, this, [this, paths] { file_loader_->loadFiles(paths, this); });
 }
 
 void MainWindow::paintEvent(QPaintEvent* event) {

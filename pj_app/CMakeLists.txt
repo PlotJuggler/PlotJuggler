@@ -634,6 +634,9 @@ if(PJ_BUILD_TESTS)
     if(NOT EMSCRIPTEN)
         list(APPEND PJ_APP_GUI_TEST_SOURCES
             tests/main_window_rhi_window_test.cpp)
+        # A file drag over a curve drop target still reaches MainWindow (desktop only).
+        list(APPEND PJ_APP_GUI_TEST_SOURCES
+            tests/main_window_file_drop_test.cpp)
     endif()
 
     # Viewport re-frame after a layout's timeline offsets settle: sync leg (FIX 1)

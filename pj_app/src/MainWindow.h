@@ -49,6 +49,7 @@ class QAction;
 class QButtonGroup;
 class QCloseEvent;
 class QDragEnterEvent;
+class QDragMoveEvent;
 class QDropEvent;
 class QMenu;
 class QPaintEvent;
@@ -1339,9 +1340,12 @@ class MainWindow : public QMainWindow {
   bool eventFilter(QObject* watched, QEvent* event) override;
 
   // Local files dragged onto the window (from a file manager) load as if picked
-  // in Load Data. Plots and placeholders ignore file drags, so a drop on them
-  // reaches here too. Folders are not expanded.
+  // in Load Data. Plots and placeholders ignore file drags, and Qt offers an
+  // ignored drag-enter to each ancestor that accepts drops, so a drop on them
+  // reaches here too. Floating docks are separate windows and do not take file
+  // drops. Folders are not expanded.
   void dragEnterEvent(QDragEnterEvent* event) override;
+  void dragMoveEvent(QDragMoveEvent* event) override;
   void dropEvent(QDropEvent* event) override;
 
   // Paints a 1-px border flush with the window edge. Self-painted via
