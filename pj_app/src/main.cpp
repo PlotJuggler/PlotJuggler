@@ -265,9 +265,8 @@ int main(int argc, char* argv[]) {
 #endif
 #ifndef PJ_TARGET_WASM
   // Handled before any Q(Core)Application exists: the selftest needs nothing
-  // from Qt, while a QApplication would demand a platform plugin — and the
-  // packaged AppImage ships only xcb, useless on the display-less CI
-  // containers this flag exists for.
+  // from Qt, while a QApplication would demand a platform plugin and a display,
+  // which the display-less CI containers this flag exists for do not have.
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--selftest-python") == 0) {
       return selftestPython();

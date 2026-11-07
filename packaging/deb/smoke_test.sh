@@ -106,7 +106,7 @@ plotjuggler4 --selftest-python
 echo "--- GUI startup under Xvfb ---"
 # Mesa's DRI drivers give Xvfb's GLX the software rasterizer (llvmpipe) the
 # render check below draws with; a user's machine has its own GPU driver.
-apt-get install -y -qq xvfb weston libgl1-mesa-dri >/dev/null
+apt-get install -y -qq xvfb weston libgl1-mesa-dri libegl-mesa0 >/dev/null
 set +e
 xvfb-run -a --server-args="-screen 0 1280x800x24" \
   timeout 25 plotjuggler4 --test-data --nosplash >"${WORK}/gui.log" 2>&1

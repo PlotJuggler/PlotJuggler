@@ -407,6 +407,15 @@ wayland_dst="${APPDIR}/usr/plugins/wayland-graphics-integration-client"
 mkdir -p "${wayland_dst}"
 install -m 755 "${wayland_src}"/*.so "${wayland_dst}/"
 "./${LD}" --appdir "${APPDIR}" --deploy-deps-only "${wayland_dst}"
+# Qt only warns when a shell or EGL integration fails to load, so a missing one
+# could still pass the render check: require them here.
+for wayland_plugin in platforms/libqwayland.so wayland-shell-integration/libxdg-shell.so \
+    wayland-graphics-integration-client/libqt-plugin-wayland-egl.so; do
+  [[ -f "${APPDIR}/usr/plugins/${wayland_plugin}" ]] || {
+    echo "ERROR: ${wayland_plugin} was not deployed into the AppDir" >&2
+    exit 1
+  }
+done
 
 if [[ "${PJ_SANITIZE}" == asan ]]; then
   if ! has_debug_lines "${deployed_app}"; then
@@ -419,8 +428,7 @@ if [[ "${PJ_SANITIZE}" == asan ]]; then
   }
   echo "Sanitizers: verified .debug_line in deployed usr/bin/plotjuggler4"
 
-  # linuxdeploy-plugin-qt deploys only the platform plugin the app actually used
-  # at deploy time, which is xcb. Running this artifact headlessly
+  # The bundled platform plugins (xcb, wayland) all need a display. Running this artifact headlessly
   # with no display — in CI and on a developer machine where starting an X server
   # is not an option — so add Qt's offscreen platform plugin. Instrumented builds
   # ONLY: the shipped release artifact is deliberately left byte-identical.

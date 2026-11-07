@@ -12,7 +12,7 @@
 # whose `apt install` resolved the .deb's Depends — which doubles as proof
 # that the set declared there covers the payload both artifacts share. For a
 # standalone run, install those packages (see `Depends:` in the .deb, or
-# SONAME_PKG in packaging/deb/build_deb.sh) plus xvfb, weston and libgl1-mesa-dri first.
+# SONAME_PKG in packaging/deb/build_deb.sh) plus xvfb, weston, libgl1-mesa-dri and libegl-mesa0 first.
 #
 #   sh packaging/appimage/smoke_test.sh <path/to/PlotJuggler-*.AppImage>
 set -e

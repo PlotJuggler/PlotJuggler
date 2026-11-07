@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: MPL-2.0
 # Render the packaged application through native Wayland, without XWayland.
+# Usage: wayland_check.sh <app command...>  (the same arguments as render_check.sh)
 set -eu
 command -v weston >/dev/null || { echo "ERROR: install weston for the Wayland smoke check" >&2; exit 1; }
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -9,7 +10,7 @@ weston_pid=
 cleanup() {
   rc=$?
   trap - EXIT HUP INT TERM
-  if [ "$rc" -ne 0 ]; then cat "$work/weston.log" >&2; fi
+  if [ "$rc" -ne 0 ]; then cat "$work/weston.log" >&2 2>/dev/null || true; fi
   if [ -n "$weston_pid" ]; then
     kill "$weston_pid" 2>/dev/null || true
     wait "$weston_pid" 2>/dev/null || true
