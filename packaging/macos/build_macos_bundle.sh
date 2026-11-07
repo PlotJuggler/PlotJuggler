@@ -111,6 +111,32 @@ cp -R "${py_stdlib}" "${CONTENTS}/Resources/python/lib/"
 find "${CONTENTS}/Resources/python" -name __pycache__ -type d -prune -exec rm -rf {} +
 echo "Python: bundled $(basename "${py_stdlib}")"
 
+# macdeployqt finds the binary through CFBundleExecutable, so the plist comes
+# first; step 4 sets LSMinimumSystemVersion.
+cat > "${CONTENTS}/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>plotjuggler4</string>
+  <key>CFBundleIdentifier</key><string>io.plotjuggler.application</string>
+  <key>CFBundleName</key><string>PlotJuggler</string>
+  <key>CFBundleDisplayName</key><string>PlotJuggler</string>
+  <key>CFBundleIconFile</key><string>plotjuggler</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${VERSION}</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+</dict>
+</plist>
+PLIST
+plutil -lint "${CONTENTS}/Info.plist" >/dev/null
+
 # ---------------------------------------------------------------------------
 # 2. Qt and Conan libraries into Frameworks, install names rewritten.
 #    The stdlib's extension modules are deployed too: they link Conan's
@@ -128,7 +154,9 @@ is_macho() { file -b "$1" | grep -q 'Mach-O'; }
 missing=0
 while IFS= read -r -d '' bin; do
   is_macho "${bin}" || continue
+  own_id="$(otool -D "${bin}" | tail -n +2)"
   while IFS= read -r dep; do
+    [[ "${dep}" == "${own_id}" ]] && continue
     case "${dep}" in
       /System/* | /usr/lib/* | @executable_path/* | @loader_path/* | @rpath/*) ;;
       *) echo "  ${bin#"${APP}/"} -> ${dep}" >&2; missing=1 ;;
@@ -178,7 +206,7 @@ PY
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Info.plist. LSMinimumSystemVersion is the highest deployment target of
+# 4. LSMinimumSystemVersion: the highest deployment target of
 #    any bundled Mach-O (Qt's floor, unless a Conan library asks for more).
 # ---------------------------------------------------------------------------
 min_macos="11.0"
@@ -190,29 +218,7 @@ while IFS= read -r -d '' bin; do
 done < <(find "${APP}" -type f -print0)
 echo "Minimum macOS: ${min_macos}"
 
-cat > "${CONTENTS}/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>plotjuggler4</string>
-  <key>CFBundleIdentifier</key><string>io.plotjuggler.application</string>
-  <key>CFBundleName</key><string>PlotJuggler</string>
-  <key>CFBundleDisplayName</key><string>PlotJuggler</string>
-  <key>CFBundleIconFile</key><string>plotjuggler</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>CFBundleVersion</key><string>${VERSION}</string>
-  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>LSMinimumSystemVersion</key><string>${min_macos}</string>
-  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>NSPrincipalClass</key><string>NSApplication</string>
-  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-</dict>
-</plist>
-PLIST
-plutil -lint "${CONTENTS}/Info.plist" >/dev/null
+plutil -replace LSMinimumSystemVersion -string "${min_macos}" "${CONTENTS}/Info.plist"
 
 # ---------------------------------------------------------------------------
 # 5. Sign inside out (no --deep): every nested Mach-O, the frameworks, the
