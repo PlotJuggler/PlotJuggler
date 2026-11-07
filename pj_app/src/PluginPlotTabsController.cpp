@@ -203,7 +203,9 @@ Status PluginPlotTabsController::createTabOfKind(
     if (is_plot) {
       clearPlotCurves(existing);
     }
-    existing->setName(title.isEmpty() ? existing->name() : title);
+    if (!title.isEmpty()) {
+      tabs_.renameTab(existing, title);
+    }
     return okStatus();
   }
   // Built before anything is replaced: a kind this build cannot show leaves the old tab as it was.

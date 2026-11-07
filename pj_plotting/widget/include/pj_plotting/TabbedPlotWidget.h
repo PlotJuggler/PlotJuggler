@@ -114,6 +114,9 @@ class TabbedPlotWidget : public QWidget {
   // Selects `docker`'s tab, exactly like clicking its tab frame. No-op if
   // `docker` is null or hosts no tab here (e.g. a stale pointer).
   void focusTab(PlotDocker* docker);
+  // Renames `docker` and its tab-strip label, which PlotDocker::setName alone leaves stale.
+  // Pushes no undo step (callers renaming user tabs emit their own). No-op if `docker` hosts no tab here.
+  void renameTab(PlotDocker* docker, const QString& name);
 
   // Panel-toggle buttons. Created here but relocated by the MainWindow
   // shell into the title bar (it reparents them after construction).

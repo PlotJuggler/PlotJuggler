@@ -184,6 +184,29 @@ TEST(TabbedWidgetTab, WidgetTabNameReadableWritableAndSurvivesRestore) {
   EXPECT_TRUE(tabbed.widgetTabName(tabbed.dockerAt(0)).isEmpty());
 }
 
+// The labels the tab strip shows, in tab order.
+QStringList stripLabels(const PJ::TabbedPlotWidget& tabbed) {
+  QStringList labels;
+  for (const QFrame* frame : tabbed.findChildren<QFrame*>(u"plotTabFrame"_s)) {
+    for (const QLabel* label : frame->findChildren<QLabel*>()) {
+      labels << label->text();
+    }
+  }
+  return labels;
+}
+
+TEST(TabbedWidgetTab, RenameTabUpdatesDockerAndStripLabel) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* docker = tabbed.addTab(u"Before"_s);
+  ASSERT_TRUE(stripLabels(tabbed).contains(u"Before"_s));
+
+  tabbed.renameTab(docker, u"After"_s);
+
+  EXPECT_EQ(docker->name(), u"After"_s);
+  EXPECT_TRUE(stripLabels(tabbed).contains(u"After"_s));
+  EXPECT_FALSE(stripLabels(tabbed).contains(u"Before"_s));
+}
+
 TEST(TabbedWidgetTab, SerializerSkipsWidgetTabsAndLoadPreservesThem) {
   PJ::TabbedPlotWidget tabbed;
   tabbed.addTab(u"plots2"_s);
