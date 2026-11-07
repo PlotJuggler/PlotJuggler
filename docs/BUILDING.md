@@ -151,12 +151,19 @@ After a default build:
 ./test.sh
 ```
 
-The wrapper runs CTest without opening windows. For GUI and GPU coverage under a
-virtual display, use the same command as Linux CI:
+The wrapper runs CTest offscreen, so no test opens a window on your desktop. The
+QRhi display runners (label `qrhi`) skip there; `--display` runs them inside a
+private Xvfb (`xvfb-run`, `QT_QPA_PLATFORM=xcb`, `WAYLAND_DISPLAY` unset), serially
+as Linux CI does:
 
 ```bash
-xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
+./test.sh --display -L qrhi
 ```
+
+No test picks a real display on its own: a display pass runs only where
+`QT_QPA_PLATFORM` names a real QPA, as `--display` and the CI lanes do. On macOS
+and Windows `--display` uses the desktop (`cocoa`, `windows`), which has no virtual
+equivalent there.
 
 GPU-backed tests self-skip when there is no usable graphics backend (the QRhi
 display runners under `offscreen`, or a backend without a driver) — expected on a

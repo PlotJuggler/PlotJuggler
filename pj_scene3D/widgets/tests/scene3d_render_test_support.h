@@ -40,9 +40,6 @@
 
 namespace pj::scene3d::test {
 
-// Runs before main(); see pjPreferRealDisplayQpa().
-inline const bool kRealDisplayPlatform = pjPreferRealDisplayQpa();
-
 // Arms the shader-named fault injection (PJ::kRhiTestFailShaderEnv) for `shader`,
 // a shader path suffix, until clear() or destruction.
 class PipelineFault {
