@@ -25,11 +25,13 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QList>
+#include <QMimeData>
 #include <QMutex>
 #include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QUrl>
 #include <QWidget>
 #include <QtGlobal>
 #include <algorithm>
@@ -4300,6 +4302,26 @@ TEST_F(FileLoaderTest, BrowserReplayRewritesWithoutRecordingTheReplacedPath) {
   EXPECT_EQ(received.value(u"filepath"_s).toString(), backing);
   EXPECT_EQ(received.value(u"delimiter"_s).toString(), u";"_s);
   EXPECT_FALSE(received.contains(u"__pj_saved_filepath"_s));
+}
+
+// A drop from a file manager can mix files with folders and links; only the
+// local files load.
+TEST(FileLoaderDrop, DroppedFilePathsKeepsOnlyLocalFiles) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString file_path = dir.filePath(u"data.csv"_s);
+  QFile file(file_path);
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  file.close();
+
+  QMimeData mime;
+  mime.setUrls(
+      {QUrl::fromLocalFile(dir.path()), QUrl::fromLocalFile(file_path),
+       QUrl::fromLocalFile(dir.filePath(u"missing.csv"_s)), QUrl(u"https://example.com/data.csv"_s)});
+  EXPECT_EQ(PJ::FileLoader::droppedFilePaths(mime), QStringList{file_path});
+
+  mime.setUrls({QUrl::fromLocalFile(dir.path())});
+  EXPECT_TRUE(PJ::FileLoader::droppedFilePaths(mime).isEmpty());
 }
 
 PJ_APP_TEST_MAIN("file_loader_test")

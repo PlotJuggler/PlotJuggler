@@ -266,6 +266,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       ui_->labelCustomTitleBar->hide();
       ui_->customTitleBarToggle->hide();
     }
+    ui_->systemFileDialogToggle->setChecked(
+        settings.value(MainWindow::kSystemFileDialogKey, false).toBool(),
+        /*animate=*/false);
+    if (!FileDialog::systemDialogSupported()) {
+      ui_->labelSystemFileDialog->hide();
+      ui_->systemFileDialogToggle->hide();
+    }
 #ifdef PJ_TARGET_WASM
     // Neither startup network call exists in the browser build (see main.cpp):
     // a tab cannot self-update, and it is a page view rather than an installed
@@ -585,6 +592,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
     settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());
     settings.setValue(MainWindow::kCustomTitleBarKey, ui_->customTitleBarToggle->isChecked());
+    settings.setValue(MainWindow::kSystemFileDialogKey, ui_->systemFileDialogToggle->isChecked());
+    FileDialog::setUseSystemDialog(ui_->systemFileDialogToggle->isChecked());
     settings.setValue(u"Preferences::check_updates_on_startup"_s, ui_->checkUpdatesToggle->isChecked());
     settings.setValue(u"Preferences::send_anonymous_stats"_s, ui_->telemetryToggle->isChecked());
     settings.setValue(u"Preferences::curve_color_global"_s, ui_->curveColorMode->selectedIndex() == 0);

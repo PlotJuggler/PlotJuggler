@@ -64,6 +64,24 @@ class FileDialog : public Dialog {
   // ShowDirsOnly). Returns the chosen directory, empty on cancel.
   static QString getExistingDirectory(QWidget* parent, const QString& caption, const QString& dir = QString());
 
+  // Opt in to the platform's own picker for the open, save and folder helpers
+  // (not getSaveFileNameWithOptions, whose checkboxes need the embedded
+  // picker). Unlike the Qt-drawn picker, it lists drives without waiting on
+  // disconnected network drives, at the cost of the app's styling. Process
+  // wide; the app applies its Preferences value. No effect unless
+  // systemDialogSupported().
+  static void setUseSystemDialog(bool enabled);
+  // Windows and macOS only: on Linux the native GTK picker crashes on this
+  // app's libpng ABI skew (pj_app/CMakeLists.txt, --exclude-libs), and the
+  // browser has its own picker.
+  [[nodiscard]] static constexpr bool systemDialogSupported() {
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return true;
+#else
+    return false;
+#endif
+  }
+
   // Test-only: replace the reachability probe run by setDirectory() and for
   // the persisted sidebar shortcuts (empty restores the default,
   // QFileInfo::exists). The probe runs on a detached
@@ -127,6 +145,14 @@ class FileDialog : public Dialog {
   // empty vector) when `extras` is empty.
   std::vector<QCheckBox*> embedExtras(const std::vector<ExtraOption>& extras);
 
+  // True when the helpers should hand over to runSystemDialog().
+  [[nodiscard]] static bool useSystemDialog();
+  // Runs the platform picker modally; the chosen paths, empty on cancel.
+  static QStringList runSystemDialog(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter, QFileDialog::FileMode mode,
+      QFileDialog::AcceptMode accept, const QString& default_suffix = QString(),
+      const QString& selected_name = QString());
+
   QFileDialog* inner_;
   QLabel* start_folder_notice_;
   ChromeMetrics chrome_metrics_;
@@ -135,6 +161,9 @@ class FileDialog : public Dialog {
 template <typename SignalSourceT>
 QString FileDialog::getOpenFileName(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, SignalSourceT* metrics_source) {
+  if (useSystemDialog()) {
+    return runSystemDialog(parent, caption, dir, filter, QFileDialog::ExistingFile, QFileDialog::AcceptOpen).value(0);
+  }
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);
@@ -160,6 +189,9 @@ QString FileDialog::getOpenFileName(
 template <typename SignalSourceT>
 QStringList FileDialog::getOpenFileNames(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, SignalSourceT* metrics_source) {
+  if (useSystemDialog()) {
+    return runSystemDialog(parent, caption, dir, filter, QFileDialog::ExistingFiles, QFileDialog::AcceptOpen);
+  }
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);
@@ -186,6 +218,10 @@ template <typename SignalSourceT>
 QString FileDialog::getSaveFileName(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
     SignalSourceT* metrics_source) {
+  if (useSystemDialog()) {
+    return runSystemDialog(parent, caption, dir, filter, QFileDialog::AnyFile, QFileDialog::AcceptSave, default_suffix)
+        .value(0);
+  }
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);
