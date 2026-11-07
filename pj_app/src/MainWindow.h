@@ -149,6 +149,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowLayoutDatasetPathsTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
+  friend class McpSpikeServer;  // SPIKE
   friend class MainWindowCustomTopicsTestPeer;
   friend class MainWindowRelease41LayoutTestPeer;
   friend class MainWindowScene3dDropFramingTestPeer;
