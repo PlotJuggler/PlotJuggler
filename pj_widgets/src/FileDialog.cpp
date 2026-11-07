@@ -282,7 +282,10 @@ bool FileDialog::useSystemDialog() {
 QStringList FileDialog::runSystemDialog(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, QFileDialog::FileMode mode,
     QFileDialog::AcceptMode accept, const QString& default_suffix, const QString& selected_name) {
-  QFileDialog dlg(parent, caption, dir, filter);
+  // QFileDialog's constructor stats the start folder on this thread; a dead
+  // network share would hang it, so open in the default folder instead.
+  const QString start_dir = (dir.isEmpty() || foldersAnsweringInTime({dir}).front() != 0) ? dir : QString();
+  QFileDialog dlg(parent, caption, start_dir, filter);
   dlg.setFileMode(mode);
   dlg.setAcceptMode(accept);
   dlg.setOption(QFileDialog::ShowDirsOnly, mode == QFileDialog::Directory);

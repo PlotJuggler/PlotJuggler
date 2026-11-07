@@ -1012,10 +1012,9 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   const QString last_dir = settings.value(kLastDirKey, QString()).toString();
 
   // PJ::FileDialog wraps a non-native QFileDialog in our frameless
-  // chrome — see pj_widgets/FileDialog.h. The native GTK dialog also
-  // crashes on this app's libpng ABI skew (see the --exclude-libs,ALL
-  // note in pj_app/CMakeLists.txt), so we avoid it both for look and
-  // for stability. The shell-injected picker threads MainWindow's chrome
+  // chrome, or opens the system dialog where the user opted in
+  // (FileDialog::setUseSystemDialog, Windows and macOS only) — see
+  // pj_widgets/FileDialog.h. The shell-injected picker threads MainWindow's chrome
   // metrics into the dialog (toolbar icon size, kept in step via
   // chromeMetricsChanged) — see setFilePicker().
   const QStringList paths = file_picker_ != nullptr
