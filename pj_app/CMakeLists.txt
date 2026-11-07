@@ -1033,8 +1033,8 @@ if(PJ_BUILD_TESTS)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
             add_test(NAME scene3d_rhi_app_smoke
                 COMMAND sh ${CMAKE_SOURCE_DIR}/packaging/smoke/render_check.sh $<TARGET_FILE:pj_app>)
-            # Skipped (77) without a display, as the gtest display passes are,
-            # unless PJ_REQUIRE_GPU_TESTS=1.
+            # Skipped (77) unless QT_QPA_PLATFORM names a real QPA, as the gtest
+            # display passes are; a failure instead under PJ_REQUIRE_GPU_TESTS=1.
             set_tests_properties(scene3d_rhi_app_smoke PROPERTIES
                 LABELS qrhi-opengl TIMEOUT 120 SKIP_RETURN_CODE 77
                 ENVIRONMENT "PJ_RENDER_BACKEND=OpenGL;PJ_RENDER_SKIP_WITHOUT_DISPLAY=1")
