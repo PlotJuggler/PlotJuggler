@@ -63,9 +63,52 @@
 #endif
 #include "pj_version.h"
 #include "pj_widgets/Style.h"
+#if defined(_WIN32)
+#include <windows.h>  // backward.hpp already pulls it in (with NOMINMAX)
+#endif
 using namespace Qt::StringLiterals;
 
 namespace {
+
+#if defined(_WIN32)
+// Ctrl+C / Ctrl+Break in the attached terminal, which the user may press long
+// after the shell prompt came back, would otherwise end the process at once and
+// skip MainWindow's close handling. Close the windows instead. Runs on a thread
+// the console creates, hence the queued call.
+BOOL WINAPI onConsoleInterrupt(DWORD event) {
+  if ((event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT) || qApp == nullptr) {
+    return FALSE;
+  }
+  QMetaObject::invokeMethod(qApp, [] { QApplication::closeAllWindows(); }, Qt::QueuedConnection);
+  return TRUE;
+}
+
+// The app is a GUI-subsystem exe, so it gets no console of its own. Started from a
+// terminal, attach to the terminal's console so CLI output (--help, the selftests)
+// and Qt's log, which goes to stderr only while a console is attached, still appear
+// there. A stream the launcher already redirected (a pipe or a file) is kept. Must
+// run before the first Qt log message: Qt caches the console check.
+void attachParentConsole() {
+  const auto is_unset = [](DWORD which) {
+    const HANDLE handle = GetStdHandle(which);
+    return handle == nullptr || handle == INVALID_HANDLE_VALUE;
+  };
+  const bool reopen_stdout = is_unset(STD_OUTPUT_HANDLE);
+  const bool reopen_stderr = is_unset(STD_ERROR_HANDLE);
+  if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+    return;
+  }
+  SetConsoleCtrlHandler(onConsoleInterrupt, TRUE);
+  FILE* reopened = nullptr;
+  if (reopen_stdout) {
+    freopen_s(&reopened, "CONOUT$", "w", stdout);
+  }
+  if (reopen_stderr) {
+    freopen_s(&reopened, "CONOUT$", "w", stderr);
+  }
+}
+#endif
+
 // One process-wide crash handler. Its constructor (run at static-init, before
 // main) registers handlers for SIGSEGV/SIGABRT/SIGFPE/... that dump a
 // symbolized stack trace to stderr. We instantiate it explicitly rather than
@@ -217,6 +260,9 @@ bool isUnattendedRun(
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#if defined(_WIN32)
+  attachParentConsole();
+#endif
 #ifndef PJ_TARGET_WASM
   // Handled before any Q(Core)Application exists: the selftest needs nothing
   // from Qt, while a QApplication would demand a platform plugin — and the

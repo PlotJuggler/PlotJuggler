@@ -34,7 +34,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $PjQtDir 'bin\Qt6Core.dll'))) {
 
 Add-PjRuntimeDllDirs $PjBuildDir
 
-# pj_app is a console-subsystem executable, so & waits for it and
-# $LASTEXITCODE is its exit code (a WIN32_EXECUTABLE would need Start-Process -Wait).
-& $Bin @appArgs
+# pj_app is a GUI-subsystem executable: & alone would return at once. Piping its
+# output makes PowerShell wait, prints it, and sets $LASTEXITCODE.
+& $Bin @appArgs | Out-Default
 exit $LASTEXITCODE

@@ -273,6 +273,16 @@ set_target_properties(pj_app PROPERTIES
     # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
     OUTPUT_NAME plotjuggler4
 )
+if(WIN32)
+    # GUI subsystem: no console window next to the app when it starts from the
+    # Start menu or Explorer. main() stays the entry point, and main.cpp attaches
+    # to the parent console when the app is started from a terminal. PowerShell's
+    # `&` does not wait for a GUI-subsystem exe (scripts/windows/run.ps1 pipes it).
+    set_target_properties(pj_app PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MSVC)
+        target_link_options(pj_app PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+endif()
 target_include_directories(pj_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(pj_app PRIVATE
     pj_app_shell
