@@ -8,6 +8,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFrame>
+#include <QLabel>
 #include <QMimeData>
 #include <QPointer>
 #include <QSignalSpy>
@@ -1152,6 +1153,18 @@ class MainWindowPluginViewsTestPeer {
     const auto config = pluginTabs(window).tabConfig(owner, u"run-b"_s);
     ASSERT_TRUE(config);
     EXPECT_NE(config->find("Renamed"), std::string::npos);
+
+    // Re-creating an owned tab with a new title retitles its tab-strip label too, not only the docker.
+    ASSERT_TRUE(pluginTabs(window).createTab(owner, u"run-b"_s, u"Retitled"_s));
+    EXPECT_EQ(pluginTabs(window).ownedTab(owner, u"run-b"_s), second);
+    EXPECT_EQ(second->name(), u"Retitled"_s);
+    QStringList strip_labels;
+    for (const QFrame* frame : tabs->findChildren<QFrame*>(u"plotTabFrame"_s)) {
+      for (const QLabel* label : frame->findChildren<QLabel*>()) {
+        strip_labels << label->text();
+      }
+    }
+    EXPECT_TRUE(strip_labels.contains(u"Retitled"_s)) << strip_labels.join(u", "_s).toStdString();
 
     DockWidget* second_dock = second->plotAt(0);
     ASSERT_NE(second_dock, nullptr);
