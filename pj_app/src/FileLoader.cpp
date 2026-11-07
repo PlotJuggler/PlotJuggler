@@ -609,9 +609,12 @@ void openScrollableMessageDialog(
     const char* role;
   };
   const BtnSpec specs[] = {
-      {PJ_MSG_BTN_OK, QT_TR_NOOP("OK"), "primary"},      {PJ_MSG_BTN_YES, QT_TR_NOOP("Yes"), "primary"},
-      {PJ_MSG_BTN_NO, QT_TR_NOOP("No"), "neutral"},      {PJ_MSG_BTN_CONTINUE, QT_TR_NOOP("Continue"), "primary"},
-      {PJ_MSG_BTN_ABORT, QT_TR_NOOP("Abort"), "cancel"}, {PJ_MSG_BTN_CANCEL, QT_TR_NOOP("Cancel"), "cancel"},
+      {PJ_MSG_BTN_OK, QT_TRANSLATE_NOOP("QObject", "OK"), "primary"},
+      {PJ_MSG_BTN_YES, QT_TRANSLATE_NOOP("QObject", "Yes"), "primary"},
+      {PJ_MSG_BTN_NO, QT_TRANSLATE_NOOP("QObject", "No"), "neutral"},
+      {PJ_MSG_BTN_CONTINUE, QT_TRANSLATE_NOOP("QObject", "Continue"), "primary"},
+      {PJ_MSG_BTN_ABORT, QT_TRANSLATE_NOOP("QObject", "Abort"), "cancel"},
+      {PJ_MSG_BTN_CANCEL, QT_TRANSLATE_NOOP("QObject", "Cancel"), "cancel"},
   };
   // Fall back to a lone OK when the plugin passed no button we render
   // (mirrors the QMessageBox path in the caller); specs[0] is that OK entry.
@@ -1083,7 +1086,8 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
           return;  // loader destroyed, or picker cancelled.
         }
         if (!staged.input.has_value()) {
-          const QString reason = staged.error.isEmpty() ? self->tr("Could not stage the selected file.") : staged.error;
+          const QString reason =
+              staged.error.isEmpty() ? FileLoader::tr("Could not stage the selected file.") : staged.error;
           self->logLoadFailure(staged.browser_name, reason);
           self->reportLoadWarning(guarded_parent.data(), reason);
           emit self->fileLoadFailed(staged.browser_name, reason);

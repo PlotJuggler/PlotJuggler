@@ -293,16 +293,17 @@ void CalendarWidget::paintEvent(QPaintEvent* /*event*/) {
   // controls, so this grid is intentionally title-less — do NOT paint an
   // "MMMM yyyy" title here (it would overdraw the weekday row / calendar).
 
-  // Day name headers
+  // Captions follow the interface catalog without changing numeric/date parsing locales.
   p.setFont(font());
-  static const char* day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+  static const char* day_names[] = {QT_TR_NOOP("Mon"), QT_TR_NOOP("Tue"), QT_TR_NOOP("Wed"), QT_TR_NOOP("Thu"),
+                                    QT_TR_NOOP("Fri"), QT_TR_NOOP("Sat"), QT_TR_NOOP("Sun")};
   int day_header_y = kHeaderPad / 2;
   QColor weekend_color(0xef, 0x53, 0x50);
   QColor header_color = tok.muted;
   for (int c = 0; c < kCols; ++c) {
     QRect r(c * cell_w, day_header_y, cell_w, fm_h + kHeaderPad);
     p.setPen((c >= 5) ? weekend_color : header_color);
-    p.drawText(r, Qt::AlignCenter, day_names[c]);
+    p.drawText(r, Qt::AlignCenter, tr(day_names[c]));
   }
 
   // Effective range for painting
@@ -605,8 +606,12 @@ RangeCalendarWidget::RangeCalendarWidget(QWidget* parent)
   // marching.
   month_combo_ = new ComboBox;
   month_combo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+  static const char* month_names[] = {QT_TR_NOOP("January"), QT_TR_NOOP("February"), QT_TR_NOOP("March"),
+                                      QT_TR_NOOP("April"),   QT_TR_NOOP("May"),      QT_TR_NOOP("June"),
+                                      QT_TR_NOOP("July"),    QT_TR_NOOP("August"),   QT_TR_NOOP("September"),
+                                      QT_TR_NOOP("October"), QT_TR_NOOP("November"), QT_TR_NOOP("December")};
   for (int m = 1; m <= 12; ++m) {
-    month_combo_->addItem(QLocale().standaloneMonthName(m), m);
+    month_combo_->addItem(tr(month_names[m - 1]), m);
   }
   year_combo_ = new ComboBox;
   year_combo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
@@ -842,17 +847,17 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
     return btn;
   };
 
-  all_button_ = add_preset(kPresetAll, "All");
-  add_preset(kPresetPast24h, "Past 24h");
-  add_preset(kPresetLast7Days, "Last 7 Days");
-  add_preset(kPresetLastMonth, "Last Month");
+  all_button_ = add_preset(kPresetAll, tr("All"));
+  add_preset(kPresetPast24h, tr("Past 24h"));
+  add_preset(kPresetLast7Days, tr("Last 7 Days"));
+  add_preset(kPresetLastMonth, tr("Last Month"));
   preset_row->addStretch();
   all_button_->setChecked(true);
   connect(preset_group_, &QButtonGroup::idClicked, this, &DateRangePicker::onPresetClicked);
   main_layout->addLayout(preset_row);
 
   auto* date_row = new QHBoxLayout;
-  custom_button_ = make_preset(kPresetCustom, "Custom");
+  custom_button_ = make_preset(kPresetCustom, tr("Custom"));
   custom_button_->setToolTip(tr("Pick a custom date range"));
   date_row->addWidget(custom_button_);
   from_edit_ = new QLineEdit;

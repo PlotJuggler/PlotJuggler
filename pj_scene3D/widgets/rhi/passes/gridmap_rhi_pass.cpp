@@ -203,13 +203,16 @@ bool GridMapRhiPass::ensureLayerGpu(QRhi* rhi, GridMapLayer* layer, LayerGpu& gp
   const std::uint64_t vertices = 6ULL * (grid.column_count - 1U) * (grid.row_count - 1U);
   if (texture_limit <= 0 || grid.column_count > static_cast<quint32>(texture_limit) ||
       grid.row_count > static_cast<quint32>(texture_limit) || vertices > std::numeric_limits<quint32>::max()) {
-    layer->noteRenderFailure(tr("Grid map %1 x %2 exceeds this GPU's texture or draw limits")
-                                 .arg(QString::number(grid.column_count), QString::number(grid.row_count)));
+    layer->noteRenderFailure(
+        QCoreApplication::translate(
+            "pj::scene3d::SceneViewWidget", "Grid map %1 x %2 exceeds this GPU's texture or draw limits")
+            .arg(QString::number(grid.column_count), QString::number(grid.row_count)));
     releaseLayerGpu(gpu);
     return false;
   }
   if (!ensureUniformBuffer(rhi, gpu.uniform_buffer, kUniformBytes)) {
-    layer->noteRenderFailure(tr("Could not create the grid-map uniform buffer"));
+    layer->noteRenderFailure(
+        QCoreApplication::translate("pj::scene3d::SceneViewWidget", "Could not create the grid-map uniform buffer"));
     releaseLayerGpu(gpu);
     return false;
   }
@@ -232,7 +235,8 @@ bool GridMapRhiPass::ensureLayerGpu(QRhi* rhi, GridMapLayer* layer, LayerGpu& gp
       gpu.color = rhi->newTexture(QRhiTexture::R32F, size);
     }
     if ((gpu.elevation != nullptr && !gpu.elevation->create()) || (gpu.color != nullptr && !gpu.color->create())) {
-      layer->noteRenderFailure(tr("Could not allocate the grid-map textures"));
+      layer->noteRenderFailure(
+          QCoreApplication::translate("pj::scene3d::SceneViewWidget", "Could not allocate the grid-map textures"));
       releaseLayerGpu(gpu);
       return false;
     }
@@ -245,7 +249,8 @@ bool GridMapRhiPass::ensureLayerGpu(QRhi* rhi, GridMapLayer* layer, LayerGpu& gp
     QRhiTexture* color = gpu.color != nullptr ? gpu.color : elevation;
     gpu.shader_resources = createLayerBindings(rhi, gpu.uniform_buffer, elevation, color);
     if (gpu.shader_resources == nullptr) {
-      layer->noteRenderFailure(tr("Could not create grid-map shader bindings"));
+      layer->noteRenderFailure(
+          QCoreApplication::translate("pj::scene3d::SceneViewWidget", "Could not create grid-map shader bindings"));
       releaseLayerGpu(gpu);
       return false;
     }

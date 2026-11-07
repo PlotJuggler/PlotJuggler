@@ -364,7 +364,7 @@ class TimelineNamePanel : public QWidget {
         theme::space(theme::Space::None));
     row->setSpacing(theme::space(theme::Space::None));
 
-    header_label_ = new QLabel(tr("Datasets"), header_);
+    header_label_ = new QLabel(QObject::tr("Datasets"), header_);
     header_label_->setObjectName(u"timelineDatasetsLabel"_s);
 
     // Merge button (merge icon, no label; 24-px to match the app chrome).
@@ -372,7 +372,7 @@ class TimelineNamePanel : public QWidget {
     // The Timeline enables it only when ≥2 sources are selected and wires its click.
     merge_button_ = new SvgButton(u":/resources/svg/merge.svg"_s, SvgButton::Size::kDefault, header_);
     merge_button_->setObjectName(u"timelineMergeButton"_s);
-    merge_button_->setToolTip(tr("Merge the selected datasets"));
+    merge_button_->setToolTip(QObject::tr("Merge the selected datasets"));
     merge_button_->setEnabled(false);
 
     row->addWidget(header_label_);

@@ -320,7 +320,7 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
     button->setFixedSize(QSize(kTabBarButtonSize, kTabBarButtonSize));
     button->setIconSize(QSize(kTabBarIconSize, kTabBarIconSize));
     button->setFocusPolicy(Qt::NoFocus);
-    button->setToolTip(QObject::tr(tip));
+    button->setToolTip(tr(tip));
     return button;
   };
   button_left_panel_ = make_panel_button(QT_TR_NOOP("Toggle left panel"));

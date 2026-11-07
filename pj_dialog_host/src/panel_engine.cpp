@@ -521,23 +521,27 @@ QWidget* PanelEngine::openPanel() {
     if (picker_view.isFilePicker(name)) {
       const FilePickerStart start = filePickerStart(picker_view, name);
       const QString path = PJ::FileDialog::getOpenFileName(
-          impl_->root, QString::fromStdString(picker_view.filePickerTitle(name).value_or("Select File")), start.dir,
-          QString::fromStdString(picker_view.filePickerFilter(name).value_or("")), start.name);
+          impl_->root,
+          QString::fromStdString(picker_view.filePickerTitle(name).value_or(QObject::tr("Select File").toStdString())),
+          start.dir, QString::fromStdString(picker_view.filePickerFilter(name).value_or("")), start.name);
       if (!path.isEmpty()) {
         forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
       }
     } else if (picker_view.isSaveFilePicker(name)) {
       const FilePickerStart start = filePickerStart(picker_view, name);
       const QString path = PJ::FileDialog::getSaveFileName(
-          impl_->root, QString::fromStdString(picker_view.filePickerTitle(name).value_or("Save File")), start.dir,
-          QString::fromStdString(picker_view.filePickerFilter(name).value_or("")),
+          impl_->root,
+          QString::fromStdString(picker_view.filePickerTitle(name).value_or(QObject::tr("Save File").toStdString())),
+          start.dir, QString::fromStdString(picker_view.filePickerFilter(name).value_or("")),
           QString::fromStdString(picker_view.saveFilePickerDefaultSuffix(name).value_or("")), start.name);
       if (!path.isEmpty()) {
         forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
       }
     } else if (picker_view.isFolderPicker(name)) {
       const QString path = PJ::FileDialog::getExistingDirectory(
-          impl_->root, QString::fromStdString(picker_view.folderPickerTitle(name).value_or("Select Folder")),
+          impl_->root,
+          QString::fromStdString(
+              picker_view.folderPickerTitle(name).value_or(QObject::tr("Select Folder").toStdString())),
           filePickerStart(picker_view, name).dir);
       if (!path.isEmpty()) {
         forward(name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()));

@@ -293,17 +293,20 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
     }
     if (prepared.draws > kSceneLimits.max_model_draws_per_layer ||
         prepared.triangles > kSceneLimits.max_model_triangles_per_layer) {
-      layer->modelLayer().noteRenderFailure(tr("Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
-                                                .arg(
-                                                    QString::number(prepared.draws),
-                                                    QString::number(prepared.triangles),
-                                                    QString::number(kSceneLimits.max_model_draws_per_layer),
-                                                    QString::number(kSceneLimits.max_model_triangles_per_layer)));
+      layer->modelLayer().noteRenderFailure(
+          QCoreApplication::translate(
+              "pj::scene3d::SceneViewWidget", "Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
+              .arg(
+                  QString::number(prepared.draws), QString::number(prepared.triangles),
+                  QString::number(kSceneLimits.max_model_draws_per_layer),
+                  QString::number(kSceneLimits.max_model_triangles_per_layer)));
       continue;
     }
     if (has_color && !tryConsumeModels(prepared.draws, prepared.triangles, remaining_draws, remaining_triangles)) {
       layer->modelLayer().noteRenderFailure(
-          tr("Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
+          QCoreApplication::translate(
+              "pj::scene3d::SceneViewWidget",
+              "Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
               .arg(
                   QString::number(prepared.draws), QString::number(prepared.triangles),
                   QString::number(remaining_draws), QString::number(remaining_triangles)));
@@ -314,7 +317,8 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
         prepared.shadow_triangles > kSceneLimits.max_model_triangles_per_layer ||
         !tryConsumeModels(
             prepared.shadow_draws, prepared.shadow_triangles, remaining_shadow_draws, remaining_shadow_triangles)) {
-      shadow_warning = tr("Model shadows exceed this view's draw/triangle budget");
+      shadow_warning = QCoreApplication::translate(
+          "pj::scene3d::SceneViewWidget", "Model shadows exceed this view's draw/triangle budget");
       for (Call& call : prepared.calls) {
         call.shadow = false;
       }
@@ -438,7 +442,8 @@ void ModelRhiPass::buildInstances(QRhi* rhi, const glm::dvec3& render_origin, co
       MeshGpu& mesh = *gpu_mesh;
       const bool lines = prepared.wireframe;
       if (lines && !ensureEdges(rhi, mesh)) {
-        layer->modelLayer().noteRenderFailure(tr("Could not allocate a model wireframe buffer"));
+        layer->modelLayer().noteRenderFailure(
+            QCoreApplication::translate("pj::scene3d::SceneViewWidget", "Could not allocate a model wireframe buffer"));
         edges_failed = true;
         continue;
       }
@@ -845,7 +850,7 @@ bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& g
     remaining_layer_pixels -= std::min(remaining_layer_pixels, mesh.texture_pixels);
   }
   const auto fail = [&](const char* reason) {
-    layer->modelLayer().noteRenderFailure(tr(reason));
+    layer->modelLayer().noteRenderFailure(QCoreApplication::translate("pj::scene3d::SceneViewWidget", reason));
     releaseLayerGpu(gpu);
     return false;
   };
@@ -857,7 +862,7 @@ bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& g
       // clearShadowMap() may have dropped its bindings.
       for (MaterialGpu& material : kept->second.materials) {
         if (material.shader_resources == nullptr && !rebuildMaterialBindings(rhi, material)) {
-          return fail("Could not create model material bindings");
+          return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "Could not create model material bindings"));
         }
       }
       continue;
@@ -887,14 +892,14 @@ bool ModelRhiPass::buildMesh(
   const std::uint64_t vertex_bytes = source->vertices.size() * sizeof(pj::scene3d::Vertex);
   const std::uint64_t index_bytes = source->indices.size() * sizeof(std::uint32_t);
   if (vertex_bytes > std::numeric_limits<quint32>::max() || index_bytes > std::numeric_limits<quint32>::max()) {
-    return fail("A model GPU buffer exceeds the 4 GiB buffer limit");
+    return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "A model GPU buffer exceeds the 4 GiB buffer limit"));
   }
   mesh.vertex_buffer =
       rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, static_cast<quint32>(vertex_bytes));
   mesh.triangle_index_buffer =
       rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer, static_cast<quint32>(index_bytes));
   if (!mesh.vertex_buffer->create() || !mesh.triangle_index_buffer->create()) {
-    return fail("Could not allocate model GPU buffers");
+    return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "Could not allocate model GPU buffers"));
   }
 
   // Charge every distinct texture against the mesh/layer budgets, decoding the
@@ -922,7 +927,7 @@ bool ModelRhiPass::buildMesh(
       }
       if (const auto cached = textures_.find(key); cached != textures_.end()) {
         if (!tryConsumeModelTexturePixels(cached->second.pixels, remaining_mesh_pixels, candidate_layer_pixels)) {
-          return fail("A model exceeds the decoded-texture limit");
+          return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "A model exceeds the decoded-texture limit"));
         }
         keys.push_back(std::move(key));
         continue;
@@ -945,19 +950,19 @@ bool ModelRhiPass::buildMesh(
         const std::uint64_t pixels =
             static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
         if (!tryConsumeModelTexturePixels(pixels, remaining_mesh_pixels, candidate_layer_pixels)) {
-          return fail("A model exceeds the decoded-texture limit");
+          return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "A model exceeds the decoded-texture limit"));
         }
         if (size != source_size) {
           if (!decodeFitsTransientLimit(
                   source_size, size, reader.supportsOption(QImageIOHandler::ScaledSize), kSceneLimits)) {
-            return fail("A model exceeds the decoded-texture limit");
+            return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "A model exceeds the decoded-texture limit"));
           }
           reader.setScaledSize(size);
         }
         image = reader.read();
       }
       if (!size.isValid() || image.isNull()) {
-        return fail("Could not decode a model material texture");
+        return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "Could not decode a model material texture"));
       }
       ++counters_.texture_decodes;
       decoded.emplace(key, image.convertToFormat(QImage::Format_RGBA8888));
@@ -977,7 +982,7 @@ bool ModelRhiPass::buildMesh(
     QRhiTexture* texture = rhi->newTexture(QRhiTexture::RGBA8, image->second.size(), 1, flags);
     if (texture == nullptr || !texture->create()) {
       delete texture;
-      return fail("Could not allocate a model material texture");
+      return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "Could not allocate a model material texture"));
     }
     const std::uint64_t pixels =
         static_cast<std::uint64_t>(image->second.width()) * static_cast<std::uint64_t>(image->second.height());
@@ -1002,7 +1007,7 @@ bool ModelRhiPass::buildMesh(
       }
     }
     if (!rebuildMaterialBindings(rhi, material_gpu)) {
-      return fail("Could not create model material bindings");
+      return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "Could not create model material bindings"));
     }
   }
   mesh.texture_pixels = kSceneLimits.max_model_texture_pixels_per_mesh - remaining_mesh_pixels;

@@ -6,6 +6,7 @@
 #include <QAbstractItemModel>
 #include <QBrush>
 #include <QColor>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -14,6 +15,7 @@
 #include <QImage>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QNetworkAccessManager>
 #include <QNetworkInformation>
 #include <QNetworkReply>
@@ -22,6 +24,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QStyle>
@@ -30,6 +33,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "AppLanguage.h"
 #include "DebugMode.h"
 #include "MainWindow.h"
 #include "PreferencesNavRow.h"
@@ -103,6 +107,19 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // we instantiate the .ui onto a child body widget rather than setupUi(this).
   auto* body = new QWidget;
   ui_->setupUi(body);
+  // Translated labels and the restart notice must remain reachable at the
+  // supported minimum size. Wrap wide form rows instead of squeezing fields,
+  // and scroll the Appearance page when its natural height exceeds the window.
+  ui_->appearanceLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
+  ui_->appearanceLayout->setSizeConstraint(QLayout::SetMinimumSize);
+  ui_->languageCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+  auto* appearance_scroll = new QScrollArea(ui_->pagesStack);
+  appearance_scroll->setObjectName(u"appearanceScrollArea"_s);
+  appearance_scroll->setFrameShape(QFrame::NoFrame);
+  appearance_scroll->setWidgetResizable(true);
+  ui_->pagesStack->removeWidget(ui_->pageAppearance);
+  appearance_scroll->setWidget(ui_->pageAppearance);
+  ui_->pagesStack->insertWidget(kAppearancePage, appearance_scroll);
   contentLayout()->addWidget(body);
   // Free the dialog to resize down. The base Dialog's top-level layout uses Qt's
   // default SetDefaultConstraint, which on every activation forces the window's
@@ -237,12 +254,21 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->scrubberFloatPrecision->setSingleStep(1);
   ui_->curveColorMode->setOptions(tr("global"), tr("per plot"));
   ui_->splashMode->setOptions(tr("memes"), tr("serious"));
+  // Endonyms stay recognizable in either interface language. The selection is
+  // the next launch's preference, even when --language overrides this session.
+  ui_->languageCombo->addItem(QLocale(u"zh_CN"_s).nativeLanguageName(), u"zh_CN"_s);
+  ui_->languageCombo->addItem(u"English"_s, u"en_US"_s);
+  // Qt may cache the empty-model minimum hint while the page is assembled.
+  // Respect both hints so the form cannot squeeze below either size contract.
+  ui_->languageCombo->setMinimumWidth(
+      ui_->languageCombo->sizeHint().expandedTo(ui_->languageCombo->minimumSizeHint()).width());
   // Derived markers (Plotting): the batch engine's mode and its automatic reload
   // rate; MainWindow applies both at startup and on OK (derivedBatchSettingsChanged).
   ui_->derivedBatchMode->setOptions(tr("Automatic"), tr("Manual"));
   ui_->scrubberDerivedReloadHz->setRange(BatchEngine::kMinReloadHz, BatchEngine::kMaxReloadHz);
   {
     QSettings settings;
+    ui_->languageCombo->setCurrentIndex(ui_->languageCombo->findData(AppLanguage::preferredLanguage(settings)));
     ui_->scrubberFloatPrecision->setValue(settings.value(u"Preferences::precision"_s, 3).toInt());
     ui_->curveColorMode->setSelectedIndex(settings.value(u"Preferences::curve_color_global"_s, true).toBool() ? 0 : 1);
     const BatchEngine::Settings batch = BatchEngine::loadSettings();
@@ -589,6 +615,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       }
     }
     QSettings settings;
+    settings.setValue(AppLanguage::kPreferenceKey, ui_->languageCombo->currentData().toString());
     settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
     settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());
     settings.setValue(MainWindow::kCustomTitleBarKey, ui_->customTitleBarToggle->isChecked());

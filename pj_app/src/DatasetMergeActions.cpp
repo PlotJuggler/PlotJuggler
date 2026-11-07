@@ -20,14 +20,6 @@
 using namespace Qt::StringLiterals;
 
 namespace PJ {
-namespace {
-
-QString tr(const char* text) {
-  return QCoreApplication::translate("DatasetMergeActions", text);
-}
-
-}  // namespace
-
 QString composeDatasetMergeWarning(const AppSession& session, const std::vector<DatasetId>& datasets) {
   struct Info {
     QString name;
@@ -115,16 +107,23 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
     return u"<p>"_s + lead + u"</p>"_s + bullet_list(set);
   };
 
-  QString text = u"<p>"_s + tr("Merging datasets is a destructive operation. Do you wish to proceed?") + u"</p>"_s;
+  QString text = u"<p>"_s +
+                 QCoreApplication::translate(
+                     "DatasetMergeActions", "Merging datasets is a destructive operation. Do you wish to proceed?") +
+                 u"</p>"_s;
   if (!overlapping.empty()) {
-    text += section(tr("The following datasets overlap in time:"), overlapping);
+    text += section(
+        QCoreApplication::translate("DatasetMergeActions", "The following datasets overlap in time:"), overlapping);
   }
   if (!colliding.empty()) {
-    text += section(tr("The following datasets have colliding data:"), colliding);
+    text += section(
+        QCoreApplication::translate("DatasetMergeActions", "The following datasets have colliding data:"), colliding);
   }
   if (!with_objects.empty()) {
-    text +=
-        section(tr("The following datasets contain object topics that will be merged into the result:"), with_objects);
+    text += section(
+        QCoreApplication::translate(
+            "DatasetMergeActions", "The following datasets contain object topics that will be merged into the result:"),
+        with_objects);
   }
   return text;
 }
@@ -148,8 +147,11 @@ void confirmAndMergeDatasets(
   if (active_streaming_dataset != 0 &&
       std::find(datasets.begin(), datasets.end(), active_streaming_dataset) != datasets.end()) {
     MessageBox::warning(
-        parent, tr("Cannot merge datasets"),
-        u"<p>"_s + tr("Stop streaming the live source before merging it with other datasets.") + u"</p>"_s);
+        parent, QCoreApplication::translate("DatasetMergeActions", "Cannot merge datasets"),
+        u"<p>"_s +
+            QCoreApplication::translate(
+                "DatasetMergeActions", "Stop streaming the live source before merging it with other datasets.") +
+            u"</p>"_s);
     return;
   }
 
@@ -165,7 +167,8 @@ void confirmAndMergeDatasets(
       const ObjectMergeConflict& c = conflicts[static_cast<std::size_t>(i)];
       if (c.marker_description_differs) {
         list += u"<li>"_s +
-                tr("\"%1\": marker sets with a different scope, target or owner")
+                QCoreApplication::translate(
+                    "DatasetMergeActions", "\"%1\": marker sets with a different scope, target or owner")
                     .arg(QString::fromStdString(c.topic_name).toHtmlEscaped()) +
                 u"</li>"_s;
         continue;
@@ -175,32 +178,41 @@ void confirmAndMergeDatasets(
         if (c.anchor_type != c.source_type) {
           return QString::fromUtf8(sdk::name(type));
         }
-        return format.empty() ? tr("canonical %1").arg(QString::fromUtf8(sdk::name(type)))
+        return format.empty() ? QCoreApplication::translate("DatasetMergeActions", "canonical %1")
+                                    .arg(QString::fromUtf8(sdk::name(type)))
                               : QString::fromStdString(format).toHtmlEscaped();
       };
       list += u"<li>"_s +
-              tr("\"%1\": %2 vs %3")
+              QCoreApplication::translate("DatasetMergeActions", "\"%1\": %2 vs %3")
                   .arg(
                       QString::fromStdString(c.topic_name).toHtmlEscaped(), describe(c.anchor_type, c.anchor_format),
                       describe(c.source_type, c.source_format)) +
               u"</li>"_s;
     }
     if (const qsizetype remaining = static_cast<qsizetype>(conflicts.size()) - shown; remaining > 0) {
-      list += u"<li>"_s + tr("...and %1 more").arg(remaining) + u"</li>"_s;
+      list +=
+          u"<li>"_s + QCoreApplication::translate("DatasetMergeActions", "...and %1 more").arg(remaining) + u"</li>"_s;
     }
     list += u"</ul>"_s;
     MessageBox::warning(
-        parent, tr("Cannot merge datasets"),
+        parent, QCoreApplication::translate("DatasetMergeActions", "Cannot merge datasets"),
         u"<p>"_s +
-            tr("These object topics share a name but have incompatible types, formats or marker descriptions, so the "
-               "datasets cannot be merged:") +
-            u"</p>"_s + list + u"<p>"_s + tr("Remove or rename the conflicting topic and try again.") + u"</p>"_s);
+            QCoreApplication::translate(
+                "DatasetMergeActions",
+                "These object topics share a name but have incompatible types, formats or marker descriptions, so the "
+                "datasets cannot be merged:") +
+            u"</p>"_s + list + u"<p>"_s +
+            QCoreApplication::translate(
+                "DatasetMergeActions", "Remove or rename the conflicting topic and try again.") +
+            u"</p>"_s);
     return;
   }
 
   MessageBox::questionAsync(
-      parent, tr("Merge datasets"), composeDatasetMergeWarning(session, datasets),
-      {{tr("Merge"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      parent, QCoreApplication::translate("DatasetMergeActions", "Merge datasets"),
+      composeDatasetMergeWarning(session, datasets),
+      {{QCoreApplication::translate("DatasetMergeActions", "Merge"), MessageBox::kDestructiveRole},
+       {QCoreApplication::translate("DatasetMergeActions", "Cancel"), MessageBox::kCancelRole}},
       [&session, datasets, on_merged = std::move(on_merged)](int choice, bool) {
         if (choice != 0) {
           return;  // Cancel / Esc

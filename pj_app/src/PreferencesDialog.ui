@@ -162,13 +162,36 @@
           <number>8</number>
          </property>
          <item row="0" column="0">
+          <widget class="QLabel" name="labelLanguage">
+           <property name="text">
+            <string>Language:</string>
+           </property>
+           <property name="buddy">
+            <cstring>languageCombo</cstring>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="PJ::ComboBox" name="languageCombo"/>
+         </item>
+         <item row="1" column="0" colspan="2">
+          <widget class="QLabel" name="labelLanguageRestart">
+           <property name="text">
+            <string>Language changes take effect after restarting PlotJuggler.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0">
           <widget class="QLabel" name="labelTheme">
            <property name="text">
             <string>Theme:</string>
            </property>
           </widget>
          </item>
-         <item row="0" column="1">
+         <item row="2" column="1">
           <widget class="PJ::ToggleSwitch" name="themeToggle" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -178,7 +201,7 @@
            </property>
           </widget>
          </item>
-         <item row="1" column="0" colspan="2">
+         <item row="3" column="0" colspan="2">
           <widget class="QWidget" name="debugChromeWidget" native="true">
            <layout class="QVBoxLayout" name="debugChromeLayout">
             <property name="spacing">
@@ -329,14 +352,14 @@
            </layout>
           </widget>
          </item>
-         <item row="2" column="0">
+         <item row="4" column="0">
           <widget class="QLabel" name="label">
            <property name="text">
             <string>Float precision:</string>
            </property>
           </widget>
          </item>
-         <item row="2" column="1">
+         <item row="4" column="1">
           <widget class="PJ::IntScrubber" name="scrubberFloatPrecision" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -346,7 +369,7 @@
            </property>
           </widget>
          </item>
-         <item row="3" column="0">
+         <item row="5" column="0">
           <widget class="QLabel" name="labelCustomTitleBar">
            <property name="toolTip">
             <string>Remove the system window frame and draw PlotJuggler's own title bar instead. Takes effect the next time PlotJuggler starts.</string>
@@ -356,7 +379,7 @@
            </property>
           </widget>
          </item>
-         <item row="3" column="1">
+         <item row="5" column="1">
           <widget class="PJ::ToggleSwitch" name="customTitleBarToggle" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -366,7 +389,7 @@
            </property>
           </widget>
          </item>
-         <item row="4" column="0">
+         <item row="6" column="0">
           <widget class="QLabel" name="labelOpenGL">
            <property name="toolTip">
             <string>Render plots on a GPU-accelerated canvas (faster); off uses the software raster canvas. Applies to newly created plots; existing plots keep their current canvas.</string>
@@ -376,7 +399,7 @@
            </property>
           </widget>
          </item>
-         <item row="4" column="1">
+         <item row="6" column="1">
           <widget class="PJ::ToggleSwitch" name="openglToggle" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -386,7 +409,7 @@
            </property>
           </widget>
          </item>
-         <item row="5" column="0">
+         <item row="7" column="0">
           <widget class="QLabel" name="labelSplashscreen">
            <property name="toolTip">
             <string>What to show on startup: a random meme, or a clean branded banner.</string>
@@ -396,7 +419,7 @@
            </property>
           </widget>
          </item>
-         <item row="5" column="1">
+         <item row="7" column="1">
           <widget class="PJ::DualOptionsWidget" name="splashMode" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -406,7 +429,7 @@
            </property>
           </widget>
          </item>
-         <item row="6" column="0">
+         <item row="8" column="0">
           <widget class="QLabel" name="labelCheckUpdates">
            <property name="toolTip">
             <string>On startup, quietly check GitHub for a newer PlotJuggler release and show a notification if one is available.</string>
@@ -416,7 +439,7 @@
            </property>
           </widget>
          </item>
-         <item row="6" column="1">
+         <item row="8" column="1">
           <widget class="PJ::ToggleSwitch" name="checkUpdatesToggle" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -426,7 +449,7 @@
            </property>
           </widget>
          </item>
-         <item row="7" column="0">
+         <item row="9" column="0">
           <widget class="QLabel" name="labelTelemetry">
            <property name="toolTip">
             <string>On startup, send one anonymous ping to count daily users: a hashed machine id, OS name and version, CPU architecture, app version, and package type. Never any personal data, file names, paths, or usage behavior.</string>
@@ -436,7 +459,7 @@
            </property>
           </widget>
          </item>
-         <item row="7" column="1">
+         <item row="9" column="1">
           <widget class="PJ::ToggleSwitch" name="telemetryToggle" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -446,7 +469,7 @@
            </property>
           </widget>
          </item>
-         <item row="8" column="0">
+         <item row="10" column="0">
           <widget class="QLabel" name="labelSystemFileDialog">
            <property name="toolTip">
             <string>Open and save files with the system's own file dialog instead of PlotJuggler's (Save Layout keeps PlotJuggler's). It does not stall on disconnected network drives, but does not follow the app's theme.</string>
@@ -456,7 +479,7 @@
            </property>
           </widget>
          </item>
-         <item row="8" column="1">
+         <item row="10" column="1">
           <widget class="PJ::ToggleSwitch" name="systemFileDialogToggle" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -466,7 +489,7 @@
            </property>
           </widget>
          </item>
-         <item row="9" column="0" colspan="2">
+         <item row="11" column="0" colspan="2">
           <spacer name="appearanceVerticalSpacer">
            <property name="orientation">
             <enum>Qt::Orientation::Vertical</enum>
@@ -1106,6 +1129,11 @@
   </layout>
  </widget>
  <customwidgets>
+  <customwidget>
+   <class>PJ::ComboBox</class>
+   <extends>QComboBox</extends>
+   <header>pj_widgets/ComboBox.h</header>
+  </customwidget>
   <customwidget>
    <class>PJ::ToggleSwitch</class>
    <extends>QWidget</extends>

@@ -15,6 +15,7 @@
 #include <QImage>
 #include <QPixmap>
 #include <QScreen>
+#include <QSettings>
 #include <QSplashScreen>
 #include <QSurfaceFormat>
 #include <QThread>
@@ -39,6 +40,7 @@
 #include <memory>
 #include <string>
 
+#include "AppLanguage.h"
 #include "BrowserPersistence.h"
 #include "DebugMode.h"
 #ifndef PJ_TARGET_WASM
@@ -370,6 +372,11 @@ int main(int argc, char* argv[]) {
   parser.setApplicationDescription(u"PlotJuggler 4"_s);
   parser.addHelpOption();
   parser.addVersionOption();
+  const QCommandLineOption language_option(
+      u"language"_s,
+      QCoreApplication::translate("AppLanguage", "Interface language for this session (zh_CN or en_US)."),
+      u"language"_s);
+  parser.addOption(language_option);
   const QCommandLineOption test_data_option(
       u"test-data"_s, u"Populate the datastore with generated sin/cos samples and one image."_s);
   parser.addOption(test_data_option);
@@ -457,6 +464,14 @@ int main(int argc, char* argv[]) {
   parser.addOption(exit_after_layout_timeout_option);
 #endif
   parser.process(app);
+
+  // The browser's settings boundary is already installed. Keep translators
+  // alive until every window is destroyed; a CLI override never changes the
+  // saved preference or the locale used to parse and format numeric data.
+  const QSettings language_settings;
+  const PJ::AppLanguage app_language(
+      app, parser.isSet(language_option) ? parser.value(language_option)
+                                         : PJ::AppLanguage::preferredLanguage(language_settings));
 
 #ifndef PJ_TARGET_WASM
   if (parser.isSet(validate_plugins_option)) {
