@@ -1,0 +1,267 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Builds the PlotJuggler 4 macOS (arm64) .dmg with packaging/macos/build_macos_bundle.sh,
+# render-checks the app from the mounted image on Metal and, on a version tag,
+# attaches it to the GitHub Release.
+#
+# Signing: a tag or a manual run signs with the Developer ID certificate in
+# MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD / MACOS_SIGNING_IDENTITY and notarizes
+# with APPLE_ID / APPLE_TEAM_ID / APPLE_APP_PASSWORD; a tag fails without them.
+# Pull requests build an ad-hoc signed image (it runs, but Gatekeeper asks the user
+# to confirm a downloaded copy).
+#
+# Toolchain, caches and runner match macos-ci.yml, so a release reuses its Conan
+# closure and sccache objects.
+name: Release macOS Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign with the Developer ID certificate and notarize
+        type: boolean
+        default: true
+      runner:
+        description: Runner label (macos-15 when Depot's macOS capacity is queued)
+        type: choice
+        options: [depot-macos-14, macos-15]
+        default: depot-macos-14
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  pull_request:
+    paths:
+      - packaging/macos/**
+      - .github/workflows/macos-release.yml
+
+permissions:
+  contents: write     # softprops/action-gh-release creates/updates the Release
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-dmg:
+    runs-on: ${{ inputs.runner || 'depot-macos-14' }}
+    timeout-minutes: 150
+    env:
+      PJ_SIGN: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.sign) }}
+
+    steps:
+      - name: Use HTTPS for github.com submodules
+        shell: bash
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          if [[ "${GITHUB_REF_TYPE}" == tag ]]; then
+            [[ "${GITHUB_REF_NAME}" == "${PJ_APP_VERSION}" ]] || {
+              echo "::error::tag ${GITHUB_REF_NAME} does not match PJ_APP_VERSION ${PJ_APP_VERSION}"; exit 1; }
+          fi
+          echo "PJ_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Check signing credentials
+        if: env.PJ_SIGN == 'true'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          for var in MACOS_CERTIFICATE MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            [[ -n "${!var}" ]] || { echo "::error::the ${var} secret is not set"; exit 1; }
+          done
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          command -v ninja || HOMEBREW_NO_AUTO_UPDATE=1 brew install ninja
+          xcodebuild -version
+          clang --version
+
+      - name: Install sccache
+        id: setup_sccache
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: "v0.16.0"
+
+      - uses: conan-io/setup-conan@v1
+        with:
+          cache_packages: false
+
+      - name: Compute Conan cache key
+        id: conan_cache
+        shell: bash
+        run: |
+          hash=$( (cat conanfile.txt conan.lock; clang --version) | shasum -a 256 | cut -c1-16)
+          echo "hash=v1-${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Conan cache
+        id: conan-gha-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-macos-arm64-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          restore-keys: conan-macos-arm64-relwithdebinfo-v1-
+
+      - name: Seed Conan source download cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+
+      - name: Restore Qt SDK cache
+        id: qt-sdk-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .qt/${{ steps.versions.outputs.qt_version }}/macos
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-macos-v1
+
+      - name: Install Qt via aqt
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          pip3 install --break-system-packages \
+            "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
+          attempt=0
+          until aqt install-qt mac desktop "${PJ_QT_VERSION}" clang_64 --outputdir ./.qt; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "aqt failed after ${attempt} attempts" >&2; exit 1; fi
+            sleep $((attempt * 15))
+          done
+          test -x ".qt/${PJ_QT_VERSION}/macos/bin/macdeployqt"
+
+      - name: Save Qt SDK cache
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .qt/${{ steps.versions.outputs.qt_version }}/macos
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-macos-v1
+
+      - name: Conan install
+        id: conan_install
+        shell: bash
+        run: |
+          set -euo pipefail
+          conan profile detect --force
+          scripts/configure_conan_remote.sh
+          conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
+            --lockfile=conan.lock --lockfile-partial \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja
+
+      - name: Trim Conan cache before saving
+        if: steps.conan_install.outcome == 'success' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: conan cache clean "*" --build --source --temp || true
+
+      - name: Save Conan cache
+        if: steps.conan_install.outcome == 'success' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: conan-macos-arm64-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+
+      - name: Build PlotJuggler 4 (app)
+        shell: bash
+        env:
+          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
+        run: |
+          launcher_args=()
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
+          fi
+          # PJ_BUILD_TESTS=OFF keeps the test-only fault injection out of the shipped binaries.
+          cmake -S . -B build -G Ninja \
+            "-DCMAKE_TOOLCHAIN_FILE=${PWD}/build/conan_toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/macos" \
+            -DPJ_INSTALLATION=macos \
+            -DPJ_BUILD_TESTS=OFF \
+            -DPJ_BUILD_DEMOS=OFF \
+            "${launcher_args[@]}"
+          cmake --build build --target pj_app --parallel
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then sccache --show-stats; fi
+
+      - name: Import the signing certificate
+        if: env.PJ_SIGN == 'true'
+        uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+
+      - name: Build the disk image
+        shell: bash
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sign_args=()
+          if [[ "${PJ_SIGN}" == true ]]; then
+            security find-identity -v -p codesigning
+            sign_args=(--sign "${MACOS_SIGNING_IDENTITY}" --notarize)
+          fi
+          packaging/macos/build_macos_bundle.sh \
+            --qt-dir ".qt/${PJ_QT_VERSION}/macos" --build-dir build --out-dir dist \
+            --version "${PJ_VERSION}" --plugins-registry ${sign_args[@]+"${sign_args[@]}"}
+
+      - name: Render-check the app from the disk image and test Python
+        # From the mounted image, as a user first runs it: the app must find Qt,
+        # its plugins and the Python stdlib inside the bundle, on Metal.
+        shell: bash
+        env:
+          QT_FORCE_STDERR_LOGGING: "1"
+          PJ_RENDER_BACKEND: Metal
+        run: |
+          set -euo pipefail
+          dmg=$(ls dist/*.dmg)
+          mount="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "${mount}" "${dmg}"
+          trap 'hdiutil detach "${mount}" || true' EXIT
+          exe="${mount}/PlotJuggler.app/Contents/MacOS/plotjuggler4"
+          test -x "${exe}"
+          sh packaging/smoke/render_check.sh "${exe}"
+          "${exe}" --selftest-python
+
+      - name: Upload the disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlotJuggler-${{ env.PJ_VERSION }}-macOS-arm64
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: Attach the disk image to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.dmg
+          generate_release_notes: true
+          fail_on_unmatched_files: true

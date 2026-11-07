@@ -10,6 +10,7 @@ The Nix flake is the exception: it builds and packages the app in one step.
 | Debian / Ubuntu | [Debian package](deb/README.md) | `packaging/deb/build_deb.sh` |
 | Windows installer | [Qt Installer Framework](installer/README.md) | `.\packaging\installer\build_windows_installer.ps1` |
 | Windows portable ZIP | [Portable Windows package](installer/README.md#portable-zip) | `.\packaging\installer\build_windows_portable.ps1 -StageDir <stage> -OutFile <zip>` |
+| macOS disk image (arm64) | [macOS app bundle](macos/README.md) | `packaging/macos/build_macos_bundle.sh --qt-dir .qt/<PJ_QT_VERSION>/macos` |
 | Conda (RoboStack) | [Conda package](conda/README.md) | `packaging/conda/build_conda.sh` |
 | Browser app (app.plotjuggler.io) | [Hosted browser app](web/README.md) | `node packaging/web/deploy.mjs --package <deployment>` |
 
@@ -37,6 +38,7 @@ elsewhere. It needs a display and runs under POSIX `sh`, Git Bash included.
 | `deb/smoke_test.sh` | the installed `.deb`, Xvfb and native Wayland/Weston + llvmpipe | the `.deb` Release attach |
 | `appimage/smoke_test.sh` | the AppImage, Xvfb and native Wayland/Weston in the same container | none: the AppImage is attached before the smoke job runs |
 | `windows-release.yml` | the silently installed IFW package, `PATH` = System32, D3D11 on WARP | both Windows package uploads |
+| `macos-release.yml` | the app run from the mounted `.dmg`, Metal; also `--selftest-python` | the `.dmg` upload |
 | `windows-release.yml` | the extracted portable ZIP before installation, `PATH` = System32, D3D11 on WARP; also `--selftest-python` | both Windows package uploads |
 
 The AppImage smoke running after its upload is deliberate: a smoke failure

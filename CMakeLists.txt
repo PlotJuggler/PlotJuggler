@@ -22,7 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Packaging channel stamped into the anonymous telemetry ping. A channel token
 # (like gcc_64/msvc2022_64), not a version — deliberately NOT in versions.env.
-set(PJ_INSTALLATION "source" CACHE STRING "Packaging channel: source, appimage, deb, windows, or conda")
+set(PJ_INSTALLATION "source" CACHE STRING "Packaging channel: source, appimage, deb, windows, macos, or conda")
 
 configure_file(cmake/pj_version.h.in ${CMAKE_BINARY_DIR}/generated/pj_version.h @ONLY)
 

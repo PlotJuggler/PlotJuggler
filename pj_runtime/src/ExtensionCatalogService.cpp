@@ -60,9 +60,16 @@ constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
 // same path works under /usr, /usr/local, or a mounted AppImage. It is a seed
 // source only (see seedBundledPlugins), never a scanned load path. A dev build
 // tree has no such directory, so seeding is a no-op there; developers point at
-// their freshly built plugins with --plugin-dir instead.
+// their freshly built plugins with --plugin-dir instead. A macOS app bundle
+// keeps them in Contents/Resources/plugins: each plugin directory holds a
+// manifest next to its library, and code signing refuses non-code files under
+// Contents/PlugIns (packaging/macos).
 QString bundledPluginsDir() {
+#if defined(Q_OS_MACOS)
+  return QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/plugins"));
+#else
   return QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../lib/plotjuggler/plugins"));
+#endif
 }
 
 // Copies one bundled payload (a per-id directory, or a lone DSO file) into the

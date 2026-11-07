@@ -36,7 +36,7 @@ PJ4/
 ├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample presets
 ├── raster/            # helper/ executable + ipc/ wire contract
 ├── scripts/           # setup, worktrees, pre-commit, windows/ entry points
-├── packaging/         # Nix, conda, AppImage, Debian package, Windows installer, hosted browser app
+├── packaging/         # Nix, conda, AppImage, Debian package, Windows installer, macOS dmg, hosted browser app
 └── docs/              # cross-cutting guides, research, archived plans
 ```
 
@@ -62,7 +62,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `3rdparty/`: vendored source deps plus `retro/` (compliance artifacts installed next to `pj-raster-helper`). Conan/system deps do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper`; `ipc/` its header-only MPL-2.0 wire contract (also used by `pj_widgets`). PlotJuggler uses only the contract, never links the helper.
 - `scripts/`: setup/maintenance utilities, `pre-commit/` hooks, `windows/` (PowerShell behind the `.bat` shims). The everyday `build.sh`, `run.sh`, `test.sh` and their shims stay at the root.
-- `packaging/`: format-specific packaging: `nix/` (native build behind the root flake), `conda/` (source build for RoboStack users), repackaging a built tree (`appimage/`, `deb/`, `installer/`; [guides](./packaging/README.md)), and `web/` (the Worker that hosts the browser build at app.plotjuggler.io). Format utilities stay with their format; general dev utilities go to `scripts/`.
+- `packaging/`: format-specific packaging: `nix/` (native build behind the root flake), `conda/` (source build for RoboStack users), repackaging a built tree (`appimage/`, `deb/`, `installer/`, `macos/`; [guides](./packaging/README.md)), and `web/` (the Worker that hosts the browser build at app.plotjuggler.io). Format utilities stay with their format; general dev utilities go to `scripts/`.
 
 ## Documentation
 
@@ -142,7 +142,7 @@ C++20, CMake + Conan, Qt pinned by `PJ_QT_VERSION` in [`versions.env`](./version
 - **Versioning rule: never hardcode a version.** `PJ_APP_VERSION`, `PJ_QT_VERSION`, `PJ_APPIMAGE_ARCH` live **only** in `versions.env`; read them from there and change them only there. Only the app version is overridable per build (`-DPJ_VERSION=<v>` / `PJ_VERSION`). The Qt platform dir tokens (`gcc_64`, `msvc2022_64`) are a separate namespace: leave them literal. Consumers: [docs/BUILDING.md](./docs/BUILDING.md#versions).
 - **Confirm the recompile**: after a rebuild meant to pick up a C++ change, grep the build log for `Building .../<file>.cpp.o` (or check the `.o` mtime) before claiming the fix is live; RCC/QSS rebuilds can mask a stalled C++ recompile.
 - **Never chain `pkill … ; ./build.sh`**: the chained build exits 144 and skips recompiling. Kill the running app in its own command, then run `./build.sh` standalone.
-- **Portability:** Linux and Windows are shipped targets (macOS runs in CI). No Linux-only APIs or POSIX-specific paths in module code; gate platform code behind CMake / `#ifdef`. Pitfalls: [docs/BUILDING.md](./docs/BUILDING.md#portability).
+- **Portability:** Linux, Windows and macOS (arm64) are shipped targets. No Linux-only APIs or POSIX-specific paths in module code; gate platform code behind CMake / `#ifdef`. Pitfalls: [docs/BUILDING.md](./docs/BUILDING.md#portability).
 - **Third-party:** vendored deps live in `3rdparty/` (never take them from Conan or the system); everything else comes from Conan. Qwt is fetched (pinned release), not vendored, and **never patched**: PJ-specific Qwt behavior lives in `pj_plotting` / `pj_dialog_host` ([details](./docs/BUILDING.md#third-party-dependencies)).
 
 ## UI conventions
