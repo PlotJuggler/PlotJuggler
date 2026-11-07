@@ -9,11 +9,16 @@
 #include <optional>
 #include <string>
 
+#include "tool_registry.hpp"  // spike/assistant_tools
+
 namespace PJ::mcp {
 
 /// Every tool an instance serves, with JSON schemas and MCP annotations. Static, so the
 /// bridge can list tools while no PlotJuggler runs.
 [[nodiscard]] nlohmann::json toolList();
+
+/// The Assistant Agent's tool layer (spike/assistant_tools), one instance for listing and calls.
+[[nodiscard]] const assistant_agent::ToolRegistry& assistantTools();
 
 /// True for tools that never change the session; the only ones allowed while the user has
 /// a modal dialog open.

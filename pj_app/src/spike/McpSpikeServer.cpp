@@ -35,6 +35,8 @@
 #include "PluginPlotTabsController.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
+#include "pj_base/sdk/service_registry.hpp"
+#include "pj_base/sdk/toolbox_plugin_base.hpp"
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_runtime/AppSession.h"
@@ -42,14 +44,19 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/FeatureCatalogHost.h"
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_runtime/SavedSeriesPath.h"
 #include "pj_runtime/SessionManager.h"
 #include "spike/McpProtocol.h"
+#include "tool_registry.hpp"  // spike/assistant_tools
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
 using namespace Qt::StringLiterals;
 
 namespace PJ {
+// MainWindow.cpp: the service registry of a toolbox panel session (SPIKE).
+PJ_service_registry_t spikeToolboxServices(ToolboxPanelSession& session);
+
 namespace {
 
 constexpr auto kOwner = "mcp-agent";
@@ -127,6 +134,7 @@ void writeResponse(QTcpSocket* socket, int code, const QByteArray& body, const Q
 
 McpSpikeServer::McpSpikeServer(MainWindow& window, quint16 port, QString token)
     : QObject(&window), window_(window), token_(std::move(token)) {
+  connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() { agent_sessions_.clear(); });
   connect(&server_, &QTcpServer::newConnection, this, [this]() {
     while (QTcpSocket* socket = server_.nextPendingConnection()) {
       connect(socket, &QTcpSocket::readyRead, this, [this, socket]() { onReadyRead(socket); });
@@ -295,6 +303,16 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
         "the user has the dialog '" + modal->windowTitle().toStdString() +
             "' open in PlotJuggler; wait for them to close it (poll get_status) before changing anything",
         true));
+    return;
+  }
+
+  if (mcp::assistantTools().find(name) != nullptr) {
+    std::optional<assistant_agent::ToolContext> context = agentContext(owner);
+    if (!context) {
+      reply(text("PlotJuggler could not build the services this tool needs", true));
+      return;
+    }
+    runAssistantTool(owner, mcp::assistantTools().execute(name, args, *context), std::move(reply));
     return;
   }
 
@@ -589,20 +607,6 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
       receiver->deleteLater();
       reply(text("load rejected (no plugin for this file type?)", true));
     }
-  } else if (name == "create_tab") {
-    const QString kind = qs(args, "kind", u"plot"_s);
-    const QString tab = qs(args, "tab");
-    reply(fromStatus(tabs.createTabOfKind(owner, tab, kind, qs(args, "title", tab)), {{"tab", tab.toStdString()}}));
-  } else if (name == "add_curve") {
-    const Status added = tabs.addCurve(owner, qs(args, "tab"), qs(args, "topic"), qs(args, "field"), datasetName(args));
-    if (added.has_value()) {
-      (void)tabs.zoomOut(owner);  // a fresh curve is otherwise drawn in the plot's 0..1 default window
-    }
-    reply(fromStatus(added, "ok"));
-  } else if (name == "focus_tab") {
-    reply(fromStatus(tabs.focusTab(owner, qs(args, "tab")), "ok"));
-  } else if (name == "zoom_fit") {
-    reply(fromStatus(tabs.zoomOut(owner), "ok"));
   } else if (name == "add_script_series") {
     // A plugin-style transform owned by the agent: listed under Custom Topics, saved in
     // layouts with its script, and outside undo/redo like the agent's tabs.
@@ -695,19 +699,6 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
       window_.syncCustomTopicsPanel();
     }
     reply(fromStatus(removed, "ok"));
-  } else if (name == "remove_curve") {
-    reply(fromStatus(
-        tabs.removeCurve(owner, qs(args, "tab"), qs(args, "topic"), qs(args, "field"), datasetName(args)), "ok"));
-  } else if (name == "close_tab") {
-    reply(fromStatus(tabs.closeTab(owner, qs(args, "tab")), "ok"));
-  } else if (name == "attach_topic") {
-    reply(fromStatus(tabs.attachTopic(owner, qs(args, "tab"), qs(args, "topic"), datasetName(args)), "ok"));
-  } else if (name == "tab_config") {
-    auto config = tabs.tabConfig(owner, qs(args, "tab"));
-    reply(config.has_value() ? text(*config) : text(config.error(), true));
-  } else if (name == "seek") {
-    playback.setCurrentTime(DisplaySeconds{args.value("time", 0.0)});
-    reply(ok({{"current_time", playback.currentTime().value}}));
   } else if (name == "add_filter") {
     // A built-in filter becomes an agent transform too (owned, removable, outside undo, under
     // Custom Topics): select its class from the bundled resource, filling schema defaults.
@@ -742,6 +733,12 @@ void McpSpikeServer::callTool(const std::string& name, const json& args, const Q
     }
     callTool("add_script_series", delegated, owner, std::move(reply));
   } else if (name == "screenshot") {
+    if (args.contains("tab")) {
+      if (const Status focused = tabs.focusTab(owner, qs(args, "tab")); !focused) {
+        reply(text(focused.error(), true));
+        return;
+      }
+    }
     reply(
         {{"content", json::array(
                          {{{"type", "image"},
@@ -906,6 +903,50 @@ QString McpSpikeServer::datasetName(const json& args) const {
   }
   // Unknown: a name no dataset has, so the lookup fails instead of picking any dataset.
   return args["dataset"].is_string() ? QString::fromStdString(args["dataset"].get<std::string>()) : u"?"_s;
+}
+
+std::optional<assistant_agent::ToolContext> McpSpikeServer::agentContext(const QString& owner) {
+  std::shared_ptr<ToolboxPanelSession>& session = agent_sessions_[owner];
+  if (session == nullptr) {
+    RuntimeToolboxPlugin stand_in;  // no library: nothing is loaded, only the services are built
+    stand_in.id = owner.toStdString();
+    stand_in.name = "MCP agent";
+    session =
+        window_.buildToolboxPanelSession(stand_in, owner, u"MCP agent"_s, [](const QString&, const QString& error) {
+          std::fprintf(stderr, "[mcp] agent services: %s\n", qPrintable(error));
+        });
+    if (session == nullptr) {
+      agent_sessions_.remove(owner);
+      return std::nullopt;
+    }
+  }
+  const sdk::ServiceRegistry services(spikeToolboxServices(*session));
+  assistant_agent::ToolContext context;
+  context.host = services.get<sdk::ToolboxHostService>().value_or(sdk::ToolboxHostView{});
+  context.dp = services.get<sdk::DataProcessorsHostService>().value_or(sdk::DataProcessorsHostView{});
+  context.objects = services.get<sdk::ToolboxObjectReadHostService>().value_or(sdk::ToolboxObjectReadHostView{});
+  context.playback = services.get<sdk::PlaybackHostService>().value_or(sdk::PlaybackHostView{});
+  context.plot_tabs = services.get<sdk::PlotTabHostService>().value_or(sdk::PlotTabHostView{});
+  context.viewport = services.get<sdk::ViewportHostService>().value_or(sdk::ViewportHostView{});
+  if (const auto runtime = services.get<sdk::ToolboxRuntimeHostService>()) {
+    context.notify_data_changed = [runtime = *runtime]() { runtime.notifyDataChanged(); };
+  }
+  return context;
+}
+
+void McpSpikeServer::runAssistantTool(const QString& owner, assistant_agent::ToolResult result, Reply reply) {
+  if (!result.resume) {
+    reply(text(result.content, !result.ok));
+    return;
+  }
+  QTimer::singleShot(50, this, [this, owner, resume = std::move(result.resume), reply = std::move(reply)]() mutable {
+    std::optional<assistant_agent::ToolContext> context = agentContext(owner);
+    if (!context) {
+      reply(text("PlotJuggler could not build the services this tool needs", true));
+      return;
+    }
+    runAssistantTool(owner, resume(*context), std::move(reply));
+  });
 }
 
 quint32 McpSpikeServer::resolveDataset(const json& selector) const {

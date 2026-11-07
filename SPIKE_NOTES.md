@@ -30,16 +30,23 @@ agent ──stdio──> plotjuggler4 --mcp-bridge ──HTTP 127.0.0.1:<port>, 
   server `instructions`, client name to tab owner, the discovery folder.
 - Every tool is a thin call into an existing service; the spike adds no business logic.
 
-## Tools (26)
+## Tools (30)
 
 | Group | Tools | Backed by |
 |---|---|---|
-| Session | `get_status`, `about` | `CatalogModel`, `SessionManager::loadedSources`, `PlaybackEngine`; `FeatureCatalogHost::document()` (#783) |
-| Data | `open_file` (default / `config` / `ask_user`), `unload_file`, `reload_file`, `list_catalog` | `FileLoader::loadFileTicketed`, `MainWindow` remove/reload bodies; catalog snapshot v2 (#766) |
-| Values | `statistics`, `get_values` (`t0`/`t1`, `max_points`, `at`), `export_series` (aligned CSV) | `sdk::ToolboxHostView::readSeries` over a per-call `DatastoreToolboxHost`, `displayTimeForSource` |
-| Derived | `add_filter` (built-ins), `add_script_series` / `remove_script_series` (agent Luau or Python) | `applyFilter`; `upsertTransform(owner, …, history_exempt=true)` |
-| Views | `create_tab`, `close_tab`, `add_curve`, `remove_curve`, `attach_topic`, `tab_config`, `focus_tab`, `zoom_fit`, `seek`, `screenshot` | `PluginPlotTabsController` under `agent-<client>`; `QWidget::grab` + `QRhiWidget::grabFramebuffer` |
+| Session | `get_status`, `about`, `report_status`* | `CatalogModel`, `SessionManager::loadedSources`, `PlaybackEngine`; `FeatureCatalogHost::document()` (#783) |
+| Data | `open_file` (default / `config` / `ask_user`), `unload_file`, `reload_file`, `list_catalog`, `list_topics`*, `describe_topic`* | `FileLoader::loadFileTicketed`, `MainWindow` remove/reload bodies; catalog snapshot v2 (#766) |
+| Values | `statistics`, `get_values`, `export_series` (aligned CSV), `read_series`* (stats / min-max buckets / raw), `evaluate`* (Luau over series or objects, leaves nothing) | `sdk::ToolboxHostView::readSeries`; `pj.data_processors.v1` ephemeral transforms and on-demand evaluations |
+| Derived | `add_filter`, `add_script_series`, `remove_script_series`, `create_derived_series`*, `create_derived_object`* (incl. `pin_at_s` findings), `create_markers`*, `remove_markers`*, `list_created`*, `remove_derived_series`* | `upsertTransform(owner, …)`; `pj.data_processors.v1` under the agent's plugin id |
+| Views | `plot_tab`* (create/add/remove/zoom/close/list), `scene_view`* (create/attach/detach/focus/close/list), `playback`* (state/play/pause/seek/rate), `screenshot` (`tab` brings one of the agent's to the front) | `pj.plot_tabs.v1`, `pj.viewport.v1`, `pj.playback.v1` under the agent's plugin id; `QWidget::grab` + `QRhiWidget::grabFramebuffer` |
 | Bridge | `list_instances`, `select_instance`, `launch` | discovery files, `QProcess::startDetached` |
+
+\* The Assistant Agent's tools (`toolbox_assistant_agent` 0.4.0), compiled unchanged from a snapshot in
+`pj_app/src/spike/assistant_tools/`. The server builds, per agent owner, the same service assembly a toolbox
+plugin gets (`MainWindow::buildToolboxPanelSession` with the owner as plugin id) and runs the plugin's
+`ToolRegistry` against it; deferred results (object evaluations) are polled every 50 ms as the plugin's GUI
+tick does. The spike's own view tools (`create_tab`, `add_curve`, `remove_curve`, `close_tab`,
+`attach_topic`, `tab_config`, `focus_tab`, `zoom_fit`, `seek`) are retired in their favour.
 
 ## Findings
 
@@ -65,6 +72,7 @@ agent ──stdio──> plotjuggler4 --mcp-bridge ──HTTP 127.0.0.1:<port>, 
 | Agent environments | Codex starts MCP servers with a filtered environment (HOME, PATH, LANG, USER, ...; no `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`). Two failures followed: `launch` started a GUI with no display (it died; the bridge waited 60 s), and Qt's `RuntimeLocation` fell back to `/tmp/runtime-<user>` in the bridge while the GUIs wrote `/run/user/<uid>`, so the bridge saw no instance at all. Fixed: discovery under `AppLocalDataLocation` (needs only HOME); `launch` refuses at once without a display and names the fix (`mcp_servers.<name>.env_vars`); a child that dies during startup is reported in ~1 s with the head of its output (the cause precedes the crash handler's backtrace). Production: the discovery path must depend on nothing an agent may strip. |
 | Bypassing the bridge | With the bridge blind, Codex read the token from the discovery file and called HTTP from Python: same-user access is the trust boundary (owner-only file), and an agent with a shell can always cross it. Not a leak, but the bridge is a convenience, not a security layer. |
 | Multi-input / multi-output scripts | `inputs` of 5 fields of one message (accel + quaternion) joined on their shared timestamps, 3 outputs, 9,879 samples in 74 ms. Outputs are named `<name>/<output>` (bare names would collide across scripts); `remove_script_series` removes all of them. |
+| Assistant tools over MCP | All 14 run unchanged through the host's toolbox services (scripted end to end on the nissan and lidar bags): suffix path resolution, min/max buckets, `evaluate` on series and at an instant (deferred poll, 57 ms), a derived series with its point count, the empty-join refusal (99 Hz IMU + 30 Hz speed), a region marker with `covered_s`, derived objects over a point cloud (crop box, live and pinned), a 3D scene view with the cloud attached, playback, `remove_*` refusing what the agent did not create. The spike's `add_script_series` output appears in `list_created`: both tool sets share the agent's namespace. Ownership is now the host's per-plugin identity for these tools, not a string the server trusts. |
 | Origin / auth | Missing or wrong token 401; any `Origin` header 403; discovery files and folder owner-only. |
 
 ## Real agents on one task
@@ -91,6 +99,12 @@ What changed after the Claude run: `export_series` (its numpy needs aligned arra
   rename on `TabbedPlotWidget` that updates the frame label, called from the controller.
 
 ## Gaps the production design must close
+
+- **Overlapping tools.** `list_catalog` / `list_topics` + `describe_topic`, `statistics` + `get_values` /
+  `read_series` + `evaluate`, `add_script_series` / `create_derived_series` do the same jobs. Keep one of each
+  after an agent trial shows which ones agents use; the spike keeps both for that trial.
+- **Share the tool layer, don't copy it.** The spike compiles a snapshot of the plugin's code; production
+  should move `tools.cpp` and `derived_recipes` where both the plugin and the app consume one copy.
 
 - **Ownership scope.** The agent sees and edits only its own tabs, never the user's: safe, but it can't "add this
   to my plot". A product decision.

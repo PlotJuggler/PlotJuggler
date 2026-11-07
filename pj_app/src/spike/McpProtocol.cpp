@@ -23,17 +23,21 @@ json schema(json props, json required = json::array()) {
 
 constexpr auto kInstructions =
     "PlotJuggler is the user's time-series and 3D data viewer, running on their desktop. Call get_status "
-    "first, then list_catalog for exact topic/field names. For numbers use statistics and get_values instead "
-    "of decoding files yourself: they read what PlotJuggler already loaded, for every format it opens. Build "
-    "views in your own tabs (create_tab, add_curve, attach_topic); you cannot see or change the user's tabs. "
-    "Take a screenshot to check what the user sees. If a tool says the user has a dialog open, wait and poll "
-    "get_status. Read about before explaining how to do something in the PlotJuggler UI.";
+    "first; open_file loads any format PlotJuggler reads. Find topics with list_topics / describe_topic (exact "
+    "paths; a unique suffix also resolves). For numbers use read_series (statistics, min/max buckets, raw "
+    "samples) and evaluate (a Luau computation over series or objects that leaves nothing behind) instead of "
+    "decoding files yourself; export_series gives aligned CSV for your own tools. create_derived_series, "
+    "create_derived_object and create_markers install live results the user sees and keeps in their layout. "
+    "Draw only in your own tabs (plot_tab, scene_view); you cannot see or change the user's. playback moves the "
+    "shared time cursor. Take a screenshot to check what the user sees. If a tool says the user has a dialog "
+    "open, wait and poll get_status. Read about before explaining how to do something in the PlotJuggler UI.";
 
 }  // namespace
 
 bool isReadOnlyTool(const std::string& name) {
-  static const std::set<std::string> read_only = {"get_status", "list_catalog", "tab_config", "screenshot",
-                                                  "about",      "get_values",   "statistics", "list_instances"};
+  static const std::set<std::string> read_only = {
+      "get_status",  "list_catalog",   "screenshot",  "about",    "get_values",   "statistics",   "list_instances",
+      "list_topics", "describe_topic", "read_series", "evaluate", "list_created", "report_status"};
   return read_only.contains(name);
 }
 
@@ -47,7 +51,7 @@ json toolList() {
   const json dataset = {
       {"type", {"string", "integer"}},
       {"description", "dataset id, name or path (get_status); needed when several hold the topic"}};
-  return json::array({
+  json tools = json::array({
       tool(
           "get_status",
           "Start here. Loaded datasets (id, name, path, loader config), time range, current time, the agent's "
@@ -73,19 +77,6 @@ json toolList() {
                {"ask_user", {{"type", "boolean"}}},
                {"config", {{"type", "object"}}}},
               {"path"})),
-      tool(
-          "create_tab", "Create (or reset) a tab owned by the agent. kind: plot | 3d | 2d.",
-          schema({{"tab", str}, {"kind", str}, {"title", str}}, {"tab", "kind"})),
-      tool(
-          "add_curve", "Draw topic/field as a curve in a plot tab (fitted to the data).",
-          schema({{"tab", str}, {"topic", str}, {"field", str}, {"dataset", dataset}}, {"tab", "topic", "field"})),
-      tool(
-          "remove_curve", "Remove one curve from an agent plot tab.",
-          schema({{"tab", str}, {"topic", str}, {"field", str}, {"dataset", dataset}}, {"tab", "topic", "field"})),
-      tool("close_tab", "Close one of the agent's tabs.", schema({{"tab", str}}, {"tab"})),
-      tool(
-          "attach_topic", "Show an object topic (point cloud, map, markers, image...) in a 3d/2d tab.",
-          schema({{"tab", str}, {"topic", str}, {"dataset", dataset}}, {"tab", "topic"})),
       tool(
           "add_filter",
           "Create a derived series by applying a built-in filter (integral, derivative, absolute, scale, "
@@ -180,12 +171,6 @@ json toolList() {
                {"t1", {{"type", "number"}}}},
               {"series"})),
       tool(
-          "tab_config", "What an agent tab actually shows, read back from the live widgets.",
-          schema({{"tab", str}}, {"tab"})),
-      tool(
-          "seek", "Move the time cursor (display seconds, as in get_status).",
-          schema({{"time", {{"type", "number"}}}}, {"time"})),
-      tool(
           "unload_file",
           "Remove a loaded dataset and its data. dataset: id, name or path from get_status. If derived series "
           "depend on it, the user is asked to confirm in PlotJuggler.",
@@ -194,14 +179,22 @@ json toolList() {
           "reload_file", "Reload a dataset from its file with the same loader settings (e.g. after it changed).",
           schema({{"dataset", dataset}}, {"dataset"})),
       tool(
-          "focus_tab", "Bring an agent tab to the front (do this before a screenshot of it).",
-          schema({{"tab", str}}, {"tab"})),
-      tool("zoom_fit", "Fit every agent plot to its data.", schema(json::object())),
-      tool(
           "screenshot",
-          "PNG of the PlotJuggler window, including GPU-rendered plots and 3D views, and any dialog the user has open.",
-          schema({{"max_width", {{"type", "integer"}}}})),
+          "PNG of the PlotJuggler window, including GPU-rendered plots and 3D views, and any dialog the user has "
+          "open. tab: one of your plot_tab/scene_view tabs to bring to the front first.",
+          schema({{"tab", str}, {"max_width", {{"type", "integer"}}}})),
   });
+  // The Assistant Agent's tools, unchanged: the same code the in-app assistant runs.
+  for (json entry : assistantTools().toMcpToolsList()) {
+    entry["annotations"] = {{"readOnlyHint", isReadOnlyTool(entry.value("name", ""))}, {"openWorldHint", false}};
+    tools.push_back(std::move(entry));
+  }
+  return tools;
+}
+
+const assistant_agent::ToolRegistry& assistantTools() {
+  static const assistant_agent::ToolRegistry registry;
+  return registry;
 }
 
 std::optional<json> lifecycleResult(const std::string& method, const json& params) {

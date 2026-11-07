@@ -10571,6 +10571,11 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
   return session;
 }
 
+// SPIKE: McpSpikeServer runs the Assistant Agent's tool layer against the services a toolbox gets.
+PJ_service_registry_t spikeToolboxServices(ToolboxPanelSession& session) {
+  return session.builder->view();
+}
+
 void MainWindow::launchToolbox(
     const QString& plugin_id, const QString& initial_config, ToolboxLaunchTarget target, const QString& pin_tab_name) {
   // Surface every failure on the diagnostic channel (the same sink the toolbox's

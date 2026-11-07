@@ -8,6 +8,16 @@ if(NOT EMSCRIPTEN)
     find_package(Backward REQUIRED)
 endif()
 
+# SPIKE: the Assistant Agent's tool layer, compiled unchanged (src/spike/assistant_tools/README.md).
+# Its own target, so PJ4's warning flags do not apply to the copied code.
+find_package(nlohmann_json REQUIRED)
+add_library(pj_spike_assistant_tools STATIC
+    src/spike/assistant_tools/tools.cpp
+    src/spike/assistant_tools/recipes.cpp)
+target_include_directories(pj_spike_assistant_tools PUBLIC src/spike/assistant_tools)
+target_link_libraries(pj_spike_assistant_tools PUBLIC plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
+target_compile_features(pj_spike_assistant_tools PUBLIC cxx_std_20)
+
 # The whole shell as an OBJECT library so a headless test can link the exact
 # same MainWindow object files (see main_window_source_layout_test) instead of
 # duplicating the widget tree. The executable below is a thin main.cpp wrapper.
@@ -193,6 +203,7 @@ target_include_directories(pj_app_shell PUBLIC
 )
 
 target_link_libraries(pj_app_shell PUBLIC
+    pj_spike_assistant_tools
     pj_runtime
     pj_widgets
     pj_plotting

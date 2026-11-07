@@ -9,16 +9,20 @@
 #include <QPointer>
 #include <QTcpServer>
 #include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <vector>
 
 #include "pj_base/expected.hpp"
+#include "tool_context.hpp"  // spike/assistant_tools
 
 class QTcpSocket;
 
 namespace PJ {
 
 class MainWindow;
+struct ToolboxPanelSession;
 
 /// Loopback MCP server (Streamable HTTP, JSON responses only) answering both the
 /// 2026-07-28 stateless protocol and the 2025-06-18 initialize/session one. Runs on
@@ -65,12 +69,22 @@ class McpSpikeServer : public QObject {
   [[nodiscard]] Expected<Series> readSeries(const nlohmann::json& selector) const;
   /// args["dataset"] as the dataset display name `resolveCurveKey` filters by; empty when absent.
   [[nodiscard]] QString datasetName(const nlohmann::json& args) const;
+  /// The Assistant Agent's tool context for `owner`: the services a toolbox plugin with that id
+  /// gets (data processors, object reads, playback, its own plot/scene tabs), built on first use.
+  /// nullopt when the host refused to build them.
+  [[nodiscard]] std::optional<assistant_agent::ToolContext> agentContext(const QString& owner);
+  /// Runs one Assistant Agent tool; a deferred result (an object evaluation) is polled every
+  /// 50 ms with a fresh context, as the plugin's GUI tick does, until it is terminal.
+  void runAssistantTool(const QString& owner, assistant_agent::ToolResult result, Reply reply);
 
   MainWindow& window_;
   QTcpServer server_;
   QString token_;
   QString discovery_path_;
   QHash<QTcpSocket*, QByteArray> buffers_;
+  /// One toolbox service assembly per agent owner. Released on aboutToQuit, while the
+  /// MainWindow services they point into are still alive (this object dies after them).
+  QHash<QString, std::shared_ptr<ToolboxPanelSession>> agent_sessions_;
 };
 
 }  // namespace PJ
