@@ -20,8 +20,9 @@
 # Options:
 #   --appdir <path>       AppDir to package (default: build/AppDir)
 #   --binary <path>       Replace the AppDir's plotjuggler4 with this one, then
-#                         strip it and restore the deployed RUNPATH, matching
-#                         what linuxdeploy did to the copy it replaces. Used by
+#                         strip its debug info (keeping the symbol table) and
+#                         restore the deployed RUNPATH, matching the AppDir copy
+#                         it replaces. Used by
 #                         release CI to ship a binary stamped
 #                         PJ_INSTALLATION=deb rather than the AppImage-stamped
 #                         one. Requires patchelf and strip.
@@ -183,11 +184,9 @@ if [[ -n "${BINARY_OVERRIDE}" ]]; then
   echo "Binary: substituting ${BINARY_OVERRIDE}"
   install -m 0755 "${BINARY_OVERRIDE}" "${PREFIX_DIR}/bin/plotjuggler4"
   patchelf --set-rpath '$ORIGIN/../lib' "${PREFIX_DIR}/bin/plotjuggler4"
-  # linuxdeploy strips what it deploys, so the AppDir binary this replaces was
-  # stripped; skipping it would more than double the package for debug info the
-  # AppImage does not ship either. backward-cpp keeps resolving names through
-  # .dynsym, exactly as it does in the AppImage.
-  strip "${PREFIX_DIR}/bin/plotjuggler4"
+  # Match the AppImage's executable: no DWARF (it would more than double the
+  # package), but the symbol table stays so crash backtraces name PJ's frames.
+  strip --strip-debug "${PREFIX_DIR}/bin/plotjuggler4"
   # stderr silenced: an older binutils readelf warns about DWARF it cannot parse
   # in .debug_info, which has nothing to do with the dynamic section read here.
   runpath="$(readelf -d "${PREFIX_DIR}/bin/plotjuggler4" 2>/dev/null | sed -n 's/.*R\(UN\)\?PATH.*\[\(.*\)\]/\2/p')"

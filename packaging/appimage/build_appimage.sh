@@ -371,22 +371,31 @@ fi
   --plugin qt \
   "${SANITIZER_LIBRARY_ARGS[@]}"
 
+deployed_app="${APPDIR}/usr/bin/plotjuggler4"
+
+# Put the build executable back over the copy linuxdeploy deployed (and possibly
+# stripped), keeping the RPATH/RUNPATH linuxdeploy set on it.
+restore_build_executable() {
+  command -v patchelf >/dev/null || {
+    echo "ERROR: patchelf is required to restore the build executable while preserving its deployed RPATH" >&2
+    exit 1
+  }
+  local deployed_rpath
+  deployed_rpath="$(patchelf --print-rpath "${deployed_app}")"
+  local rpath_args=(--set-rpath "${deployed_rpath}")
+  # Preserve DT_RPATH versus DT_RUNPATH semantics as well as the path value.
+  if LC_ALL=C readelf -d "${deployed_app}" | grep -F '(RPATH)' >/dev/null; then
+    rpath_args+=(--force-rpath)
+  fi
+  install -m 0755 "${BUILD}/pj_app/plotjuggler4" "${deployed_app}"
+  patchelf "${rpath_args[@]}" "${deployed_app}"
+  echo "Restored the build executable with the deployed RPATH/RUNPATH: ${deployed_rpath}"
+}
+
 if [[ "${PJ_SANITIZE}" == asan ]]; then
-  deployed_app="${APPDIR}/usr/bin/plotjuggler4"
   if ! has_debug_lines "${deployed_app}"; then
-    command -v patchelf >/dev/null || {
-      echo "ERROR: linuxdeploy stripped .debug_line despite NO_STRIP=1; patchelf is required to restore the executable while preserving its deployed RPATH" >&2
-      exit 1
-    }
-    deployed_rpath="$(patchelf --print-rpath "${deployed_app}")"
-    rpath_args=(--set-rpath "${deployed_rpath}")
-    # Preserve DT_RPATH versus DT_RUNPATH semantics as well as the path value.
-    if LC_ALL=C readelf -d "${deployed_app}" | grep -F '(RPATH)' >/dev/null; then
-      rpath_args+=(--force-rpath)
-    fi
-    install -m 0755 "${BUILD}/pj_app/plotjuggler4" "${deployed_app}"
-    patchelf "${rpath_args[@]}" "${deployed_app}"
-    echo "Sanitizers: linuxdeploy stripped .debug_line despite NO_STRIP=1; restored the unstripped build executable and reapplied the deployed RPATH/RUNPATH: ${deployed_rpath}"
+    echo "Sanitizers: linuxdeploy stripped .debug_line despite NO_STRIP=1"
+    restore_build_executable
   fi
   has_debug_lines "${deployed_app}" || {
     echo "ERROR: deployed ${deployed_app} lacks .debug_line; refusing to package an instrumented AppImage without file/line information" >&2
@@ -406,6 +415,16 @@ if [[ "${PJ_SANITIZE}" == asan ]]; then
   else
     echo "WARNING: ${offscreen_src} not found; running this artifact will require a display" >&2
   fi
+else
+  # linuxdeploy's strip also drops the symbol table, which leaves crash
+  # backtraces with no names for PlotJuggler's own frames. Ship the executable
+  # with its symbol table and without DWARF (about 1 MB more, compressed).
+  restore_build_executable
+  strip --strip-debug "${deployed_app}"
+  LC_ALL=C readelf -SW "${deployed_app}" | grep -E '[[:space:]]\.symtab[[:space:]]' >/dev/null || {
+    echo "ERROR: deployed ${deployed_app} lacks .symtab" >&2
+    exit 1
+  }
 fi
 
 # Scalable icon next to the 256px raster, so HiDPI docks and app grids render
