@@ -5,7 +5,9 @@
 
 #include <qwt_text.h>
 
+#include <QDateTime>
 #include <QLocale>
+#include <QTimeZone>
 #include <cmath>
 #include <limits>
 
@@ -41,7 +43,7 @@ QwtText PlotTimeScaleDraw::label(double value) const {
 }
 
 PlotTimeScaleEngine::PlotTimeScaleEngine(TimeLabelFormat format)
-    : QwtDateScaleEngine(format == TimeLabelFormat::kLocalClock ? Qt::LocalTime : Qt::UTC) {}
+    : QwtDateScaleEngine(Qt::UTC), local_(format == TimeLabelFormat::kLocalClock) {}
 
 void PlotTimeScaleEngine::autoScale(int max_num_steps, double& x1, double& x2, double& step_size) const {
   QwtLinearScaleEngine::autoScale(max_num_steps, x1, x2, step_size);
@@ -50,15 +52,20 @@ void PlotTimeScaleEngine::autoScale(int max_num_steps, double& x1, double& x2, d
 QwtScaleDiv PlotTimeScaleEngine::divideScale(
     double x1, double x2, int max_major_steps, int max_minor_steps, double step_size) const {
   constexpr double kMsPerSecond = 1000.0;
-  const bool duration = std::max(std::abs(x1), std::abs(x2)) < kMinWallClockSeconds;
-  const QwtDateScaleEngine& engine = duration ? duration_engine_ : *this;
-  // Qualified call: on *this a virtual divideScale would recurse into this override.
-  const QwtScaleDiv ms_div = engine.QwtDateScaleEngine::divideScale(
-      x1 * kMsPerSecond, x2 * kMsPerSecond, max_major_steps, max_minor_steps, step_size * kMsPerSecond);
+  // One offset for the whole interval: across a DST change the later ticks stay
+  // on the earlier side's local boundaries.
+  double offset = 0.0;
+  if (local_ && !(readsAsDuration(x1) && readsAsDuration(x2))) {
+    const auto middle = static_cast<qint64>(std::llround((x1 + x2) / 2.0));
+    offset = QDateTime::fromSecsSinceEpoch(middle, QTimeZone(QTimeZone::LocalTime)).offsetFromUtc();
+  }
+  const QwtScaleDiv ms_div = QwtDateScaleEngine::divideScale(
+      (x1 + offset) * kMsPerSecond, (x2 + offset) * kMsPerSecond, max_major_steps, max_minor_steps,
+      step_size * kMsPerSecond);
   QList<double> ticks[QwtScaleDiv::NTickTypes];
   for (int type = 0; type < QwtScaleDiv::NTickTypes; ++type) {
     for (const double tick_ms : ms_div.ticks(type)) {
-      ticks[type].append(tick_ms / kMsPerSecond);
+      ticks[type].append((tick_ms / kMsPerSecond) - offset);
     }
   }
   // Keep the caller's exact bounds: x * 1000 / 1000 need not round-trip, and the

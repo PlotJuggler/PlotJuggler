@@ -347,21 +347,14 @@ void TimelineWidget::applyIcons(QString theme) {
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
   const int band_extent = chrome_metrics_.bandHeight();
   ui_->buttonTimeOffset->setIcon(loadSvg(":/resources/svg/t0.svg", theme));
-  ui_->buttonTimeOffset->setIconSize(icon_sz);
-  ui_->buttonTimeOffset->setMinimumSize(button_extent, button_extent);
-  ui_->buttonTimeOffset->setMaximumSize(button_extent, button_extent);
   ui_->buttonUseDateTime->setIcon(loadSvg(":/resources/svg/datetime.svg", theme));
-  ui_->buttonUseDateTime->setIconSize(icon_sz);
-  ui_->buttonUseDateTime->setMinimumSize(button_extent, button_extent);
-  ui_->buttonUseDateTime->setMaximumSize(button_extent, button_extent);
   ui_->playbackLoop->setIcon(loadSvg(":/resources/svg/loop.svg", theme));
-  ui_->playbackLoop->setIconSize(icon_sz);
-  ui_->playbackLoop->setMinimumSize(button_extent, button_extent);
-  ui_->playbackLoop->setMaximumSize(button_extent, button_extent);
   applyPlayPauseIcon(theme);
-  ui_->buttonPlay->setIconSize(icon_sz);
-  ui_->buttonPlay->setMinimumSize(button_extent, button_extent);
-  ui_->buttonPlay->setMaximumSize(button_extent, button_extent);
+  for (QPushButton* button : {ui_->buttonTimeOffset, ui_->buttonUseDateTime, ui_->playbackLoop, ui_->buttonPlay}) {
+    button->setIconSize(icon_sz);
+    button->setMinimumSize(button_extent, button_extent);
+    button->setMaximumSize(button_extent, button_extent);
+  }
   // Override .ui-baked 24-px height caps on the strip's non-button
   // controls so the row grows together when icons scale.
   ui_->displayTime->setMinimumHeight(button_extent);

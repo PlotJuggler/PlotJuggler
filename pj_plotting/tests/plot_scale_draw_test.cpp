@@ -6,7 +6,9 @@
 #include <qwt_plot_curve.h>
 
 #include <QApplication>
+#include <QDateTime>
 #include <QLocale>
+#include <QTimeZone>
 #include <cmath>
 
 #include "pj_plotting/PlotCurve.h"
@@ -104,11 +106,26 @@ TEST_F(PlotScaleDrawTest, TimeEngineAlignsTicksToClockBoundaries) {
 
 // Below a second the engine falls back to decimal steps, still in seconds.
 TEST_F(PlotScaleDrawTest, TimeEngineSubSecondTicksStayInSeconds) {
-  const PJ::PlotTimeScaleEngine engine(PJ::TimeLabelFormat::kElapsedClock);
+  const PJ::PlotTimeScaleEngine engine(PJ::TimeLabelFormat::kUtcClock);
   const QwtScaleDiv div = engine.divideScale(10.0, 10.5, 5, 5);
   const QList<double> ticks = div.ticks(QwtScaleDiv::MajorTick);
   ASSERT_GE(ticks.size(), 2);
   EXPECT_NEAR(ticks[1] - ticks[0], 0.1, 1e-9);
+}
+
+// Local time shifts by the zone offset instead of running Qwt in local mode:
+// the ticks must still land on whole local minutes.
+TEST_F(PlotScaleDrawTest, LocalTimeEngineAlignsToLocalMinutes) {
+  const PJ::PlotTimeScaleEngine engine(PJ::TimeLabelFormat::kLocalClock);
+  const double x1 = 1794066683.25;
+  const QwtScaleDiv div = engine.divideScale(x1, x1 + 3600.0, 8, 5);
+  const QList<double> ticks = div.ticks(QwtScaleDiv::MajorTick);
+  ASSERT_GE(ticks.size(), 3);
+  for (const double tick : ticks) {
+    const QDateTime local = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(tick), QTimeZone(QTimeZone::LocalTime));
+    EXPECT_EQ(local.time().second(), 0) << tick;
+    EXPECT_EQ(std::fmod(tick, 1.0), 0.0) << tick;
+  }
 }
 
 // The date-time toggle swaps only the time axis, and an XY plot keeps numbers.

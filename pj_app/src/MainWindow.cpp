@@ -2028,18 +2028,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   session_->sessionManager().setUseTimeOffset(QSettings().value(u"MainWindow.useTimeOffset"_s, false).toBool());
   ui_->timelineWidget->setUseTimeOffset(session_->sessionManager().useTimeOffset());
   connect(ui_->timelineWidget, &TimelineWidget::useTimeOffsetToggled, this, [this](bool checked) {
-    if (applying_state_) {
-      return;
-    }
     QSettings().setValue(u"MainWindow.useTimeOffset"_s, checked);
     onUseTimeOffsetToggled(checked);
   });
 
   // Date-time toggle (bottom-left of the playback strip).
-  use_date_time_ = QSettings().value(kDateTimeDisplayKey, false).toBool();
-  ui_->timelineWidget->setUseDateTime(use_date_time_);
+  ui_->timelineWidget->setUseDateTime(QSettings().value(kDateTimeDisplayKey, false).toBool());
   connect(ui_->timelineWidget, &TimelineWidget::useDateTimeToggled, this, [this](bool checked) {
-    use_date_time_ = checked;
     QSettings().setValue(kDateTimeDisplayKey, checked);
     applyTimeLabelFormat();
   });
@@ -3041,7 +3036,7 @@ void MainWindow::onOpenMarketplace() {
       PreferencesDialog prefs(*theme_, this);
       prefs.setChromeMetrics(chrome_metrics_);
       bindRecordingPreferences(prefs);
-      bindDerivedBatchPreferences(prefs);
+      bindPlottingPreferences(prefs);
       prefs.showPage(PreferencesDialog::kPluginsPage);
       prefs.exec();
     });
@@ -3608,13 +3603,13 @@ void MainWindow::onShowPreferencesDialog() {
   dlg->setAttribute(Qt::WA_DeleteOnClose);
   dlg->setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(*dlg);
-  bindDerivedBatchPreferences(*dlg);
+  bindPlottingPreferences(*dlg);
   dlg->open();
 #else
   PreferencesDialog dlg(*theme_, this);
   dlg.setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(dlg);
-  bindDerivedBatchPreferences(dlg);
+  bindPlottingPreferences(dlg);
   dlg.exec();
 #endif
 }
@@ -3749,7 +3744,7 @@ void MainWindow::pushSeriesStatus(PlotWidget* only) {
   }
 }
 
-void MainWindow::bindDerivedBatchPreferences(PreferencesDialog& dialog) {
+void MainWindow::bindPlottingPreferences(PreferencesDialog& dialog) {
   connect(&dialog, &PreferencesDialog::derivedBatchSettingsChanged, this, &MainWindow::applyDerivedBatchPreferences);
   connect(&dialog, &PreferencesDialog::timeLabelSettingsChanged, this, &MainWindow::applyTimeLabelFormat);
 }
@@ -4576,7 +4571,9 @@ void MainWindow::broadcastReferenceLine() {
 }
 
 void MainWindow::applyTimeLabelFormat() {
-  time_label_format_ = clockFormatFor(use_date_time_, QSettings().value(kClockUtcKey, false).toBool());
+  const QSettings settings;
+  time_label_format_ =
+      clockFormatFor(settings.value(kDateTimeDisplayKey, false).toBool(), settings.value(kClockUtcKey, false).toBool());
   forEachPlot([this](PlotWidget* plot) { plot->setTimeLabelFormat(time_label_format_); });
   ui_->timelineWidget->setTimeLabelFormat(time_label_format_);
   if (source_timeline_ != nullptr) {

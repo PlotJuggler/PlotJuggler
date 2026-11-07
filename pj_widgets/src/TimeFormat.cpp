@@ -36,9 +36,7 @@ TimeLabelFormat clockFormatFor(bool date_time, bool utc) noexcept {
 
 QString formatTimeLabel(double seconds, TimeLabelFormat format, int decimals, bool with_date) {
   decimals = std::clamp(decimals, 0, kMaxDecimals);
-  if (isWallClock(format) && std::abs(seconds) < kMinWallClockSeconds) {
-    format = TimeLabelFormat::kElapsedClock;
-  }
+  const bool duration = isWallClock(format) && readsAsDuration(seconds);
   const qint64 scale = pow10(decimals);
   const double scaled_value = seconds * static_cast<double>(scale);
   if (format == TimeLabelFormat::kSeconds || !std::isfinite(scaled_value) ||
@@ -48,7 +46,7 @@ QString formatTimeLabel(double seconds, TimeLabelFormat format, int decimals, bo
   // Round ONCE in integer units of the last digit, then split: rounding the
   // fraction alone would print 0.9996 as ":59.1000" instead of carrying.
   const qint64 scaled = std::llround(scaled_value);
-  const bool negative = format == TimeLabelFormat::kElapsedClock && scaled < 0;
+  const bool negative = duration && scaled < 0;
   // Durations print a sign and a magnitude; wall-clock instants floor (an
   // instant before the epoch still lands in the right second).
   const qint64 magnitude = negative ? -scaled : scaled;
@@ -60,7 +58,7 @@ QString formatTimeLabel(double seconds, TimeLabelFormat format, int decimals, bo
   }
 
   QString text;
-  if (format == TimeLabelFormat::kElapsedClock) {
+  if (duration) {
     text = QStringLiteral("%1%2:%3:%4")
                .arg(negative ? QStringLiteral("-") : QString())
                .arg(whole / 3600)

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QString>
+#include <cmath>
 #include <cstdint>
 
 namespace PJ {
@@ -10,11 +11,12 @@ namespace PJ {
 /// How a time value (seconds on the shared display axis) is labeled. One value
 /// drives every time label of the app (plot X axis, playback readout, Source
 /// Timeline) so they never disagree.
+/// The clock formats print a value below kMinWallClockSeconds as an elapsed
+/// duration `H:mm:ss` (0:00:00 at the origin, no date, no zone).
 enum class TimeLabelFormat : std::uint8_t {
-  kSeconds,       ///< Plain decimal seconds, the value as-is.
-  kElapsedClock,  ///< Duration `H:mm:ss` (0:00:00 at the origin); zone-free, for values relative to a time offset.
-  kLocalClock,    ///< Wall-clock time of day in the system time zone; the value is Unix epoch seconds.
-  kUtcClock,      ///< Wall-clock time of day in UTC; the value is Unix epoch seconds.
+  kSeconds,     ///< Plain decimal seconds, the value as-is.
+  kLocalClock,  ///< Wall-clock time of day in the system time zone; the value is Unix epoch seconds.
+  kUtcClock,    ///< Wall-clock time of day in UTC; the value is Unix epoch seconds.
 };
 
 /// Wall-clock formats read values below this (one year after the epoch) as an
@@ -23,6 +25,11 @@ enum class TimeLabelFormat : std::uint8_t {
 /// clocks (ULog, many ROS bags), do. A 1970 time of day shifted by the local zone
 /// would read as nonsense.
 inline constexpr double kMinWallClockSeconds = 365.0 * 86400.0;
+
+/// True when a clock format prints `seconds` as a duration (see kMinWallClockSeconds).
+[[nodiscard]] inline bool readsAsDuration(double seconds) noexcept {
+  return std::abs(seconds) < kMinWallClockSeconds;
+}
 
 /// True for the two wall-clock formats (the value is read as an epoch instant).
 [[nodiscard]] constexpr bool isWallClock(TimeLabelFormat format) noexcept {
@@ -39,9 +46,8 @@ inline constexpr double kMinWallClockSeconds = 365.0 * 86400.0;
 /// Formats `seconds` with `decimals` fractional digits (clamped to 0..6),
 /// rounded to the nearest unit, never truncated, so a label and the playback
 /// readout cannot disagree by one in the last digit. `with_date` prefixes
-/// `yyyy-MM-dd ` on the wall-clock formats only; a wall-clock format renders a
-/// value below kMinWallClockSeconds as kElapsedClock (no date, no zone). Values too large for exact
-/// integer rounding (or non-finite) fall back to plain seconds.
+/// `yyyy-MM-dd ` on a wall-clock instant only, never on a duration. Values too
+/// large for exact integer rounding (or non-finite) fall back to plain seconds.
 [[nodiscard]] QString formatTimeLabel(double seconds, TimeLabelFormat format, int decimals, bool with_date = false);
 
 /// Fractional digits needed to tell apart labels `step_seconds` apart: 0 for

@@ -44,12 +44,13 @@ TEST(TimeFormat, LocalClockMatchesSystemZone) {
   EXPECT_EQ(formatTimeLabel(kEpoch, TimeLabelFormat::kLocalClock, 0), expected);
 }
 
-TEST(TimeFormat, ElapsedClockIsSignedDuration) {
-  EXPECT_EQ(formatTimeLabel(3723.5, TimeLabelFormat::kElapsedClock, 1), QStringLiteral("1:02:03.5"));
-  EXPECT_EQ(formatTimeLabel(-1.5, TimeLabelFormat::kElapsedClock, 3), QStringLiteral("-0:00:01.500"));
-  EXPECT_EQ(formatTimeLabel(0.0, TimeLabelFormat::kElapsedClock, 0), QStringLiteral("0:00:00"));
+// Small values (relative to an offset) read as a signed duration in any zone.
+TEST(TimeFormat, SmallValuesAreSignedDurations) {
+  EXPECT_EQ(formatTimeLabel(3723.5, TimeLabelFormat::kUtcClock, 1), QStringLiteral("1:02:03.5"));
+  EXPECT_EQ(formatTimeLabel(-1.5, TimeLabelFormat::kUtcClock, 3), QStringLiteral("-0:00:01.500"));
+  EXPECT_EQ(formatTimeLabel(0.0, TimeLabelFormat::kUtcClock, 0), QStringLiteral("0:00:00"));
   // Durations past a day keep counting hours instead of wrapping.
-  EXPECT_EQ(formatTimeLabel(100.0 * 3600.0, TimeLabelFormat::kElapsedClock, 0), QStringLiteral("100:00:00"));
+  EXPECT_EQ(formatTimeLabel(100.0 * 3600.0, TimeLabelFormat::kUtcClock, 0), QStringLiteral("100:00:00"));
 }
 
 // Time-since-boot / sim-time values (or data aligned to start at 0) are not

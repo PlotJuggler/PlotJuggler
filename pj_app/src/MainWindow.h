@@ -710,11 +710,11 @@ class MainWindow : public QMainWindow {
 
   // Pushes the derived-markers mode and reload rate the Preferences Plotting page
   // persists to the batch engine: at startup, and on OK of every Preferences dialog
-  // this window opens (bindDerivedBatchPreferences).
+  // this window opens (bindPlottingPreferences).
   void applyDerivedBatchPreferences();
   // Connects the Plotting page's OK signals: the derived-markers settings above and
   // the clock time zone (applyTimeLabelFormat).
-  void bindDerivedBatchPreferences(PreferencesDialog& dialog);
+  void bindPlottingPreferences(PreferencesDialog& dialog);
 
   // Tells every plot which of the marker rules it displays are computing or failed
   // (PlotWidget::setMarkerStatus), on BatchEngine::runningChanged. "Computing" waits
@@ -1902,9 +1902,6 @@ class MainWindow : public QMainWindow {
   QToolButton* button_ratio_ = nullptr;
   QToolButton* button_dots_ = nullptr;
   QToolButton* button_reference_point_ = nullptr;
-  // Re-bases the time axis to start near zero (each dataset relative to its own
-  // earliest sample) instead of absolute Unix-epoch time. The frame state lives
-  // in SessionManager; this button mirrors it.
   // Global-column "Legend" button — single icon that combines a corner
   // picker (left-click) with a show/hide toggle (right-click). Checked
   // while the legend is shown at one of the four corners; unchecked
@@ -1922,9 +1919,8 @@ class MainWindow : public QMainWindow {
   LegendStatus legend_status_ = LegendStatus::kTopRight;
   bool show_points_ = false;
   bool activate_grid_ = false;
-  // Date-time toggle (kDateTimeDisplayKey) and the label format derived from it
-  // by applyTimeLabelFormat(); new plots pick the format up in applyGlobalToggles.
-  bool use_date_time_ = false;
+  // Derived from kDateTimeDisplayKey + kClockUtcKey by applyTimeLabelFormat();
+  // new plots pick it up in applyGlobalToggles.
   TimeLabelFormat time_label_format_ = TimeLabelFormat::kSeconds;
   bool dots_ = false;
 
