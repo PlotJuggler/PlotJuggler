@@ -16,7 +16,8 @@ packaging/macos/build_macos_bundle.sh --qt-dir .qt/<PJ_QT_VERSION>/macos --plugi
 | --- | --- |
 | `MacOS/` | `plotjuggler4` and `pj-plugin-check` (the marketplace refuses installs without it) |
 | `Frameworks/` | Qt and the Conan libraries, placed by `macdeployqt` |
-| `PlugIns/plotjuggler/` | the curated official plugins, seeded into the user's extension folder on first run (`ExtensionCatalogService`) |
+| `PlugIns/` | the Qt plugins (platform, styles, image formats, TLS), placed by `macdeployqt` |
+| `Resources/plugins/` | the curated official plugins, seeded into the user's extension folder on first run (`ExtensionCatalogService`). Not under `PlugIns/`: codesign refuses the non-code `manifest.json` there |
 | `Resources/python/` | the embedded CPython stdlib; `main.cpp` sets `PYTHONHOME` to it unless the user set one |
 
 The raster helper (`pj-raster-helper` and its data) is not bundled.

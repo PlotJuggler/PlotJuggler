@@ -57,7 +57,7 @@ class ExtensionCatalogService : public QObject {
     // PlatformUtils::extensionsDir().
     QString marketplace_dir;
     // Seed source (share). Empty = <prefix>/lib/plotjuggler/plugins resolved
-    // relative to the executable (Contents/PlugIns/plotjuggler in a macOS app
+    // relative to the executable (Contents/Resources/plugins in a macOS app
     // bundle).
     QString bundled_dir;
   };

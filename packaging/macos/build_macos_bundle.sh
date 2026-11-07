@@ -17,8 +17,9 @@
 #                       APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD
 #
 # Layout: Contents/MacOS holds plotjuggler4 and pj-plugin-check, Frameworks the Qt
-# and Conan libraries (macdeployqt), PlugIns/plotjuggler the bundled plugins
-# (ExtensionCatalogService's seed source) and Resources/python the embedded
+# and Conan libraries (macdeployqt), PlugIns the Qt plugins, Resources/plugins the
+# bundled PlotJuggler plugins (ExtensionCatalogService's seed source; codesign
+# refuses their manifest.json under PlugIns) and Resources/python the embedded
 # CPython stdlib (main.cpp points PYTHONHOME there). The raster helper is left
 # out.
 set -euo pipefail
@@ -81,7 +82,7 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "${STAGE}"' EXIT
 APP="${STAGE}/PlotJuggler.app"
 CONTENTS="${APP}/Contents"
-mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources" "${CONTENTS}/PlugIns/plotjuggler"
+mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources/plugins"
 
 # ---------------------------------------------------------------------------
 # 1. Executables, icon, Python stdlib.
@@ -199,8 +200,8 @@ PY
     payload="${unpack}"
     entries=("${unpack}"/*)
     if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}" ]]; then payload="${entries[0]}"; fi
-    mkdir -p "${CONTENTS}/PlugIns/plotjuggler/${id}"
-    cp -R "${payload}/." "${CONTENTS}/PlugIns/plotjuggler/${id}/"
+    mkdir -p "${CONTENTS}/Resources/plugins/${id}"
+    cp -R "${payload}/." "${CONTENTS}/Resources/plugins/${id}/"
     rm -rf "${unpack}" "${zip}"
     echo "  plugin ${id}"
   done
