@@ -5014,6 +5014,13 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   // Remember the left-panel width (the whole splitter layout) so the next launch
   // restores it instead of falling back to the narrow .ui default.
   settings.setValue(u"MainWindow.mainSplitterState"_s, ui_->mainSplitter->saveState());
+#ifndef PJ_TARGET_WASM
+  // Restored by main() before the first show. The blob records the screen, so the
+  // window reopens on the monitor it closed on where the platform lets an app place
+  // its windows; a Wayland compositor picks the screen itself and only the size and
+  // maximized state come back.
+  settings.setValue(u"MainWindow.geometry"_s, saveGeometry());
+#endif
   QMainWindow::closeEvent(event);
 }
 
