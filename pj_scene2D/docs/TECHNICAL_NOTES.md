@@ -113,13 +113,18 @@ each backend of the platform (and at the OpenGL 3.3 floor in Linux CI). A genera
 A top-level first shown with no `QRhiWidget` gets a raster backing store. When a
 `QRhiWidget` joins it later (a media or Scene3D dock added to a window whose
 plots use the raster canvas), Qt switches the window to QRhi composition (found on 6.11.1, confirmed on 6.12.0),
-on desktop and in the browser; no zero-size bootstrap widget is needed. Qt only
-does this when the `QRhiWidget` is reparented into the window
+on desktop and in the browser, by destroying and recreating the window's native
+window. Qt only does this when the `QRhiWidget` is reparented into the window
 (`QWidgetPrivate::setParent`), and a `QRhiWidget` constructed with its parent is
 not one yet when `QWidget`'s constructor sets that parent, so the window stays
 raster (`QRhiWidget: No QRhi`). Every `QRhiWidget` is therefore constructed
 parentless and then inserted (`MediaViewerWidget`, `PlotRhiCanvas`,
-`SceneViewWidget`). `rhi_mixed_dock_test` covers both paths:
+`SceneViewWidget`). On desktop `MainWindow` avoids the recreation (a visible
+flash on Wayland) by owning a hidden `QRhiWidget` from construction, so the
+window composites through QRhi from its first show; that one may take its parent
+at construction, because the first show picks the composition from the widgets
+already in the hierarchy. The browser build has none (see below).
+`rhi_mixed_dock_test` covers both paths:
 `RhiMixedLateDockFixture` (GPU docks added after a raster-only first show) and
 `RhiScene2DInPlaceTest` (a Scene2D dock built in place inside the shown window,
 as the app's dock factory does, with no other GPU widget to switch it).
