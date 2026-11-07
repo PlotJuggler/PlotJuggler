@@ -4,6 +4,7 @@
 
 #include <QElapsedTimer>
 #include <QHash>
+#include <QMimeData>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -141,6 +142,15 @@ class FileLoader : public QObject {
   // order (so you can populate several datasets in one go). The chosen directory
   // is persisted in QSettings under "FileLoader/lastDir".
   void openFromDialog(QWidget* dialog_parent);
+
+  // Runs loadFile() for each path in order, as openFromDialog does for a
+  // multi-select pick: each file reports its own failures, so one bad file
+  // does not stop the rest. Used by files dropped on the main window.
+  void loadFiles(const QStringList& paths, QWidget* dialog_parent);
+
+  // The local regular files among a drag's URLs, in order. Folders and
+  // non-local URLs are skipped; empty when nothing is loadable.
+  [[nodiscard]] static QStringList droppedFilePaths(const QMimeData& mime);
 
   // The dataset "Replace" entry point: same plugin-extension filter and lastDir
   // persistence as openFromDialog, but single-select, and the chosen file loads

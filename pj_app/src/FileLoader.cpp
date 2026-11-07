@@ -24,6 +24,7 @@
 #include <QStyle>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <chrono>
@@ -1025,13 +1026,24 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   }
   // Remember the directory of the last pick for next time.
   settings.setValue(kLastDirKey, QFileInfo(paths.last()).absolutePath());
-  // Load each selected file in order so several datasets populate in one go.
-  // Each loadFile may pop its own data-source config dialog and reports its own
-  // failures, so a single bad file doesn't abort the rest.
+  loadFiles(paths, dialog_parent);
+#endif
+}
+
+void FileLoader::loadFiles(const QStringList& paths, QWidget* dialog_parent) {
   for (const QString& path : paths) {
     loadFile(path, dialog_parent);
   }
-#endif
+}
+
+QStringList FileLoader::droppedFilePaths(const QMimeData& mime) {
+  QStringList paths;
+  for (const QUrl& url : mime.urls()) {
+    if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile()) {
+      paths.append(url.toLocalFile());
+    }
+  }
+  return paths;
 }
 
 void FileLoader::replaceFromDialog(DatasetId dataset_id, QWidget* dialog_parent) {

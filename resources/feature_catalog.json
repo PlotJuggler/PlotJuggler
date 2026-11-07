@@ -4,9 +4,9 @@
     {
       "id": "open_data_file",
       "name": "Open data files",
-      "summary": "Load recorded data from a file. The formats that open depend on the data loader extensions installed (for example CSV, MCAP, ULog or Parquet). Each loaded file becomes its own dataset, and several can be loaded side by side.",
-      "entry_point": "File → Open Data File..., or Sources panel → File → Load a data file",
-      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Open Data File...\"); pj_app/src/ui/LeftPanel.ui#Load a data file",
+      "summary": "Load recorded data from a file. The formats that open depend on the data loader extensions installed (for example CSV, MCAP, ULog or Parquet). Each loaded file becomes its own dataset, and several can be loaded side by side. Files dragged onto the window from a file manager load the same way.",
+      "entry_point": "File → Open Data File..., or Sources panel → File → Load a data file, or drag files onto the window",
+      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Open Data File...\"); pj_app/src/ui/LeftPanel.ui#Load a data file; pj_app/src/MainWindow.cpp#setAcceptDrops(true)",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Open Data File... and the Sources panel File page with its load button"
     },
     {
