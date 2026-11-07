@@ -100,6 +100,8 @@ DiagnosticsDialog::DiagnosticsDialog(DiagnosticHistory* history, QWidget* parent
   policy->setSectionWidth(kColTime, 150);
   policy->setSectionWidth(kColSeverity, 90);
   policy->setSectionWidth(kColSource, 180);
+  // Rows grow to fit the wrapped message; the history cap keeps this cheap.
+  table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
   // The table takes every extra pixel; the pane keeps a few lines unless dragged.
   ui_->splitter->setStretchFactor(0, 1);
   ui_->splitter->setStretchFactor(1, 0);
@@ -168,7 +170,6 @@ void DiagnosticsDialog::rebuild() {
     auto* level_item = new KeyedItem(loadSvg(level.icon_path, theme), level.label);
     level_item->setData(kSortKeyRole, static_cast<int>(record.level));
     auto* message_item = new QTableWidgetItem(record.message.section(u'\n', 0, 0));
-    message_item->setToolTip(record.message);
     table->setItem(row, kColTime, time_item);
     table->setItem(row, kColSeverity, level_item);
     table->setItem(row, kColSource, new QTableWidgetItem(record.source));
