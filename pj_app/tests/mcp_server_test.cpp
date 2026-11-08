@@ -21,6 +21,9 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <algorithm>
+#include <array>
+#include <clocale>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
@@ -621,6 +624,56 @@ TEST_F(McpServerTest, ExportQuotesHeadersAndRefusesTooManyRows) {
   const auto [big, big_error] = result(call("export_series", {{"paths", {"mock/file_data/value"}}, {"rate_hz", 1e14}}));
   EXPECT_TRUE(big_error);
   EXPECT_NE(big.find("more than 10000000 rows"), std::string::npos) << big;
+}
+
+// The CSV holds every value exactly and in the C locale: a value needing more than ten significant digits reads back
+// unchanged, and a decimal-comma locale (where one is installed) does not split a number into two columns.
+TEST_F(McpServerTest, ExportWritesNumbersExactlyWhateverTheLocale) {
+  ASSERT_NE(loadMock(), 0);
+  constexpr double kEpoch = 1731080000.123;  // a Unix time: 13 significant digits
+  const auto [added, add_error] = result(call(
+      "create_derived_series",
+      {{"name", "epoch"}, {"inputs", {"mock/file_data/value"}}, {"expression", "value * 0 + 1731080000.123"}}));
+  ASSERT_FALSE(add_error) << added;
+  const std::string series = json::parse(added, nullptr, false).value("series", "");
+  ASSERT_FALSE(series.empty()) << added;
+
+  const std::string saved = std::setlocale(LC_NUMERIC, nullptr);
+  bool comma_locale = false;
+  for (const char* name : {"en_DK.UTF-8", "en_DK.utf8", "de_DE.UTF-8", "de_DE.utf8", "de_DE", "German_Germany.1252"}) {
+    if (std::setlocale(LC_NUMERIC, name) != nullptr) {
+      std::array<char, 8> probe{};
+      std::snprintf(probe.data(), probe.size(), "%.1f", 1.5);
+      comma_locale = std::string(probe.data()) == "1,5";
+      if (comma_locale) {
+        break;
+      }
+    }
+  }
+  if (!comma_locale) {
+    std::setlocale(LC_NUMERIC, saved.c_str());
+  }
+  const auto [text, error] = result(call("export_series", {{"paths", {series}}}));
+  std::setlocale(LC_NUMERIC, saved.c_str());
+  ASSERT_FALSE(error) << text;
+
+  QFile csv(QString::fromStdString(json::parse(text, nullptr, false).value("path", "")));
+  ASSERT_TRUE(csv.open(QIODevice::ReadOnly));
+  csv.readLine();  // header
+  int rows = 0;
+  while (!csv.atEnd()) {
+    const QList<QByteArray> fields = csv.readLine().trimmed().split(',');
+    ASSERT_EQ(fields.size(), 2) << "comma locale: " << comma_locale << ", row: " << fields.join(',').toStdString();
+    bool ok = false;
+    fields[0].toDouble(&ok);
+    EXPECT_TRUE(ok) << fields[0].toStdString();
+    if (!fields[1].isEmpty()) {
+      EXPECT_EQ(fields[1].toDouble(), kEpoch) << fields[1].toStdString();
+      ++rows;
+    }
+  }
+  csv.remove();
+  EXPECT_GT(rows, 0);
 }
 
 // An agent's removal never takes the user's work with it: with a series of the user's built on each of the agent's,
