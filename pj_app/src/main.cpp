@@ -627,8 +627,7 @@ int main(int argc, char* argv[]) {
 
   // Before any layout restore: a previous run that died with Custom Widget plugins live is
   // reported, and an attended run asks whether to disable them.
-  window.reviewUncleanShutdown(
-      /*interactive=*/!isUnattendedRun(parser, exit_after_layout_option, screenshot_option));
+  window.reviewUncleanShutdown(/*interactive=*/attended);
 #endif
 
   // Deferred so the load runs after the event loop starts (the file loads on a
@@ -642,7 +641,7 @@ int main(int argc, char* argv[]) {
 #ifdef PJ_TARGET_WASM
     constexpr bool interactive = false;
 #else
-    const bool interactive = !isUnattendedRun(parser, exit_after_layout_option, screenshot_option);
+    const bool interactive = attended;
 #endif
     QTimer::singleShot(0, &window, [&window, startup_files, layout_path, interactive]() {
       window.loadAtStartup(startup_files, layout_path, interactive);

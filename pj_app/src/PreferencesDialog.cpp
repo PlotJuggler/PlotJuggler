@@ -620,7 +620,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     emit timeLabelSettingsChanged();
 #ifndef PJ_TARGET_WASM
     // The MCP switch applies only when it differs from the current state: public access opened
-    // with --mcp stays open (and the setting stays off) unless the user turns it off here.
+    // with --mcp stays open (the stored setting untouched) unless the user turns it off here.
     if (const bool mcp_on = ui_->mcpServerToggle->isChecked();
         main_window != nullptr && mcp_on != main_window->mcpPublicAccess()) {
       settings.setValue(MainWindow::kMcpServerKey, mcp_on);

@@ -456,9 +456,9 @@ class MainWindow : public QMainWindow {
     return feature_catalog_.get();
   }
 
-  // Preferences key (bool, default off): open MCP public access so AI agents can control this
-  // window. Read at startup by main.cpp; the Preferences switch shows whether public access is
-  // open and applies on OK.
+  // Preferences key (bool, default on): open MCP public access so AI agents can control this
+  // window. Read at startup by main.cpp, which ignores it for an unattended run; the Preferences
+  // switch shows whether public access is open and applies on OK.
   static constexpr QLatin1StringView kMcpServerKey{"Preferences::mcp_server"};
 
   // Opens MCP public access: any local agent (the bridge) may connect with a random token, which
@@ -811,9 +811,10 @@ class MainWindow : public QMainWindow {
   // (PlotWidget::setSeriesStatus); on SessionManager::seriesStateChanged and for a new plot.
   void pushSeriesStatus(PlotWidget* only);
 
-  // Reloads a recorded source through its plugin + config (dialog skipped when
-  // both are known). Shared by the global Reload button and the per-dataset
-  // context-menu reload.
+  // Reloads a recorded source through its plugin + config (dialog skipped when both are known,
+  // unless `policy` says otherwise). Shared by the Reload button and reloadDataset (the per-dataset
+  // reload, also an MCP tool's); the loader asks `still_allowed` before applying anything. Returns
+  // the load ticket, 0 when the loader refused the request outright.
   LoadRequestId reloadSource(
       const QString& path, const QString& plugin_id, const QString& plugin_config_json,
       std::optional<DialogPolicy> policy = std::nullopt, std::function<bool()> still_allowed = {});

@@ -3152,7 +3152,7 @@ void MainWindow::refreshReloadEnabled() {
 }
 
 void MainWindow::onReloadDatasetRequested(DatasetId dataset_id) {
-  static_cast<void>(reloadDataset(dataset_id));
+  reloadDataset(dataset_id);
 }
 
 LoadRequestId MainWindow::reloadDataset(
@@ -3401,17 +3401,11 @@ void MainWindow::confirmAndRemoveDependentTransforms(
       {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
       [this, removed_topics, dependent_curve_keys, proceed = std::move(proceed),
        still_allowed = std::move(still_allowed), cancelled = std::move(cancelled)](int choice, bool) {
-        const auto abandon = [&cancelled] {
+        // Cancelled by the user, or its caller lost the right to act: leave everything intact.
+        if (choice != 0 || (still_allowed && !still_allowed())) {
           if (cancelled) {
             cancelled();
           }
-        };
-        if (choice != 0) {
-          abandon();  // user cancelled — leave everything intact
-          return;
-        }
-        if (still_allowed && !still_allowed()) {
-          abandon();
           return;
         }
         for (const QString& key : dependent_curve_keys) {
@@ -3422,7 +3416,9 @@ void MainWindow::confirmAndRemoveDependentTransforms(
           emitDiagnostic(
               DiagnosticLevel::kError, "Processors", "dependent-remove-failed",
               QString::fromStdString(removed.error()));
-          abandon();
+          if (cancelled) {
+            cancelled();
+          }
           return;
         }
         session_->catalogModel().rebuildFromDatastore();
