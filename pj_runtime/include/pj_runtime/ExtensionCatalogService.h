@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -161,11 +162,16 @@ class ExtensionCatalogService : public QObject {
   const LoadedWidget* findWidget(QStringView plugin_id) const;
 
   // Short label naming the Toolbox `id` on a tab watermark or a Custom Topics row badge: its manifest `badge`, else
-  // the toolbox name, else the id; empty when no such toolbox is loaded. Same lifetime and threading rules as
-  // findToolbox.
+  // the toolbox name, else the id; an ad-hoc owner's name; empty when neither is known. Same lifetime and threading
+  // rules as findToolbox.
   [[nodiscard]] QString toolboxBadge(QStringView id) const;
-  // The toolbox's display name, or `id` itself when it is not loaded. Same rules as findToolbox.
+  // The toolbox's display name, else an ad-hoc owner's name, else `id` itself. Same rules as findToolbox.
   [[nodiscard]] QString toolboxDisplayName(QStringView id) const;
+  // Names `id`, an owner of tabs and derived series that is no plugin (an AI agent acting through the toolbox
+  // services), so toolboxBadge and toolboxDisplayName label it instead of reporting a missing plugin. A loaded
+  // toolbox with the same id still wins. Kept for the process lifetime (its tabs and series outlive the agent).
+  // Main thread.
+  void registerAdHocOwner(const QString& id, const QString& name);
 
   // The id of the loaded toolbox whose manifest lists `custom_topics_editor` in its `capabilities`: the editor of
   // the host's Custom Topics (the "+" opens it, and its recipes are the only ones the panel lets the user edit or
@@ -373,6 +379,7 @@ class ExtensionCatalogService : public QObject {
   // manifest forge the highest trust tier. (Authenticated install receipts are
   // the full answer and arrive with the marketplace-receipts follow-up.)
   std::unordered_map<std::string, BundledPluginInfo> bundled_plugin_versions_;
+  QHash<QString, QString> ad_hoc_owners_;  // registerAdHocOwner: id -> name; main thread
 
   // Serializes every use of routing_ (externally synchronized). Lock order is
   // routing_mutex_ -> catalog_mutex_: resolve/classify take routing_mutex_ then

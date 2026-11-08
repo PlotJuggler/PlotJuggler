@@ -28,6 +28,10 @@
 
 namespace PJ {
 
+/// No plugin id starts with this: the in-app MCP server names AI agents `agent-<client>` in the same
+/// id namespace (tabs, derived series, layouts), so an agent never shares a plugin's identity.
+inline constexpr std::string_view kAgentIdPrefix = "agent-";
+
 /// Reads the Qt minor a library asked for out of a dynamic-loader failure such as
 /// "version `Qt_6.13' not found (required by libfoo.so)" and words it for the user:
 /// "needs Qt 6.13 (PlotJuggler uses 6.12)". Empty when the message is about anything else.

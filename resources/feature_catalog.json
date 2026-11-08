@@ -162,6 +162,14 @@
       "verified": "2026-10-21 in-app on release-4.1 e275111c: Help → Check for Updates... and the startup check on the Appearance page"
     },
     {
+      "id": "mcp_server",
+      "name": "AI agent control (MCP server)",
+      "summary": "Let AI agents such as Claude Code or Codex control PlotJuggler over the Model Context Protocol: open files, read and export series, create derived series and markers, and draw in their own tabs, never the user's. Off by default; it serves this computer only, behind a secret token. Agents connect through plotjuggler4 --mcp-bridge (stdio). The status bar names an agent while it is active.",
+      "entry_point": "File → Preferences... → Appearance → Let AI agents control PlotJuggler (MCP server):; for one run: plotjuggler4 --mcp",
+      "evidence": "pj_app/src/PreferencesDialog.ui#Let AI agents control PlotJuggler (MCP server):; pj_app/src/main.cpp#mcp_option; pj_app/src/mcp/McpBridge.cpp#int runBridge",
+      "verified": "McpBridgeTest (stdio bridge against an offscreen instance) and McpServerTest; in-app check pending"
+    },
+    {
       "id": "axis_wheel_zoom",
       "name": "Axis wheel zoom",
       "summary": "Hold X or Y while scrolling over a plot to zoom only that axis, even when keyboard focus is in another widget. Release the key to restore ordinary wheel zoom.",

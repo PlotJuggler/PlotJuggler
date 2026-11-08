@@ -272,6 +272,10 @@ class DataProcessorService {
   /// `applyFilter` and `availableFilters` resolve through it; without it the service
   /// has no filters (the bundled resource always installs one in the real app).
   void setFilterCatalogue(std::shared_ptr<scripting::FilterCatalogue> catalogue);
+  /// The installed catalogue, or null when none is.
+  [[nodiscard]] const scripting::FilterCatalogue* filterCatalogue() const {
+    return filter_catalogue_.get();
+  }
 
   /// Resolve a persisted layout entry to a processor for restore, in priority
   /// order (never silently mis-binds): the live catalogue by `id` → the layout's

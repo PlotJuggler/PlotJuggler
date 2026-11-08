@@ -1,0 +1,59 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include <functional>
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <string>
+
+namespace PJ::agent_tools {
+
+struct ToolContext;
+
+// The outcome of a tool call, handed back to the model verbatim. `content` is
+// the text (usually compact JSON) the model reads; `ok=false` marks a failure
+// the model should see and react to (e.g. a rejected transform): errors are
+// data here, never exceptions.
+struct ToolResult {
+  bool ok = true;
+  std::string content;
+  // GUI tick continuation; empty once the model-facing result is terminal.
+  // Neither it nor an executor may spin a nested event loop: the caller relies on
+  // that to keep the services a running call reaches alive until it returns (only a
+  // later event can destroy them), and destroying a continuation may release into them.
+  std::function<ToolResult(ToolContext&)> resume;
+
+  static ToolResult success(std::string content) {
+    return {true, std::move(content), {}};
+  }
+  static ToolResult deferred(std::function<ToolResult(ToolContext&)> continuation) {
+    return {true, {}, std::move(continuation)};
+  }
+  static ToolResult failure(std::string content) {
+    return {false, std::move(content), {}};
+  }
+};
+
+// Host handles the executors reach through. The caller runs every executor on the
+// GUI thread, where these views may be used directly, and builds the context fresh
+// for each call (views can be invalidated between event-loop ticks). A result with
+// `resume` set is not terminal: the caller invokes `resume` again on later ticks,
+// with a fresh context, until it returns a terminal result.
+struct ToolContext {
+  PJ::sdk::ToolboxHostView host;       // catalog snapshot + readSeries
+  PJ::sdk::DataProcessorsHostView dp;  // createTransform / createMarkers / validateScript
+  // Reads back what we just created — markers are objects, and entryCount() is
+  // the only way to know how many were actually produced. Optional: an unbound
+  // view means the answer carries no count, never that the tool fails.
+  PJ::sdk::ToolboxObjectReadHostView objects;
+  // App-control path. Optional on the same terms: an unbound view degrades to a
+  // clean "host did not expose <service>" the model reads.
+  PJ::sdk::PlaybackHostView playback;  // play/pause/seek/rate/state + ns->display-seconds
+  // Tabs this agent composed, and the only plots it may touch. The viewport
+  // view is bounded to them by the host, so the two travel together.
+  PJ::sdk::PlotTabHostView plot_tabs;
+  PJ::sdk::ViewportHostView viewport;         // zoom, scoped to the tabs above
+  std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
+};
+
+}  // namespace PJ::agent_tools

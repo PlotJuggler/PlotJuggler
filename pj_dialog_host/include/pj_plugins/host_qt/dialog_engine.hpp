@@ -64,6 +64,9 @@ struct DialogEngineConfig {
   /// into the dialog. Defaults to false (modal).
   bool non_modal = false;
 
+  /// Put before the plugin dialog's own title (say, who asked for it). Sub-dialogs keep theirs.
+  QString title_prefix{};
+
   /// Chrome metrics for sizing plugin SectionHeaderBand widgets to the app's
   /// canonical band height. A plugin .ui inflates its bands at the widget's
   /// default height, with no wiring to the host — so without this they render

@@ -273,6 +273,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->systemFileDialogToggle->setChecked(
         settings.value(MainWindow::kSystemFileDialogKey, false).toBool(),
         /*animate=*/false);
+#ifndef PJ_TARGET_WASM
+    // The switch shows whether public access is open now (--mcp included), so OK can always revoke
+    // it. A toolbox plugin's private endpoint does not count: it is not for outside agents.
+    ui_->mcpServerToggle->setChecked(main_window != nullptr && main_window->mcpPublicAccess(), /*animate=*/false);
+#endif
     if (!FileDialog::systemDialogSupported()) {
       ui_->labelSystemFileDialog->hide();
       ui_->systemFileDialogToggle->hide();
@@ -288,6 +293,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     // The browser has no raster canvas: plots always render through WebGL.
     ui_->labelOpenGL->hide();
     ui_->openglToggle->hide();
+    // A page cannot listen on a socket.
+    ui_->labelMcpServer->hide();
+    ui_->mcpServerToggle->hide();
 #endif
   }
 
@@ -610,6 +618,19 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     emit derivedBatchSettingsChanged();
     settings.setValue(MainWindow::kClockUtcKey, ui_->clockTimeZone->selectedIndex() == 1);
     emit timeLabelSettingsChanged();
+#ifndef PJ_TARGET_WASM
+    // The MCP switch applies only when it differs from the current state: public access opened
+    // with --mcp stays open (and the setting stays off) unless the user turns it off here.
+    if (const bool mcp_on = ui_->mcpServerToggle->isChecked();
+        main_window != nullptr && mcp_on != main_window->mcpPublicAccess()) {
+      settings.setValue(MainWindow::kMcpServerKey, mcp_on);
+      if (mcp_on) {
+        main_window->openMcpPublicAccess();
+      } else {
+        main_window->closeMcpPublicAccess();
+      }
+    }
+#endif
   });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);
