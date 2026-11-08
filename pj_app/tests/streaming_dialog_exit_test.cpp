@@ -78,10 +78,12 @@ class StreamingDialogExitTest : public ::testing::Test {
     qunsetenv(kNullDialogEnv);
   }
 
-  // Settles the next plugin dialog the manager opens, once it is on screen.
+  // Settles the next plugin dialog the manager opens, once it is on screen. Gives
+  // up after 10 s, so a case that never opens one leaves no timer polling.
   static void settleNextDialog(bool accept) {
     auto* poll = new QTimer(qApp);
     poll->setInterval(5);
+    QTimer::singleShot(10'000, poll, &QObject::deleteLater);
     QObject::connect(poll, &QTimer::timeout, poll, [poll, accept] {
       for (QWidget* widget : QApplication::topLevelWidgets()) {
         auto* dialog = qobject_cast<QDialog*>(widget);

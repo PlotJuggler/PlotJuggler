@@ -507,6 +507,7 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
 
 bool StreamingSourceManager::configureAndLaunch(
     const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session, QString& error) {
+  error.clear();
   const QString source_name = QString::fromStdString(source.name);
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source.name);
