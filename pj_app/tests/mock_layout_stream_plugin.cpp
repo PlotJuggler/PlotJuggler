@@ -12,6 +12,9 @@
 //   "fail_start":true start() fails
 // Each loadConfig/start/stop appends one line ("load <config>", "start",
 // "stop") to the file PJ_LAYOUT_STREAM_PROBE_FILE names, when set.
+// An interactive start is steered through the environment, read at call time:
+//   PJ_LAYOUT_STREAM_DIALOG_CONFIG  the configuration the dialog saves on accept (default "{}")
+//   PJ_LAYOUT_STREAM_NULL_DIALOG    getDialog() hands back no dialog context (a contract violation)
 
 #include <cstdint>
 #include <cstdlib>
@@ -92,7 +95,7 @@ class MockLayoutStreamDialog : public PJ::DialogPluginTyped {
     return data.toJson();
   }
   std::string saveConfig() const override {
-    return "{}";
+    return PJ::sdk::getEnv("PJ_LAYOUT_STREAM_DIALOG_CONFIG").value_or("{}");
   }
   bool loadConfig(std::string_view) override {
     return true;
@@ -102,6 +105,9 @@ class MockLayoutStreamDialog : public PJ::DialogPluginTyped {
 class MockLayoutStream : public PJ::StreamSourceBase {
  public:
   PJ_borrowed_dialog_t getDialog() override {
+    if (PJ::sdk::getEnv("PJ_LAYOUT_STREAM_NULL_DIALOG").has_value()) {
+      return PJ_borrowed_dialog_t{nullptr, nullptr};
+    }
     return PJ::borrowDialog(dialog_);
   }
 

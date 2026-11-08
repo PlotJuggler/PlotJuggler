@@ -188,8 +188,11 @@ class StreamingSourceManager : public QObject {
   // domain creation failed, etc.). No DatasetId is available yet.
   void setupError(QString message);
 
-  // Emitted on the UI thread for errors on an already-created session
-  // (dialog rejection, bind failure, plugin start/poll error). The session
+  // Emitted on the UI thread for a failure once the session's dataset exists:
+  // an interactive start that fails after its dialog opened (plugin contract
+  // violation, refused configuration, start() failure), or a launched session
+  // that fails while running (poll error). In the first case the dataset is
+  // already discarded and no streamStopped follows; in the second the session
   // typically stops shortly after via streamStopped().
   void streamError(DatasetId dataset_id, QString message);
 
@@ -213,10 +216,18 @@ class StreamingSourceManager : public QObject {
   void rememberSkippedLazy(const StreamingSession& session);
 
   // The interactive start: resolves the plugin by display name, builds the
-  // session (createSession), configures it from the remembered settings and the
-  // plugin's dialog, then launches it. Emits streamStarted() on success,
-  // setupError()/streamError() on a failure.
+  // session (createSession), then configureAndLaunch()es it. Emits
+  // streamStarted() on success, setupError()/streamError() on a failure. A start
+  // that does not launch, a cancelled dialog included, leaves no dataset behind.
   void startSession(const QString& plugin_id);
+
+  // What startSession does between createSession and the stream running:
+  // configures `session` from the remembered settings and the plugin's dialog,
+  // then launchSession()s it. Returns false when nothing launched, with `error`
+  // the failure to report (empty when the user cancelled the dialog). Owns no
+  // cleanup: the caller destroys `session` and discards its dataset.
+  [[nodiscard]] bool configureAndLaunch(
+      const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session, QString& error);
 
   // The construction both starts share, up to and including bind(): handle,
   // time domain and dataset ("[stream] <label>", mirrored on the secondary

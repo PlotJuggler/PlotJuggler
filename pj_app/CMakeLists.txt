@@ -522,6 +522,14 @@ if(PJ_BUILD_TESTS)
         COMPILE_DEFINITIONS
         "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\";PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH=\"$<TARGET_FILE:mock_layout_stream_plugin>\"")
 
+    # An interactive stream start that does not launch (dialog cancelled, plugin
+    # contract violation, refused configuration, failed start) leaves no dataset
+    # behind (test stream staged per case).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/streaming_dialog_exit_test.cpp)
+    set_source_files_properties(tests/streaming_dialog_exit_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH="$<TARGET_FILE:mock_layout_stream_plugin>")
+
     # Browser presets: the welcome dialog's selection, upload, cancel/retry and
     # thumbnail fallback (built on the desktop too; only its wiring is browser-only).
     list(APPEND PJ_APP_GUI_TEST_SOURCES
