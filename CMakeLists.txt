@@ -58,6 +58,13 @@ if(EMSCRIPTEN)
     add_compile_options(-pthread)
     add_link_options(-pthread)
 
+    # Emscripten compiles catch blocks out of every translation unit built without -fexceptions: a throw still
+    # unwinds, but nothing catches it. The plugin SDK's C-ABI trampolines turn a plugin's exception into an error
+    # only if they can catch it, and any module or dependency may rely on its own catch, so the whole module
+    # catches.
+    add_compile_options(-fexceptions)
+    add_link_options(-fexceptions)
+
     # Conan packages in the desktop graph are native binaries. The wasm build
     # resolves its cross-compiled subset through a pinned FetchContent provider.
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmDependencies.cmake)

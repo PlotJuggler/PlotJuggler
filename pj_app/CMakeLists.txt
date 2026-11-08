@@ -348,8 +348,7 @@ if(EMSCRIPTEN)
     set_target_properties(pj_app PROPERTIES
         AUTORCC ON
         QT_WASM_INITIAL_MEMORY "256MB")
-    target_compile_options(pj_app PRIVATE -fexceptions)
-    target_link_options(pj_app PRIVATE -fexceptions -sALLOW_MEMORY_GROWTH=1)
+    target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1)
     if(PJ_WASM_WITH_PYTHON)
         # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
         # the main thread waits on it never starts.
