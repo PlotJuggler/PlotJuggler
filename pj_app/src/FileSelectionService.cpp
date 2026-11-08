@@ -27,8 +27,13 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 namespace {
 
-// Reports a pick: the browser's file name and a blob: URL for the File, both empty on cancel.
-using PickCompletion = std::function<void(QString name, QString blob_url)>;
+// Reports a pick: the browser's file name and a blob: URL for the File, both empty on cancel, and its size in bytes.
+using PickCompletion = std::function<void(QString name, QString blob_url, qint64 size)>;
+
+// The largest pick the browser can stage: it is copied whole into one JavaScript array, and Chromium allocates
+// none larger (2 GiB - 2 MiB); Firefox, which can, then fails to hash one of 2 GiB with WebCrypto. It also keeps
+// every offset in the file within a 32-bit `long`, which loaders on wasm32 seek with (ftell/fseek).
+constexpr qint64 kMaxBrowserPickBytes = 2145386496;
 
 // The picks whose <input> has not settled yet, by id. Browser main thread only.
 std::unordered_map<quint32, PickCompletion>& pendingPicks() {
@@ -56,7 +61,7 @@ EM_JS(void, pj_browser_pick_file, (unsigned id, const char* accept_utf8), {
     input.remove();
     const name = stringToNewUTF8(file ? file.name : '');
     const url = stringToNewUTF8(file ? URL.createObjectURL(file) : '');
-    Module._pj_browser_pick_done(id, name, url);
+    Module._pj_browser_pick_done(id, name, url, file ? file.size : 0);
   };
   input.addEventListener('change', () => settle(input.files && input.files.length > 0 ? input.files[0] : null));
   input.addEventListener('cancel', () => settle(null));
@@ -82,14 +87,14 @@ void revokeObjectUrl(const QString& blob_url) {
 }  // namespace PJ
 
 /// The <input> of pick `id` settled; `name` and `url` are malloc'ed by the page and freed here.
-extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_pick_done(quint32 id, char* name, char* url) {
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_pick_done(quint32 id, char* name, char* url, double size) {
   const QString browser_name = QString::fromUtf8(name);
   const QString blob_url = QString::fromUtf8(url);
   free(name);
   free(url);
   auto node = PJ::pendingPicks().extract(id);
   if (!node.empty()) {
-    node.mapped()(browser_name, blob_url);
+    node.mapped()(browser_name, blob_url, static_cast<qint64>(size));
   }
 }
 #endif
@@ -185,10 +190,20 @@ void FileSelectionService::selectAndStageFile(
   Q_UNUSED(parent);
   pickBrowserFile(
       browserAcceptList(name_filter),
-      [store = std::move(store), callback = std::move(callback)](QString browser_name, QString blob_url) {
+      [store = std::move(store), callback = std::move(callback)](QString browser_name, QString blob_url, qint64 size) {
         if (browser_name.isEmpty()) {
           revokeObjectUrl(blob_url);
           callback({});
+          return;
+        }
+        if (size > kMaxBrowserPickBytes) {
+          revokeObjectUrl(blob_url);
+          callback({
+              .browser_name = browser_name,
+              .error = u"%1 is too large to open in the browser (%2 MiB; the limit is %3 MiB)."_s.arg(browser_name)
+                           .arg(static_cast<double>(size) / (1024.0 * 1024.0), 0, 'f', 1)
+                           .arg(static_cast<double>(kMaxBrowserPickBytes) / (1024.0 * 1024.0), 0, 'f', 1),
+          });
           return;
         }
         BrowserFileStore::StageResult staged =

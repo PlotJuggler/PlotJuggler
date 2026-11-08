@@ -47,9 +47,10 @@ class FileSelectionService {
   // The shared store keeps kickoff safe even if the caller is destroyed while
   // the browser picker is pending.
   // In the browser the picked File streams into its MEMFS file and never passes
-  // through the wasm heap, so the file size is bounded by the tab's memory, not
-  // by the 32-bit heap (QByteArray tops out near 2 GiB there). It must be called
-  // from a user gesture (a click handler), like any browser file picker.
+  // through the wasm heap. That file is one JavaScript array, which caps a pick
+  // just under 2 GiB (Chromium allocates no larger one): a larger File is
+  // refused at once with that reason, before any byte is copied. It must be
+  // called from a user gesture (a click handler), like any browser file picker.
   static void selectAndStageFile(
       QWidget* parent, const QString& name_filter, std::shared_ptr<BrowserFileStore> store, StagedCallback callback);
 

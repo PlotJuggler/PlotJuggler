@@ -462,7 +462,9 @@ staging and identity, bytes behind a lifetime lease in MEMFS), `FileSelectionSer
 (the asynchronous file pickers) and `BrowserPersistence` (the durable-settings bridge). A data-file
 pick (`selectAndStageFile`) opens its own `<input type=file>` and streams the `File` into a
 `BrowserFileStore::reserve()`d file through `BrowserFetch.h` (a `blob:` URL), so the wasm heap never
-holds it; the small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
+holds it. That MEMFS file is one JavaScript array, so a pick over `kMaxBrowserPickBytes` (2 GiB - 2 MiB,
+Chromium's largest array; Firefox's WebCrypto hashes up to 2 GiB) is refused before the copy, with the size
+limit as its reason. The small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
 `PresetController` downloads through `pj_runtime`'s `fetchBytesWithLimit()` and streams recordings through `BrowserFetch.h` there ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)).
 Browser-only integration is tied to the executable's lifetime and policy, so it lives
 here rather than in a library.
