@@ -4,8 +4,10 @@
 // The app's own MCP tools: each a thin call into an existing service or MainWindow action.
 
 #include <QApplication>
+#include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
+#include <QLocale>
 #include <QSettings>
 #include <QTemporaryFile>
 #include <algorithm>
@@ -535,21 +537,24 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     written = written && file->write(out.data(), static_cast<qint64>(out.size())) == static_cast<qint64>(out.size());
     out.clear();
   };
+  // Numbers are written in the C locale (a decimal comma would split a column): time to the nanosecond, each value as
+  // the shortest text that reads back to the same double.
+  const auto append_number = [&out](double number, char format, int precision) {
+    const QByteArray text = QByteArray::number(number, format, precision);
+    out.append(text.constData(), static_cast<std::size_t>(text.size()));
+  };
   // Sample-and-hold: each row holds every series' last value at or before its time (empty before the first).
   std::vector<std::size_t> cursor(columns->size(), 0);
-  std::array<char, 32> number{};
   for (std::size_t row = 0; row < rows && written; ++row) {
     const double t = rate > 0 ? lo + static_cast<double>(row) / rate : stamps_grid[row];
-    std::snprintf(number.data(), number.size(), "%.9f", t);
-    out += number.data();
+    append_number(t, 'f', 9);
     for (std::size_t c = 0; c < columns->size(); ++c) {
       while (cursor[c] < times[c].size() && times[c][cursor[c]] <= t) {
         ++cursor[c];
       }
       out += ',';
       if (cursor[c] > 0) {
-        std::snprintf(number.data(), number.size(), "%.10g", (*columns)[c].values[cursor[c] - 1]);
-        out += number.data();
+        append_number((*columns)[c].values[cursor[c] - 1], 'g', QLocale::FloatingPointShortest);
       }
     }
     out += '\n';
