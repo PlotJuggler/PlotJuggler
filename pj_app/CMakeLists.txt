@@ -501,6 +501,12 @@ if(PJ_BUILD_TESTS)
     set_source_files_properties(tests/main_window_startup_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
 
+    # The Reload button comes back on every way a reload request ends, including the exits the
+    # legacy load signals stay silent on (rejected config dialog, queued cancel).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_reload_button_test.cpp)
+    set_source_files_properties(tests/main_window_reload_button_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:dialog_probe_source_plugin>")
+
     # Browser presets: a layout's streaming sources start from their saved
     # configuration inside the same all-or-nothing replay, and their views bind
     # as topics arrive (test stream plugin staged per case).
@@ -995,7 +1001,7 @@ if(PJ_BUILD_TESTS)
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
     # $<TARGET_FILE:...> in a compile definition creates no build-order dependency.
     add_dependencies(pj_app_gui_tests custom_topics_editor_fixture_plugin
-                     mock_file_source_plugin mock_layout_stream_plugin)
+                     mock_file_source_plugin mock_layout_stream_plugin dialog_probe_source_plugin)
     # on_demand_test_utils.h: the fake script run and clouds shared with pj_runtime's tests.
     # preset_controller_test serves canned responses with pj_runtime's loopback test server.
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)

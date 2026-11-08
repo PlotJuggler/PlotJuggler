@@ -148,6 +148,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowMarkerGeneratorTestPeer;
   friend class MainWindowMarkerStatusTestPeer;
   friend class MainWindowLayoutDatasetPathsTestPeer;
+  friend class MainWindowReloadButtonTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
   friend class MainWindowCustomTopicsTestPeer;
@@ -732,6 +733,10 @@ class MainWindow : public QMainWindow {
   // both are known). Shared by the global Reload button and the per-dataset
   // context-menu reload.
   void reloadSource(const QString& path, const QString& plugin_id, const QString& plugin_config_json);
+
+  // Enables the Reload button iff a reloadable source is recorded. reloadSource disables it for the
+  // request's duration; call this from every way that request can end.
+  void refreshReloadEnabled();
 
   // Sets legend position (or hides if `position` already matches the
   // current state — clicking the active corner toggles the legend off).
