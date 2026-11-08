@@ -920,9 +920,9 @@ ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const Ex
 }
 
 ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const InstalledExtension& installed) const {
-  // There is no registry platform map for a sideload. ABI, SDK contract, and
-  // application release claims all come from the embedded descriptor and are
-  // evaluated by the same primitive the runtime loader and seed use.
+  // There is no registry platform map for a sideload. The ABI and SDK contract
+  // claims come from the embedded descriptor and are evaluated by the same
+  // primitive the runtime loader and seed use.
   const std::string version = installed.version.toStdString();
   const std::string minimum_sdk = installed.min_sdk_required.toStdString();
   const PluginCompatibilityResult result = evaluatePluginCompatibility(

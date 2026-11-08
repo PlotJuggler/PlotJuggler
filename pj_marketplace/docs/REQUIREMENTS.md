@@ -503,15 +503,14 @@ Fields read from the embedded plugin manifest:
 | `category` | Embedded plugin manifest key `"category"` |
 | `abi_major` | ABI major reported by SDK DSO discovery; zero means an older/unknown descriptor |
 | `min_sdk_required` | Embedded plugin manifest key `"min_sdk_required"`; empty means undeclared. Hard SDK-contract gate |
-| `min_plotjuggler_version` | Embedded plugin manifest key `"min_plotjuggler_version"`; empty means no declared floor. Gates a local-ZIP sideload the way the registry field gates a registry install |
+| `min_plotjuggler_version` | Embedded plugin manifest key `"min_plotjuggler_version"`. Deprecated: read and displayed, never gates (see `min_sdk_required`) |
 | `install_date` | Last-modified timestamp of the extension root directory |
 | `path` | The scanned subdirectory itself |
 | `enabled` | Always `true` by default (no persistence yet) |
 
 A directory holding several plugin DSOs is installed and gated as one extension, so
 they must agree on `id` and `version`. The plugin version and each non-empty
-SDK/application floor are strict SemVer; the extension adopts the highest component
-floor. Malformed metadata rejects new admission but does not erase an already-installed
+SDK floor are strict SemVer; the extension adopts the highest component floor. Malformed metadata rejects new admission but does not erase an already-installed
 extension from the manager: that row remains visible and uninstallable while runtime
 loading rejects it.
 The host may normalize the single `v`/`V` tag prefix accepted by the PJ4 build, but
@@ -520,8 +519,8 @@ plugin declarations themselves remain strict SemVer.
 Registry compatibility fields are an early filter, not authority over the extracted
 code. Before initial promotion, before staged promotion after restart, during bundled
 seed rescue, and immediately before runtime registration, the same headless evaluator
-checks embedded plugin version, ABI major, `min_sdk_required`, and
-`min_plotjuggler_version`. An
+checks embedded plugin version, ABI major, and `min_sdk_required`
+(`min_plotjuggler_version` is deprecated and never gates). An
 authoritative `--plugin-dir` copy retains strict id shadowing, but a copy that fails
 this gate is not loaded and does not fall back silently to the managed store.
 

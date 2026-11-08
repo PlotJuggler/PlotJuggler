@@ -71,12 +71,12 @@ class ExtensionManager : public QObject {
   void install(const Extension& ext);
 
   // Host/plugin compatibility of a registry extension: the current platform must
-  // be listed in ext.platforms AND the host version must be >= its declared
-  // min_plotjuggler_version (an empty value imposes no floor). The host version is
-  // QCoreApplication::applicationVersion(), the single source the app sets at
-  // startup (tests set it the same way). `reason` is a human-readable explanation
-  // when !ok, for the footer / an install-button tooltip. install() refuses an
-  // incompatible extension (see doInstall).
+  // be listed in ext.platforms (when the record declares any) AND this build's SDK
+  // must satisfy ext.min_sdk_required. min_plotjuggler_version never gates; a
+  // plugin needing a newer host declares the SDK release that added what it needs.
+  // `reason` is a human-readable explanation when !ok, for the footer / an
+  // install-button tooltip. install() refuses an incompatible extension (see
+  // doInstall).
   struct HostCompatibility {
     bool ok = true;
     QString reason;
@@ -88,8 +88,8 @@ class ExtensionManager : public QObject {
   HostCompatibility hostCompatibility(const Extension& ext) const;
 
   // Same gate for an extension known from its embedded manifest — a sideload or
-  // an extracted registry payload. Applies ABI major, min_sdk_required, and
-  // min_plotjuggler_version together. The registry platform half has no manifest
+  // an extracted registry payload. Applies ABI major and min_sdk_required
+  // together. The registry platform half has no manifest
   // counterpart; a foreign binary fails discovery before producing this record.
   // Local ZIP admission, registry post-extraction validation, staged promotion,
   // bundled seeding, and runtime loading all delegate to the same evaluator.
@@ -138,7 +138,7 @@ class ExtensionManager : public QObject {
   // local file has no provenance, and the integrity gate is the manifest scan
   // (the DSO must load and describe itself coherently), not a digest.
   //
-  // The embedded ABI, min_sdk_required, and min_plotjuggler_version are enforced
+  // The embedded ABI and min_sdk_required are enforced
   // before anything is written; only the platform half of the registry gate is
   // absent (see the InstalledExtension overload of hostCompatibility).
   //

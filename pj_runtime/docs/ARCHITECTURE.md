@@ -295,7 +295,7 @@ UI on `RecordingService::isSupported()` alone.
   At construction it seeds the bundled dir `<prefix>/lib/plotjuggler/plugins` into the
   marketplace dir: copy when absent, staged refresh when the bundled version is newer,
   never downgrade a compatible install; an installed copy the host would reject (malformed
-  version, or the ABI / `min_sdk_required` / `min_plotjuggler_version` gate, see
+  version, or the ABI / `min_sdk_required` gate, see
   `descriptorIncompatReason`) is overwritten by the bundled build. The bundled dir is never
   scanned as a load path. The bundled id→version map goes to the `ExtensionManager`
   (core-plugin uninstall lock) in default sessions only. Lookups return raw pointers
