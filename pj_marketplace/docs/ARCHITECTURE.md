@@ -224,7 +224,7 @@ struct InstalledExtension {
 
 `RegistryManager` parses every record before making a host-specific choice. The
 pure `resolveRegistryCandidates()` function then validates every extension
-version, SDK floor, and application floor with SDK `PJ::SemVer` and returns one
+version and SDK floor with SDK `PJ::SemVer` and returns one
 row per id. It selects the highest compatible release for the current platform;
 if none is compatible, the highest release for that platform remains visible as
 blocked; if the platform has no artifact, the highest release overall remains
@@ -723,9 +723,9 @@ Binary compatibility (ABI) is the biggest technical challenge:
 
 ### 6.3 Compatibility Policy
 
-- The registry may declare both `min_plotjuggler_version` and `min_sdk_required`; embedded plugin manifests carry the same floors, while discovery supplies the ABI major.
+- The gate is the ABI major plus `min_sdk_required`: the registry and the embedded plugin manifest both declare the SDK floor, while discovery supplies the ABI major. A plugin that needs a newer host declares the SDK release that added the surface it needs. `min_plotjuggler_version` is still parsed and shown, but never gates.
 - One headless admission evaluator, backed by the SDK's strict `PJ::SemVer`, is shared by registry/local-ZIP admission, pending-install promotion, bundled-seed rescue, static registration, and runtime DSO loading. Plugin versions and floors fail closed when malformed. A multi-DSO extension retains the highest valid floor; invalid metadata keeps the complete extension unloadable without removing its installed marketplace row.
-- Registry metadata is only a pre-screen: after extraction the embedded ABI, SDK floor, and application floor are rechecked before promotion, and staged work is rechecked again at restart. `platforms` remains registry-only; a foreign binary fails DSO discovery before the embedded gate.
+- Registry metadata is only a pre-screen: after extraction the embedded ABI and SDK floor are rechecked before promotion, and staged work is rechecked again at restart. `platforms` remains registry-only; a foreign binary fails DSO discovery before the embedded gate.
 - Compatibility is a hard runtime gate. `--plugin-dir` and Preferences folders retain strict shadow priority: an incompatible authoritative copy suppresses a managed same-id fallback but is itself not loaded, making developer override failures explicit instead of silently testing another build.
 - If SDK changes incompatibly, PlotJuggler provides internal adapter
 - **Existing plugins are never broken by PlotJuggler updates**
