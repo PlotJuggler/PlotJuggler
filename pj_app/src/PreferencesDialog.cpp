@@ -265,12 +265,16 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // Derived markers (Plotting): the batch engine's mode and its automatic reload
   // rate; MainWindow applies both at startup and on OK (derivedBatchSettingsChanged).
   ui_->derivedBatchMode->setOptions(tr("Automatic"), tr("Manual"));
+  // Clock time zone (Plotting): wall-clock labels in the system zone or UTC;
+  // MainWindow re-applies it on OK (timeLabelSettingsChanged).
+  ui_->clockTimeZone->setOptions(tr("local"), tr("UTC"));
   ui_->scrubberDerivedReloadHz->setRange(BatchEngine::kMinReloadHz, BatchEngine::kMaxReloadHz);
   {
     QSettings settings;
     ui_->languageCombo->setCurrentIndex(ui_->languageCombo->findData(AppLanguage::preferredLanguage(settings)));
     ui_->scrubberFloatPrecision->setValue(settings.value(u"Preferences::precision"_s, 3).toInt());
     ui_->curveColorMode->setSelectedIndex(settings.value(u"Preferences::curve_color_global"_s, true).toBool() ? 0 : 1);
+    ui_->clockTimeZone->setSelectedIndex(settings.value(MainWindow::kClockUtcKey, false).toBool() ? 1 : 0);
     const BatchEngine::Settings batch = BatchEngine::loadSettings();
     ui_->derivedBatchMode->setSelectedIndex(batch.mode == BatchEngine::Mode::kManual ? 1 : 0);
     ui_->scrubberDerivedReloadHz->setValue(batch.reload_hz);
@@ -631,6 +635,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
              ui_->derivedBatchMode->selectedIndex() == 1 ? BatchEngine::Mode::kManual : BatchEngine::Mode::kAutomatic,
          .reload_hz = ui_->scrubberDerivedReloadHz->value()});
     emit derivedBatchSettingsChanged();
+    settings.setValue(MainWindow::kClockUtcKey, ui_->clockTimeZone->selectedIndex() == 1);
+    emit timeLabelSettingsChanged();
   });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);

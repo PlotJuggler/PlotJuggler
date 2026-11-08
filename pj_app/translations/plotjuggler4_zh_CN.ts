@@ -231,22 +231,22 @@
         </message>
         <message>
             <location line="+26" />
-            <location line="+44" />
+            <location line="+48" />
             <source>Cannot merge datasets</source>
             <translation>无法合并数据集</translation>
         </message>
         <message>
-            <location line="-43" />
+            <location line="-46" />
             <source>Stop streaming the live source before merging it with other datasets.</source>
             <translation>请先停止接收此实时数据源，再将其与其他数据集合并。</translation>
         </message>
         <message>
-            <location line="+16" />
+            <location line="+18" />
             <source>"%1": marker sets with a different scope, target or owner</source>
             <translation>“%1”：标记集的作用域、目标或所有者不同</translation>
         </message>
         <message>
-            <location line="+10" />
+            <location line="+11" />
             <source>canonical %1</source>
             <translation>标准类型 %1</translation>
         </message>
@@ -266,22 +266,22 @@
             <translation>这些对象主题名称相同，但类型、格式或标记描述不兼容，因此无法合并数据集：</translation>
         </message>
         <message>
-            <location line="+2" />
+            <location line="+5" />
             <source>Remove or rename the conflicting topic and try again.</source>
             <translation>请移除冲突话题或重命名后重试。</translation>
         </message>
         <message>
-            <location line="+5" />
+            <location line="+7" />
             <source>Merge datasets</source>
             <translation>合并数据集</translation>
         </message>
         <message>
-            <location line="+1" />
+            <location line="+2" />
             <source>Merge</source>
             <translation>合并</translation>
         </message>
         <message>
-            <location line="+0" />
+            <location line="+1" />
             <source>Cancel</source>
             <translation>取消</translation>
         </message>
@@ -1681,7 +1681,7 @@ from %2</source>
             <translation>替换数据</translation>
         </message>
         <message>
-            <location line="+23" />
+            <location line="+24" />
             <source>Could not stage the selected file.</source>
             <translation>无法暂存选中的文件。</translation>
         </message>
@@ -1781,12 +1781,12 @@ from %2</source>
             <translation>无法替换数据集 %1：选中的配置会生成 %2 个数据集。</translation>
         </message>
         <message>
-            <location line="-715" />
+            <location line="-716" />
             <source>Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config</source>
             <translation>插件“%1”：saveConfig 失败：%2；保存布局时将跳过插件配置</translation>
         </message>
         <message>
-            <location line="+931" />
+            <location line="+932" />
             <source>Could not create the time domain for %1: %2</source>
             <translation>无法为 %1 创建时间域：%2</translation>
         </message>
@@ -2356,13 +2356,13 @@ for example when the stream is already rectified.</source>
         </message>
         <message>
             <location line="+143" />
-            <location line="+2192" />
+            <location line="+2206" />
             <location line="+87" />
             <source>dataset removed</source>
             <translation>数据集已移除</translation>
         </message>
         <message>
-            <location line="-1899" />
+            <location line="-1913" />
             <source>Start Streaming</source>
             <translation>开始接收流数据</translation>
         </message>
@@ -2416,9 +2416,9 @@ for example when the stream is already rectified.</source>
         </message>
         <message>
             <location line="+1" />
-            <location line="+1448" />
+            <location line="+1462" />
             <location line="+169" />
-            <location line="+2022" />
+            <location line="+2035" />
             <location line="+305" />
             <location line="+2070" />
             <location line="+1219" />
@@ -2426,7 +2426,7 @@ for example when the stream is already rectified.</source>
             <translation>取消</translation>
         </message>
         <message>
-            <location line="-7143" />
+            <location line="-7170" />
             <source>Undo</source>
             <translation>撤销</translation>
         </message>
@@ -2436,7 +2436,7 @@ for example when the stream is already rectified.</source>
             <translation>重做</translation>
         </message>
         <message>
-            <location line="+77" />
+            <location line="+91" />
             <source>No widget selected</source>
             <translation>未选择视图组件</translation>
         </message>
@@ -2482,12 +2482,12 @@ for example when the stream is already rectified.</source>
         </message>
         <message>
             <location line="+87" />
-            <location line="+2386" />
+            <location line="+2399" />
             <source>The layout still contains an ephemeral browser path and was not downloaded.</source>
             <translation>布局仍包含临时浏览器路径，因此未下载。</translation>
         </message>
         <message>
-            <location line="-2254" />
+            <location line="-2267" />
             <source>Remove all Datasets</source>
             <translation>移除全部数据集</translation>
         </message>
@@ -2525,12 +2525,12 @@ for example when the stream is already rectified.</source>
         </message>
         <message>
             <location line="+2" />
-            <location line="+4566" />
+            <location line="+4579" />
             <source>Delete</source>
             <translation>删除</translation>
         </message>
         <message>
-            <location line="-4403" />
+            <location line="-4416" />
             <source>Are you sure you want to remove '%1' and its data?</source>
             <translation>确定要移除“%1”及其数据吗？</translation>
         </message>
@@ -2555,7 +2555,7 @@ for example when the stream is already rectified.</source>
             <translation>移除</translation>
         </message>
         <message>
-            <location line="+247" />
+            <location line="+248" />
             <source>New release available: &lt;b&gt;%1&lt;/b&gt;</source>
             <translation>有新版本可用：&lt;b&gt;%1&lt;/b&gt;</translation>
         </message>
@@ -2600,7 +2600,7 @@ for example when the stream is already rectified.</source>
             <translation>无法启动 PlotJuggler 维护工具。</translation>
         </message>
         <message>
-            <location line="+819" />
+            <location line="+831" />
             <source>Nothing to record: start a streaming source first.</source>
             <translation>没有可录制的内容：请先启动一个流数据源。</translation>
         </message>
@@ -3293,12 +3293,7 @@ for example when the stream is already rectified.</source>
             <translation>在回放位置添加蓝色参考线；数值显示为相对于该位置的差值</translation>
         </message>
         <message>
-            <location line="+3" />
-            <source>Use time offset: show time relative to each dataset's start (axis begins at 0) instead of absolute time</source>
-            <translation>使用时间偏移：显示相对于各数据集起点的时间（横轴从 0 开始），而非绝对时间</translation>
-        </message>
-        <message>
-            <location line="+138" />
+            <location line="+126" />
             <source>Align sources: line every source's start up at the earliest start</source>
             <translation>对齐数据源：将各数据源的起点对齐到最早的起点</translation>
         </message>
@@ -4068,7 +4063,17 @@ Details: %1</source>
             <translation>手动</translation>
         </message>
         <message>
-            <location line="+68" />
+            <location line="+3" />
+            <source>local</source>
+            <translation>本地</translation>
+        </message>
+        <message>
+            <location line="+0" />
+            <source>UTC</source>
+            <translation>UTC</translation>
+        </message>
+        <message>
+            <location line="+69" />
             <source>This folder does not exist.</source>
             <translation>此文件夹不存在。</translation>
         </message>
@@ -5054,7 +5059,17 @@ Details: %1</source>
             <translation> Hz</translation>
         </message>
         <message>
-            <location line="+36" />
+            <location line="+7" />
+            <source>Time zone of the clock times shown while the date-time toggle (bottom left) is on.</source>
+            <translation>启用左下角的日期时间开关时，时钟时间所使用的时区。</translation>
+        </message>
+        <message>
+            <location line="+3" />
+            <source>Clock time zone:</source>
+            <translation>时钟时区：</translation>
+        </message>
+        <message>
+            <location line="+46" />
             <source>Coming soon</source>
             <translation>即将推出</translation>
         </message>
@@ -5169,12 +5184,12 @@ Details: %1</source>
     <context>
         <name>PresetCatalog</name>
         <message>
-            <location filename="../../pj_runtime/src/PresetCatalog.cpp" line="+61" />
+            <location filename="../../pj_runtime/src/PresetCatalog.cpp" line="+62" />
             <source>preset index is not valid JSON: %1</source>
             <translation>预设索引不是有效的 JSON：%1</translation>
         </message>
         <message>
-            <location line="+4" />
+            <location line="+5" />
             <source>preset index has no "presets" array</source>
             <translation>预设索引没有“presets”数组</translation>
         </message>
@@ -5184,7 +5199,7 @@ Details: %1</source>
             <translation>第 %1 个预设不是对象</translation>
         </message>
         <message>
-            <location line="+9" />
+            <location line="+10" />
             <source>preset #%1 has a field that is not a string</source>
             <translation>第 %1 个预设包含非字符串字段</translation>
         </message>
@@ -5199,12 +5214,12 @@ Details: %1</source>
             <translation>预设 ID“%1”重复</translation>
         </message>
         <message>
-            <location line="+7" />
+            <location line="+8" />
             <source>preset "%1" has no usable http(s) layout</source>
             <translation>预设“%1”没有可用的 http(s) 布局</translation>
         </message>
         <message>
-            <location line="+3" />
+            <location line="+4" />
             <source>preset "%1" has no usable http(s) thumbnail</source>
             <translation>预设“%1”没有可用的 http(s) 缩略图</translation>
         </message>
@@ -5278,10 +5293,10 @@ Details: %1</source>
         </message>
         <message>
             <location line="+2" />
-            <location filename="../src/FileLoader.cpp" line="-1995" />
+            <location filename="../src/FileLoader.cpp" line="-1996" />
             <location line="+90" />
             <location line="+7" />
-            <location filename="../src/MainWindow.cpp" line="-10469" />
+            <location filename="../src/MainWindow.cpp" line="-10481" />
             <source>OK</source>
             <translation>确定</translation>
         </message>
@@ -5430,7 +5445,7 @@ Details: %1</source>
             <translation>时长</translation>
         </message>
         <message>
-            <location filename="../src/BrowserPersistence.cpp" line="+589" />
+            <location filename="../src/BrowserPersistence.cpp" line="+591" />
             <source>The layout is not a bounded, source-free browser recipe.</source>
             <translation>此布局不符合浏览器布局配置的要求：大小受限且不包含数据源。</translation>
         </message>
@@ -5451,19 +5466,19 @@ Details: %1</source>
         </message>
         <message>
             <location filename="../../pj_dialog_host/src/dialog_engine.cpp" line="+503" />
-            <location filename="../../pj_dialog_host/src/panel_engine.cpp" line="+524" />
+            <location filename="../../pj_dialog_host/src/panel_engine.cpp" line="+525" />
             <source>Select File</source>
             <translation>选择文件</translation>
         </message>
         <message>
             <location line="+73" />
-            <location filename="../../pj_dialog_host/src/panel_engine.cpp" line="+16" />
+            <location filename="../../pj_dialog_host/src/panel_engine.cpp" line="+19" />
             <source>Select Folder</source>
             <translation>选择文件夹</translation>
         </message>
         <message>
             <location line="+37" />
-            <location filename="../../pj_dialog_host/src/panel_engine.cpp" line="-8" />
+            <location filename="../../pj_dialog_host/src/panel_engine.cpp" line="-10" />
             <source>Save File</source>
             <translation>保存文件</translation>
         </message>
@@ -5539,7 +5554,17 @@ Details: %1</source>
     <context>
         <name>TimelineWidget</name>
         <message>
-            <location filename="../src/ui/TimelineWidget.ui" line="+90" />
+            <location filename="../src/ui/TimelineWidget.ui" line="+42" />
+            <source>Use time offset: show time relative to each dataset's start (axis begins at 0) instead of absolute time</source>
+            <translation>使用时间偏移：显示相对于各数据集起点的时间（横轴从 0 开始），而非绝对时间</translation>
+        </message>
+        <message>
+            <location line="+37" />
+            <source>Show time as clock time (HH:mm:ss) instead of seconds</source>
+            <translation>将时间显示为时钟时间（HH:mm:ss），而非秒数</translation>
+        </message>
+        <message>
+            <location line="+85" />
             <source>Loop</source>
             <translation>循环</translation>
         </message>
@@ -6495,32 +6520,32 @@ Details: %1</source>
             <translation>占据栅格大小为 %1 x %2；此 GPU 最大支持 %3 x %3 的纹理</translation>
         </message>
         <message>
-            <location line="+5" />
+            <location line="+7" />
             <source>Could not create the occupancy-grid uniform buffer</source>
             <translation>无法创建占据栅格的 uniform 缓冲区</translation>
         </message>
         <message>
-            <location line="+15" />
+            <location line="+17" />
             <source>Could not allocate the occupancy-grid texture</source>
             <translation>无法分配占据栅格纹理</translation>
         </message>
         <message>
-            <location line="+11" />
+            <location line="+12" />
             <source>Could not create occupancy-grid shader bindings</source>
             <translation>无法创建占据栅格的着色器绑定</translation>
         </message>
         <message>
-            <location filename="../../pj_scene3D/widgets/rhi/passes/voxel_rhi_pass.cpp" line="+234" />
+            <location filename="../../pj_scene3D/widgets/rhi/passes/voxel_rhi_pass.cpp" line="+235" />
             <source>Could not create the voxel-grid uniform buffer</source>
             <translation>无法创建体素栅格的 uniform 缓冲区</translation>
         </message>
         <message>
-            <location line="+23" />
+            <location line="+24" />
             <source>Could not allocate the voxel-grid 3D texture</source>
             <translation>无法分配体素栅格的三维纹理</translation>
         </message>
         <message>
-            <location line="+13" />
+            <location line="+14" />
             <source>Could not create voxel-grid shader bindings</source>
             <translation>无法创建体素栅格的着色器绑定</translation>
         </message>
@@ -6540,7 +6565,7 @@ Details: %1</source>
             <translation>体素栅格大小为 %1 x %2 x %3；此 GPU 支持的三维纹理每个维度最大为 %4</translation>
         </message>
         <message>
-            <location filename="../../pj_scene3D/widgets/rhi/passes/model_rhi_pass.cpp" line="+296" />
+            <location filename="../../pj_scene3D/widgets/rhi/passes/model_rhi_pass.cpp" line="+297" />
             <source>Models need %1 draws and %2 triangles; the layer limits are %3 and %4</source>
             <translation>模型需要 %1 次绘制调用和 %2 个三角形；单图层的上限分别为 %3 和 %4</translation>
         </message>
@@ -6550,12 +6575,12 @@ Details: %1</source>
             <translation>模型需要 %1 次绘制调用和 %2 个三角形；视图的剩余配额分别为 %3 和 %4</translation>
         </message>
         <message>
-            <location line="+11" />
+            <location line="+13" />
             <source>Model shadows exceed this view's draw/triangle budget</source>
             <translation>模型阴影超出此视图的绘制调用/三角形配额</translation>
         </message>
         <message>
-            <location line="+124" />
+            <location line="+126" />
             <source>Could not allocate a model wireframe buffer</source>
             <translation>无法分配模型线框缓冲区</translation>
         </message>
@@ -6593,37 +6618,37 @@ Details: %1</source>
             <translation>无法创建模型材质绑定</translation>
         </message>
         <message>
-            <location filename="../../pj_scene3D/widgets/rhi/passes/gridmap_rhi_pass.cpp" line="+206" />
+            <location filename="../../pj_scene3D/widgets/rhi/passes/gridmap_rhi_pass.cpp" line="+207" />
             <source>Grid map %1 x %2 exceeds this GPU's texture or draw limits</source>
             <translation>栅格地图 %1 x %2 超出此 GPU 的纹理或绘制限制</translation>
         </message>
         <message>
-            <location line="+6" />
+            <location line="+8" />
             <source>Could not create the grid-map uniform buffer</source>
             <translation>无法创建栅格地图的 uniform 缓冲区</translation>
         </message>
         <message>
-            <location line="+23" />
+            <location line="+24" />
             <source>Could not allocate the grid-map textures</source>
             <translation>无法分配栅格地图纹理</translation>
         </message>
         <message>
-            <location line="+13" />
+            <location line="+14" />
             <source>Could not create grid-map shader bindings</source>
             <translation>无法创建栅格地图的着色器绑定</translation>
         </message>
         <message>
-            <location filename="../../pj_scene3D/widgets/rhi/passes/marker_rhi_pass.cpp" line="+458" />
+            <location filename="../../pj_scene3D/widgets/rhi/passes/marker_rhi_pass.cpp" line="+459" />
             <source>Marker instance accounting overflowed the view limit</source>
             <translation>标记实例计数超出视图上限</translation>
         </message>
         <message>
-            <location line="+19" />
+            <location line="+20" />
             <source>Markers need %1 submitted instances and %2 streamed vertices; the layer limits are %3 and %4</source>
             <translation>标记需要提交 %1 个实例并流式传输 %2 个顶点；单图层的上限分别为 %3 和 %4</translation>
         </message>
         <message>
-            <location line="+9" />
+            <location line="+11" />
             <source>Markers need %1 instances and %2 streamed vertices; only %3 and %4 remain in this view's budget</source>
             <translation>标记需要 %1 个实例和 %2 个流式传输顶点；此视图的剩余配额分别仅为 %3 和 %4</translation>
         </message>

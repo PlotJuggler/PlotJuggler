@@ -16,11 +16,12 @@
 #   PJ_RENDER_BACKEND  the QRhi backend every view must report (QRhi::backendName()).
 #                      Default: D3D11 on Windows, Metal on macOS, OpenGL elsewhere.
 #   PJ_RENDER_TIMEOUT  seconds before a run counts as hung (default 90).
-#   PJ_RENDER_SKIP_WITHOUT_DISPLAY=1  exit 77 (ctest's skip) instead of failing
-#                      when there is no display to render on (QT_QPA_PLATFORM
-#                      offscreen/minimal, or no DISPLAY/WAYLAND_DISPLAY off
-#                      Windows and macOS), unless PJ_REQUIRE_GPU_TESTS=1. The
-#                      build tree's ctest sets it; the packaging smokes do not.
+#   PJ_RENDER_SKIP_WITHOUT_DISPLAY=1  run only on a QPA named in QT_QPA_PLATFORM
+#                      (not offscreen/minimal), never on whatever display the
+#                      session has; otherwise exit 77 (ctest's skip), or fail
+#                      under PJ_REQUIRE_GPU_TESTS=1. The build tree's ctest sets
+#                      it (`./test.sh --display` names xcb on a private Xvfb);
+#                      the packaging smokes do not.
 #
 # It fails unless:
 #   - the app exits 0 (--screenshot exits non-zero on a missing or blank grab);
@@ -35,17 +36,17 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-if [ "${PJ_RENDER_SKIP_WITHOUT_DISPLAY:-}" = 1 ] && [ "${PJ_REQUIRE_GPU_TESTS:-}" != 1 ]; then
-  no_display=""
-  case "${QT_QPA_PLATFORM:-}" in offscreen* | minimal*) no_display=1 ;; esac
-  case "$(uname -s)" in
-    MINGW* | MSYS* | CYGWIN* | Darwin) ;;
-    *) [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || no_display=1 ;;
+if [ "${PJ_RENDER_SKIP_WITHOUT_DISPLAY:-}" = 1 ]; then
+  case "${QT_QPA_PLATFORM:-}" in
+    "" | offscreen* | minimal*)
+      if [ "${PJ_REQUIRE_GPU_TESTS:-}" = 1 ]; then
+        echo "FAIL: no display named to render on (QT_QPA_PLATFORM='${QT_QPA_PLATFORM:-}')" >&2
+        exit 1
+      fi
+      echo "SKIP: no display named to render on (QT_QPA_PLATFORM='${QT_QPA_PLATFORM:-}')"
+      exit 77
+      ;;
   esac
-  if [ -n "${no_display}" ]; then
-    echo "SKIP: no display to render on (QT_QPA_PLATFORM='${QT_QPA_PLATFORM:-}')"
-    exit 77
-  fi
 fi
 
 case "$(uname -s)" in

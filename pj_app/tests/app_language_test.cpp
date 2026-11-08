@@ -121,6 +121,41 @@ class AppLanguageTest : public QObject {
         QString::fromUtf8(source));
   }
 
+  void embeddedCatalogTranslatesCurrentTimeControls_data() {
+    QTest::addColumn<QByteArray>("context");
+    QTest::addColumn<QByteArray>("source");
+    QTest::addColumn<QString>("expected");
+    QTest::newRow("local") << QByteArray("PJ::PreferencesDialog") << QByteArray("local") << u"本地"_s;
+    QTest::newRow("utc") << QByteArray("PJ::PreferencesDialog") << QByteArray("UTC") << u"UTC"_s;
+    QTest::newRow("clock-zone-label") << QByteArray("PreferencesContent") << QByteArray("Clock time zone:")
+                                      << u"时钟时区："_s;
+    QTest::newRow("clock-zone-help")
+        << QByteArray("PreferencesContent")
+        << QByteArray("Time zone of the clock times shown while the date-time toggle (bottom left) is on.")
+        << u"启用左下角的日期时间开关时，时钟时间所使用的时区。"_s;
+    QTest::newRow("time-offset-help") << QByteArray("TimelineWidget")
+                                      << QByteArray(
+                                             "Use time offset: show time relative to each dataset's start (axis begins "
+                                             "at 0) instead of absolute time")
+                                      << u"使用时间偏移：显示相对于各数据集起点的时间（横轴从 0 开始），而非绝对时间"_s;
+    QTest::newRow("clock-time-help") << QByteArray("TimelineWidget")
+                                     << QByteArray("Show time as clock time (HH:mm:ss) instead of seconds")
+                                     << u"将时间显示为时钟时间（HH:mm:ss），而非秒数"_s;
+  }
+
+  void embeddedCatalogTranslatesCurrentTimeControls() {
+    QFETCH(QByteArray, context);
+    QFETCH(QByteArray, source);
+    QFETCH(QString, expected);
+    {
+      const PJ::AppLanguage chinese(*QCoreApplication::instance(), u"zh_CN"_s);
+      QVERIFY(chinese.catalogLoaded());
+      QCOMPARE(QCoreApplication::translate(context.constData(), source.constData()), expected);
+    }
+    const PJ::AppLanguage english(*QCoreApplication::instance(), u"en_US"_s);
+    QCOMPARE(QCoreApplication::translate(context.constData(), source.constData()), QString::fromUtf8(source));
+  }
+
   void englishUsesSourceTextAndDoesNotOverwriteThePreference() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

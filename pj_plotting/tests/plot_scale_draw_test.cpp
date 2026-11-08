@@ -6,7 +6,10 @@
 #include <qwt_plot_curve.h>
 
 #include <QApplication>
+#include <QDateTime>
 #include <QLocale>
+#include <QTimeZone>
+#include <cmath>
 
 #include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotScaleDraw.h"
@@ -80,6 +83,67 @@ TEST_F(PlotScaleDrawTest, InstalledOnAllPlotAxes) {
   for (const int axis : {QwtPlot::yLeft, QwtPlot::yRight, QwtPlot::xBottom, QwtPlot::xTop}) {
     EXPECT_NE(dynamic_cast<const PJ::PlotScaleDraw*>(plot.qwtPlot()->axisScaleDraw(axis)), nullptr) << axis;
   }
+}
+
+// The clock engine works in seconds while QwtDateScaleEngine works in ms: the
+// ticks must come back in seconds, on whole-minute boundaries for an hour span,
+// inside the caller's exact bounds.
+TEST_F(PlotScaleDrawTest, TimeEngineAlignsTicksToClockBoundaries) {
+  const PJ::PlotTimeScaleEngine engine(PJ::TimeLabelFormat::kUtcClock);
+  const double x1 = 1794066683.25;  // 2026-11-07 15:51:23.25 UTC
+  const double x2 = x1 + 3600.0;
+  const QwtScaleDiv div = engine.divideScale(x1, x2, 8, 5);
+  EXPECT_EQ(div.lowerBound(), x1);
+  EXPECT_EQ(div.upperBound(), x2);
+  const QList<double> ticks = div.ticks(QwtScaleDiv::MajorTick);
+  ASSERT_GE(ticks.size(), 3);
+  for (const double tick : ticks) {
+    EXPECT_GE(tick, x1);
+    EXPECT_LE(tick, x2);
+    EXPECT_EQ(std::fmod(tick, 60.0), 0.0) << tick;
+  }
+}
+
+// Below a second the engine falls back to decimal steps, still in seconds.
+TEST_F(PlotScaleDrawTest, TimeEngineSubSecondTicksStayInSeconds) {
+  const PJ::PlotTimeScaleEngine engine(PJ::TimeLabelFormat::kUtcClock);
+  const QwtScaleDiv div = engine.divideScale(10.0, 10.5, 5, 5);
+  const QList<double> ticks = div.ticks(QwtScaleDiv::MajorTick);
+  ASSERT_GE(ticks.size(), 2);
+  EXPECT_NEAR(ticks[1] - ticks[0], 0.1, 1e-9);
+}
+
+// Local time shifts by the zone offset instead of running Qwt in local mode:
+// the ticks must still land on whole local minutes.
+TEST_F(PlotScaleDrawTest, LocalTimeEngineAlignsToLocalMinutes) {
+  const PJ::PlotTimeScaleEngine engine(PJ::TimeLabelFormat::kLocalClock);
+  const double x1 = 1794066683.25;
+  const QwtScaleDiv div = engine.divideScale(x1, x1 + 3600.0, 8, 5);
+  const QList<double> ticks = div.ticks(QwtScaleDiv::MajorTick);
+  ASSERT_GE(ticks.size(), 3);
+  for (const double tick : ticks) {
+    const QDateTime local = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(tick), QTimeZone(QTimeZone::LocalTime));
+    EXPECT_EQ(local.time().second(), 0) << tick;
+    EXPECT_EQ(std::fmod(tick, 1.0), 0.0) << tick;
+  }
+}
+
+// The date-time toggle swaps only the time axis, and an XY plot keeps numbers.
+TEST_F(PlotScaleDrawTest, TimeLabelFormatSwapsOnlyTheTimeAxis) {
+  TestPlot plot;
+  auto x_draw = [&plot]() { return plot.qwtPlot()->axisScaleDraw(QwtPlot::xBottom); };
+  plot.setTimeLabelFormat(PJ::TimeLabelFormat::kLocalClock);
+  EXPECT_NE(dynamic_cast<const PJ::PlotTimeScaleDraw*>(x_draw()), nullptr);
+  EXPECT_NE(dynamic_cast<const PJ::PlotTimeScaleEngine*>(plot.qwtPlot()->axisScaleEngine(QwtPlot::xBottom)), nullptr);
+  EXPECT_NE(dynamic_cast<const PJ::PlotScaleDraw*>(plot.qwtPlot()->axisScaleDraw(QwtPlot::yLeft)), nullptr);
+
+  plot.setModeXY(true);
+  EXPECT_NE(dynamic_cast<const PJ::PlotScaleDraw*>(x_draw()), nullptr);
+  plot.setModeXY(false);
+  EXPECT_NE(dynamic_cast<const PJ::PlotTimeScaleDraw*>(x_draw()), nullptr);
+
+  plot.setTimeLabelFormat(PJ::TimeLabelFormat::kSeconds);
+  EXPECT_NE(dynamic_cast<const PJ::PlotScaleDraw*>(x_draw()), nullptr);
 }
 
 // "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass

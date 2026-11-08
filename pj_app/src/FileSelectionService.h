@@ -46,6 +46,10 @@ class FileSelectionService {
   // browser_name is preserved for diagnostics once a selection was made.
   // The shared store keeps kickoff safe even if the caller is destroyed while
   // the browser picker is pending.
+  // In the browser the picked File streams into its MEMFS file and never passes
+  // through the wasm heap, so the file size is bounded by the tab's memory, not
+  // by the 32-bit heap (QByteArray tops out near 2 GiB there). It must be called
+  // from a user gesture (a click handler), like any browser file picker.
   static void selectAndStageFile(
       QWidget* parent, const QString& name_filter, std::shared_ptr<BrowserFileStore> store, StagedCallback callback);
 
@@ -53,6 +57,11 @@ class FileSelectionService {
   // picker has no desktop-style filter dropdown, and duplicate aggregate /
   // per-plugin entries can become redundant native File System Access types.
   static QString browserContentFilter(const QString& name_filter);
+
+  // The `accept` attribute of an <input type=file> for a QFileDialog filter:
+  // every `*.ext` pattern of its first entry as `.ext`, comma-separated. Empty
+  // (anything goes) when that entry has a bare `*` or names no extension.
+  static QString browserAcceptList(const QString& name_filter);
 };
 
 }  // namespace PJ

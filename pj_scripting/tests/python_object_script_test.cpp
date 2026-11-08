@@ -2072,7 +2072,8 @@ TEST(PythonObjectScript, AnOnDemandCompileNeverWaitsForTheGil) {
     kept.reset();  // the last copy: its release waits for the GIL on the helper
     good = compileOnDemand("python", "def evaluate(inputs, params):\n    return 3\n");
     broken = compileOnDemand("python", kBroken);
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(250)) << "no wait for the GIL";
+    // A wait for the held GIL never returns: the bound only has to clear a loaded CI runner's scheduling.
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(1000)) << "no wait for the GIL";
   }
   ASSERT_TRUE(good->has_value()) << good->error();
   ASSERT_TRUE(broken->has_value()) << broken->error() << ": a Python compile error is its first run's";

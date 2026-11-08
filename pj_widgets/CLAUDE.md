@@ -82,6 +82,7 @@ Helpers:
 
 | Header | What it is, and the one thing to know |
 |---|---|
+| `TimeFormat.h` | `TimeLabelFormat` + `formatTimeLabel`: seconds or clock-time labels shared by the plot X axis, the playback readout and the Source Timeline's absolute labels so they agree. A clock value below `kMinWallClockSeconds` prints as a duration (`readsAsDuration`). |
 | `CoalescingTrigger.h` | Leading + trailing rate limiter; the one "cap the rate at the origin" primitive. Non-copyable. |
 | `ChromeMetrics.h` | Shared icon/layout metrics broadcast by `MainWindow`. |
 | `Hatch.h` | The one app-wide "no data" hatch, phased to a global grid so every caller is continuous. |

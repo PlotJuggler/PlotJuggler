@@ -117,8 +117,8 @@ for example `./test.sh --sanitize asan -R '^pj_scripting\.'`.
 runs them instrumented. Before merging a change to QRhi resource lifetimes or
 failure handling, run the GPU lifetime and failure runners under ASan locally, on
 Mesa's software rasterizers: llvmpipe for the `.opengl` passes, lavapipe (via
-`VK_ICD_FILENAMES`) for the `.vulkan` ones. `--display` keeps the caller's display
-instead of `offscreen`, and `PJ_REQUIRE_GPU_TESTS=1` turns a skip into a failure.
+`VK_ICD_FILENAMES`) for the `.vulkan` ones. `--display` runs them inside a private
+Xvfb instead of `offscreen`, and `PJ_REQUIRE_GPU_TESTS=1` turns a skip into a failure.
 They need a session bus (`dbus-run-session`): without one, Qt's D-Bus client on
 xcb leaks a libdbus read buffer in every process and LeakSanitizer fails each
 case:
@@ -126,7 +126,7 @@ case:
 ```bash
 ./build.sh --sanitize asan
 PJ_REQUIRE_GPU_TESTS=1 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-  dbus-run-session -- xvfb-run -a ./test.sh --sanitize asan --display --timeout 300 \
+  dbus-run-session -- ./test.sh --sanitize asan --display --timeout 300 \
   -R '^(scene3d_rhi_failure_test|scene3d_rhi_marker_cache_test|scene3d_rhi_model_cache_test|rhi_dock_lifecycle_test|rhi_mixed_dock_test|plot_rhi_render_test)\.(opengl|vulkan)\.'
 ```
 

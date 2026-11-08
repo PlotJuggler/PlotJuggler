@@ -94,6 +94,8 @@ constexpr std::array kPreferenceRules{
     PreferenceRule{"MainWindow.buttonRatio", ValueKind::kBool},
     PreferenceRule{"MainWindow.buttonLink", ValueKind::kBool},
     PreferenceRule{"MainWindow.useTimeOffset", ValueKind::kBool},
+    PreferenceRule{"MainWindow.dateTimeDisplay", ValueKind::kBool},
+    PreferenceRule{"Preferences::clock_utc", ValueKind::kBool},
     PreferenceRule{"MainWindow.timeTrackerSetting", ValueKind::kInt, 0, 2},
     PreferenceRule{"MainWindow.legendStatus", ValueKind::kInt, 0, 4},
     PreferenceRule{"MainWindow.panelBottomExpandedHeight", ValueKind::kInt, 0, 16384},

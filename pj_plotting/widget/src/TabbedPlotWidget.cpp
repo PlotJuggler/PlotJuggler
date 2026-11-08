@@ -455,6 +455,13 @@ void TabbedPlotWidget::focusTab(PlotDocker* docker) {
   }
 }
 
+void TabbedPlotWidget::renameTab(PlotDocker* docker, const QString& name) {
+  if (const TabEntry* entry = findEntry(static_cast<QWidget*>(docker)); entry != nullptr && entry->docker != nullptr) {
+    entry->docker->setName(name);
+    entry->frame->setName(name);
+  }
+}
+
 void TabbedPlotWidget::focusWidgetTab(QWidget* content) {
   if (const TabEntry* entry = findWidgetEntry(content)) {
     selectEntry(*entry);

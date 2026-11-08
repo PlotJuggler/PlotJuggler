@@ -827,8 +827,10 @@ void Timeline::setPlayhead(double display_seconds) {
 
 QString Timeline::markerLabel(qint64 display_ns) const {
   // fixed_ms=true so the pill matches the playback readout (always 3 decimals).
-  return absolute_time_labels_ ? timeline_detail::formatAbsoluteSeconds(display_ns, /*fixed_ms=*/true)
-                               : formatMarkerTime(display_ns - ruler_epoch_ns_);
+  if (!absolute_time_labels_) {
+    return formatMarkerTime(display_ns - ruler_epoch_ns_);
+  }
+  return timeline_detail::formatAbsoluteLabel(display_ns, absolute_clock_format_, /*fixed_ms=*/true);
 }
 
 void Timeline::setAbsoluteTimeLabels(bool absolute) {
@@ -838,6 +840,16 @@ void Timeline::setAbsoluteTimeLabels(bool absolute) {
   absolute_time_labels_ = absolute;
   ruler_item_->setAbsoluteFormat(absolute);
   // Refresh the (lazily-shown) pill labels so the next grab reads the new format.
+  playhead_item_->setLabel(markerLabel(playhead_ns_));
+  reference_item_->setLabel(markerLabel(reference_ns_));
+}
+
+void Timeline::setAbsoluteClockFormat(TimeLabelFormat format) {
+  if (absolute_clock_format_ == format) {
+    return;
+  }
+  absolute_clock_format_ = format;
+  ruler_item_->setClockFormat(format);
   playhead_item_->setLabel(markerLabel(playhead_ns_));
   reference_item_->setLabel(markerLabel(reference_ns_));
 }

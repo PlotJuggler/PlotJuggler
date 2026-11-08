@@ -91,9 +91,9 @@ smaller size, all Appearance controls must remain reachable by scrolling.
 
 The original contribution was based on official `main-4.x` commit
 `0345ec513bde7f05ad3148548ac30401f2b6f7a7`. It now integrates official
-`08aa99c272bbeca4024cbbd45d78320c7fca335f`, preserving the current asynchronous
-dataset merge, load diagnostics, browser replay, file-picker hints, and
-derived-marker preferences. Its initial language infrastructure,
+`0511b57bb1806b08c1ee3fee60d96c1e0448c358`, preserving the current asynchronous
+dataset merge, load diagnostics, browser replay, streamed browser file picks,
+file-picker hints, clock/time-offset controls, and derived-marker preferences. Its initial language infrastructure,
 translation strings, and focused tests were extracted from
 [`reliable-ly0411/PlotJuggler-zh-CN` commit `0c73d762`](https://github.com/reliable-ly0411/PlotJuggler-zh-CN/commit/0c73d7620ea60f2fec171f55314c46c72820723d);
 the stricter catalog validator comes from that fork's `203d29a8` snapshot.
@@ -119,3 +119,8 @@ behavior and let the complete source file remain in extraction. Explicit
 `QCoreApplication::translate` calls in the preset catalog and Scene3D passes
 keep the runtime lookup contexts visible to the extractor. Deferred model
 error literals use `QT_TRANSLATE_NOOP` with that same runtime context.
+
+The browser file-picker `EM_JS` body uses double-quoted empty JavaScript strings.
+Qt 6.12 otherwise reads the single-quoted empty strings as unterminated C++
+characters and cannot extract the complete file reliably; the JavaScript value
+and browser behavior are unchanged.

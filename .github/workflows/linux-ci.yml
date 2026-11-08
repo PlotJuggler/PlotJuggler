@@ -296,9 +296,10 @@ jobs:
           export VK_ICD_FILENAMES
           # Parallel except the QRhi display passes, which share the one xvfb
           # screen and include frame benchmarks (as scripts/perf/gate_par.sh).
+          # Those need their QPA named: no test picks a real display on its own.
           status=0
           xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 -j"$(nproc)" -LE qrhi || status=1
-          xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 -L qrhi || status=1
+          QT_QPA_PLATFORM=xcb xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 -L qrhi || status=1
           exit "${status}"
 
       - name: Test the QRhi renderer at the OpenGL floor (3.3 core)
@@ -311,6 +312,7 @@ jobs:
           MESA_GL_VERSION_OVERRIDE: "3.3"
           MESA_GLSL_VERSION_OVERRIDE: "330"
           PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump-gl33
+          QT_QPA_PLATFORM: xcb
         run: |
           xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error \
             -R '^(scene3d_rhi_render_test|rhi_dock_lifecycle_test|media_viewer_render_test)\.opengl\.'

@@ -6,6 +6,7 @@
 #include <QWidget>
 
 #include "pj_widgets/ChromeMetrics.h"
+#include "pj_widgets/TimeFormat.h"
 
 namespace Ui {
 class TimelineWidget;
@@ -26,6 +27,22 @@ class TimelineWidget : public QWidget {
 
   void setPlaybackEngine(PlaybackEngine* engine);
   void setSeekLocked(bool locked);
+
+  /// The date-time toggle's state (buttonUseDateTime), set by the host without
+  /// emitting useDateTimeToggled.
+  void setUseDateTime(bool checked);
+  /// The time-offset toggle's state (buttonTimeOffset), set by the host without
+  /// emitting useTimeOffsetToggled.
+  void setUseTimeOffset(bool checked);
+  /// Format of the playback readout (displayTime). Wall-clock formats add the
+  /// date, which the plot axis omits, so the readout pins the exact instant.
+  void setTimeLabelFormat(TimeLabelFormat format);
+
+ signals:
+  /// The user flipped the date-time toggle; the host owns the app-wide state.
+  void useDateTimeToggled(bool checked);
+  /// The user flipped the time-offset toggle; the host owns the time frame.
+  void useTimeOffsetToggled(bool checked);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -51,7 +68,14 @@ class TimelineWidget : public QWidget {
   void onRateChanged(double value);
   void onStepChanged(double value);
 
+ protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
  private:
+  // Fits displayTime to the widest label of time_label_format_ in its current
+  // (styled) font, so a dated wall-clock readout is never clipped.
+  void updateReadoutWidth();
+
   void applyIcons(QString theme);
   // Swaps the play button between play_arrow.svg and pause.svg based on
   // its current checked state, re-tinted for the given theme.
@@ -88,6 +112,8 @@ class TimelineWidget : public QWidget {
   QTimer seek_throttle_timer_;
   double pending_seek_value_ = 0.0;
   bool has_pending_seek_ = false;
+
+  TimeLabelFormat time_label_format_ = TimeLabelFormat::kSeconds;
 
   // Chrome metrics from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;

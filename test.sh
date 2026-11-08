@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Runs the full ctest suite headless. Many widget tests create a QApplication
-# without forcing a platform plugin, so a plain `ctest` pops their windows on
-# the desktop; `offscreen` keeps them invisible (CI gets the same via xvfb).
+# Runs the full ctest suite headless (QT_QPA_PLATFORM=offscreen), whatever the
+# session's display: no test may open a window on the desktop.
 # --sanitize selects the build tree and runtime defaults; other arguments go to
 # ctest. An explicit --test-dir takes precedence over the lane's build tree.
-# --display keeps the caller's display (xvfb-run, a private X server) instead of
-# offscreen, for the QRhi display runners, which skip offscreen.
+# --display runs the QRhi display runners, which skip offscreen: on Linux inside
+# a private Xvfb (xvfb-run, xcb), never on the desktop. Run their passes serially
+# (-L qrhi without -j), as CI does: they share the one virtual screen.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/versions.env"
@@ -67,8 +67,20 @@ if [[ "$PJ_SANITIZE" != none ]]; then
   export PYTHONMALLOC="${PYTHONMALLOC-malloc}"
 fi
 
+# --display: the QRhi display runners need a real QPA, which they never pick on
+# their own. On Linux that is always a private Xvfb, never the desktop: a Wayland
+# session would otherwise win over xvfb-run's DISPLAY. macOS has no virtual
+# display, so there it is the desktop's cocoa.
+DISPLAY_LAUNCH=()
 if [[ "$KEEP_DISPLAY" == 0 ]]; then
   export QT_QPA_PLATFORM=offscreen
+elif [[ "$(uname -s)" == Darwin ]]; then
+  export QT_QPA_PLATFORM=cocoa
+else
+  command -v xvfb-run >/dev/null || { echo "test.sh --display needs xvfb-run (apt install xvfb)" >&2; exit 2; }
+  unset WAYLAND_DISPLAY
+  export QT_QPA_PLATFORM=xcb
+  DISPLAY_LAUNCH=(xvfb-run -a)
 fi
 export QT_IM_MODULE=""
 export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64/plugins"
@@ -85,5 +97,5 @@ if [[ "$PJ_SANITIZE" == tsan ]] && setarch -R true >/dev/null 2>&1; then
 fi
 
 # Emit --test-dir once; the last caller-supplied directory wins if repeated.
-exec ${TSAN_LAUNCH[@]+"${TSAN_LAUNCH[@]}"} \
+exec ${TSAN_LAUNCH[@]+"${TSAN_LAUNCH[@]}"} ${DISPLAY_LAUNCH[@]+"${DISPLAY_LAUNCH[@]}"} \
   ctest --test-dir "$TEST_DIR" --output-on-failure --no-tests=error "${CTEST_ARGS[@]}"

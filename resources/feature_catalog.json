@@ -98,6 +98,14 @@
       "verified": "2026-10-21 in-app on release-4.1 e275111c: Start/Stop player, Loop, Rate and Step size in the bottom bar"
     },
     {
+      "id": "clock_time",
+      "name": "Clock time display",
+      "summary": "Show times as a clock instead of seconds. Plot time axes show the time of day (HH:mm:ss, no date) with ticks on whole seconds, minutes or hours; the playback readout adds the date; the source timeline labels follow. Times relative to a start (the time-offset button beside it, or datasets aligned to 0) read as elapsed time from 0:00:00, without the date. Clock times use the local time zone, or UTC when chosen in Preferences.",
+      "entry_point": "Bottom bar: the clock button left of the time readout (Show time as clock time (HH:mm:ss) instead of seconds); File → Preferences... → Plotting → Clock time zone:",
+      "evidence": "pj_app/src/ui/TimelineWidget.ui#buttonUseDateTime; pj_app/src/PreferencesDialog.ui#Clock time zone:; pj_plotting/widget/src/PlotScaleDraw.cpp#PlotTimeScaleEngine::divideScale",
+      "verified": "PlotScaleDrawTest (clock-aligned ticks, axis swap, XY fallback) and TimeFormat tests"
+    },
+    {
       "id": "source_timeline",
       "name": "Source timeline: align and merge datasets",
       "summary": "Shows each dataset as a bar on a shared time axis. Dragging a bar shifts that dataset in time, Align lines up the starts of all datasets, and merging combines the selected datasets into one.",
