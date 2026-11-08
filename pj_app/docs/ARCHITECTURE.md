@@ -87,6 +87,19 @@ test suites compile it standalone.
   `Layout`/`data-source-missing`.
 - Streaming sources are not wired to the sink.
 
+### Reload button
+
+`MainWindow::reloadSource` disables the left panel's Reload button until its
+request resolves. `FileLoader::loadFinished`, the one terminal every accepted
+request reaches (including the exits `fileLoadFailed` stays silent on: a rejected
+config dialog, a queued cancel, shutdown), brings it back through
+`refreshReloadEnabled()`, which follows whether a source is recorded
+(`lastLoadedSource()`; `onFileLoaded` records it first, because `loadFinished` is
+queued). A request the loader refuses outright gets no ticket and no terminal, so
+`reloadSource` refreshes on a `false` return. The guard only stops a double click:
+any request's terminal re-enables the button, and the loader's queue serialises a
+second reload anyway. Tests: `ReloadButtonTest`.
+
 ### Per-dataset load progress (curve tree)
 
 `wireIngestProgress()` (`IngestProgressWiring.{h,cpp}`) is the single definition of

@@ -1753,18 +1753,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
             .workspace = capturePortableWorkspace(replaced_id, incoming), .path = incoming, .ticket = ticket};
       });
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
-  // A reload disables the Reload button until completion (reloadSource); only
-  // onFileLoaded re-enables it, so a FAILED load would leave it stuck disabled.
-  connect(file_loader_.get(), &FileLoader::fileLoadFailed, this, [this](const QString&, const QString&) {
-    ui_->leftPanel->setReloadEnabled(session_->sessionManager().lastLoadedSource().has_value());
-  });
+  // loadFinished is the one terminal every accepted request reaches, including
+  // the exits fileLoadFailed stays silent on (a rejected config dialog, a queued
+  // cancel, shutdown), so a reload can never leave the Reload button disabled.
+  // It is queued, so onFileLoaded has already recorded a successful load.
+  connect(file_loader_.get(), &FileLoader::loadFinished, this, &MainWindow::refreshReloadEnabled);
   // Disarm a replacement snapshot whose load did not commit. Bound to
-  // loadFinished, not the legacy signals: it is the one terminal every accepted
-  // request reaches, including the exits fileLoadFailed stays silent on (a
-  // rejected config dialog, a queued cancel, shutdown). The snapshot describes
-  // the datasets that are still loaded — the load rolled back — so leaving it
-  // armed would let a LATER successful load of the same path rebind the
-  // workspace onto an obsolete picture of it. Ticket equality, NOT a path
+  // loadFinished, not the legacy signals, for the same reason. The snapshot
+  // describes the datasets that are still loaded — the load rolled back — so
+  // leaving it armed would let a LATER successful load of the same path rebind
+  // the workspace onto an obsolete picture of it. Ticket equality, NOT a path
   // match: loadFinished is queued, so a stale same-path terminal from another
   // load (a cancelled queued duplicate, a failed predecessor) could otherwise
   // disarm a live load's capture and silently skip its workspace rebind.
@@ -3114,7 +3112,7 @@ void MainWindow::onReloadDataRequested() {
 }
 
 void MainWindow::reloadSource(const QString& path, const QString& plugin_id, const QString& plugin_config_json) {
-  // Prevent re-entry; success re-enables via onFileLoaded.
+  // Prevent re-entry; every terminal re-enables via loadFinished.
   ui_->leftPanel->setReloadEnabled(false);
   LoadHints hints{
       .expected_manifest_id = QString(),  // interactive reload: the display name is the recorded identity
@@ -3123,7 +3121,16 @@ void MainWindow::reloadSource(const QString& path, const QString& plugin_id, con
       .dialog_policy = !plugin_id.isEmpty() && !plugin_config_json.isEmpty() ? DialogPolicy::kPreferPreset
                                                                              : DialogPolicy::kInteractive,
   };
-  file_loader_->loadFile(path, this, hints);
+  if (!file_loader_->loadFile(path, this, hints)) {
+    refreshReloadEnabled();  // refused outright: no ticket, so no loadFinished
+  }
+}
+
+void MainWindow::refreshReloadEnabled() {
+  // Browser uploads deliberately are not recorded as reloadable paths: their
+  // logical identity is not a host path and the browser must grant a fresh file
+  // selection gesture. Do not leave a button enabled that can only no-op.
+  ui_->leftPanel->setReloadEnabled(session_->sessionManager().lastLoadedSource().has_value());
 }
 
 void MainWindow::onReloadDatasetRequested(DatasetId dataset_id) {
@@ -3332,10 +3339,6 @@ void MainWindow::onFileLoaded(
   // already was (e.g. 0) would otherwise leave the value column blank until the
   // first scrub. Mirrors PJ3's update2ndColumnValues-after-load.
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
-  // Browser uploads deliberately are not recorded as reloadable paths: their
-  // logical identity is not a host path and the browser must grant a fresh file
-  // selection gesture. Do not leave a button enabled that can only no-op.
-  ui_->leftPanel->setReloadEnabled(session_->sessionManager().lastLoadedSource().has_value());
 #ifdef PJ_TARGET_WASM
   updateBrowserLayoutActions();
 #endif
