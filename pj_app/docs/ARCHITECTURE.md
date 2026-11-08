@@ -156,6 +156,15 @@ time-series caches of registered plots synchronously before evicting the preview
 history: bounds calculation inside `curveListChanged` may already have filled
 them, and no paint or event-loop turn may run between invalidation and eviction.
 
+An interactive start creates the session's dataset (in both engines) before the
+plugin's dialog opens, so every start that does not launch (the user cancelling,
+a plugin contract violation, a refused configuration, a failed `start()`)
+destroys the session and then discards that dataset, as `startFromLayout` does;
+an abandoned dataset would otherwise count in the catalog's duplicate-label
+ordinals and suffix the next start's name. The failure is reported through
+`streamError` only after the dataset is gone (a cancel reports nothing), so a
+`streamError` consumer cannot rely on that dataset existing.
+
 The topic streaming context menu is available for a single selected row of a
 per-topic-pause-capable source. A field row resolves to its owning topic, so
 "Force topic streaming" always affects the whole topic. Multiple selected rows

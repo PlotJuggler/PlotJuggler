@@ -484,15 +484,30 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
     return;
   }
   const LoadedDataSource& source = *source_ptr;
-  const QString source_name = QString::fromStdString(source.name);
   QString error;
-  std::unique_ptr<StreamingSession> session = createSession(source, source_name, error);
+  std::unique_ptr<StreamingSession> session = createSession(source, QString::fromStdString(source.name), error);
   if (session == nullptr) {
     emit setupError(error);
     return;
   }
   const DatasetId dataset_id = session->dataset_id;
 
+  if (!configureAndLaunch(source, session, error)) {
+    // createSession made the dataset before the dialog opened, so any exit that
+    // does not launch must take it back, or an empty dataset lingers and counts in
+    // the catalog's duplicate-label ordinals. The session goes first (as in
+    // startFromLayout) and the dataset is gone before the failure is reported.
+    session.reset();
+    discardDataset(dataset_id);
+    if (!error.isEmpty()) {
+      emit streamError(dataset_id, error);
+    }
+  }
+}
+
+bool StreamingSourceManager::configureAndLaunch(
+    const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session, QString& error) {
+  const QString source_name = QString::fromStdString(source.name);
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source.name);
   std::string config = persisted_settings.value(config_key, QString()).toString().toStdString();
@@ -525,14 +540,13 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
           chrome_metrics_provider_ ? std::optional<ChromeMetrics>(chrome_metrics_provider_()) : std::nullopt,
   });
   if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
-    emit streamError(
-        dataset_id, tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
-                        .arg(QString::fromStdString(dlg.error)));
-    return;
+    error = tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
+                .arg(QString::fromStdString(dlg.error));
+    return false;
   }
   if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
     qCInfo(lcStream) << "User cancelled stream dialog for" << source_name;
-    return;
+    return false;
   }
   if (dlg.payload.has_value()) {
     config = dlg.payload->saved_config;
@@ -548,18 +562,15 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
       }
     }
     if (auto status = session->handle.loadConfig(config); !status) {
-      emit streamError(
-          dataset_id, tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
-                          .arg(source_name, QString::fromStdString(status.error())));
-      return;
+      error = tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                  .arg(source_name, QString::fromStdString(status.error()));
+      return false;
     }
   }
   persisted_settings.setValue(config_key, QString::fromStdString(config));
   session->config_template = QString::fromStdString(config);
 
-  if (!launchSession(std::move(session), error)) {
-    emit streamError(dataset_id, error);
-  }
+  return launchSession(std::move(session), error);
 }
 
 DatasetId StreamingSourceManager::startFromLayout(
