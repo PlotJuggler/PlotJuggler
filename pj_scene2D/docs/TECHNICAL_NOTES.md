@@ -592,8 +592,10 @@ more packets on subsequent calls.
 containers with B-frames, use DTS (always monotonic) as the ObjectStore
 timestamp, not PTS (non-monotonic). FFmpeg's decoder expects packets in decode
 order and handles reordering internally — `AVFrame::pts` on the output gives
-the correct presentation timestamp. For production streaming (per VideoFrame
-spec), B-frames are disallowed, so PTS == DTS and this is a non-issue.
+the correct presentation timestamp. The same holds for every VideoFrame
+producer, not only MP4: the VideoFrame spec allows B-frames, the store key is
+the DTS and `VideoFrame.timestamp_ns` is the PTS (see "B-Frame Support").
+Without B-frames PTS == DTS.
 
 **ObjectStore indices shift after eviction.** A cached `last_decoded_index_`
 becomes stale after eviction removes entries from the front. Always
