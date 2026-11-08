@@ -47,6 +47,12 @@ node scripts/package_wasm.mjs \
   --presets resources/wasm-presets
 ```
 
+The whole module, including fetched dependencies, compiles and links with
+`-fexceptions` (root `CMakeLists.txt`): Emscripten drops the catch blocks of any
+translation unit built without it, so do not set it per target. These are
+Emscripten's JavaScript-based exceptions; `-fwasm-exceptions` would need a Qt
+kit built with `wasm_exceptions`, which the official kit is not.
+
 A public deployment also publishes the source offer
 ([licence and source offer](#licence-of-the-browser-bundle-and-the-source-offer)):
 `node scripts/wasm_source_offer.mjs --links --output build-wasm/deploy/sources`.

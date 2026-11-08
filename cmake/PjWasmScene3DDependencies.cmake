@@ -33,9 +33,6 @@ FetchContent_Declare(assimp
     OVERRIDE_FIND_PACKAGE
     SYSTEM)
 FetchContent_MakeAvailable(assimp)
-# Assimp uses exceptions internally even for successful imports. Emscripten
-# disables catching in optimized translation units unless explicitly enabled.
-target_compile_options(assimp PRIVATE -fexceptions)
 
 if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
     # Match the native graph (Draco 1.5.7 + Cloudini 1.4.1). The common wasm
