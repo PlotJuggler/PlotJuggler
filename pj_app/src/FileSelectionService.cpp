@@ -129,7 +129,6 @@ void FileSelectionService::selectAndStageFile(
           return;
         }
         if (fingerprint == Fingerprint::kInBackground) {
-          browser_picked_file::fingerprintInBackground(input.backing_path);
           callback({.browser_name = browser_name, .input = std::move(input)});
           return;
         }

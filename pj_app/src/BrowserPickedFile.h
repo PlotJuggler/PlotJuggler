@@ -40,13 +40,6 @@ void forget(quint32 pick_id);
 /// runs at about 100 MB/s; reads of the mounted file never wait for it.
 void hash(const QString& path, std::function<void(QString sha256)> done);
 
-/// hash() whose result is kept for fingerprintOf() instead of reported.
-void fingerprintInBackground(const QString& path);
-
-/// The SHA-256 a fingerprintInBackground() of `path` produced; empty while it runs, after it failed, or for a path
-/// that never had one.
-[[nodiscard]] QString fingerprintOf(const QString& path);
-
 /// Runs `handler(path)` once per mounted file whose read first fails (its File changed or was removed on disk since
 /// the pick; every later read fails too), from the event loop, after the failed read returned. One handler for the
 /// process; a later call replaces it, an empty one removes it.

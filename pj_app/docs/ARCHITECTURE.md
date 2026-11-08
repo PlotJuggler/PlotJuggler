@@ -483,14 +483,15 @@ Lazy picks, what they cost and how they fail:
   so the Workers start at pick time and the pick is reported only once they answer.
 - **Fingerprint.** `content_sha256` is plain SHA-256 (layouts and presets compare against it), and WebCrypto
   cannot hash incrementally, so a hasher Worker runs an incremental JS SHA-256 at about 100 MB/s. A normal
-  open (`FileLoader::loadFromBrowserPicker`) hashes in the background (`Fingerprint::kInBackground`) and
-  "Save Layout with Sources" reads the result then, refusing to save while it is still running; layout
+  open (`FileLoader::loadFromBrowserPicker`) hashes in the background (`Fingerprint::kInBackground`; the loader
+  keeps the result) and "Save Layout with Sources" reads it then, refusing to save while it is still running; layout
   replay reselection and `DialogPresenter` picks wait for it (`kBeforeSelection`), because they compare it.
 - **A file changed on disk after the pick.** The browser then fails every read of it (`NotReadableError`),
   surfaced as `EIO`. A `pread`-based source gets the error; a `std::istream`-based one takes it for the end of
   the file. Either way the first failed read of a node raises one `kWarning` diagnostic
-  (`browser-file-read-failed`, `FileLoader`), saying its data may be incomplete. A source with lazy object
-  pulls reads its file for the whole session, so this can happen long after the load.
+  (`browser-file-read-failed`, `FileLoader`), saying its data may be incomplete, and drops the file's
+  fingerprint, so "Save Layout with Sources" refuses it. A source with lazy object pulls reads its file for the
+  whole session, so this can happen long after the load.
 - **Offsets past 2 GiB.** `long` is 32 bits on wasm32, so a loader that measures or seeks with `ftell` /
   `fseek` fails on a larger pick; loaders use `ftello` / `fseeko` or `pread` (the MCAP reader does).
 - Not lazy: a drag-and-drop goes through Qt's drop handling, which copies the file into MEMFS, and preset

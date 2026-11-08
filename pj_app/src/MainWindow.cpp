@@ -2644,9 +2644,9 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
       error = tr("A browser source has no usable filename.");
       return std::nullopt;
     }
-    // A picked file is fingerprinted while it loads, so the record (taken when the load finished) may predate it.
-    const QString content_sha256 =
-        record.content_sha256.isEmpty() ? file_loader_->browserContentSha256(source.identity) : record.content_sha256;
+    // The live fingerprint, not the record's (taken when the load finished): a picked file is fingerprinted while it
+    // loads, and loses its fingerprint when a read of it fails.
+    const QString content_sha256 = file_loader_->browserContentSha256(source.identity);
     if (content_sha256.isEmpty()) {
       error = tr("'%1' has no content fingerprint yet: it is still being computed, or the file changed since it was "
                  "picked. Save the layout again in a moment, or open the file again.")

@@ -992,6 +992,9 @@ FileLoader::FileLoader(
   // A picked file is read lazily, for the whole session: a change on disk after the pick turns up later as failed
   // reads, which a std::istream-based source takes for the end of the file. Say so, or the data looks complete.
   browser_picked_file::setReadFailureHandler([this](const QString& path) {
+    // Its content is no longer what was fingerprinted: a layout must not pin the session to that fingerprint, nor
+    // to one a hash still running stores later.
+    browser_content_sha256_.remove(browser_identity_by_path_.take(path));
     emitDiagnosticTo(
         diagnostic_sink_, DiagnosticLevel::kWarning, "File Loader", "browser-file-read-failed",
         tr("The browser can no longer read '%1': it changed or was removed on disk since it was opened. Data loaded "
@@ -1116,10 +1119,6 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
       FileSelectionService::Fingerprint::kInBackground);
 }
 
-void FileLoader::selectBrowserInput(QWidget* dialog_parent, BrowserSelectionCallback callback) {
-  selectBrowserInput(dialog_parent, std::move(callback), FileSelectionService::Fingerprint::kBeforeSelection);
-}
-
 void FileLoader::selectBrowserInput(
     QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint) {
   const QString filter = extensions_.buildFileFilter();
@@ -1138,12 +1137,6 @@ void FileLoader::selectBrowserInput(
 #endif
 
 QString FileLoader::browserContentSha256(const QString& source_identity) const {
-#ifdef PJ_TARGET_WASM
-  if (const auto pending = browser_pending_fingerprint_path_.constFind(source_identity);
-      pending != browser_pending_fingerprint_path_.cend()) {
-    return browser_picked_file::fingerprintOf(*pending);
-  }
-#endif
   return browser_content_sha256_.value(source_identity);
 }
 
@@ -2237,8 +2230,19 @@ LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_pare
     browser_content_sha256_.insert(input.source_identity, input.content_sha256);
   }
 #ifdef PJ_TARGET_WASM
-  if (input.content_sha256.isEmpty() && isBrowserUploadIdentity(input.source_identity)) {
-    browser_pending_fingerprint_path_.insert(input.source_identity, input.backing_path);
+  if (isBrowserUploadIdentity(input.source_identity)) {
+    browser_identity_by_path_.insert(input.backing_path, input.source_identity);
+    // Only a lazily read pick arrives unfingerprinted (a copied or downloaded file is hashed as it is written); an
+    // empty result means its File changed since the pick, which its reads report.
+    if (input.content_sha256.isEmpty()) {
+      browser_picked_file::hash(
+          input.backing_path, [self = QPointer<FileLoader>(this), path = input.backing_path,
+                               identity = input.source_identity](QString sha256) {
+            if (self && !sha256.isEmpty() && self->browser_identity_by_path_.contains(path)) {
+              self->browser_content_sha256_.insert(identity, std::move(sha256));
+            }
+          });
+    }
   }
 #endif
   ++next_load_ticket_;

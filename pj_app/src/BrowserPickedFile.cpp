@@ -5,7 +5,6 @@
 
 #include <emscripten/emscripten.h>
 
-#include <QHash>
 #include <QLoggingCategory>
 #include <cstdlib>
 #include <unordered_map>
@@ -36,10 +35,9 @@ std::unordered_map<quint32, std::function<void(QString)>>& pendingHashes() {
   return instance;
 }
 
-// Finished background fingerprints, by mounted path. Paths are never reused within a session (BrowserFileStore
-// numbers them), so an entry outliving its file is harmless.
-QHash<QString, QString>& fingerprints() {
-  static QHash<QString, QString> instance;
+// The one setReadFailureHandler() handler; empty when none is set.
+std::function<void(const QString&)>& readFailureHandler() {
+  static std::function<void(const QString&)> instance;
   return instance;
 }
 
@@ -67,27 +65,6 @@ void hash(const QString& path, std::function<void(QString sha256)> done) {
   pj_browser_pick_hash(id, path.toUtf8().constData());
 }
 
-void fingerprintInBackground(const QString& path) {
-  hash(path, [path](QString sha256) {
-    if (sha256.isEmpty()) {
-      qCWarning(lcBrowserPick).noquote() << "Could not fingerprint" << path << "(changed since it was picked?)";
-      return;
-    }
-    fingerprints().insert(path, std::move(sha256));
-  });
-}
-
-QString fingerprintOf(const QString& path) {
-  return fingerprints().value(path);
-}
-
-namespace {
-std::function<void(const QString&)>& readFailureHandler() {
-  static std::function<void(const QString&)> instance;
-  return instance;
-}
-}  // namespace
-
 void setReadFailureHandler(std::function<void(const QString& path)> handler) {
   readFailureHandler() = std::move(handler);
 }
@@ -111,8 +88,6 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_pick_read_failed(char* path) {
   const QString mounted_path = QString::fromUtf8(path);
   free(path);
   qCWarning(PJ::browser_picked_file::lcBrowserPick).noquote() << "PJ_BROWSER_PICK_READ_FAILED" << mounted_path;
-  // Its content is no longer what was read: a layout must not pin the session to that fingerprint.
-  PJ::browser_picked_file::fingerprints().remove(mounted_path);
   if (const auto& handler = PJ::browser_picked_file::readFailureHandler()) {
     handler(mounted_path);
   }

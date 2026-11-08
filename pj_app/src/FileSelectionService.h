@@ -54,8 +54,8 @@ class FileSelectionService {
   // `fingerprint` decides when the browser input's content_sha256 is computed
   // (about 100 MB/s, the whole file once): kBeforeSelection delays the callback
   // until it is set; kInBackground reports the input at once, with an empty
-  // content_sha256, and leaves the result to browser_picked_file::fingerprintOf()
-  // of its backing path. Native builds ignore it.
+  // content_sha256, which FileLoader computes while the file loads. Native
+  // builds ignore it.
   enum class Fingerprint { kBeforeSelection, kInBackground };
   static void selectAndStageFile(
       QWidget* parent, const QString& name_filter, std::shared_ptr<BrowserFileStore> store, StagedCallback callback,

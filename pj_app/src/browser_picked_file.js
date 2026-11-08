@@ -43,7 +43,7 @@ addToLibrary({
           self.postMessage('ready');
           return;
         }
-        let got = -1;
+        let got;
         try {
           const bytes = new Uint8Array(reader.readAsArrayBuffer(message));
           new Uint8Array(scratch, 0, bytes.length).set(bytes);
@@ -157,16 +157,15 @@ addToLibrary({
     },
 
     // Hasher Worker body: hashes a whole File, slice by slice; '' when it cannot be read whole.
-    hasherMain: function (makeSha256) {
+    hasherMain: function (makeSha256, kSlice) {
       const reader = new FileReaderSync();
-      const kSlice = 8 << 20;
       self.onmessage = (event) => {
         const message = event.data;
         if (message.ping) {
           self.postMessage({ready: true});
           return;
         }
-        let hex = '';
+        let hex;
         try {
           const sha = makeSha256();
           const file = message.file;
@@ -211,7 +210,7 @@ addToLibrary({
       PJPick.scratch = new SharedArrayBuffer(PJPick.kSlice);
       PJPick.reader = PJPick.workerFrom('(' + PJPick.readerMain.toString() + ')();');
       PJPick.hasher = PJPick.workerFrom(
-          '(' + PJPick.hasherMain.toString() + ')(' + PJPick.sha256.toString() + ');');
+          '(' + PJPick.hasherMain.toString() + ')(' + PJPick.sha256.toString() + ', ' + PJPick.kSlice + ');');
       // A Worker that fails still settles its promise: the pick is reported, and its reads fail with EIO.
       const readerUp = new Promise((resolve) => {
         PJPick.reader.addEventListener('message', () => resolve(), {once: true});
@@ -396,7 +395,7 @@ addToLibrary({
   // empty hex when the File cannot be read whole (changed or removed since it was picked).
   pj_browser_pick_hash__deps: ['$PJPick', '$stringToNewUTF8'],
   pj_browser_pick_hash: function (request_id, path_utf8) {
-    let file = null;
+    let file;
     try {
       file = FS.lookupPath(UTF8ToString(path_utf8)).node.pjFile || null;
     } catch (error) {

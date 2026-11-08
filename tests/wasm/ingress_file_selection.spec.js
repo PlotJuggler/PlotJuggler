@@ -571,9 +571,13 @@ test('official Protobuf parser imports scalars and cold-decodes a Foxglove objec
     () => consoleMessages.find(message => message.includes('/protobuf/telemetry/temperature:3@')) || '',
     { timeout: 30000 },
   ).toContain('=12.5..-2');
-  const object = consoleMessages.find(
-    message => message.includes('PJ_WASM_PROTOBUF_OBJECT_OK topic=/foxglove/tf'),
+  // The object probe logs after the load does, once its cold fetch has read the picked file on demand.
+  const objectMessage = () => consoleMessages.find(
+    message => message.includes('PJ_WASM_PROTOBUF_OBJECT_OK topic=/foxglove/tf')
+      || message.includes('PJ_WASM_PROTOBUF_OBJECT_FAILED'),
   ) || '';
+  await expect.poll(objectMessage, { timeout: 30000 }).not.toBe('');
+  const object = objectMessage();
   expect(object).toContain('entries=1 type=kFrameTransforms');
   expect(object).toContain('transforms=1 parent=map child=base_link');
   expect(consoleMessages.some(message => message.includes('PJ_WASM_PROTOBUF_OBJECT_FAILED'))).toBe(false);

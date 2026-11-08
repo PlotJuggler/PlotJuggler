@@ -174,13 +174,16 @@ class FileLoader : public QObject {
   // replay uses this to finish every required selection before importing any
   // data, with its content fingerprint already set (it compares it). Cancellation
   // is an empty input/error pair.
-  void selectBrowserInput(QWidget* dialog_parent, BrowserSelectionCallback callback);
+  void selectBrowserInput(
+      QWidget* dialog_parent, BrowserSelectionCallback callback,
+      FileSelectionService::Fingerprint fingerprint = FileSelectionService::Fingerprint::kBeforeSelection);
 #endif
 
   // Fingerprint captured while BrowserFileStore staged this opaque upload (or a
   // preset's download, on any platform). A picked file loaded through
   // openFromDialog is fingerprinted in the background, so its value stays empty
-  // until that finishes (or for good, if the file changed since the pick). Empty
+  // until that finishes (or for good, if the file changed since the pick), and a
+  // picked file whose read fails loses it, whenever it was computed. Empty
   // for native paths, unknown identities, and failed pre-staging calls. Kept
   // outside SessionManager because it is browser-session metadata, not a durable
   // source path or plugin concern.
@@ -511,11 +514,6 @@ class FileLoader : public QObject {
   // Logs the failure (`log_text` when given, else `reason`) and reports one
   // data-source-load-failed error (never for a user cancel). GUI thread.
   void logLoadFailure(const QString& identity, const QString& reason, const QString& log_text = {}) const;
-#ifdef PJ_TARGET_WASM
-  // selectBrowserInput() with the choice of when the content fingerprint is computed.
-  void selectBrowserInput(
-      QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint);
-#endif
 
   SessionManager& session_;
   ExtensionCatalogService& extensions_;
@@ -525,8 +523,9 @@ class FileLoader : public QObject {
   std::shared_ptr<BrowserFileStore> browser_file_store_;
   QHash<QString, QString> browser_content_sha256_;
 #ifdef PJ_TARGET_WASM
-  // Backing paths of browser picks loaded before their background fingerprint finished, by source identity.
-  QHash<QString, QString> browser_pending_fingerprint_path_;
+  // Source identity of every browser upload loaded, by backing path: a failed read of a picked file reports its path.
+  // A picked file leaves it at its first failed read.
+  QHash<QString, QString> browser_identity_by_path_;
 #endif
 #ifdef PJ_WITH_SCENE3D
   PJ::TransformService* transform_service_ = nullptr;
