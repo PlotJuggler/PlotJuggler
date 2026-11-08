@@ -2450,6 +2450,10 @@ MainWindow::~MainWindow() {
   // the engine — guarantees no late signal dereferences a dead pointer.
   ui_->timelineWidget->setPlaybackEngine(nullptr);
   ui_->curveListPanel->setCatalog(nullptr);
+  // The loader is a member, so it dies after this body, and its destructor
+  // delivers queued terminals synchronously (loadFinished); the slots behind
+  // them touch the widgets, so stop listening before the widgets go.
+  file_loader_->disconnect(this);
   delete ui_;
 }
 
