@@ -469,11 +469,36 @@ Tests: `tests/main_window_custom_widget_test.cpp` (including the record's lifecy
 On WebAssembly the shell owns the browser boundary: `BrowserFileStore` (upload
 staging and identity, bytes behind a lifetime lease in MEMFS), `FileSelectionService`
 (the asynchronous file pickers) and `BrowserPersistence` (the durable-settings bridge). A data-file
-pick (`selectAndStageFile`) opens its own `<input type=file>` and streams the `File` into a
-`BrowserFileStore::reserve()`d file through `BrowserFetch.h` (a `blob:` URL), so the wasm heap never
-holds it. That MEMFS file is one JavaScript array, so a pick over `kMaxBrowserPickBytes` (2 GiB - 2 MiB,
-Chromium's largest array; Firefox's WebCrypto hashes up to 2 GiB) is refused before the copy, with the size
-limit as its reason. The small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
+pick (`selectAndStageFile`) opens its own `<input type=file>` and never copies the `File`:
+`BrowserPickedFile` turns its `BrowserFileStore::reserve()`d path into a read-only MEMFS node that reads
+from the `File` on demand (`browser_picked_file.js`), so a pick may exceed the wasm32 address space and costs
+no memory while open; the small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
+
+Lazy picks, what they cost and how they fail:
+
+- **Reads.** With pthreads every file syscall runs on the browser main thread, which cannot await, so a read
+  posts a `file.slice()` to a reader Worker (`FileReaderSync` into a shared scratch buffer) and spins until it
+  answers: about 0.1–0.2 ms per round trip. A 1 MiB read-ahead block per node absorbs small sequential reads;
+  a read of 1 MiB or more goes straight through. A Worker the main thread waits on must already be running,
+  so the Workers start at pick time and the pick is reported only once they answer.
+- **Fingerprint.** `content_sha256` is plain SHA-256 (layouts and presets compare against it), and WebCrypto
+  cannot hash incrementally, so a hasher Worker runs an incremental JS SHA-256 at about 100 MB/s. A normal
+  open (`FileLoader::loadFromBrowserPicker`) hashes in the background (`Fingerprint::kInBackground`) and
+  "Save Layout with Sources" reads the result then, refusing to save while it is still running; layout
+  replay reselection and `DialogPresenter` picks wait for it (`kBeforeSelection`), because they compare it.
+- **A file changed on disk after the pick.** The browser then fails every read of it (`NotReadableError`),
+  surfaced as `EIO`. A `pread`-based source gets the error; a `std::istream`-based one takes it for the end of
+  the file. Either way the first failed read of a node raises one `kWarning` diagnostic
+  (`browser-file-read-failed`, `FileLoader`), saying its data may be incomplete. A source with lazy object
+  pulls reads its file for the whole session, so this can happen long after the load.
+- **Offsets past 2 GiB.** `long` is 32 bits on wasm32, so a loader that measures or seeks with `ftell` /
+  `fseek` fails on a larger pick; loaders use `ftello` / `fseeko` or `pread` (the MCAP reader does).
+- Not lazy: a drag-and-drop goes through Qt's drop handling, which copies the file into MEMFS, and preset
+  recordings download into MEMFS.
+
+Tests: `tests/wasm/ingress_file_selection.spec.js` (a sparse pick larger than the address space loads with flat
+memory; a file changed after the pick reports the failed read and leaves the next pick working), and the
+`content_sha256` checks of `persistence_layout.spec.js` (the JS hash against Node's).
 `PresetController` downloads through `pj_runtime`'s `fetchBytesWithLimit()` and streams recordings through `BrowserFetch.h` there ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)).
 Browser-only integration is tied to the executable's lifetime and policy, so it lives
 here rather than in a library.

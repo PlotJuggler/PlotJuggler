@@ -6,7 +6,7 @@
     "test:serial": "playwright test --project=chromium --reporter=line --workers=1 --grep @serial",
     "test:firefox": "playwright test --project=firefox --reporter=line --workers=1",
     "test:deployment": "playwright test -c deployment.playwright.config.js",
-    "test:package": "node --test package_wasm.test.mjs wasm_notices.test.mjs wasm_source_offer.test.mjs",
+    "test:package": "node --test package_wasm.test.mjs wasm_notices.test.mjs wasm_source_offer.test.mjs browser_picked_file.test.mjs",
     "fetch:assets": "node support/hosted_assets.js",
     "test:scene3d-capability": "playwright test -c scene3d_capability.playwright.config.js --project=chromium",
     "test:scene3d-capability:firefox": "playwright test -c scene3d_capability.playwright.config.js --project=firefox"

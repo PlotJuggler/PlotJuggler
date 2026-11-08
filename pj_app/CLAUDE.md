@@ -59,7 +59,7 @@ Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction
 - `CustomWidgetController`: the Custom Widget pages, the pending target panel, the `ActiveWidgetsMarker` and the startup crash review ([docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Custom Widget panels").
 - `ToolboxPresenter`, `ToolboxChrome`, `ToolboxHostWiring.h`, `PluginPlotTabsController`, `PluginSceneViewsController`: toolbox presentation and plugin-owned views.
 - `SourceTimelineController`, `DatasetMergeActions`: Source Timeline binding and dataset merge.
-- `BrowserFileStore`, `FileSelectionService`, `BrowserPersistence`: WebAssembly boundary. `PresetController`, `WelcomePresetsDialog{.h,.cpp,.ui}`: browser presets (tests: `PresetControllerTest`, `WelcomePresetsDialogTest`, `RemotePresetReplayTest`, `StreamingPresetTest` with `tests/mock_layout_stream_plugin.cpp`).
+- `BrowserFileStore`, `FileSelectionService`, `BrowserPickedFile` (+ `browser_picked_file.js`, lazy picks), `BrowserPersistence`: WebAssembly boundary. `PresetController`, `WelcomePresetsDialog{.h,.cpp,.ui}`: browser presets (tests: `PresetControllerTest`, `WelcomePresetsDialogTest`, `RemotePresetReplayTest`, `StreamingPresetTest` with `tests/mock_layout_stream_plugin.cpp`).
 - `Theme`, `WidgetTuner`, `DebugMode`/`DebugUi`, `Splashscreen`, `DiagnosticDump`, `BuiltinPlugins`, `scene_object_classification`, `SceneImageDecoder`, `SceneVideoFrameSource`, `KeySequence`, `RasterKeyMap`: app services and helpers.
 - `tests/`, `tests/support/`, `tests/fixtures/layouts/`, `benchmarks/`: tests, shared fixtures, frozen layouts, the mixed-layout benchmark. `tests/wasm_*probe*`: acceptance-build-only WebAssembly probes, never part of desktop or production behavior (`docs/ARCHITECTURE.md` "Acceptance probes").
 

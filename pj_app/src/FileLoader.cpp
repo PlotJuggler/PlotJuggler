@@ -44,6 +44,9 @@
 #include "DialogPresenter.h"
 #include "FanoutConfig.h"
 #include "FileSelectionService.h"
+#ifdef PJ_TARGET_WASM
+#include "BrowserPickedFile.h"
+#endif
 #include "LayoutXml.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
@@ -984,9 +987,25 @@ FileLoader::FileLoader(
       catalog_(catalog),
       browser_file_store_(std::make_shared<BrowserFileStore>()),
       active_plugin_message_dialog_(std::make_shared<QPointer<QDialog>>()),
-      message_gate_(std::make_shared<PluginMessageGate>()) {}
+      message_gate_(std::make_shared<PluginMessageGate>()) {
+#ifdef PJ_TARGET_WASM
+  // A picked file is read lazily, for the whole session: a change on disk after the pick turns up later as failed
+  // reads, which a std::istream-based source takes for the end of the file. Say so, or the data looks complete.
+  browser_picked_file::setReadFailureHandler([this](const QString& path) {
+    emitDiagnosticTo(
+        diagnostic_sink_, DiagnosticLevel::kWarning, "File Loader", "browser-file-read-failed",
+        tr("The browser can no longer read '%1': it changed or was removed on disk since it was opened. Data loaded "
+           "from it may be incomplete; open it again to reload it.")
+            .arg(QFileInfo(path).fileName())
+            .toStdString());
+  });
+#endif
+}
 
 FileLoader::~FileLoader() {
+#ifdef PJ_TARGET_WASM
+  browser_picked_file::setReadFailureHandler({});
+#endif
   // Stricter admission than a reusable shutdown: the final synchronous
   // terminal flush inside joinForShutdown runs loadFinished slots, and one of
   // them starting fresh work here would leave an accepted request nothing can
@@ -1077,8 +1096,11 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
   // QEventLoop/exec() is involved.
   QPointer<FileLoader> self(this);
   QPointer<QWidget> guarded_parent(dialog_parent);
+  // A plain open needs no fingerprint up front (only saving a source-bound layout does), so it is computed while the
+  // file loads instead of before its dialog opens.
   selectBrowserInput(
-      dialog_parent, [self, guarded_parent, hints = std::move(hints)](BrowserSelectionResult staged) mutable {
+      dialog_parent,
+      [self, guarded_parent, hints = std::move(hints)](BrowserSelectionResult staged) mutable {
         if (self.isNull() || (!staged.input.has_value() && staged.error.isEmpty())) {
           return;  // loader destroyed, or picker cancelled.
         }
@@ -1090,10 +1112,16 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
           return;
         }
         self->loadFile(std::move(*staged.input), guarded_parent, hints);
-      });
+      },
+      FileSelectionService::Fingerprint::kInBackground);
 }
 
 void FileLoader::selectBrowserInput(QWidget* dialog_parent, BrowserSelectionCallback callback) {
+  selectBrowserInput(dialog_parent, std::move(callback), FileSelectionService::Fingerprint::kBeforeSelection);
+}
+
+void FileLoader::selectBrowserInput(
+    QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint) {
   const QString filter = extensions_.buildFileFilter();
   qCInfo(lcFileLoader).noquote() << "Opening browser file picker with filter:" << filter;
   FileSelectionService::selectAndStageFile(
@@ -1104,11 +1132,18 @@ void FileLoader::selectBrowserInput(QWidget* dialog_parent, BrowserSelectionCall
             .input = std::move(staged.input),
             .error = std::move(staged.error),
         });
-      });
+      },
+      fingerprint);
 }
 #endif
 
 QString FileLoader::browserContentSha256(const QString& source_identity) const {
+#ifdef PJ_TARGET_WASM
+  if (const auto pending = browser_pending_fingerprint_path_.constFind(source_identity);
+      pending != browser_pending_fingerprint_path_.cend()) {
+    return browser_picked_file::fingerprintOf(*pending);
+  }
+#endif
   return browser_content_sha256_.value(source_identity);
 }
 
@@ -2201,6 +2236,11 @@ LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_pare
   if (!input.content_sha256.isEmpty()) {
     browser_content_sha256_.insert(input.source_identity, input.content_sha256);
   }
+#ifdef PJ_TARGET_WASM
+  if (input.content_sha256.isEmpty() && isBrowserUploadIdentity(input.source_identity)) {
+    browser_pending_fingerprint_path_.insert(input.source_identity, input.backing_path);
+  }
+#endif
   ++next_load_ticket_;
   if (next_load_ticket_ == 0) {
     ++next_load_ticket_;  // reserve zero for "invalid", even after wraparound
