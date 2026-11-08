@@ -469,7 +469,7 @@
          <item row="9" column="0">
           <widget class="QLabel" name="labelMcpServer">
            <property name="toolTip">
-            <string>Serve the Model Context Protocol on this computer only (127.0.0.1, behind a secret token), so AI agents such as Claude Code or Codex can open files, read series, and draw in their own tabs. The status bar names an agent while it is active. Shows whether outside agents may connect now (also when allowed with --mcp); off by default; applies on OK. An agent a toolbox plugin starts itself gets its own private access and does not need this.</string>
+            <string>Serve the Model Context Protocol on this computer only (127.0.0.1, behind a secret token), so AI agents such as Claude Code or Codex can open files, read series, and draw in their own tabs. The status bar names an agent while it is active. Shows whether outside agents may connect now (also when allowed with --mcp); on by default; applies on OK. An agent a toolbox plugin starts itself gets its own private access and does not need this.</string>
            </property>
            <property name="text">
             <string>Let AI agents control PlotJuggler (MCP server):</string>

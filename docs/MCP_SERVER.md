@@ -3,7 +3,8 @@
 PlotJuggler lets AI agents read and drive a running instance over the
 [Model Context Protocol](https://modelcontextprotocol.io). Two kinds of client use the same in-app server:
 
-- **External agents** (Claude Code, Codex, any MCP client) reach it through a stdio bridge, once the user opts in.
+- **External agents** (Claude Code, Codex, any MCP client) reach it through a stdio bridge. This is on by default,
+  and the user can turn it off.
 - **Toolbox plugins** (the Assistant) lease a private endpoint through the SDK service `pj.mcp_endpoint.v1`. The
   plugin then points its own agent CLI at that endpoint. There is no opt-in and no discovery file.
 
@@ -126,11 +127,13 @@ with an injective transform id (bytes other than `[A-Za-z0-9]` escaped).
 
 ## Public access (external agents)
 
-- **Opt-in.** Public access is off by default. The Preferences → Appearance switch "Let AI agents control PlotJuggler
-  (MCP server)" (`MainWindow::kMcpServerKey`) shows whether public access is open now. `--mcp` also opens it; a
-  plugin's endpoint does not count. OK applies the switch when it differs from the current state: it writes the
-  setting and either opens public access with a random token (discovery file written) or closes it (file removed;
-  plugin tokens keep working). `--mcp` opens it for one run without touching the setting.
+- **On by default.** An attended run opens public access at startup unless the user turned off the Preferences →
+  Appearance switch "Let AI agents control PlotJuggler (MCP server)" (`MainWindow::kMcpServerKey`). An unattended
+  run (`--exit-after-layout`, `--screenshot`, the offscreen and minimal platforms, so every test) opens it only with
+  `--mcp`, so it never shows up as an instance an agent could pick. The switch shows whether public access is open
+  now; a plugin's endpoint does not count. OK applies the switch when it differs from the current state: it writes
+  the setting and either opens public access with a random token (discovery file written) or closes it (file
+  removed; plugin tokens keep working). `--mcp` opens it for one run without touching the setting.
 - **Indicator.** While a public client calls, a status-bar label names it. The label hides two minutes after the last
   request, or when public access closes.
 - **Discovery.** `<AppLocalData>/mcp-instances/<pid>.json` holds pid, port, token and start time, owner-only like its
@@ -211,9 +214,10 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
 - **`export_series`** by default writes a new owner-only, randomly named file (`QTemporaryFile`). It refuses more
   than 10 million rows and reports a failed write, flush or close.
 - **Logging.** No token is ever logged, and server logging goes to the `pj.mcp` category.
-- **Trust boundary.** It is the same user. The bridge is a convenience, not a security layer. A plugin token is
-  capability-scoped (agent tools only, the plugin's own identity), but any local process of that user that learns it
-  can use it until it is revoked.
+- **Trust boundary.** It is the same user. The bridge is a convenience, not a security layer. With public access on
+  by default, any process of that user can read the discovery file and drive the window; the Preferences switch
+  closes it. A plugin token is capability-scoped (agent tools only, the plugin's own identity), but any local process
+  of that user that learns it can use it until it is revoked.
 
 ## Tests
 

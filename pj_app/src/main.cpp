@@ -614,11 +614,14 @@ int main(int argc, char* argv[]) {
   }
 
 #ifndef PJ_TARGET_WASM
+  const bool attended = !isUnattendedRun(parser, exit_after_layout_option, screenshot_option);
   // Tests and headless runs must not repoint the agent plugin's launcher at a build tree.
-  if (!isUnattendedRun(parser, exit_after_layout_option, screenshot_option)) {
+  if (attended) {
     PJ::mcp::recordExecutable();
   }
-  if (parser.isSet(mcp_option) || QSettings().value(PJ::MainWindow::kMcpServerKey, false).toBool()) {
+  // On by default for an attended run; tests and headless runs open it only with --mcp, so they
+  // never show up as an instance an agent could pick.
+  if (parser.isSet(mcp_option) || (attended && QSettings().value(PJ::MainWindow::kMcpServerKey, true).toBool())) {
     window.openMcpPublicAccess();
   }
 

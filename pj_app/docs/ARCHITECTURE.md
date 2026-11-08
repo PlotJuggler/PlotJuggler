@@ -507,9 +507,9 @@ imports it from the embedded stdlib zip.
 ## MCP server
 
 AI agents read and drive a running PlotJuggler over the Model Context Protocol, desktop only (`src/mcp/` is left out
-of the browser build). External agents come in through the stdio bridge `--mcp-bridge` with the opt-in public token;
-toolbox plugins lease a private, agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The design (tool sets,
-tokens and owners, lifetimes and revocation, discovery, the user-first rules, security, tests) is in
+of the browser build). External agents come in through the stdio bridge `--mcp-bridge` with the public token (on
+by default); toolbox plugins lease a private, agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The design
+(tool sets, tokens and owners, lifetimes and revocation, discovery, the user-first rules, security, tests) is in
 [`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md).
 
 What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp`, `McpServer` (with
