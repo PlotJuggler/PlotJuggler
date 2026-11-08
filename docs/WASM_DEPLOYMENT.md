@@ -371,7 +371,9 @@ must answer them with `Access-Control-Allow-Origin` for the page.
 ## Browser-local state
 
 Uploaded files are staged in the page's temporary filesystem and receive opaque
-browser identities; they are not persisted across refreshes. Ordinary
+browser identities; they are not persisted across refreshes. A data file opened
+from the picker must be at most 2 GiB - 2 MiB (the browser holds it in one array);
+a larger one is refused when picked, saying so. Ordinary
 `QSettings` callers are likewise redirected to page-lifetime storage. The only
 durable browser state is the typed preference allowlist and a bounded list of
 source-free generic layout recipes owned by `BrowserPersistence`. Source-bound

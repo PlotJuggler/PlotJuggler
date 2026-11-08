@@ -152,6 +152,53 @@ test('a picked file is staged without passing through the wasm heap', async ({ p
   }
 });
 
+// A pick is copied whole into one browser array: Chromium cannot allocate one of 2 GiB, and Firefox's WebCrypto
+// cannot hash one. A larger file is refused at once with that reason, not copied and then blamed on the disk.
+test('a picked file too large for the browser is refused at once with the size limit', async ({ page }) => {
+  test.setTimeout(180000);
+  const errors = [];
+  const consoleMessages = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('console', message => consoleMessages.push(message.text()));
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  const screen = await page.locator('#screen').boundingBox();
+  expect(screen).not.toBeNull();
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pj-pick-'));
+  const huge = path.join(directory, 'huge.pjprobe');
+  const small = path.join(directory, 'small.pjprobe');
+  fs.closeSync(fs.openSync(huge, 'w'));
+  fs.truncateSync(huge, 2200 * 1000 * 1000);
+  fs.writeFileSync(small, Buffer.alloc(1024, 1));
+  try {
+    const chooser = await openFileChooser(page, screen, true);
+    const picked = Date.now();
+    await chooser.setFiles(huge);
+    await expect.poll(
+      () => consoleMessages.find(message => message.includes('data-source-load-failed')) || '',
+      { timeout: 10000 },
+    ).toContain('too large');
+    expect(Date.now() - picked).toBeLessThan(10000);
+    // Dismiss the app-modal "Load failed" box by its default action once it has focus.
+    await page.waitForTimeout(750);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(750);
+
+    const next = await openFileChooser(page, screen, true);
+    await next.setFiles(small);
+    await page.waitForTimeout(1000);
+    await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+    await expect.poll(
+      () => consoleMessages.find(message => message.includes('PJ_WASM_INGRESS_PROBE_OK')) || '',
+      { timeout: 30000 },
+    ).toContain('bytes=1024 sum=1024');
+    expect(errors).toEqual([]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('browser file dialog can reject then accept without a nested event loop', async ({ page }) => {
   test.setTimeout(90000);
   const errors = [];
