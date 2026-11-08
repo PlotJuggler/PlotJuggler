@@ -15,7 +15,7 @@ header. The `plotjuggler_sdk` Conan package is a separate repo with its own lice
 
 ## Architecture
 
-Module boundaries and dependency rules are below; each module's `CLAUDE.md` and `docs/` describe its implementation. Cross-module designs: derived series and objects in [docs/derived_objects/](./docs/derived_objects/ARCHITECTURE.md), recording and source cache in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md). [docs/archive/](./docs/archive) holds retired plans (history only).
+Module boundaries and dependency rules are below; each module's `CLAUDE.md` and `docs/` describe its implementation. Cross-module designs: derived series and objects in [docs/derived_objects/](./docs/derived_objects/ARCHITECTURE.md), recording and source cache in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md), AI agents over MCP (server, bridge, plugin endpoint) in [MCP_SERVER.md](./docs/MCP_SERVER.md). [docs/archive/](./docs/archive) holds retired plans (history only).
 
 ```
 PJ4/

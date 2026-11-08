@@ -110,6 +110,13 @@ struct LoadHints {
   // instead of degrading to a plain fresh load. No effect without
   // replace_dataset_id. Default false preserves the degrade.
   bool require_replacement = false;
+  // Put before the plugin dialog's title (e.g. "An AI agent asked you to choose: "), so the user
+  // knows who opened it. Only that dialog; empty leaves the title alone.
+  QString dialog_title_prefix{};
+  // Asked when the request leaves the queue and again once its dialog is accepted: false
+  // cancels the load (kCancelled, no legacy signals) before anything is applied. For a caller
+  // whose right to load can lapse while it waits (an MCP agent's revoked token).
+  std::function<bool()> still_allowed{};
 };
 
 // Ticket naming one ACCEPTED load request, minted at enqueue time by

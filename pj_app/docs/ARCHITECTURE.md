@@ -504,6 +504,20 @@ Python checks that the repo-root `tests/wasm/python.spec.js` asserts) and compil
 `tests/wasm_python_stdlib_probe.cpp`, which walks what a strict script can reach and
 imports it from the embedded stdlib zip.
 
+## MCP server
+
+AI agents read and drive a running PlotJuggler over the Model Context Protocol, desktop only (`src/mcp/` is left out
+of the browser build). External agents come in through the stdio bridge `--mcp-bridge` with the public token (on
+by default); toolbox plugins lease a private, agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The design
+(tool sets, tokens and owners, lifetimes and revocation, discovery, the user-first rules, security, tests) is in
+[`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md).
+
+What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp`, `McpServer` (with
+`McpEndpointHost`), `McpServerTools.cpp` (the app tools over `MainWindow`'s public "agent control" block). The
+agent tools come from `pj_runtime`'s `pj_agent_tools`. The shell's part of the teardown order:
+`~ToolboxPanelSession` resets `mcp_endpoint` after `handle` and before every service, and `~MainWindow` destroys
+the server right after `teardownAllToolboxes`.
+
 ## Concrete codecs behind runtime interfaces
 
 `pj_runtime` links no Scene2D library, so the shell supplies the concrete codecs the
@@ -572,6 +586,14 @@ Suites that keep their own executable and ctest entry, and why:
   plugin-path definitions; also covers provider quiescence on teardown.
 - `layout_import_batch_test`: desktop-only, with both the mock file-source and the
   runtime host object-parser plugin paths.
+- `mcp_bridge_test` (Linux): runs the built `plotjuggler4 --mcp` offscreen and drives
+  `--mcp-bridge` over stdio under a private HOME/XDG sandbox: both eras, the forwarded
+  tool list, a load and a read, refused envelopes (deep nesting, an over-1 MiB line),
+  token, Origin and owner spoofing. `McpServerTest` (gui runner; the mock file, mock
+  layout stream and dialog-probe plugins) covers in process the held replies, the modal
+  gate, the agent-titled dialogs, the socket cap, export escaping and its row cap, the
+  empty-join refusal, a stop with an evaluation in flight and the Preferences switch;
+  `McpHttpParsing`/`McpEnvelope` (unit runner) the HTTP and JSON-RPC gates.
 - `splash_meme_pool_test` (`SplashMemePoolTest`): compiles `Splashscreen.cpp`
   standalone with `PJ_MEMES_SOURCE_DIR` and the shipped resources.
 

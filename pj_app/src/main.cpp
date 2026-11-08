@@ -15,6 +15,7 @@
 #include <QImage>
 #include <QPixmap>
 #include <QScreen>
+#include <QSettings>
 #include <QSplashScreen>
 #include <QSurfaceFormat>
 #include <QThread>
@@ -51,6 +52,9 @@
 #include "MainWindow.h"
 #include "Splashscreen.h"
 #include "WidgetTuner.h"
+#ifndef PJ_TARGET_WASM
+#include "mcp/McpProtocol.h"
+#endif
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/processor_detail.hpp"
 #include "pj_plotting/PlotWidgetBase.h"
@@ -274,6 +278,9 @@ int main(int argc, char* argv[]) {
     if (std::strcmp(argv[i], "--selftest-python") == 0) {
       return selftestPython();
     }
+    if (std::strcmp(argv[i], "--mcp-bridge") == 0) {  // MCP over stdio for agents, needs no display
+      return PJ::mcp::runBridge(argc, argv, QStringLiteral(PJ_VERSION_STRING));
+    }
   }
 #endif
 
@@ -455,6 +462,14 @@ int main(int argc, char* argv[]) {
       u"Seconds --exit-after-layout waits for settlement before exiting with code 2 (default 300)."_s, u"seconds"_s,
       u"300"_s);
   parser.addOption(exit_after_layout_timeout_option);
+  const QCommandLineOption mcp_option(
+      u"mcp"_s,
+      u"Let AI agents control this window for this run (MCP server on a free 127.0.0.1 port; see --mcp-bridge), "
+      "whatever the Preferences setting."_s);
+  parser.addOption(mcp_option);
+  // Registered only so --help lists it; handled at the top of main().
+  parser.addOption(QCommandLineOption(
+      u"mcp-bridge"_s, u"Speak MCP over stdio, forwarding to a running PlotJuggler with MCP on (for agents)."_s));
 #endif
   parser.process(app);
 
@@ -599,10 +614,20 @@ int main(int argc, char* argv[]) {
   }
 
 #ifndef PJ_TARGET_WASM
+  const bool attended = !isUnattendedRun(parser, exit_after_layout_option, screenshot_option);
+  // Tests and headless runs must not repoint the agent plugin's launcher at a build tree.
+  if (attended) {
+    PJ::mcp::recordExecutable();
+  }
+  // On by default for an attended run; tests and headless runs open it only with --mcp, so they
+  // never show up as an instance an agent could pick.
+  if (parser.isSet(mcp_option) || (attended && QSettings().value(PJ::MainWindow::kMcpServerKey, true).toBool())) {
+    window.openMcpPublicAccess();
+  }
+
   // Before any layout restore: a previous run that died with Custom Widget plugins live is
   // reported, and an attended run asks whether to disable them.
-  window.reviewUncleanShutdown(
-      /*interactive=*/!isUnattendedRun(parser, exit_after_layout_option, screenshot_option));
+  window.reviewUncleanShutdown(/*interactive=*/attended);
 #endif
 
   // Deferred so the load runs after the event loop starts (the file loads on a
@@ -616,7 +641,7 @@ int main(int argc, char* argv[]) {
 #ifdef PJ_TARGET_WASM
     constexpr bool interactive = false;
 #else
-    const bool interactive = !isUnattendedRun(parser, exit_after_layout_option, screenshot_option);
+    const bool interactive = attended;
 #endif
     QTimer::singleShot(0, &window, [&window, startup_files, layout_path, interactive]() {
       window.loadAtStartup(startup_files, layout_path, interactive);

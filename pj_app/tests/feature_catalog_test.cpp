@@ -213,6 +213,7 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
   }
   labels["prefs.check_updates"] = textOf(prefs, "labelCheckUpdates");
   labels["prefs.clock_time_zone"] = textOf(prefs, "labelClockTimeZone");
+  labels["prefs.mcp_server"] = textOf(prefs, "labelMcpServer");
   return live;
 }
 
@@ -244,6 +245,7 @@ const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
       {"diagnostics", {"titlebar.diagnostics"}},
       {"check_updates",
        {"menu.help", "action.check_updates", "menu.file", "action.preferences", "prefs.check_updates"}},
+      {"mcp_server", {"menu.file", "action.preferences", "prefs.mcp_server"}},
   };
   return table;
 }

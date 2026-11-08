@@ -1407,6 +1407,35 @@ Status DataProcessorService::removeTransform(std::string_view namespaced_key) {
   return removeTransformOnly(namespaced_key);
 }
 
+Status DataProcessorService::removeOwnTransform(std::string_view namespaced_key) {
+  const auto it = transform_recipes_.find(std::string(namespaced_key));
+  if (it == transform_recipes_.end()) {
+    return removeTransform(namespaced_key);  // its unknown-key error
+  }
+  const TransformRecipe& removed = it->second;
+  std::unordered_set<TopicId> affected(removed.output_topic_ids.begin(), removed.output_topic_ids.end());
+  std::string foreign;
+  const auto name = [&foreign](const std::string& reader) { foreign += (foreign.empty() ? "" : ", ") + reader; };
+  forEachDependentProcessor(
+      affected, /*include_ephemeral_transforms=*/true,
+      [&name](TopicId, const FilterRecipe& filter) { name("'" + filter.output_name + "' (a filter)"); },
+      [&name, &removed](const std::string&, const TransformRecipe& reader) {
+        if (reader.owner_plugin != removed.owner_plugin) {
+          for (const std::string& output : reader.outputs) {
+            name("'" + output + "' (made by '" + reader.owner_plugin + "')");
+          }
+        }
+      });
+  if (!foreign.empty()) {
+    return PJ::unexpected(
+        "pj.data_processors: '" + removed.user_id +
+        "' was not removed: series of other owners are built on it and "
+        "would be deleted with it: " +
+        foreign + ". Only their owners can remove those.");
+  }
+  return removeTransform(namespaced_key);
+}
+
 Status DataProcessorService::removeTransformOnly(std::string_view namespaced_key) {
   const auto it = transform_recipes_.find(std::string(namespaced_key));
   if (it == transform_recipes_.end()) {

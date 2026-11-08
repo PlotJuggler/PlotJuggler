@@ -1170,6 +1170,22 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     emit fileLoadFailed(source_identity, reason);
     return false;
   };
+  // The caller's right to load lapsed (LoadHints::still_allowed): a terminal cancel, silent like
+  // a declined dialog.
+  const auto disallowed = [&]() -> bool {
+    if (!hints.still_allowed || hints.still_allowed()) {
+      return false;
+    }
+    qCInfo(lcFileLoader).noquote() << "load no longer allowed by its caller:" << source_identity;
+    cancel_mode_.store(0);  // a cancel latched for this load is honoured: it ends here
+    erase_created_live_dataset();
+    rollback_tombstones();
+    emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
+    return true;
+  };
+  if (disallowed()) {
+    co_return;
+  }
 
   const QString ext = normalizeExtension(input.display_name);
   if (ext.isEmpty()) {
@@ -1485,6 +1501,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         .parent = dialog_parent,
         .initial_parser_config = initial_parser_config,
         .browser_file_store = browser_file_store_,
+        .title_prefix = hints.dialog_title_prefix,
     });
     const auto dlg = co_await std::move(dialog_awaiter);
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
@@ -1504,6 +1521,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       erase_created_live_dataset();
       rollback_tombstones();
       emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
+      co_return;
+    }
+    if (disallowed()) {
       co_return;
     }
     if (dlg.payload.has_value()) {
