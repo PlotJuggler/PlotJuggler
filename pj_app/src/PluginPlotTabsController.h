@@ -86,13 +86,13 @@ class PluginPlotTabsController {
   /// such tab. The single ownership check every operation goes through.
   [[nodiscard]] PlotDocker* ownedTab(const QString& plugin_id, const QString& tab_id) const;
 
-  /// Set the visible X window of every time plot `plugin_id` owns to [t0_s, t1_s]
-  /// (display-axis seconds), keeping each plot's Y range and ignoring the
-  /// toolbar's Link-X toggle. Owning no tab and owning only tabs with nothing to
+  /// Set the visible X window of every time plot `plugin_id` owns, or only of those in its tab
+  /// `tab_id` when given, to [t0_s, t1_s] (display-axis seconds), keeping each plot's Y range and
+  /// ignoring the toolbar's Link-X toggle. Owning no such tab and owning only tabs with nothing to
   /// zoom are distinct errors: the caller's remedy differs.
-  Status zoomToTimeRange(const QString& plugin_id, double t0_s, double t1_s);
-  /// Reset every plot `plugin_id` owns to fit its data.
-  Status zoomOut(const QString& plugin_id);
+  Status zoomToTimeRange(const QString& plugin_id, double t0_s, double t1_s, const QString& tab_id = {});
+  /// Reset every plot `plugin_id` owns, or only those in its tab `tab_id` when given, to fit its data.
+  Status zoomOut(const QString& plugin_id, const QString& tab_id = {});
 
   /// Re-stamp every owned tab's watermark from the extension catalog: the owning
   /// toolbox's display name while loaded, and the "not loaded" form otherwise.
@@ -109,7 +109,9 @@ class PluginPlotTabsController {
   /// badge. Null when the workspace refuses a new tab.
   [[nodiscard]] PlotDocker* newOwnedTab(const QString& plugin_id, const QString& tab_id, const QString& title);
   static void clearPlotCurves(PlotDocker* docker);
-  void forEachPlotOwnedBy(const QString& plugin_id, const std::function<void(PlotWidget*)>& operation) const;
+  /// Every plot in the tabs `plugin_id` owns, or only in its tab `tab_id` when that is not empty.
+  void forEachPlotOwnedBy(
+      const QString& plugin_id, const QString& tab_id, const std::function<void(PlotWidget*)>& operation) const;
 
   TabbedPlotWidget& tabs_;
   CatalogModel& catalog_;

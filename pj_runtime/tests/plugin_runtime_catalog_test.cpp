@@ -240,6 +240,20 @@ TEST_F(PluginCatalogTest, RuntimeCatalogRejectsMalformedPluginVersion) {
   }));
 }
 
+TEST_F(PluginCatalogTest, RuntimeCatalogRefusesTheAgentIdPrefix) {
+  std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_AGENT_ID_PLUGIN_PATH, dir_ / pluginFileName("ds"));
+
+  std::vector<Diagnostic> diagnostics;
+  PluginRuntimeCatalog catalog({}, [&](const Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+  catalog.setPluginDir(dir_);
+  catalog.scanDirectory();
+
+  EXPECT_TRUE(catalog.dataSources().empty());
+  EXPECT_TRUE(std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+    return diagnostic.level == DiagnosticLevel::kError && diagnostic.message.find("reserved") != std::string::npos;
+  }));
+}
+
 TEST_F(PluginCatalogTest, RuntimeCatalogRejectsNewerSdkRequirement) {
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 

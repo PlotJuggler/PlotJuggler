@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,6 +64,12 @@ class FilterCatalogue {
   /// source fails to compile or declares no class with `id`.
   [[nodiscard]] Expected<std::unique_ptr<LuaMimoTransform>> makeMimoFromSource(
       const std::string& source, std::string_view id, const std::string& params_json, std::size_t num_outputs) const;
+
+  /// A Luau module returning just class `id`, whose `create(params)` fills every parameter the
+  /// caller leaves out with its declared default: how a catalogued filter runs as a plugin-style
+  /// transform (DataProcessorService::upsertTransform), which passes params through unfilled.
+  /// nullopt for an unknown id.
+  [[nodiscard]] std::optional<std::string> standaloneClassScript(std::string_view id) const;
 
   // DEFERRED (post-v1): rescanUserDir(path) would merge a user-override file +
   // marketplace dir over the bundled set (user ids shadow bundled, except the

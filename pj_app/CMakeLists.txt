@@ -1,4 +1,5 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg Test)
+find_package(nlohmann_json REQUIRED)
 
 # backward-cpp (Conan): symbolized crash backtraces. The package exports the
 # `Backward` config and the `Backward::Backward` target, which propagates the
@@ -138,6 +139,18 @@ if(TARGET pj_scene3d_widgets)
     target_sources(pj_app_shell PRIVATE
         src/ui/Scene3DConfigPanel.cpp
         src/ui/Scene3DConfigPanel.h)
+endif()
+# The MCP server and its stdio bridge (docs/ARCHITECTURE.md "MCP server"): desktop only, since a
+# page can neither listen on a socket nor be spawned. The agent tools are pj_runtime's pj_agent_tools.
+if(NOT EMSCRIPTEN)
+    target_sources(pj_app_shell PRIVATE
+        src/mcp/McpBridge.cpp
+        src/mcp/McpProtocol.cpp
+        src/mcp/McpProtocol.h
+        src/mcp/McpServer.cpp
+        src/mcp/McpServer.h
+        src/mcp/McpServerTools.cpp)
+    target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
 endif()
 
 if(EMSCRIPTEN)
@@ -413,6 +426,11 @@ if(PJ_BUILD_TESTS)
         LIBS Qt6::Widgets Qt6::Xml
     )
     set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
+    # The MCP server's HTTP and JSON-RPC gates (desktop only, like the server).
+    if(NOT EMSCRIPTEN)
+        target_sources(pj_app_unit_tests PRIVATE tests/mcp_protocol_test.cpp src/mcp/McpProtocol.cpp)
+        target_link_libraries(pj_app_unit_tests PRIVATE pj_agent_tools)
+    endif()
     # pj_runtime's include tree only for the header-only XmlCdata.h and
     # SavedSeriesPath.h LayoutXml uses; the runner does not link pj_runtime.
     target_include_directories(pj_app_unit_tests PRIVATE
@@ -996,6 +1014,14 @@ if(PJ_BUILD_TESTS)
     # A series replay as a progress entry of its topic: the linger, and the stop by topic.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/series_progress_controller_test.cpp)
+    # The MCP server over loopback HTTP: held replies that wait for the user, the dialogs an agent
+    # opens for the user (a file loader's, a stream's), the gates (desktop only).
+    if(NOT EMSCRIPTEN)
+        list(APPEND PJ_APP_GUI_TEST_SOURCES tests/mcp_server_test.cpp)
+        set_source_files_properties(tests/mcp_server_test.cpp PROPERTIES
+            COMPILE_DEFINITIONS
+            "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\";PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH=\"$<TARGET_FILE:mock_layout_stream_plugin>\";PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:dialog_probe_source_plugin>\"")
+    endif()
     # The feature catalog resource, whose entry points must name the live
     # widget labels. Desktop only, like FeatureCatalogHost.
     if(NOT EMSCRIPTEN)
@@ -1059,6 +1085,21 @@ if(PJ_BUILD_TESTS)
                 ENVIRONMENT "PJ_RENDER_BACKEND=OpenGL;PJ_RENDER_SKIP_WITHOUT_DISPLAY=1")
         endif()
     endif()
+endif()
+
+# An agent's view end to end: the built app's --mcp-bridge over stdio in front of an offscreen
+# `plotjuggler4 --mcp`, under a private HOME (XDG paths isolate settings and discovery, hence Linux).
+if(PJ_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pj_add_test_runner(mcp_bridge_test
+        MAIN core WARNINGS
+        SOURCES tests/mcp_bridge_test.cpp
+        LIBS Qt6::Core Qt6::Network nlohmann_json::nlohmann_json
+        TIMEOUT 120
+    )
+    target_compile_definitions(mcp_bridge_test PRIVATE
+        PJ_APP_PATH="$<TARGET_FILE:pj_app>"
+        PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
+    add_dependencies(mcp_bridge_test pj_app mock_file_source_plugin)
 endif()
 
 # The mixed-layout fixture (tests/mixed_layout_fixture.h): a plot, a Scene3D view

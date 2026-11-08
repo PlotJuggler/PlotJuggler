@@ -134,6 +134,7 @@ DialogPrologue prepareDialog(const DataSourceRequest& req) {
   DialogEngineConfig engine_config;
   engine_config.parser_dialog_provider = makeParserDialogProvider(req.catalog);
   engine_config.section_band_metrics = req.section_band_metrics;
+  engine_config.title_prefix = req.title_prefix;
   // string-from-string_view ctor (C++17) handles a default-empty view safely;
   // raw .assign(data(), size()) would be UB when data() is nullptr.
   engine_config.initial_parser_config = std::string(req.initial_parser_config);
