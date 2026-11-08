@@ -12,10 +12,6 @@ int main(int argc, char* argv[]) {
   // Match pj_app so AppDataLocation resolves to the same install tree.
   QCoreApplication::setOrganizationName(u"PlotJuggler"_s);
   QCoreApplication::setApplicationName(u"PlotJuggler4"_s);
-  // hostCompatibility() reads applicationVersion() as the host version. pj_app
-  // stamps the real build version; this dev harness has none, so treat the host
-  // as "newest" so the compatibility gate never blocks manual UI testing.
-  QCoreApplication::setApplicationVersion(u"9999.0.0"_s);
   const QUrl registry_url =
       QUrl("https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json");
   PJ::MarketplaceWindow w(registry_url);

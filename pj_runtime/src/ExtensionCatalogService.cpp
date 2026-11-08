@@ -158,7 +158,7 @@ bool sameDsoSignature(const std::filesystem::path& installed_dso, const std::fil
 // half-written copy) — both mean "reseed".
 //
 // Returns the full descriptor rather than just the version, because the seed's
-// compat check needs abi_major, min_sdk_required, and min_plotjuggler_version — a stale
+// compat check needs abi_major and min_sdk_required — a stale
 // installed copy that would be rejected at load time gets replaced with the
 // bundled build, which is compatible by construction.
 std::optional<PluginDescriptor> installedPluginDescriptor(const std::filesystem::path& dir, const std::string& id) {

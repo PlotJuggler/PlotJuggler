@@ -246,7 +246,7 @@ class ExtensionCatalogService : public QObject {
   // non-empty reason triggers the rescue path (overwrite with the bundled
   // build, compatible by construction).
   //
-  // Three gates, evaluated by the same headless primitive as marketplace
+  // Two gates, evaluated by the same headless primitive as marketplace
   // admission and PluginRuntimeCatalog:
   //   - ABI: `abi_major` (baked into the manifest at build time by the SDK's
   //     CMake helper) must equal the host's `PJ_ABI_VERSION`. A zero
@@ -255,8 +255,7 @@ class ExtensionCatalogService : public QObject {
   //     will catch a real mismatch there).
   //   - `min_sdk_required`: the SDK used by the host must be at least the
   //     concrete SemVer contract floor. Empty means undeclared.
-  //   - `min_plotjuggler_version`: the host must be at least the declared
-  //     concrete SemVer minimum. An empty value is no floor.
+  // `min_plotjuggler_version` is display-only and never gates.
   //
   // The reason string mirrors ExtensionManager::hostCompatibility's wording
   // so seed diagnostics and marketplace UI say the same thing.
