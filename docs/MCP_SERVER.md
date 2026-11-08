@@ -174,9 +174,10 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
 ## The Assistant as a consumer
 
 - **Per-turn acquire.** On every turn, on the GUI thread, `AssistantDialog::sendCurrentInput` acquires the endpoint
-  (the same one while held) and hands it to the backend in `TurnTools::mcp`. A host without the service gets "The
-  Assistant needs PlotJuggler 4.2 or newer." Other failures are reported in the chat ("This PlotJuggler cannot serve
-  the Assistant's tools: …"). The plugin never releases; its session teardown revokes the token.
+  (the same one while held) and hands it to the backend in `TurnTools::mcp`. A failure ends the turn with a chat note,
+  "This PlotJuggler cannot serve the Assistant's tools: …", which for a host without the service reads "it offers no
+  MCP endpoint to plugins." A PlotJuggler older than SDK 0.40.0 never gets that far: it refuses to install or load the
+  plugin (`min_sdk_required`). The plugin never releases; its session teardown revokes the token.
 - **Claude backend.** The CLI runs with `--tools ""` (no built-in tool: no shell, no filesystem), `--restricted`
   (none of the user's settings or CLAUDE.md), and `--mcp-config <0600 temp file>` with `--strict-mcp-config` and
   `--allowedTools mcp__pj`. The config file holds the url and the token. It is written through `writePrivateTempFile`
