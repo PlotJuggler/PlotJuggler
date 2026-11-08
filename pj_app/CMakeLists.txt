@@ -154,6 +154,10 @@ if(NOT EMSCRIPTEN)
 endif()
 
 if(EMSCRIPTEN)
+    # Lazily read browser picks; the page side is browser_picked_file.js, linked into pj_app below.
+    target_sources(pj_app_shell PRIVATE
+        src/BrowserPickedFile.cpp
+        src/BrowserPickedFile.h)
     # DiagnosticHistory consumes this QObject bridge, normally supplied by the
     # marketplace library that is intentionally absent in a static web build.
     target_sources(pj_app_shell PRIVATE
@@ -361,7 +365,9 @@ if(EMSCRIPTEN)
     set_target_properties(pj_app PROPERTIES
         AUTORCC ON
         QT_WASM_INITIAL_MEMORY "256MB")
-    target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1)
+    target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1
+        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
+    set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
     if(PJ_WASM_WITH_PYTHON)
         # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
         # the main thread waits on it never starts.

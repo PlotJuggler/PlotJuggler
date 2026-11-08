@@ -5,99 +5,17 @@
 
 #include <QFileDialog>
 #include <QRegularExpression>
+#include <memory>
 #include <string>
 #include <utility>
 
 #include "BrowserFileStore.h"
 #ifdef Q_OS_WASM
-#include <emscripten/emscripten.h>
 #include <emscripten/val.h>
 
-#include <QUrl>
-#include <chrono>
-#include <cstdlib>
-#include <limits>
-#include <unordered_map>
-
-#include "pj_runtime/BrowserFetch.h"
+#include "BrowserPickedFile.h"
 #endif
 using namespace Qt::StringLiterals;
-
-#ifdef Q_OS_WASM
-namespace PJ {
-namespace {
-
-// Reports a pick: the browser's file name and a blob: URL for the File, both empty on cancel, and its size in bytes.
-using PickCompletion = std::function<void(QString name, QString blob_url, qint64 size)>;
-
-// The largest pick the browser can stage: it is copied whole into one JavaScript array, and Chromium allocates
-// none larger (2 GiB - 2 MiB); Firefox, which can, then fails to hash one of 2 GiB with WebCrypto. It also keeps
-// every offset in the file within a 32-bit `long`, which loaders on wasm32 seek with (ftell/fseek).
-constexpr qint64 kMaxBrowserPickBytes = 2145386496;
-
-// The picks whose <input> has not settled yet, by id. Browser main thread only.
-std::unordered_map<quint32, PickCompletion>& pendingPicks() {
-  static std::unordered_map<quint32, PickCompletion> instance;
-  return instance;
-}
-
-// Shows the browser's file picker through a detached <input type=file> and hands the chosen File back as an object
-// URL, so its bytes can be streamed instead of read whole (Qt's getOpenFileContent holds the file in a QByteArray).
-// The input settles once, on `change` or on `cancel`; a browser that never fires `cancel` leaves the pick pending,
-// as Qt's own picker does. The macro joins the body into one line: every statement ends in a semicolon.
-// clang-format off
-EM_JS_DEPS(pj_browser_pick, "$stringToNewUTF8");
-EM_JS(void, pj_browser_pick_file, (unsigned id, const char* accept_utf8), {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = UTF8ToString(accept_utf8);
-  input.style.display = 'none';
-  let settled = false;
-  const settle = (file) => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    input.remove();
-    const name = stringToNewUTF8(file ? file.name : '');
-    const url = stringToNewUTF8(file ? URL.createObjectURL(file) : '');
-    Module._pj_browser_pick_done(id, name, url, file ? file.size : 0);
-  };
-  input.addEventListener('change', () => settle(input.files && input.files.length > 0 ? input.files[0] : null));
-  input.addEventListener('cancel', () => settle(null));
-  document.body.appendChild(input);
-  input.click();
-});
-// clang-format on
-
-void pickBrowserFile(const QString& accept, PickCompletion completion) {
-  static quint32 last_id = 0;
-  const quint32 id = ++last_id;
-  pendingPicks()[id] = std::move(completion);
-  pj_browser_pick_file(id, accept.toUtf8().constData());
-}
-
-void revokeObjectUrl(const QString& blob_url) {
-  if (!blob_url.isEmpty()) {
-    emscripten::val::global("URL").call<void>("revokeObjectURL", blob_url.toStdString());
-  }
-}
-
-}  // namespace
-}  // namespace PJ
-
-/// The <input> of pick `id` settled; `name` and `url` are malloc'ed by the page and freed here.
-extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_pick_done(quint32 id, char* name, char* url, double size) {
-  const QString browser_name = QString::fromUtf8(name);
-  const QString blob_url = QString::fromUtf8(url);
-  free(name);
-  free(url);
-  auto node = PJ::pendingPicks().extract(id);
-  if (!node.empty()) {
-    node.mapped()(browser_name, blob_url, static_cast<qint64>(size));
-  }
-}
-#endif
 
 namespace PJ {
 
@@ -185,43 +103,41 @@ void FileSelectionService::saveFileContent(QWidget* parent, const QByteArray& by
 }
 
 void FileSelectionService::selectAndStageFile(
-    QWidget* parent, const QString& name_filter, std::shared_ptr<BrowserFileStore> store, StagedCallback callback) {
+    QWidget* parent, const QString& name_filter, std::shared_ptr<BrowserFileStore> store, StagedCallback callback,
+    Fingerprint fingerprint) {
 #ifdef Q_OS_WASM
   Q_UNUSED(parent);
-  pickBrowserFile(
-      browserAcceptList(name_filter),
-      [store = std::move(store), callback = std::move(callback)](QString browser_name, QString blob_url, qint64 size) {
+  browser_picked_file::pick(
+      browserAcceptList(name_filter), [store = std::move(store), callback = std::move(callback), fingerprint](
+                                          quint32 pick_id, QString browser_name) mutable {
         if (browser_name.isEmpty()) {
-          revokeObjectUrl(blob_url);
           callback({});
-          return;
-        }
-        if (size > kMaxBrowserPickBytes) {
-          revokeObjectUrl(blob_url);
-          callback({
-              .browser_name = browser_name,
-              .error = u"%1 is too large to open in the browser (%2 MiB; the limit is %3 MiB)."_s.arg(browser_name)
-                           .arg(static_cast<double>(size) / (1024.0 * 1024.0), 0, 'f', 1)
-                           .arg(static_cast<double>(kMaxBrowserPickBytes) / (1024.0 * 1024.0), 0, 'f', 1),
-          });
           return;
         }
         BrowserFileStore::StageResult staged =
             store ? store->reserve(browser_name)
                   : BrowserFileStore::StageResult{.error = QStringLiteral("Browser file staging is unavailable.")};
         if (!staged.input.has_value()) {
-          revokeObjectUrl(blob_url);
+          browser_picked_file::forget(pick_id);
           callback({.browser_name = browser_name, .error = std::move(staged.error)});
           return;
         }
-        const QString path = staged.input->backing_path;
-        // A local read never stalls like a network one, so the idle timeout only catches a File that went away.
-        browserFetchToFile(
-            QUrl(blob_url), path, std::numeric_limits<qint64>::max(), std::chrono::seconds(60),
-            [callback, browser_name, blob_url, input = std::move(*staged.input)](BrowserFetchResult result) mutable {
-              revokeObjectUrl(blob_url);
-              if (!result.error.isEmpty()) {
-                // Dropping `input` releases its lease, which removes the partial file.
+        LoadInput input = std::move(*staged.input);
+        if (!browser_picked_file::mount(pick_id, input.backing_path)) {
+          callback(
+              {.browser_name = browser_name, .error = u"The browser lost the picked file %1."_s.arg(browser_name)});
+          return;
+        }
+        if (fingerprint == Fingerprint::kInBackground) {
+          callback({.browser_name = browser_name, .input = std::move(input)});
+          return;
+        }
+        const QString path = input.backing_path;
+        browser_picked_file::hash(
+            path, [callback = std::move(callback), browser_name,
+                   input = std::make_shared<LoadInput>(std::move(input))](QString sha256) mutable {
+              if (sha256.isEmpty()) {
+                // Dropping `input` releases its lease, which removes the mounted file.
                 callback({
                     .browser_name = browser_name,
                     .error =
@@ -229,11 +145,12 @@ void FileSelectionService::selectAndStageFile(
                 });
                 return;
               }
-              input.content_sha256 = result.sha256;
-              callback({.browser_name = browser_name, .input = std::move(input)});
+              input->content_sha256 = std::move(sha256);
+              callback({.browser_name = browser_name, .input = std::move(*input)});
             });
       });
 #else
+  Q_UNUSED(fingerprint);
   selectFileContent(
       parent, name_filter, [store = std::move(store), callback = std::move(callback)](Selection selection) mutable {
         if (selection.browser_name.isEmpty()) {

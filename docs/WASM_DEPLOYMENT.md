@@ -377,9 +377,11 @@ must answer them with `Access-Control-Allow-Origin` for the page.
 ## Browser-local state
 
 Uploaded files are staged in the page's temporary filesystem and receive opaque
-browser identities; they are not persisted across refreshes. A data file opened
-from the picker must be at most 2 GiB - 2 MiB (the browser holds it in one array);
-a larger one is refused when picked, saying so. Ordinary
+browser identities; they are not persisted across refreshes. A file opened from
+the picker is read from disk on demand rather than copied, so its size is not
+bounded by the tab's memory; it must stay unchanged on disk while it is open
+(a changed file reports that its data may be incomplete, see
+[`pj_app/docs/ARCHITECTURE.md`](../pj_app/docs/ARCHITECTURE.md#browser-webassembly-boundary)). Ordinary
 `QSettings` callers are likewise redirected to page-lifetime storage. The only
 durable browser state is the typed preference allowlist and a bounded list of
 source-free generic layout recipes owned by `BrowserPersistence`. Source-bound

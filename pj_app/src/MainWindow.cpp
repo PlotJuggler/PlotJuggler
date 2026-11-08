@@ -2652,8 +2652,13 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
       error = tr("A browser source has no usable filename.");
       return std::nullopt;
     }
-    if (record.content_sha256.isEmpty()) {
-      error = tr("A browser source no longer has its staged content fingerprint.");
+    // The live fingerprint, not the record's (taken when the load finished): a picked file is fingerprinted while it
+    // loads, and loses its fingerprint when a read of it fails.
+    const QString content_sha256 = file_loader_->browserContentSha256(source.identity);
+    if (content_sha256.isEmpty()) {
+      error = tr("'%1' has no content fingerprint yet: it is still being computed, or the file changed since it was "
+                 "picked. Save the layout again in a moment, or open the file again.")
+                  .arg(basename);
       return std::nullopt;
     }
     // Preserve W9c.2's compact one-source document. Multi-source documents use
@@ -2666,7 +2671,7 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
     QDomElement file_info = doc.createElement(u"fileInfo"_s);
     file_info.setAttribute(u"filename"_s, logical_path);
     file_info.setAttribute(u"prefix"_s, record.prefix);
-    file_info.setAttribute(u"content_sha256"_s, record.content_sha256);
+    file_info.setAttribute(u"content_sha256"_s, content_sha256);
     for (std::size_t dataset_index = 0; dataset_index < record.datasets.size(); ++dataset_index) {
       const BrowserLayoutRuntime::DatasetShape& shape = record.datasets[dataset_index];
       logical_path_for_dataset.insert(shape.dataset_id, logical_path);

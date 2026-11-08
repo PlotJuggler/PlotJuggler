@@ -25,6 +25,8 @@ async function bootScene3D(page, messages) {
 }
 
 async function loadScene3DFixture(page, screen, messages, name) {
+  const loads = () => messages.filter(message => message.includes('PJ_FILE_LOAD_OK') && message.includes(`/${name}`)).length;
+  const before = loads();
   const chooser = await openFileChooser(page, screen);
   await chooser.setFiles({
     name,
@@ -33,6 +35,9 @@ async function loadScene3DFixture(page, screen, messages, name) {
   });
   await page.waitForTimeout(800);
   await clickActiveDialogButton(page, screen, messages, 'ok');
+  // The dataset row the caller drags exists only once the import finishes, and a picked file is read on demand, so
+  // how long that takes varies by browser and machine.
+  await expect.poll(loads, { timeout: 60000 }).toBeGreaterThan(before);
   await page.waitForTimeout(500);
 }
 
