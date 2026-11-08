@@ -233,7 +233,7 @@ ToolRegistry::ToolRegistry() {
       {"remove_derived_series",
        "Delete a derived series or object you created, by its name. Only your own creations — "
        "loaded data cannot be touched. Use it to withdraw a series or object that turned out wrong "
-       "instead of leaving it in the user's panel.",
+       "instead of leaving it in the user's panel. Refused while someone else's series is built on it.",
        {{"type", "object"},
         {"properties", {{"name", {{"type", "string"}, {"description", "name given at creation"}}}}},
         {"required", json::array({"name"})}},

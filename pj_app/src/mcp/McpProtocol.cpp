@@ -174,7 +174,9 @@ json appToolEntries() {
                {"name", str}},
               {"input", "filter"})),
       tool(
-          "remove_script_series", "Delete a series made with add_script_series or add_filter.",
+          "remove_script_series",
+          "Delete a series made with add_script_series or add_filter. Refused while someone else's series (the "
+          "user's, a plugin's) is built on it, since that would be deleted too.",
           schema({{"name", str}}, {"name"})),
       tool(
           "screenshot",

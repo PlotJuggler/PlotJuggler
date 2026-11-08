@@ -119,13 +119,13 @@ json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::strin
   return out;
 }
 
-// Whether the HOST can address this series by name for a create, and the error
-// to hand back when it cannot. The create side of pj.data_processors.v1 takes
-// bare names; when the same topic/field exists in several datasets the bare
-// name no longer picks one, so handing it over would either fail or land on
-// whichever dataset the host resolves first. Reads are unaffected — they go by
-// handle — so this is a create-only limit, refused loudly here instead of
-// silently mistargeted there.
+// Whether the HOST can address this series by name for a marker rule, and the
+// error to hand back when it cannot. A rule names its series by bare name;
+// when the same topic/field exists in several datasets the bare name no longer
+// picks one, so handing it over would either fail or land on whichever dataset
+// the host resolves first. Reads are unaffected — they go by handle — so this
+// is a create-only limit, refused loudly here instead of silently mistargeted
+// there.
 std::optional<std::string> hostCreateBlocker(const PJ::sdk::CatalogSnapshot& catalog, const ResolvedSeries& resolved) {
   const auto bare = resolveSeriesPath(catalog, resolved.host_path);
   if (!bare.ambiguous) {
@@ -135,6 +135,13 @@ std::optional<std::string> hostCreateBlocker(const PJ::sdk::CatalogSnapshot& cat
          "', and the host's create interface addresses inputs by bare name, so it cannot target that specific "
          "dataset. Reading it works (read_series); to build on it, ask the user to keep only the relevant file "
          "loaded.";
+}
+
+// The name a transform input reaches the host by: the bare path, or the
+// dataset-qualified one ("dataset_source:topic/field", which the host resolves
+// in that dataset) when several datasets share the bare path.
+std::string transformInputPath(const PJ::sdk::CatalogSnapshot& catalog, const ResolvedSeries& resolved) {
+  return resolveSeriesPath(catalog, resolved.host_path).ambiguous ? resolved.path : resolved.host_path;
 }
 
 // Persistent nodes request exclusion from undo/redo, but only when the SDK
@@ -651,13 +658,11 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   // remembering to.
   if (auto existing = ctx.dp.list()) {
     for (const auto& id : *existing) {
-      for (const auto& out : outputs) {
-        if (id == out) {
-          return ToolResult::failure(
-              "'" + out +
-              "' already exists — you created it earlier in the session. Remove it first with "
-              "remove_derived_series, or choose another name.");
-        }
+      if (id == name || std::find(outputs.begin(), outputs.end(), id) != outputs.end()) {
+        return ToolResult::failure(
+            "'" + id +
+            "' already exists — you created it earlier in the session. Remove it first with "
+            "remove_derived_series, or choose another name.");
       }
     }
   }
@@ -673,10 +678,7 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
       if (!lookup.resolved) {
         return ToolResult::failure(seriesLookupError(in, lookup));
       }
-      if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
-        return ToolResult::failure(*blocked);
-      }
-      in = lookup.resolved->host_path;
+      in = transformInputPath(*catalog, *lookup.resolved);
       if (inputs.size() == 1) {
         if (auto view = ctx.host.readSeries(lookup.resolved->handle); view) {
           single_input_points = view->rowCount();
@@ -823,11 +825,10 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
     }
   }
 
-  // Same resolution, host-create-blocker and join-forecast rules as
-  // create_derived_series, and for the same reasons: an unresolved or
-  // ambiguous input would install (briefly) a transform that computes
-  // nothing meaningful, and inputs that share no timestamps join to zero
-  // points either way.
+  // Same resolution and join-forecast rules as create_derived_series, and for
+  // the same reasons: an unresolved or ambiguous input would install (briefly)
+  // a transform that computes nothing meaningful, and inputs that share no
+  // timestamps join to zero points either way.
   JoinForecast forecast;
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
@@ -839,10 +840,7 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
     if (!lookup.resolved) {
       return ToolResult::failure(seriesLookupError(in, lookup));
     }
-    if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
-      return ToolResult::failure(*blocked);
-    }
-    in = lookup.resolved->host_path;
+    in = transformInputPath(*catalog, *lookup.resolved);
   }
   if (inputs.size() > 1) {
     forecast = forecastJoin(ctx, *catalog, inputs);

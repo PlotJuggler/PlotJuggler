@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
+#include <QRectF>
 #include <QSettings>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -27,6 +28,7 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "FileLoader.h"
@@ -39,9 +41,12 @@
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/service_traits.hpp"
+#include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
+#include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/MessageBox.h"
@@ -618,6 +623,41 @@ TEST_F(McpServerTest, ExportQuotesHeadersAndRefusesTooManyRows) {
   EXPECT_NE(big.find("more than 10000000 rows"), std::string::npos) << big;
 }
 
+// An agent's removal never takes the user's work with it: with a series of the user's built on each of the agent's,
+// both remove tools refuse, naming it and its owner, and remove nothing.
+TEST_F(McpServerTest, AnAgentsRemovalRefusesToTakeTheUsersSeriesWithIt) {
+  ASSERT_NE(loadMock(), 0);
+  const auto [script_added, script_add_error] = addDoubled("doubled");
+  ASSERT_FALSE(script_add_error) << script_added;
+  const auto [derived_added, derived_add_error] = result(call(
+      "create_derived_series",
+      {{"name", "tripled"}, {"inputs", {"mock/file_data/value"}}, {"expression", "value * 3"}}));
+  ASSERT_FALSE(derived_add_error) << derived_added;
+  const json script_topics = json::parse(script_added, nullptr, false).value("topics", json::object());
+  ASSERT_FALSE(script_topics.empty() || script_topics.begin()->empty()) << script_added;
+  const std::map<std::string, std::string> agent_series = {
+      {"doubled", script_topics.begin().key() + "/" + script_topics.begin()->front().get<std::string>()},
+      {"tripled", json::parse(derived_added, nullptr, false).value("series", "")}};
+  PJ::DataProcessorService& processors = window_->appSession().sessionManager().dataProcessorService();
+  for (const auto& [name, path] : agent_series) {
+    const std::string id = "on_" + name;
+    const std::string script = "-- pj-script: luau\nreturn { id=\"" + id +
+                               "\", name=\"Negate\", output=\"same\", create = function(p) return { calculate = "
+                               "function(t, v) return -v end } end }\n";
+    const auto users = processors.upsertTransform("user-editor", id, {path}, {id}, script, "{}");
+    ASSERT_TRUE(users.has_value()) << path << ": " << users.error();
+  }
+
+  for (const auto& [tool, name] :
+       {std::pair{"remove_script_series", "doubled"}, std::pair{"remove_derived_series", "tripled"}}) {
+    const auto [text, error] = result(call(tool, {{"name", name}}));
+    EXPECT_TRUE(error) << tool;
+    EXPECT_NE(text.find("'on_" + std::string(name) + "'"), std::string::npos) << text;
+    EXPECT_NE(text.find("user-editor"), std::string::npos) << text;
+  }
+  EXPECT_EQ(processors.transformRecipes().size(), 4U);
+}
+
 TEST_F(McpServerTest, TheSeventeenthConnectionIsClosed) {
   std::vector<std::unique_ptr<QTcpSocket>> held;
   for (int i = 0; i < PJ::mcp::kMaxOpenSockets; ++i) {
@@ -947,6 +987,58 @@ TEST_F(McpEndpointTest, TwoPluginsGetTheirOwnTokensAndOwners) {
   EXPECT_NE(tabOf("toolbox-mcp-b", "b_tab"), nullptr);
   EXPECT_EQ(tabOf("toolbox-mcp-a", "b_tab"), nullptr);
   EXPECT_EQ(tabOf("toolbox-mcp-b", "a_tab"), nullptr);
+}
+
+// plot_tab's zoom frames the tab it names and no other: not the caller's other tabs, not another caller's. A tab the
+// caller does not have is refused with the ones it does.
+TEST_F(McpEndpointTest, PlotTabZoomFramesOnlyTheNamedTab) {
+  openPublic();
+  ASSERT_NE(loadMock(), 0);
+  const Plugin plugin = launch(u"toolbox-mcp-a"_s);
+  ASSERT_FALSE(plugin.token.empty());
+  const auto draw = [this](const std::string& token, const std::string& client, const std::string& tab) {
+    for (const json& args :
+         {json{{"action", "create"}, {"tab", tab}},
+          json{{"action", "add"}, {"tab", tab}, {"curves", {"mock/file_data/value"}}}}) {
+      const auto [text, error] = result(callAs(token, "plot_tab", args, client));
+      EXPECT_FALSE(error) << text;
+    }
+  };
+  draw(token_, "test", "a");
+  draw(token_, "test", "b");
+  draw(plugin.token, "", "c");
+  const auto x_range = [this](const char* owner, const char* tab) {
+    PJ::PlotDocker* docker = window_->pluginPlotTabs().ownedTab(QString::fromLatin1(owner), QString::fromLatin1(tab));
+    PJ::DockWidget* dock = docker == nullptr || docker->plotCount() == 0 ? nullptr : docker->plotAt(0);
+    PJ::PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget();
+    EXPECT_NE(plot, nullptr) << owner << "/" << tab;
+    const QRectF rect = plot == nullptr ? QRectF() : plot->currentBoundingRect();
+    return std::pair{rect.left(), rect.right()};
+  };
+  const auto expect_x_range = [&x_range](const char* owner, const char* tab, double start, double end) {
+    const auto [left, right] = x_range(owner, tab);
+    EXPECT_NEAR(left, start, 1e-9) << owner << "/" << tab;
+    EXPECT_NEAR(right, end, 1e-9) << owner << "/" << tab;
+  };
+  const auto b_before = x_range("agent-test", "b");
+  const auto c_before = x_range("toolbox-mcp-a", "c");
+
+  const auto [zoomed, zoom_error] =
+      result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", 10.0}, {"end_s", 20.0}}));
+  ASSERT_FALSE(zoom_error) << zoomed;
+  expect_x_range("agent-test", "a", 10.0, 20.0);
+  EXPECT_EQ(x_range("agent-test", "b"), b_before);
+  EXPECT_EQ(x_range("toolbox-mcp-a", "c"), c_before);
+
+  const auto [plugin_zoomed, plugin_zoom_error] =
+      result(callAs(plugin.token, "plot_tab", {{"action", "zoom"}, {"tab", "c"}, {"start_s", 30.0}, {"end_s", 40.0}}));
+  ASSERT_FALSE(plugin_zoom_error) << plugin_zoomed;
+  expect_x_range("toolbox-mcp-a", "c", 30.0, 40.0);
+  expect_x_range("agent-test", "a", 10.0, 20.0);
+
+  const auto [refused, refused_error] = result(call("plot_tab", {{"action", "zoom"}, {"tab", "c"}}));
+  EXPECT_TRUE(refused_error);
+  EXPECT_NE(refused.find("a, b"), std::string::npos) << refused;
 }
 
 TEST_F(McpEndpointTest, TearingDownTheSessionRevokesAndDropsItsEvaluation) {

@@ -56,10 +56,16 @@ may run while a modal dialog is open.
 
 The agent tools run against a `ToolContext` built from a service registry. That is the same set of SDK host views a
 toolbox plugin gets (`ToolboxHostView`, `PlotTabsHostView`, `DataProcessorHostView`, `PlaybackHostView`, ...). The
-registry decides whose tabs and derived series the tools see and create. Series names follow `read_series`
-everywhere (`resolveSeriesPath`: unique suffixes, `dataset:topic/field`, near-miss candidates). `add_filter` takes its
-class from `pj_scripting`'s `FilterCatalogue::standaloneClassScript`. `screenshot` composites each visible QRhi
-view's next presented frame (`grabPresentedFrame`) into the window grab, and replies when the frames arrive.
+registry decides whose tabs and derived series the tools see and create. Series names follow `read_series` everywhere
+(`resolveSeriesPath`: unique suffixes, `dataset:topic/field`, near-miss candidates); a transform input whose bare path
+several datasets share reaches the host dataset-qualified. An agent's removal (`remove_derived_series`,
+`remove_script_series`) goes through `DataProcessorService::removeOwnTransform`: when the cascade would also delete a
+series another owner built on it (the user's included), it is refused, naming each one and its owner. The user's own
+deletes ask first and keep cascading. `plot_tab`'s zoom frames only the tab it names: `pj.viewport.v1` frames all of a
+caller's tabs at once, so the server sets the context's `zoom_tab` hook (`PluginPlotTabsController` with the caller's
+owner, which a plugin token records at `addPluginToken`). `add_filter` takes its class from `pj_scripting`'s
+`FilterCatalogue::standaloneClassScript`. `screenshot` composites each visible QRhi view's next presented frame
+(`grabPresentedFrame`) into the window grab, and replies when the frames arrive.
 
 ## Tokens and identity
 

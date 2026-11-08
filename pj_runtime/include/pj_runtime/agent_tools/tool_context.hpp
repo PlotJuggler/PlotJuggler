@@ -3,8 +3,10 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
+#include <utility>
 
 namespace PJ::agent_tools {
 
@@ -52,7 +54,11 @@ struct ToolContext {
   // Tabs this agent composed, and the only plots it may touch. The viewport
   // view is bounded to them by the host, so the two travel together.
   PJ::sdk::PlotTabHostView plot_tabs;
-  PJ::sdk::ViewportHostView viewport;         // zoom, scoped to the tabs above
+  PJ::sdk::ViewportHostView viewport;  // zoom, scoped to the tabs above
+  // Zooms ONE of the caller's tabs, `tab`, to `range` (display-axis seconds), or fits it to its data when `range`
+  // is empty. Optional: `viewport` can only frame every tab the caller owns at once (its SDK contract), so a host
+  // that can address one tab sets this, and plot_tab's zoom uses it instead.
+  std::function<PJ::Status(const std::string& tab, std::optional<std::pair<double, double>> range)> zoom_tab;
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
 };
 

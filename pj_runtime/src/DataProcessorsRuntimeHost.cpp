@@ -137,7 +137,7 @@ bool DataProcessorsRuntimeHost::onCreateV2(
 bool DataProcessorsRuntimeHost::onRemove(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept {
   return guarded<DataProcessorsRuntimeHost>(ctx, out_error, kDomain, [&](DataProcessorsRuntimeHost& self) {
     const std::string key = DataProcessorService::makeTransformKey(self.plugin_id_, sdk::toStringView(id));
-    const Status removed = self.service_.removeTransform(key);
+    const Status removed = self.service_.removeOwnTransform(key);
     if (removed.has_value()) {
       self.previews_.erase(key);
     }

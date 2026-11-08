@@ -390,7 +390,9 @@ does not link it.
   Transform recipes capture dataset/source/topic/field input identity; a replacing reload
   uses `rebindAndRecomputeForReplacedSources` to rebind columns in place, keeping output
   TopicIds. Compatible script edits replace operators transactionally, structural edits
-  are rejected before mutation, removal cascades by exact TopicId. The ABI `config` carries
+  are rejected before mutation, removal cascades by exact TopicId. `removeOwnTransform` (a
+  plugin's `remove_data_processor`, an agent's removal) refuses instead when that cascade
+  reaches a processor of another owner. The ABI `config` carries
   `gaps` (input rows retention evicted before the node consumed them).
 - **History.** `TransformRecipe::history_exempt` (and `GeneratorRecipe::history_exempt`)
   makes a processor immune to undo/redo: persisted in layouts, never removed, recreated or
@@ -710,7 +712,9 @@ of the module: its files keep their own SPDX and copyright lines.
   (toolbox catalog and reads, data processors, object reads, playback, plot tabs,
   viewport); the caller builds it fresh for every call, on the GUI thread, from the
   agent's own toolbox session, since a view may be invalidated between event-loop ticks.
-  What an agent creates is owned by it, and the remove tools reach only that.
+  What an agent creates is owned by it, and the remove tools reach only that. `plot_tab`'s
+  zoom uses the context's `zoom_tab` hook when the host sets it (one tab), else
+  `pj.viewport.v1` (every tab the caller owns).
 - **Errors are data.** Every failure is a `ToolResult` with `ok=false`;
   `ToolRegistry::execute` turns a throw from a wrongly typed, model-supplied argument
   into one.

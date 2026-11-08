@@ -153,6 +153,9 @@ struct FlatRunSummary {
   // Where the longest run starts, in seconds relative to the first sample —
   // same axis as min_at_s/max_at_s/max_gap_at_s.
   double flat_span_at_s = 0.0;
+  // The same instant as an absolute timestamp, for the display-time conversion: a
+  // windowed read's stats start at the window, not at the series' first sample.
+  std::int64_t flat_span_start_ns = 0;
 };
 
 [[nodiscard]] inline FlatRunSummary flatRunSummary(
@@ -172,6 +175,7 @@ struct FlatRunSummary {
   bool run_open = false;
   double best_len_s = 0.0;
   double best_start_s = 0.0;
+  std::int64_t best_start_ns = 0;
   for (std::size_t i = 0; i < n; ++i) {
     const double v = values[i];
     if (!std::isfinite(v)) {
@@ -195,6 +199,7 @@ struct FlatRunSummary {
     if (len_s > best_len_s) {
       best_len_s = len_s;
       best_start_s = static_cast<double>(timestamps[run_start] - timestamps[0]) * 1e-9;
+      best_start_ns = timestamps[run_start];
     }
   }
 
@@ -208,6 +213,7 @@ struct FlatRunSummary {
     out.has_flat_span = true;
     out.flat_span_s = best_len_s;
     out.flat_span_at_s = best_start_s;
+    out.flat_span_start_ns = best_start_ns;
   }
   return out;
 }

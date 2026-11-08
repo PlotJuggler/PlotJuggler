@@ -18,8 +18,11 @@
 #include <QTcpSocket>
 #include <algorithm>
 #include <array>
+#include <optional>
+#include <utility>
 
 #include "MainWindow.h"
+#include "PluginPlotTabsController.h"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/toolbox_plugin_base.hpp"
@@ -175,9 +178,9 @@ void McpServer::closePublicAccess() {
   emit activeClientChanged({});
 }
 
-QByteArray McpServer::addPluginToken(PJ_service_registry_t services) {
+QByteArray McpServer::addPluginToken(PJ_service_registry_t services, const QString& owner) {
   const QByteArray token = randomToken();
-  plugin_tokens_.insert(token, services);
+  plugin_tokens_.insert(token, {.services = services, .owner = owner});
   return token;
 }
 
@@ -388,14 +391,23 @@ std::optional<agent_tools::ToolContext> McpServer::agentContext(const QString& o
 }
 
 std::optional<agent_tools::ToolContext> McpServer::contextFor(const Caller& caller) {
+  std::optional<agent_tools::ToolContext> context;
+  QString owner = caller.owner;
   if (isPublic(caller)) {
-    return agentContext(caller.owner);
+    context = agentContext(owner);
+  } else if (const auto token = plugin_tokens_.constFind(caller.token); token != plugin_tokens_.cend()) {
+    context = contextFrom(token->services);
+    owner = token->owner;
   }
-  const auto services = plugin_tokens_.constFind(caller.token);
-  if (services == plugin_tokens_.cend()) {
-    return std::nullopt;
+  if (context) {
+    // pj.viewport.v1 frames every tab the caller owns; plot_tab's zoom names one.
+    context->zoom_tab = [this, owner](const std::string& tab, std::optional<std::pair<double, double>> range) {
+      PluginPlotTabsController& tabs = window_.pluginPlotTabs();
+      const QString tab_id = QString::fromStdString(tab);
+      return range ? tabs.zoomToTimeRange(owner, range->first, range->second, tab_id) : tabs.zoomOut(owner, tab_id);
+    };
   }
-  return contextFrom(*services);
+  return context;
 }
 
 void McpServer::runAgentTool(
@@ -539,8 +551,8 @@ quint32 McpServer::resolveDataset(const json& selector) const {
   return 0;
 }
 
-McpEndpointHost::McpEndpointHost(std::function<McpServer*()> server, PJ_service_registry_t services)
-    : server_on_demand_(std::move(server)), services_(services) {}
+McpEndpointHost::McpEndpointHost(std::function<McpServer*()> server, PJ_service_registry_t services, QString owner)
+    : server_on_demand_(std::move(server)), services_(services), owner_(std::move(owner)) {}
 
 McpEndpointHost::~McpEndpointHost() {
   release();
@@ -582,7 +594,7 @@ bool McpEndpointHost::acquire(PJ_mcp_endpoint_t& out, PJ_error_t* out_error) {
     // Whatever can throw comes before the token: once it exists only release() forgets it.
     std::string url = "http://127.0.0.1:" + std::to_string(server->port()) + "/mcp";
     QPointer<McpServer> held(server);  // the first QPointer to an object allocates
-    token_ = server->addPluginToken(services_);
+    token_ = server->addPluginToken(services_, owner_);
     url_ = std::move(url);
     server_ = std::move(held);
   }

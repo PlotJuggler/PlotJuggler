@@ -966,11 +966,9 @@ std::vector<std::string> requestedPaths(const json& args, std::initializer_list<
 json statsWithDisplayStart(
     const SeriesStats& stats, ToolContext& ctx, const std::string& topic, const FlatRunSummary& flat) {
   json stats_json = statsToJson(stats);
-  bool has_display_start = false;
   if (ctx.playback.valid() && stats.count > 0) {
     if (auto display_s = ctx.playback.toDisplayTime(topic, stats.t_start_ns)) {
       stats_json["t_start_display_s"] = *display_s;
-      has_display_start = true;
     }
   }
   // Whole-series facts (see FlatRunSummary): a constant channel says so
@@ -991,8 +989,13 @@ json statsWithDisplayStart(
     note << std::fixed << std::setprecision(1);
     note << "held one value for " << flat.flat_span_s << " s starting at " << flat.flat_span_at_s
          << " s into the series";
-    if (has_display_start) {
-      note << " (display: t_start_display_s + " << flat.flat_span_at_s << ")";
+    // Its own display time: flat_span_at_s counts from the series' first sample, while a windowed
+    // read's t_start_display_s is the window's.
+    if (ctx.playback.valid()) {
+      if (auto display_s = ctx.playback.toDisplayTime(topic, flat.flat_span_start_ns)) {
+        stats_json["flat_span_display_s"] = *display_s;
+        note << " (display " << *display_s << " s)";
+      }
     }
     note << " — a change within the recording";
     stats_json["flat_span_note"] = note.str();

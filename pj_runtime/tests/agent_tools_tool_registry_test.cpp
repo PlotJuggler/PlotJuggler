@@ -12,10 +12,12 @@
 #include <cstdint>
 #include <iomanip>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "fake_catalog_host.hpp"
@@ -555,6 +557,36 @@ TEST(ToolRegistry, ReadSeriesStatsFlagsLongFlatSpan) {
   EXPECT_NE(note.find(expected_span.str()), std::string::npos) << note;
   EXPECT_NE(note.find(expected_at.str()), std::string::npos) << note;
   EXPECT_NE(note.find("within the recording"), std::string::npos) << note;
+}
+
+// The flat span is a whole-recording fact while t_start_display_s is the window's first sample, so a windowed read
+// gives the span's own display time: the freeze at 15 s of a recording that starts at display 0 is at display 15,
+// whatever window was read.
+TEST(ToolRegistry, WindowedReadGivesTheFlatSpansOwnDisplayTime) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  for (int i = 0; i < 20; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * kSec);
+    v.push_back(i < 15 ? static_cast<double>(i % 5) : 42.0);
+  }
+  store.addField("/imu", "servo", ts, v);
+  FakePlaybackHost pb;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("read_series", {{"series", "/imu/servo"}, {"t_start_s", 5.0}, {"t_end_s", 10.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json stats = json::parse(r.content)["stats"];
+  EXPECT_DOUBLE_EQ(stats["t_start_display_s"].get<double>(), 5.0);
+  EXPECT_NEAR(stats["flat_span_at_s"].get<double>(), 15.0, 1e-9);
+  ASSERT_TRUE(stats.contains("flat_span_display_s")) << r.content;
+  EXPECT_NEAR(stats["flat_span_display_s"].get<double>(), 15.0, 1e-9);
+  const std::string note = stats["flat_span_note"].get<std::string>();
+  EXPECT_NE(note.find("display 15.0 s"), std::string::npos) << note;
+  EXPECT_EQ(note.find("t_start_display_s"), std::string::npos) << note;
 }
 
 TEST(ToolRegistry, ReadUnknownSeriesFails) {
@@ -2130,6 +2162,30 @@ TEST(ToolRegistry, QualifiedCreateOnAUniqueNameHandsTheHostItsBareForm) {
   EXPECT_EQ(json::parse(r.content)["created_markers_on"], "run_friday.mcap:/speed/value");
 }
 
+// A transform input the host takes dataset-qualified ("dataset_source:topic/field", which picks that dataset), so a
+// qualified path whose bare form several datasets share reaches the host qualified instead of being refused.
+TEST(ToolRegistry, TransformOnADuplicatedPathHandsTheHostTheQualifiedPath) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+  RecordingDpHost dp;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+
+  const auto created = reg.execute(
+      "create_derived_series",
+      {{"name", "doubled"}, {"inputs", {"run_friday.mcap:/speed/value"}}, {"expression", "value * 2"}}, ctx);
+  ASSERT_TRUE(created.ok) << created.content;
+  EXPECT_EQ(dp.last_inputs, (std::vector<std::string>{"run_friday.mcap:/speed/value"}));
+
+  dp.last_inputs.clear();
+  const auto evaluated =
+      reg.execute("evaluate", {{"inputs", {"run_friday.mcap:/speed/value"}}, {"expression", "value"}}, ctx);
+  EXPECT_EQ(evaluated.content.find("cannot target"), std::string::npos) << evaluated.content;
+  EXPECT_EQ(dp.last_inputs, (std::vector<std::string>{"run_friday.mcap:/speed/value"}));
+}
+
 // One dataset loaded: paths stay bare in both directions — no qualifier to
 // learn, no extra characters in any result. The overwhelmingly common case
 // pays nothing.
@@ -2597,6 +2653,46 @@ TEST(ToolRegistry, PlotTabZoomValidatesItsRange) {
   auto r = reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "view"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_TRUE(vp.reset_called);
+}
+
+// Zoom names one of the caller's tabs: one it does not own (the user's, or none at all) is refused with the tabs it
+// does own, and the host's per-tab zoom gets the tab named, never the viewport's every-tab zoom.
+TEST(ToolRegistry, PlotTabZoomFramesOnlyTheNamedOwnTab) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlotTabsHost tabs;
+  tabs.addForeignTab("user-1");
+  FakeViewportHost vp;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+  ctx.viewport = vp.view();
+  std::vector<std::pair<std::string, std::optional<std::pair<double, double>>>> zooms;
+  ctx.zoom_tab = [&zooms](const std::string& tab, std::optional<std::pair<double, double>> range) {
+    zooms.emplace_back(tab, range);
+    return PJ::okStatus();
+  };
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "a"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "b"}}, ctx).ok);
+
+  for (const char* stranger : {"user-1", "nope"}) {
+    const auto refused =
+        reg.execute("plot_tab", {{"action", "zoom"}, {"tab", stranger}, {"start_s", 1.0}, {"end_s", 2.0}}, ctx);
+    EXPECT_FALSE(refused.ok) << stranger;
+    EXPECT_NE(refused.content.find("a, b"), std::string::npos) << refused.content;
+  }
+  EXPECT_TRUE(zooms.empty());
+
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", 1.0}, {"end_s", 2.0}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "b"}}, ctx).ok);
+  ASSERT_EQ(zooms.size(), 2U);
+  EXPECT_EQ(zooms[0].first, "a");
+  EXPECT_EQ(zooms[0].second, (std::optional<std::pair<double, double>>{{1.0, 2.0}}));
+  EXPECT_EQ(zooms[1].first, "b");
+  EXPECT_FALSE(zooms[1].second.has_value());
+  EXPECT_EQ(vp.zoom_calls, 0);
+  EXPECT_FALSE(vp.reset_called);
+  EXPECT_EQ(tabs.foreign_mutations, 0);
 }
 
 TEST(ToolRegistry, PlotTabDegradesWithoutTheService) {
@@ -3412,6 +3508,35 @@ TEST(ToolRegistry, RefusesToCreateOverAnExistingName) {
   EXPECT_NE(again.content.find("already exists"), std::string::npos) << again.content;
   EXPECT_EQ(dp.liveCount(), 1) << "the refused create must leave the first one untouched";
   EXPECT_EQ(dp.create_calls, 1) << "and must not reach the host at all";
+}
+
+// With explicit outputs the node is still addressed by its name: creating "pair" again, with other outputs or
+// another expression, would replace it.
+TEST(ToolRegistry, RefusesToCreateOverAnExistingNodeWithNamedOutputs) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  ASSERT_TRUE(reg.execute(
+                     "create_derived_series",
+                     {{"name", "pair"},
+                      {"inputs", json::array({"/imu/x"})},
+                      {"outputs", json::array({"x", "y"})},
+                      {"body", "return value, -value"}},
+                     ctx)
+                  .ok);
+  const auto again = reg.execute(
+      "create_derived_series",
+      {{"name", "pair"},
+       {"inputs", json::array({"/imu/x"})},
+       {"outputs", json::array({"x", "y"})},
+       {"body", "return 0, 0"}},
+      ctx);
+  EXPECT_FALSE(again.ok);
+  EXPECT_NE(again.content.find("'pair' already exists"), std::string::npos) << again.content;
+  EXPECT_EQ(dp.create_calls, 1) << "the second create must not reach the host";
 }
 
 TEST(ToolRegistry, AsyncEvaluationFailureReleasesExactlyOnceAndNamesTheCoverageError) {

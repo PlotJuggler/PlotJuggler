@@ -71,9 +71,9 @@ class McpServer : public QObject {
   void closePublicAccess();
 
   /// A new random token serving only the agent tools, run against `services` (a toolbox session's
-  /// registry, which names the plugin they act as). `services` must outlive the token: revoke it
-  /// before they go.
-  [[nodiscard]] QByteArray addPluginToken(PJ_service_registry_t services);
+  /// registry, which names the plugin they act as) as `owner`, that plugin's id (the owner of its
+  /// tabs, for the host-side zoom). `services` must outlive the token: revoke it before they go.
+  [[nodiscard]] QByteArray addPluginToken(PJ_service_registry_t services, const QString& owner);
   /// Revokes plugin token `token` synchronously: no request carrying it is accepted after this
   /// returns, its queued results are dropped (before the services they point into can die) and its
   /// open connections are closed. Side effects its calls already caused stay. No-op for an unknown
@@ -178,8 +178,12 @@ class McpServer : public QObject {
 
   MainWindow& window_;
   QTcpServer server_;
-  /// Each plugin token, with the session services its tools run against.
-  QHash<QByteArray, PJ_service_registry_t> plugin_tokens_;
+  /// What a plugin token's tools run against: its session's services, as its plugin.
+  struct PluginToken {
+    PJ_service_registry_t services;
+    QString owner;
+  };
+  QHash<QByteArray, PluginToken> plugin_tokens_;
   /// "" while public access is closed.
   QByteArray public_token_;
   QString discovery_path_;
@@ -211,8 +215,9 @@ class McpServer : public QObject {
 class McpEndpointHost {
  public:
   /// `server` returns the window's MCP server, starting it when needed, or nullptr when it cannot
-  /// listen. `services` (the session's registry, which names the plugin) must outlive this.
-  McpEndpointHost(std::function<McpServer*()> server, PJ_service_registry_t services);
+  /// listen. `services` (the session's registry, which names the plugin) must outlive this;
+  /// `owner` is that plugin's id.
+  McpEndpointHost(std::function<McpServer*()> server, PJ_service_registry_t services, QString owner);
   ~McpEndpointHost();
   McpEndpointHost(const McpEndpointHost&) = delete;
   McpEndpointHost& operator=(const McpEndpointHost&) = delete;
@@ -226,6 +231,7 @@ class McpEndpointHost {
 
   std::function<McpServer*()> server_on_demand_;
   PJ_service_registry_t services_;
+  QString owner_;
   /// The server that accepts token_; null while none is held (also once that server is gone).
   QPointer<McpServer> server_;
   /// What acquire handed out; kept until release, as the contract requires.

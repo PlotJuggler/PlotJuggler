@@ -431,6 +431,12 @@ class DataProcessorService {
   /// Remove a transform by its namespaced key, cascading through every exact
   /// downstream processor and retiring all affected outputs. Unknown key = error.
   Status removeTransform(std::string_view namespaced_key);
+  /// `removeTransform` for a removal the transform's owner asks for itself (a plugin through
+  /// `pj.data_processors.v1`, an AI agent): refused, removing nothing, when the cascade would also
+  /// take a processor another owner made (a transform with another `owner_plugin`, or a filter);
+  /// the error names each and its owner. The shell's own removals ask the user first and keep
+  /// cascading through `removeTransform`.
+  Status removeOwnTransform(std::string_view namespaced_key);
 
   /// Remove the EPHEMERAL (preview) transforms among `keys`, cascading like
   /// `removeTransform`; a key that is gone or persistent is skipped. A preview belongs

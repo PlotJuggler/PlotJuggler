@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/builtin/field_table.hpp>
 #include <pj_base/builtin/field_table_registry.hpp>
@@ -17,6 +18,7 @@
 #include <pj_base/sdk/object_topic_metadata.hpp>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_runtime/agent_tools/object_ops_catalog.hpp"
@@ -587,16 +589,29 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
     return ToolResult::success(json({{"closed", tab}}).dump());
   }
   if (action == "zoom") {
+    const std::vector<std::string> mine = ownedIdsOfKind(ctx, /*scene=*/false);
+    if (std::find(mine.begin(), mine.end(), tab) == mine.end()) {
+      return ToolResult::failure(
+          "you have no plot tab '" + tab + "' (yours: " + joinOrNone(mine) +
+          "). Only tabs you created can be zoomed; the user's tabs are not yours to touch.");
+    }
     // The two services are meant to be registered together, so this only fires
     // on a host that half-adopted them — worth saying plainly rather than
     // failing as if the tab were at fault.
-    if (!ctx.viewport.valid()) {
+    if (!ctx.zoom_tab && !ctx.viewport.valid()) {
       return ToolResult::failure(kNoViewport);
     }
+    // Without the host's per-tab zoom, the viewport service frames every tab the caller owns.
+    const auto zoom = [&ctx, &tab](std::optional<std::pair<double, double>> range) {
+      if (ctx.zoom_tab) {
+        return ctx.zoom_tab(tab, range);
+      }
+      return range ? ctx.viewport.zoomToTimeRange(range->first, range->second) : ctx.viewport.zoomReset();
+    };
     const bool has_start = args.contains("start_s") && args["start_s"].is_number();
     const bool has_end = args.contains("end_s") && args["end_s"].is_number();
     if (!has_start && !has_end) {
-      if (auto status = ctx.viewport.zoomReset(); !status) {
+      if (auto status = zoom(std::nullopt); !status) {
         return ToolResult::failure("could not fit the view: " + status.error());
       }
       return ToolResult::success(json({{"tab", tab}, {"x_range", "fit"}}).dump());
@@ -609,7 +624,7 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
     if (start_s >= end_s) {
       return ToolResult::failure("'start_s' must be less than 'end_s'");
     }
-    if (auto status = ctx.viewport.zoomToTimeRange(start_s, end_s); !status) {
+    if (auto status = zoom(std::pair{start_s, end_s}); !status) {
       return ToolResult::failure("could not zoom: " + status.error());
     }
     return ToolResult::success(json({{"tab", tab}, {"x_range", {{"start_s", start_s}, {"end_s", end_s}}}}).dump());

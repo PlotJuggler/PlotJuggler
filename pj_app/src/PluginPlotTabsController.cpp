@@ -103,11 +103,12 @@ ViewportRuntimeHost::Callbacks PluginPlotTabsController::viewportCallbacks(const
 }
 
 void PluginPlotTabsController::forEachPlotOwnedBy(
-    const QString& plugin_id, const std::function<void(PlotWidget*)>& operation) const {
+    const QString& plugin_id, const QString& tab_id, const std::function<void(PlotWidget*)>& operation) const {
   // This is where the boundary is actually enforced: a plugin drives the view
   // only where the user can see it is driving.
-  tabs_.forEachDocker([&plugin_id, &operation](PlotDocker* docker) {
-    if (docker->ownerPlugin() != plugin_id) {
+  const QString tab_key = tab_id.isEmpty() ? QString() : ownedTabKey(plugin_id, tab_id);
+  tabs_.forEachDocker([&plugin_id, &tab_key, &operation](PlotDocker* docker) {
+    if (docker->ownerPlugin() != plugin_id || (!tab_key.isEmpty() && docker->stateId() != tab_key)) {
       return;
     }
     const int plot_count = docker->plotCount();
@@ -121,11 +122,12 @@ void PluginPlotTabsController::forEachPlotOwnedBy(
   });
 }
 
-Status PluginPlotTabsController::zoomToTimeRange(const QString& plugin_id, double t0_s, double t1_s) {
+Status PluginPlotTabsController::zoomToTimeRange(
+    const QString& plugin_id, double t0_s, double t1_s, const QString& tab_id) {
   // An explicit command sets every plot itself, so there is no link feedback to propagate.
   int owned = 0;
   int zoomed = 0;
-  forEachPlotOwnedBy(plugin_id, [t0_s, t1_s, &owned, &zoomed](PlotWidget* plot) {
+  forEachPlotOwnedBy(plugin_id, tab_id, [t0_s, t1_s, &owned, &zoomed](PlotWidget* plot) {
     ++owned;
     if (plot->isEmpty() || plot->isXYPlot()) {
       return;
@@ -139,19 +141,26 @@ Status PluginPlotTabsController::zoomToTimeRange(const QString& plugin_id, doubl
   // Two distinct dead ends with two distinct remedies — open a tab, or put
   // something in the one you have. Saying only "nothing to zoom" would leave a
   // caller repeating whichever of the two it guessed.
+  if (!tab_id.isEmpty()) {
+    return unexpected(
+        owned == 0 ? "this plugin owns no plot tab '" + tab_id.toStdString() + "'"
+                   : "the tab '" + tab_id.toStdString() + "' holds no time-series plot to zoom");
+  }
   return unexpected(
       owned == 0 ? "this plugin owns no plot tab; create one before zooming"
                  : "the tabs this plugin owns hold no time-series plot to zoom");
 }
 
-Status PluginPlotTabsController::zoomOut(const QString& plugin_id) {
+Status PluginPlotTabsController::zoomOut(const QString& plugin_id, const QString& tab_id) {
   int owned = 0;
-  forEachPlotOwnedBy(plugin_id, [&owned](PlotWidget* plot) {
+  forEachPlotOwnedBy(plugin_id, tab_id, [&owned](PlotWidget* plot) {
     ++owned;
     plot->zoomOut(false);
   });
   if (owned == 0) {
-    return unexpected("this plugin owns no plot tab; create one before zooming");
+    return unexpected(
+        tab_id.isEmpty() ? std::string("this plugin owns no plot tab; create one before zooming")
+                         : "this plugin owns no plot tab '" + tab_id.toStdString() + "'");
   }
   return okStatus();
 }

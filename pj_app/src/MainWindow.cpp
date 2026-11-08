@@ -10611,7 +10611,7 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
   // A private endpoint on this window's MCP server ("pj.mcp_endpoint.v1") for an agent the plugin
   // launches: its tools run as this plugin, against these services.
   session->mcp_endpoint =
-      std::make_unique<McpEndpointHost>([this] { return ensureMcpServer(); }, session->builder->view());
+      std::make_unique<McpEndpointHost>([this] { return ensureMcpServer(); }, session->builder->view(), plugin_id);
   registerOptionalService<sdk::McpEndpointHostService>(*session->builder, session->mcp_endpoint->raw());
 #endif
   return session;

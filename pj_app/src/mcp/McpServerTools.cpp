@@ -689,7 +689,7 @@ void McpServer::addFilter(const json& args, const Caller& caller, Reply reply) {
 }
 
 void McpServer::removeScriptSeries(const json& args, const Caller& caller, Reply reply) {
-  const Status removed = window_.appSession().sessionManager().dataProcessorService().removeTransform(
+  const Status removed = window_.appSession().sessionManager().dataProcessorService().removeOwnTransform(
       DataProcessorService::makeTransformKey(caller.owner.toStdString(), transformId(args.value("name", ""))));
   if (removed.has_value()) {
     window_.appSession().catalogModel().rebuildFromDatastore();
