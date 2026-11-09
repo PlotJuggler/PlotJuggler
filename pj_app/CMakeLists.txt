@@ -1,4 +1,5 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg Test)
+find_package(nlohmann_json REQUIRED)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjAppLanguage.cmake)
 pj_add_app_language()
 
@@ -141,8 +142,24 @@ if(TARGET pj_scene3d_widgets)
         src/ui/Scene3DConfigPanel.cpp
         src/ui/Scene3DConfigPanel.h)
 endif()
+# The MCP server and its stdio bridge (docs/ARCHITECTURE.md "MCP server"): desktop only, since a
+# page can neither listen on a socket nor be spawned. The agent tools are pj_runtime's pj_agent_tools.
+if(NOT EMSCRIPTEN)
+    target_sources(pj_app_shell PRIVATE
+        src/mcp/McpBridge.cpp
+        src/mcp/McpProtocol.cpp
+        src/mcp/McpProtocol.h
+        src/mcp/McpServer.cpp
+        src/mcp/McpServer.h
+        src/mcp/McpServerTools.cpp)
+    target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
+endif()
 
 if(EMSCRIPTEN)
+    # Lazily read browser picks; the page side is browser_picked_file.js, linked into pj_app below.
+    target_sources(pj_app_shell PRIVATE
+        src/BrowserPickedFile.cpp
+        src/BrowserPickedFile.h)
     # DiagnosticHistory consumes this QObject bridge, normally supplied by the
     # marketplace library that is intentionally absent in a static web build.
     target_sources(pj_app_shell PRIVATE
@@ -351,8 +368,9 @@ if(EMSCRIPTEN)
     set_target_properties(pj_app PROPERTIES
         AUTORCC ON
         QT_WASM_INITIAL_MEMORY "256MB")
-    target_compile_options(pj_app PRIVATE -fexceptions)
-    target_link_options(pj_app PRIVATE -fexceptions -sALLOW_MEMORY_GROWTH=1)
+    target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1
+        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
+    set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
     if(PJ_WASM_WITH_PYTHON)
         # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
         # the main thread waits on it never starts.
@@ -412,6 +430,11 @@ if(PJ_BUILD_TESTS)
         LIBS Qt6::Widgets Qt6::Xml
     )
     set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
+    # The MCP server's HTTP and JSON-RPC gates (desktop only, like the server).
+    if(NOT EMSCRIPTEN)
+        target_sources(pj_app_unit_tests PRIVATE tests/mcp_protocol_test.cpp src/mcp/McpProtocol.cpp)
+        target_link_libraries(pj_app_unit_tests PRIVATE pj_agent_tools)
+    endif()
     # pj_runtime's include tree only for the header-only XmlCdata.h and
     # SavedSeriesPath.h LayoutXml uses; the runner does not link pj_runtime.
     target_include_directories(pj_app_unit_tests PRIVATE
@@ -507,6 +530,12 @@ if(PJ_BUILD_TESTS)
     set_source_files_properties(tests/main_window_startup_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
 
+    # The Reload button comes back on every way a reload request ends, including the exits the
+    # legacy load signals stay silent on (rejected config dialog, queued cancel).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_reload_button_test.cpp)
+    set_source_files_properties(tests/main_window_reload_button_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:dialog_probe_source_plugin>")
+
     # Browser presets: a layout's streaming sources start from their saved
     # configuration inside the same all-or-nothing replay, and their views bind
     # as topics arrive (test stream plugin staged per case).
@@ -521,6 +550,14 @@ if(PJ_BUILD_TESTS)
     set_source_files_properties(tests/streaming_preset_test.cpp PROPERTIES
         COMPILE_DEFINITIONS
         "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\";PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH=\"$<TARGET_FILE:mock_layout_stream_plugin>\"")
+
+    # An interactive stream start that does not launch (dialog cancelled, plugin
+    # contract violation, refused configuration, failed start) leaves no dataset
+    # behind (test stream staged per case).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/streaming_dialog_exit_test.cpp)
+    set_source_files_properties(tests/streaming_dialog_exit_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH="$<TARGET_FILE:mock_layout_stream_plugin>")
 
     # Browser presets: the welcome dialog's selection, upload, cancel/retry and
     # thumbnail fallback (built on the desktop too; only its wiring is browser-only).
@@ -982,6 +1019,14 @@ if(PJ_BUILD_TESTS)
     # A series replay as a progress entry of its topic: the linger, and the stop by topic.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/series_progress_controller_test.cpp)
+    # The MCP server over loopback HTTP: held replies that wait for the user, the dialogs an agent
+    # opens for the user (a file loader's, a stream's), the gates (desktop only).
+    if(NOT EMSCRIPTEN)
+        list(APPEND PJ_APP_GUI_TEST_SOURCES tests/mcp_server_test.cpp)
+        set_source_files_properties(tests/mcp_server_test.cpp PROPERTIES
+            COMPILE_DEFINITIONS
+            "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\";PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH=\"$<TARGET_FILE:mock_layout_stream_plugin>\";PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:dialog_probe_source_plugin>\"")
+    endif()
     # The feature catalog resource, whose entry points must name the live
     # widget labels. Desktop only, like FeatureCatalogHost.
     if(NOT EMSCRIPTEN)
@@ -1001,7 +1046,7 @@ if(PJ_BUILD_TESTS)
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
     # $<TARGET_FILE:...> in a compile definition creates no build-order dependency.
     add_dependencies(pj_app_gui_tests custom_topics_editor_fixture_plugin
-                     mock_file_source_plugin mock_layout_stream_plugin)
+                     mock_file_source_plugin mock_layout_stream_plugin dialog_probe_source_plugin)
     # on_demand_test_utils.h: the fake script run and clouds shared with pj_runtime's tests.
     # preset_controller_test serves canned responses with pj_runtime's loopback test server.
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
@@ -1045,6 +1090,21 @@ if(PJ_BUILD_TESTS)
                 ENVIRONMENT "PJ_RENDER_BACKEND=OpenGL;PJ_RENDER_SKIP_WITHOUT_DISPLAY=1")
         endif()
     endif()
+endif()
+
+# An agent's view end to end: the built app's --mcp-bridge over stdio in front of an offscreen
+# `plotjuggler4 --mcp`, under a private HOME (XDG paths isolate settings and discovery, hence Linux).
+if(PJ_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pj_add_test_runner(mcp_bridge_test
+        MAIN core WARNINGS
+        SOURCES tests/mcp_bridge_test.cpp
+        LIBS Qt6::Core Qt6::Network nlohmann_json::nlohmann_json
+        TIMEOUT 120
+    )
+    target_compile_definitions(mcp_bridge_test PRIVATE
+        PJ_APP_PATH="$<TARGET_FILE:pj_app>"
+        PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
+    add_dependencies(mcp_bridge_test pj_app mock_file_source_plugin)
 endif()
 
 # The mixed-layout fixture (tests/mixed_layout_fixture.h): a plot, a Scene3D view

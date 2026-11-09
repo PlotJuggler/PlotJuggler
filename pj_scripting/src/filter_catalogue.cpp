@@ -3,6 +3,8 @@
 
 #include "pj_scripting/filter_catalogue.h"
 
+#include <algorithm>
+#include <cctype>
 #include <utility>
 
 #include "pj_scripting/lua_mimo_transform.h"
@@ -73,6 +75,35 @@ Expected<std::unique_ptr<LuaMimoTransform>> FilterCatalogue::makeMimoFromSource(
     }
   }
   return PJ::unexpected(std::string("embedded source has no filter id '") + std::string(id) + "'");
+}
+
+std::optional<std::string> FilterCatalogue::standaloneClassScript(std::string_view id) const {
+  const CatalogueEntry* entry = find(id);
+  // The id is spliced into Luau source: only identifier characters may reach it.
+  if (entry == nullptr ||
+      !std::all_of(id.begin(), id.end(), [](unsigned char c) { return std::isalnum(c) != 0 || c == '_'; })) {
+    return std::nullopt;
+  }
+  const std::string quoted = "\"" + std::string(id) + "\"";
+  return "local module = (function()\n" + entry->cls.source +
+         "\nend)()\n"
+         "local classes = module.id ~= nil and { module } or module\n"
+         "for _, c in ipairs(classes) do\n"
+         "  if c.id == " +
+         quoted +
+         " then\n"
+         "    local create = c.create\n"
+         "    c.create = function(given)\n"
+         "      local p = {}\n"
+         "      for _, d in ipairs(c.parameters or {}) do p[d.name] = d.default end\n"
+         "      for k, v in pairs(given or {}) do p[k] = v end\n"
+         "      return create(p)\n"
+         "    end\n"
+         "    return c\n"
+         "  end\n"
+         "end\n"
+         "error(\"no filter class \" .. " +
+         quoted + ")\n";
 }
 
 }  // namespace PJ::scripting

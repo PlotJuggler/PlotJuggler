@@ -144,6 +144,32 @@ void RangeCursor::forEachChunk(std::function<void(const ChunkRowRange&)> callbac
   frontiers_.clear();
 }
 
+void RangeCursor::forEachOrderedRun(const std::function<void(const ChunkRowRange&)>& callback) {
+  while (valid()) {
+    std::pop_heap(frontiers_.begin(), frontiers_.end(), frontierAfter);
+    const CursorFrontier top = frontiers_.back();
+    frontiers_.pop_back();
+    const TopicChunk& chunk = (*chunks_)[top.chunk];
+    const auto ts_begin = chunk.timestamps.begin();
+    const auto run_begin = ts_begin + static_cast<std::ptrdiff_t>(top.row);
+    auto run_end = std::upper_bound(run_begin, ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count), t_max_);
+    const bool more = !frontiers_.empty();
+    if (more) {
+      // The rows that come before the next frontier in (ts, chunk) order: a tie goes to the lower chunk index.
+      const CursorFrontier& next = frontiers_.front();
+      run_end = top.chunk < next.chunk ? std::upper_bound(run_begin, run_end, next.ts)
+                                       : std::lower_bound(run_begin, run_end, next.ts);
+    }
+    const auto row_end = static_cast<std::size_t>(run_end - ts_begin);
+    assert(row_end > top.row);
+    callback(ChunkRowRange{&chunk, top.row, row_end});
+    if (more && row_end < chunk.stats.row_count && *run_end <= t_max_) {
+      frontiers_.push_back(CursorFrontier{*run_end, top.chunk, row_end});
+      std::push_heap(frontiers_.begin(), frontiers_.end(), frontierAfter);
+    }
+  }
+}
+
 void RangeCursor::initFrontiers() {
   const auto& chunks = *chunks_;
   for (std::size_t i = 0; i < chunks.size(); ++i) {
@@ -168,6 +194,12 @@ void RangeCursor::initFrontiers() {
 // ===========================================================================
 
 std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, Timestamp t, Timestamp retention_floor) {
+  return latestAt(chunks, t, retention_floor, nullptr);
+}
+
+std::optional<SampleRow> latestAt(
+    const std::deque<TopicChunk>& chunks, Timestamp t, Timestamp retention_floor,
+    const std::function<bool(const TopicChunk&)>& include) {
   // Chunk ranges may overlap (out-of-order ingest), so candidate chunks are
   // scanned rather than binary-searched; each candidate contributes its last
   // row with timestamp <= t (per-chunk binary search — chunks are internally
@@ -177,7 +209,8 @@ std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, Timestam
   for (const TopicChunk& chunk : chunks) {
     // Skip empty chunks, chunks beginning after t, and chunks entirely below the
     // retention floor (all their rows are logically evicted).
-    if (chunk.stats.row_count == 0 || chunk.stats.t_min > t || chunk.stats.t_max < retention_floor) {
+    if (chunk.stats.row_count == 0 || chunk.stats.t_min > t || chunk.stats.t_max < retention_floor ||
+        (include && !include(chunk))) {
       continue;
     }
     const auto ts_begin = chunk.timestamps.begin();

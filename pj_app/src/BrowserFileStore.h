@@ -29,8 +29,8 @@ class BrowserFileStore {
   // Synchronous staging: writes the whole buffer in one QFile::write. Retained
   // for native code paths and tests. On the browser main thread this blocks the
   // event loop for the full memcpy of a large buffer; browser data-file picks
-  // never come here (FileSelectionService::selectAndStageFile streams the File
-  // into a reserve()d file instead). `bytes` is consumed (moved-from) so the
+  // never come here (FileSelectionService::selectAndStageFile mounts the File
+  // lazily at a reserve()d path instead). `bytes` is consumed (moved-from) so the
   // caller's copy can be released as early as this call.
   [[nodiscard]] StageResult stage(const QString& browser_name, QByteArray bytes);
 
@@ -52,8 +52,9 @@ class BrowserFileStore {
   // job snapshots every value it needs at kickoff and touches the store no more.
   void stageAsync(const QString& browser_name, QByteArray bytes, StageCompletion completion);
 
-  // Places a file the caller writes itself (a download streamed into MEMFS) and returns its input: the path
-  // does not exist yet, content_sha256 is the caller's to fill, and the lease removes whatever the path holds.
+  // Places a file the caller creates itself (a download streamed into MEMFS, a lazily mounted pick) and returns
+  // its input: the path does not exist yet, content_sha256 is the caller's to fill, and the lease removes whatever
+  // the path holds.
   [[nodiscard]] StageResult reserve(const QString& browser_name);
 
   [[nodiscard]] static QString sanitizedBasename(const QString& browser_name);

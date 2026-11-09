@@ -607,11 +607,14 @@ This means a plugin compiled today will continue to work when PlotJuggler migrat
 
 The commitment to plugin developers:
 
-- Registry versions, `min_sdk_required`, and `min_plotjuggler_version` are strict
-  SemVer. A semantic `(id, version)` release slot is immutable and appears once,
-  with every platform artifact in that record. After extraction the host
-  independently enforces the embedded plugin version, ABI, SDK floor, and
-  application floor through the same gate used immediately before runtime loading
+- Registry versions and `min_sdk_required` are strict SemVer. A semantic
+  `(id, version)` release slot is immutable and appears once, with every platform
+  artifact in that record. After extraction the host independently enforces the
+  embedded plugin version, ABI and SDK floor through the same gate used immediately
+  before runtime loading
+- `min_plotjuggler_version` is deprecated and never gates. A plugin that needs a newer
+  host declares the SDK release that added what it needs in `min_sdk_required`; older
+  hosts then keep resolving the highest release whose floor they meet
 - If the SDK changes incompatibly, PlotJuggler provides an internal adapter
 - **Existing plugins are never broken by PlotJuggler updates**
 - Stability target: Qt 6.12 LTS (5-year support)

@@ -2,6 +2,7 @@
 const { test, expect } = require('@playwright/test');
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp } = require('./support/app');
 const { nativePickerType } = require('./support/browser');
 const { clickActiveDialogButton } = require('./support/dialogs');
@@ -827,6 +828,22 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
     });
   };
   observePage(page, consoleMessages);
+  // Every page of this context also records its console lines itself. Firefox can lose a console event on its
+  // way to Playwright, so the exact-count checks of the successful replay read the page's own record instead.
+  await page.context().addInitScript(() => {
+    window.pjTestConsoleRecord = [];
+    for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+      const print = console[level].bind(console);
+      console[level] = (...args) => {
+        window.pjTestConsoleRecord.push(args.map(String).join(' '));
+        print(...args);
+      };
+    }
+  });
+  const recordedLines = token => page.evaluate(
+    text => window.pjTestConsoleRecord.filter(line => line.includes(text)),
+    token,
+  );
 
   await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
   await waitForQtApp(page, consoleMessages);
@@ -1026,17 +1043,15 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
 
   // The clean replay imports in source order, remaps both logical aliases to
   // fresh uploads, and applies the document/timeline exactly once.
-  const loadCountBeforeSuccess = consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK')).length;
+  const loadCountBeforeSuccess = (await recordedLines('PJ_FILE_LOAD_OK')).length;
   await openSavedSourceLayout(customized, 'multi-source-success.pj4.xml');
   await selectReplaySource(leftBytes);
   await selectReplaySource(rightBytes);
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_WASM_LAYOUT_LOAD_OK name=multi-source-success')) || '',
+    async () => (await recordedLines('PJ_WASM_LAYOUT_LOAD_OK name=multi-source-success')).join('\n'),
     { timeout: 30000 },
   ).toContain('multi-source-success.pj4.xml');
-  const successfulLoads = consoleMessages
-    .filter(message => message.includes('PJ_FILE_LOAD_OK'))
-    .slice(loadCountBeforeSuccess);
+  const successfulLoads = (await recordedLines('PJ_FILE_LOAD_OK')).slice(loadCountBeforeSuccess);
   expect(successfulLoads).toHaveLength(2);
   expect(successfulLoads[0]).toContain('duplicate/value:3@');
   expect(successfulLoads[1]).toContain('duplicate/value:3@');
@@ -1068,5 +1083,61 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
   expect(roundTrip.bytes.toString('utf8')).not.toContain('/pj_uploads');
   expect(allConsoleMessages.some(message => message.includes('PJ_WASM_SOURCE_LAYOUT_RESELECT_FAILED'))).toBe(false);
   expect(allConsoleMessages.some(message => message.includes('PJ_WASM_LAYOUT_DIALOG_DISMISS_FAILED'))).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+// A plugin that throws must fail its load with a reported reason, as on the desktop: the SDK's C-ABI guards
+// catch the exception and return it as an error. A malformed `_parser_config` (a number, not a string) in a
+// replayed MCAP source makes the MCAP plugin's loadConfig throw a JSON type error.
+test('an exception thrown by a plugin fails its load with a reason and leaves the app usable', async ({ page }) => {
+  test.setTimeout(180000);
+  const errors = [];
+  const allConsoleMessages = [];
+  let consoleMessages = [];
+  observeRuntimeTarget(page, consoleMessages, allConsoleMessages, errors);
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  let screen = await page.locator('#screen').boundingBox();
+  expect(screen).not.toBeNull();
+  const mcapBytes = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'ros2_tf_grid_real.mcap'));
+  const pickMcap = async (chooser) => {
+    await chooser.setFiles({ name: 'tf-grid.mcap', mimeType: 'application/octet-stream', buffer: mcapBytes });
+  };
+
+  await pickMcap(await openFileChooser(page, screen));
+  await page.waitForTimeout(1000);
+  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+  await expect.poll(
+    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    { timeout: 20000 },
+  ).toContain('plugin=MCAP Loader');
+  const downloaded = await downloadSourceLayoutFromFileMenu(page, screen, consoleMessages);
+  const xml = downloaded.bytes.toString('utf8');
+  expect(xml).toContain('"filepath":"tf-grid.mcap"');
+  const broken = xml.replace('"filepath":"tf-grid.mcap"', '"_parser_config":5,"filepath":"tf-grid.mcap"');
+
+  ({ page, consoleMessages, screen } = await replaceRuntimeTarget(page, allConsoleMessages, errors));
+  const layoutChooser = await openLayoutChooser(page);
+  await layoutChooser.setFiles({ name: downloaded.fileName, mimeType: 'application/xml', buffer: Buffer.from(broken) });
+  await expect.poll(
+    () => consoleMessages.some(message => message.includes('PJ_WASM_SOURCE_LAYOUT_DECISION')),
+    { timeout: 15000 },
+  ).toBe(true);
+  const geometry = await sourceLayoutDecisionGeometry(page, consoleMessages);
+  await pickMcap(await openSourceReplayChooser(page, screen, geometry, consoleMessages));
+  await expect.poll(
+    () => consoleMessages.find(message => message.includes('data-source-load-failed')) || '',
+    { timeout: 20000 },
+  ).toContain('load_config threw');
+  expect(errors).toEqual([]);
+
+  // Still usable: the same file opens normally.
+  await pickMcap(await openFileChooser(page, screen));
+  await page.waitForTimeout(1000);
+  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+  await expect.poll(
+    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    { timeout: 20000 },
+  ).toContain('plugin=MCAP Loader');
   expect(errors).toEqual([]);
 });

@@ -158,7 +158,7 @@ bool sameDsoSignature(const std::filesystem::path& installed_dso, const std::fil
 // half-written copy) — both mean "reseed".
 //
 // Returns the full descriptor rather than just the version, because the seed's
-// compat check needs abi_major, min_sdk_required, and min_plotjuggler_version — a stale
+// compat check needs abi_major and min_sdk_required — a stale
 // installed copy that would be rejected at load time gets replaced with the
 // bundled build, which is compatible by construction.
 std::optional<PluginDescriptor> installedPluginDescriptor(const std::filesystem::path& dir, const std::string& id) {
@@ -756,7 +756,7 @@ const LoadedWidget* ExtensionCatalogService::findWidget(QStringView plugin_id) c
 QString ExtensionCatalogService::toolboxBadge(QStringView id) const {
   const LoadedToolbox* toolbox = findToolbox(id);
   if (toolbox == nullptr) {
-    return {};
+    return ad_hoc_owners_.value(id.toString());
   }
   if (!toolbox->badge.empty()) {
     return QString::fromStdString(toolbox->badge);
@@ -766,7 +766,14 @@ QString ExtensionCatalogService::toolboxBadge(QStringView id) const {
 
 QString ExtensionCatalogService::toolboxDisplayName(QStringView id) const {
   const LoadedToolbox* toolbox = findToolbox(id);
-  return toolbox == nullptr || toolbox->name.empty() ? id.toString() : QString::fromStdString(toolbox->name);
+  if (toolbox == nullptr) {
+    return ad_hoc_owners_.value(id.toString(), id.toString());
+  }
+  return toolbox->name.empty() ? id.toString() : QString::fromStdString(toolbox->name);
+}
+
+void ExtensionCatalogService::registerAdHocOwner(const QString& id, const QString& name) {
+  ad_hoc_owners_.insert(id, name);
 }
 
 QString ExtensionCatalogService::pickCustomTopicsEditor(const QString& current, const QStringList& declarers) {

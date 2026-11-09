@@ -26,7 +26,7 @@
     <context>
         <name>AppLanguage</name>
         <message>
-            <location filename="../src/main.cpp" line="+377" />
+            <location filename="../src/main.cpp" line="+383" />
             <source>Interface language for this session (zh_CN or en_US).</source>
             <translation>本次会话的界面语言（zh_CN 或 en_US）。</translation>
         </message>
@@ -1669,7 +1669,7 @@ from %2</source>
     <context>
         <name>PJ::FileLoader</name>
         <message>
-            <location filename="../src/FileLoader.cpp" line="+1024" />
+            <location filename="../src/FileLoader.cpp" line="+1046" />
             <location line="+1" />
             <source>Load Data</source>
             <translation>加载数据</translation>
@@ -1681,12 +1681,12 @@ from %2</source>
             <translation>替换数据</translation>
         </message>
         <message>
-            <location line="+24" />
+            <location line="+27" />
             <source>Could not stage the selected file.</source>
             <translation>无法暂存选中的文件。</translation>
         </message>
         <message>
-            <location line="+90" />
+            <location line="+109" />
             <source>File has no extension; cannot pick a plugin.</source>
             <translation>文件没有扩展名，无法选择插件。</translation>
         </message>
@@ -1707,12 +1707,12 @@ from %2</source>
         </message>
         <message>
             <location line="+11" />
-            <location line="+582" />
+            <location line="+586" />
             <source>Plugin '%1': createHandle failed.</source>
             <translation>插件“%1”：createHandle 失败。</translation>
         </message>
         <message>
-            <location line="-559" />
+            <location line="-563" />
             <source>Could not create the time domain for %1.</source>
             <translation>无法为 %1 创建时间域。</translation>
         </message>
@@ -1723,24 +1723,24 @@ from %2</source>
         </message>
         <message>
             <location line="+83" />
-            <location line="+443" />
+            <location line="+447" />
             <source>createDataset failed: %1</source>
             <translation>createDataset 失败：%1</translation>
         </message>
         <message>
-            <location line="-401" />
-            <location line="+434" />
+            <location line="-405" />
+            <location line="+438" />
             <source>Plugin '%1': service registration failed: %2</source>
             <translation>插件“%1”：服务注册失败：%2</translation>
         </message>
         <message>
-            <location line="-429" />
-            <location line="+437" />
+            <location line="-433" />
+            <location line="+441" />
             <source>Plugin '%1': bind failed: %2</source>
             <translation>插件“%1”：绑定失败：%2</translation>
         </message>
         <message>
-            <location line="-404" />
+            <location line="-408" />
             <source>Plugin '%1': the saved configuration is not a JSON object and cannot be replayed.</source>
             <translation>插件 '%1'：已保存的配置不是 JSON 对象，无法重新应用。</translation>
         </message>
@@ -1756,17 +1756,17 @@ from %2</source>
         </message>
         <message>
             <location line="+7" />
-            <location line="+379" />
+            <location line="+383" />
             <source>Plugin '%1': loadConfig failed: %2</source>
             <translation>插件“%1”：loadConfig 失败：%2</translation>
         </message>
         <message>
-            <location line="-346" />
+            <location line="-349" />
             <source>Plugin contract violation: %1. Reinstall the plugin from the Marketplace.</source>
             <translation>插件接口契约违规：%1。请从扩展市场重新安装此插件。</translation>
         </message>
         <message>
-            <location line="+34" />
+            <location line="+37" />
             <source>Plugin '%1': loadConfig (post-dialog) failed: %2</source>
             <translation>插件“%1”：对话框关闭后 loadConfig 失败：%2</translation>
         </message>
@@ -1781,30 +1781,30 @@ from %2</source>
             <translation>无法替换数据集 %1：选中的配置会生成 %2 个数据集。</translation>
         </message>
         <message>
-            <location line="-716" />
+            <location line="-761" />
             <source>Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config</source>
             <translation>插件“%1”：saveConfig 失败：%2；保存布局时将跳过插件配置</translation>
         </message>
         <message>
-            <location line="+932" />
+            <location line="+977" />
             <source>Could not create the time domain for %1: %2</source>
             <translation>无法为 %1 创建时间域：%2</translation>
         </message>
         <message>
             <location line="+313" />
-            <location line="+411" />
+            <location line="+427" />
             <source>Loader metadata rejected: %1</source>
             <translation>加载器元数据被拒绝：%1</translation>
         </message>
         <message>
-            <location line="-367" />
-            <location line="+191" />
+            <location line="-383" />
+            <location line="+207" />
             <location line="+8" />
             <source>Import discarded</source>
             <translation>导入已丢弃</translation>
         </message>
         <message>
-            <location line="-193" />
+            <location line="-209" />
             <source>All %1 entries of '%2' failed to load:
 %3</source>
             <translation>“%2”的全部 %1 个条目均加载失败：
@@ -1817,17 +1817,22 @@ from %2</source>
         </message>
         <message>
             <location line="-230" />
-            <location line="+378" />
+            <location line="+394" />
             <source>Plugin '%1': start failed: %2</source>
             <translation>插件“%1”：启动失败：%2</translation>
         </message>
         <message>
-            <location line="-147" />
+            <location line="-1408" />
+            <source>The browser can no longer read '%1': it changed or was removed on disk since it was opened. Data loaded from it may be incomplete; open it again to reload it.</source>
+            <translation>浏览器无法再读取“%1”：该文件自打开后已在磁盘上更改或移除。从中加载的数据可能不完整，请重新打开以重新加载。</translation>
+        </message>
+        <message>
+            <location line="+1245" />
             <source>not a readable file.</source>
             <translation>不是可读取的文件。</translation>
         </message>
         <message>
-            <location line="+177" />
+            <location line="+193" />
             <source>Plugin '%1': derived-series replay failed: %2</source>
             <translation>插件“%1”：派生序列重放失败：%2</translation>
         </message>
@@ -2267,7 +2272,7 @@ for example when the stream is already rectified.</source>
     <context>
         <name>PJ::MainWindow</name>
         <message>
-            <location filename="../src/MainWindow.cpp" line="+412" />
+            <location filename="../src/MainWindow.cpp" line="+415" />
             <source>PlotJuggler 4 Layout (*.pj4.xml)</source>
             <translation>PlotJuggler 4 布局 (*.pj4.xml)</translation>
         </message>
@@ -2356,13 +2361,13 @@ for example when the stream is already rectified.</source>
         </message>
         <message>
             <location line="+143" />
-            <location line="+2206" />
+            <location line="+2239" />
             <location line="+87" />
             <source>dataset removed</source>
             <translation>数据集已移除</translation>
         </message>
         <message>
-            <location line="-1913" />
+            <location line="-1946" />
             <source>Start Streaming</source>
             <translation>开始接收流数据</translation>
         </message>
@@ -2390,7 +2395,7 @@ for example when the stream is already rectified.</source>
 %1</translation>
         </message>
         <message>
-            <location line="+257" />
+            <location line="+255" />
             <source>Stop loading…</source>
             <translation>停止加载…</translation>
         </message>
@@ -2416,9 +2421,9 @@ for example when the stream is already rectified.</source>
         </message>
         <message>
             <location line="+1" />
-            <location line="+1462" />
-            <location line="+169" />
-            <location line="+2035" />
+            <location line="+1493" />
+            <location line="+173" />
+            <location line="+2037" />
             <location line="+305" />
             <location line="+2070" />
             <location line="+1219" />
@@ -2426,7 +2431,7 @@ for example when the stream is already rectified.</source>
             <translation>取消</translation>
         </message>
         <message>
-            <location line="-7170" />
+            <location line="-7207" />
             <source>Undo</source>
             <translation>撤销</translation>
         </message>
@@ -2441,7 +2446,7 @@ for example when the stream is already rectified.</source>
             <translation>未选择视图组件</translation>
         </message>
         <message>
-            <location line="+430" />
+            <location line="+439" />
             <source>Loaded test sin/cos data</source>
             <translation>已加载正弦/余弦测试数据</translation>
         </message>
@@ -2476,18 +2481,18 @@ for example when the stream is already rectified.</source>
             <translation>某个浏览器数据源没有可用的文件名。</translation>
         </message>
         <message>
-            <location line="+4" />
-            <source>A browser source no longer has its staged content fingerprint.</source>
-            <translation>某个浏览器数据源的暂存内容指纹已丢失。</translation>
+            <location line="+7" />
+            <source>'%1' has no content fingerprint yet: it is still being computed, or the file changed since it was picked. Save the layout again in a moment, or open the file again.</source>
+            <translation>“%1”尚无内容指纹：仍在计算中，或文件自选取后发生了更改。请稍后再次保存布局，或重新打开文件。</translation>
         </message>
         <message>
-            <location line="+87" />
-            <location line="+2399" />
+            <location line="+89" />
+            <location line="+2422" />
             <source>The layout still contains an ephemeral browser path and was not downloaded.</source>
             <translation>布局仍包含临时浏览器路径，因此未下载。</translation>
         </message>
         <message>
-            <location line="-2267" />
+            <location line="-2290" />
             <source>Remove all Datasets</source>
             <translation>移除全部数据集</translation>
         </message>
@@ -2498,12 +2503,12 @@ for example when the stream is already rectified.</source>
             <translation>扩展市场</translation>
         </message>
         <message>
-            <location line="+240" />
+            <location line="+260" />
             <source>The source was reloaded, but some workspace bindings could not be mapped to its new datasets.</source>
             <translation>已重新加载数据源，但部分工作区绑定无法映射到新的数据集。</translation>
         </message>
         <message numerus="yes">
-            <location line="+51" />
+            <location line="+48" />
             <source>%n derived series</source>
             <translation>
                 <numerusform>%n 个派生序列</numerusform>
@@ -2525,12 +2530,12 @@ for example when the stream is already rectified.</source>
         </message>
         <message>
             <location line="+2" />
-            <location line="+4579" />
+            <location line="+4585" />
             <source>Delete</source>
             <translation>删除</translation>
         </message>
         <message>
-            <location line="-4416" />
+            <location line="-4418" />
             <source>Are you sure you want to remove '%1' and its data?</source>
             <translation>确定要移除“%1”及其数据吗？</translation>
         </message>
@@ -2555,7 +2560,7 @@ for example when the stream is already rectified.</source>
             <translation>移除</translation>
         </message>
         <message>
-            <location line="+248" />
+            <location line="+250" />
             <source>New release available: &lt;b&gt;%1&lt;/b&gt;</source>
             <translation>有新版本可用：&lt;b&gt;%1&lt;/b&gt;</translation>
         </message>
@@ -3398,7 +3403,7 @@ for example when the stream is already rectified.</source>
             <translation>继续下载</translation>
         </message>
         <message>
-            <location line="+290" />
+            <location line="+298" />
             <source>Failed to publish toolbox services for '%1': %2</source>
             <translation>无法为“%1”发布工具箱服务：%2</translation>
         </message>
@@ -3428,7 +3433,22 @@ for example when the stream is already rectified.</source>
             <translation>无法为“%1”发布图表标签页服务：%2</translation>
         </message>
         <message>
-            <location line="+22" />
+            <location line="+41" />
+            <source>The MCP server could not listen on 127.0.0.1, so AI agents cannot reach PlotJuggler.</source>
+            <translation>MCP 服务器无法监听 127.0.0.1，因此 AI 智能体无法连接 PlotJuggler。</translation>
+        </message>
+        <message>
+            <location line="+11" />
+            <source>AI agent: %1</source>
+            <translation>AI 智能体：%1</translation>
+        </message>
+        <message>
+            <location line="+2" />
+            <source>%1 is controlling PlotJuggler through MCP. Turn this off in Preferences → Appearance.</source>
+            <translation>%1 正通过 MCP 控制 PlotJuggler。可在“首选项 → 外观”中关闭。</translation>
+        </message>
+        <message>
+            <location line="+35" />
             <source>Toolbox</source>
             <translation>工具箱</translation>
         </message>
@@ -3836,6 +3856,24 @@ Details: %1</source>
         </message>
     </context>
     <context>
+        <name>PJ::McpServer</name>
+        <message>
+            <location filename="../src/mcp/McpServer.cpp" line="+359" />
+            <source>an MCP client</source>
+            <translation>某个 MCP 客户端</translation>
+        </message>
+        <message>
+            <location line="+52" />
+            <source>AI agent (%1)</source>
+            <translation>AI 智能体（%1）</translation>
+        </message>
+        <message>
+            <location filename="../src/mcp/McpServerTools.cpp" line="+97" />
+            <source>An AI agent asked you to choose: </source>
+            <translation>AI 智能体请您选择：</translation>
+        </message>
+    </context>
+    <context>
         <name>PJ::MediaViewerWidget</name>
         <message>
             <location filename="../../pj_scene2D/widgets/src/media_viewer_widget.cpp" line="+51" />
@@ -4073,7 +4111,7 @@ Details: %1</source>
             <translation>UTC</translation>
         </message>
         <message>
-            <location line="+69" />
+            <location line="+77" />
             <source>This folder does not exist.</source>
             <translation>此文件夹不存在。</translation>
         </message>
@@ -4649,12 +4687,12 @@ Details: %1</source>
             <translation>未选择流数据源。</translation>
         </message>
         <message>
-            <location line="+224" />
+            <location line="+225" />
             <source>Stream plugin '%1' not found.</source>
             <translation>未找到流数据插件“%1”。</translation>
         </message>
         <message>
-            <location line="-131" />
+            <location line="-132" />
             <source>Plugin '%1': createHandle failed.</source>
             <translation>插件“%1”：createHandle 失败。</translation>
         </message>
@@ -4689,17 +4727,17 @@ Details: %1</source>
             <translation>插件“%1”：绑定失败：%2</translation>
         </message>
         <message>
-            <location line="+72" />
+            <location line="+90" />
             <source>Plugin contract violation: %1. Reinstall the plugin from the Marketplace.</source>
             <translation>插件接口契约违规：%1。请从扩展市场重新安装此插件。</translation>
         </message>
         <message>
-            <location line="+23" />
+            <location line="+26" />
             <source>Plugin '%1': loadConfig (post-dialog) failed: %2</source>
             <translation>插件“%1”：对话框关闭后 loadConfig 失败：%2</translation>
         </message>
         <message>
-            <location line="+19" />
+            <location line="+17" />
             <source>Stream plugin '%1' is not installed.</source>
             <translation>未安装流插件 '%1'。</translation>
         </message>
@@ -5018,6 +5056,16 @@ Details: %1</source>
             <translation>系统文件对话框：</translation>
         </message>
         <message>
+            <location line="+17" />
+            <source>Serve the Model Context Protocol on this computer only (127.0.0.1, behind a secret token), so AI agents such as Claude Code or Codex can open files, read series, and draw in their own tabs. The status bar names an agent while it is active. Shows whether outside agents may connect now (also when allowed with --mcp); on by default; applies on OK. An agent a toolbox plugin starts itself gets its own private access and does not need this.</source>
+            <translation>仅在本机提供模型上下文协议服务（127.0.0.1，使用秘密令牌保护），让 Claude Code 或 Codex 等 AI 智能体能够打开文件、读取序列，并在各自的标签页中绘图。智能体活动时，状态栏会显示其名称。此开关显示当前是否允许外部智能体连接（包括通过 --mcp 允许的连接）；默认开启，点击“确定”后生效。工具箱插件自行启动的智能体拥有独立的私有访问权限，无需开启此项。</translation>
+        </message>
+        <message>
+            <location line="+3" />
+            <source>Let AI agents control PlotJuggler (MCP server):</source>
+            <translation>允许 AI 智能体控制 PlotJuggler（MCP 服务器）：</translation>
+        </message>
+        <message>
             <location line="+52" />
             <source>Rescale a plot's vertical axis to fit its curves whenever a curve is added or removed (the shared time axis is left unchanged).</source>
             <translation>添加或移除曲线时，自动调整图表纵轴以适合曲线范围（共享时间轴保持不变）。</translation>
@@ -5293,10 +5341,10 @@ Details: %1</source>
         </message>
         <message>
             <location line="+2" />
-            <location filename="../src/FileLoader.cpp" line="-1996" />
+            <location filename="../src/FileLoader.cpp" line="-2057" />
             <location line="+90" />
             <location line="+7" />
-            <location filename="../src/MainWindow.cpp" line="-10481" />
+            <location filename="../src/MainWindow.cpp" line="-10591" />
             <source>OK</source>
             <translation>确定</translation>
         </message>

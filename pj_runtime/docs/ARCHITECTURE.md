@@ -31,6 +31,9 @@ WebAssembly). Only the recording **sink** is platform-bound: `find_package(mcap)
 headers build everywhere. No compile definition is exported; `pj_app` gates its Record
 UI on `RecordingService::isSupported()` alone.
 
+`pj_agent_tools` is a separate static target ([Agent tools](#agent-tools)); `pj_runtime`
+does not link it.
+
 ## Session and data lifecycle
 
 ### AppSession
@@ -295,14 +298,17 @@ UI on `RecordingService::isSupported()` alone.
   At construction it seeds the bundled dir `<prefix>/lib/plotjuggler/plugins` into the
   marketplace dir: copy when absent, staged refresh when the bundled version is newer,
   never downgrade a compatible install; an installed copy the host would reject (malformed
-  version, or the ABI / `min_sdk_required` / `min_plotjuggler_version` gate, see
+  version, or the ABI / `min_sdk_required` gate, see
   `descriptorIncompatReason`) is overwritten by the bundled build. The bundled dir is never
   scanned as a load path. The bundled id→version map goes to the `ExtensionManager`
   (core-plugin uninstall lock) in default sessions only. Lookups return raw pointers
   valid until the next `reload()`, GUI thread only. Browser/static builds skip the
   marketplace and register a `StaticPluginSet`. The Custom Topics editor is the toolbox
   whose manifest `capabilities` lists `custom_topics_editor`; `toolboxBadge` /
-  `toolboxDisplayName` name an owner on rows and owned-tab watermarks.
+  `toolboxDisplayName` name an owner on rows and owned-tab watermarks, from its toolbox
+  or, for an owner with no plugin (an MCP agent), from `registerAdHocOwner`.
+  `PluginRuntimeCatalog` refuses plugin ids starting with `kAgentIdPrefix` (`agent-`),
+  so such owners never collide with a plugin.
 - **`PluginRuntimeCatalog`** resolves duplicate ids by authoritative → compatibility →
   version → folder priority, then hard-rejects a winner with a malformed version or an
   incompatible host contract. An authoritative copy still shadows every managed fallback,
@@ -384,7 +390,9 @@ UI on `RecordingService::isSupported()` alone.
   Transform recipes capture dataset/source/topic/field input identity; a replacing reload
   uses `rebindAndRecomputeForReplacedSources` to rebind columns in place, keeping output
   TopicIds. Compatible script edits replace operators transactionally, structural edits
-  are rejected before mutation, removal cascades by exact TopicId. The ABI `config` carries
+  are rejected before mutation, removal cascades by exact TopicId. `removeOwnTransform` (a
+  plugin's `remove_data_processor`, an agent's removal) refuses instead when that cascade
+  reaches a processor of another owner. The ABI `config` carries
   `gaps` (input rows retention evicted before the node consumed them).
 - **History.** `TransformRecipe::history_exempt` (and `GeneratorRecipe::history_exempt`)
   makes a processor immune to undo/redo: persisted in layouts, never removed, recreated or
@@ -691,6 +699,35 @@ Specification: [docs/RECORDING_AND_CACHING.md §3.4](../../docs/RECORDING_AND_CA
   manifest (a contended miss makes `LayoutImportBatch` fail that source).
   `setCaptureEnabled()` gates arming only. A refused publication never touches session data.
 
+## Agent tools
+
+`pj_agent_tools` (`include/pj_runtime/agent_tools/`, `src/agent_tools/`) is the tool layer
+`pj_app`'s MCP server offers AI agents ([`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md)): `ToolRegistry` holds the fixed catalog (name,
+description, JSON Schema, executor per tool) and dispatches a call by name. Desktop only,
+like the server. It links only `plotjuggler_sdk::base` and `nlohmann_json` (no Qt), so
+`pj_app`'s unit tests link it without this module's closure. MIT-licensed, unlike the rest
+of the module: its files keep their own SPDX and copyright lines.
+
+- **Executors see what a toolbox plugin sees.** A `ToolContext` carries SDK host views
+  (toolbox catalog and reads, data processors, object reads, playback, plot tabs,
+  viewport); the caller builds it fresh for every call, on the GUI thread, from the
+  agent's own toolbox session, since a view may be invalidated between event-loop ticks.
+  What an agent creates is owned by it, and the remove tools reach only that. `plot_tab`'s
+  zoom uses the context's `zoom_tab` hook when the host sets it (one tab), else
+  `pj.viewport.v1` (every tab the caller owns). A windowed `read_series` (and `pj_app`'s
+  `export_series`) decodes only the window when the host sets `read_window`; `read_series`
+  also needs `scan_values`, a whole-series value walk, for the flat facts it reports for
+  the whole series (`FlatRunAccumulator`, `series_stats.hpp`). Unset, they read the whole
+  series and cut it, with the same answer.
+- **Errors are data.** Every failure is a `ToolResult` with `ok=false`;
+  `ToolRegistry::execute` turns a throw from a wrongly typed, model-supplied argument
+  into one.
+- **Deferred results.** A result with `resume` set is not terminal: the caller invokes
+  `resume` again on later ticks, with a fresh context, until it returns a terminal result.
+- `derived_recipes.hpp` also serves `pj_app`'s own MCP tools: series path resolution
+  (`resolveSeriesPath`: dataset qualifiers, ambiguity, near-miss candidates), the
+  generated Luau chunks and the display↔raw time conversion.
+
 ## Network services
 
 - `httpGetWithTimeout` / `httpPostWithTimeout`: the callback runs on the caller's thread,
@@ -735,5 +772,8 @@ Specification: [docs/RECORDING_AND_CACHING.md §3.4](../../docs/RECORDING_AND_CA
   before it, pre-recording pushes never leak in, two sources land in two files of one
   capture (same `capture_id`, ordinals 1 and 2), a second recording starts from an empty
   channel table, and ingest is unaffected.
+- **Agent tools.** `pj_agent_tools_tests` (plain main, no Qt) runs the executors against
+  fake host views (`tests/fake_*.hpp`, `tests/recording_dp_host.hpp`, MIT like the code)
+  and the SDK's `ToolboxTestStore`.
 - `transform_service_test`'s custom `QCoreApplication` main exists because its debug
   thread-affinity death test forks and aborts in the child.

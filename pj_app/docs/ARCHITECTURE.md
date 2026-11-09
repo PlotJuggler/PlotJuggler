@@ -87,6 +87,19 @@ test suites compile it standalone.
   `Layout`/`data-source-missing`.
 - Streaming sources are not wired to the sink.
 
+### Reload button
+
+`MainWindow::reloadSource` disables the left panel's Reload button until its
+request resolves. `FileLoader::loadFinished`, the one terminal every accepted
+request reaches (including the exits `fileLoadFailed` stays silent on: a rejected
+config dialog, a queued cancel, shutdown), brings it back through
+`refreshReloadEnabled()`, which follows whether a source is recorded
+(`lastLoadedSource()`; `onFileLoaded` records it first, because `loadFinished` is
+queued). A request the loader refuses outright gets no ticket and no terminal, so
+`reloadSource` refreshes on a `false` return. The guard only stops a double click:
+any request's terminal re-enables the button, and the loader's queue serialises a
+second reload anyway. Tests: `ReloadButtonTest`.
+
 ### Per-dataset load progress (curve tree)
 
 `wireIngestProgress()` (`IngestProgressWiring.{h,cpp}`) is the single definition of
@@ -155,6 +168,15 @@ previewed topic, `TopicDemandController` invalidates the matching XY and
 time-series caches of registered plots synchronously before evicting the preview
 history: bounds calculation inside `curveListChanged` may already have filled
 them, and no paint or event-loop turn may run between invalidation and eviction.
+
+An interactive start creates the session's dataset (in both engines) before the
+plugin's dialog opens, so every start that does not launch (the user cancelling,
+a plugin contract violation, a refused configuration, a failed `start()`)
+destroys the session and then discards that dataset, as `startFromLayout` does;
+an abandoned dataset would otherwise count in the catalog's duplicate-label
+ordinals and suffix the next start's name. The failure is reported through
+`streamError` only after the dataset is gone (a cancel reports nothing), so a
+`streamError` consumer cannot rely on that dataset existing.
 
 The topic streaming context menu is available for a single selected row of a
 per-topic-pause-capable source. A field row resolves to its owning topic, so
@@ -447,9 +469,37 @@ Tests: `tests/main_window_custom_widget_test.cpp` (including the record's lifecy
 On WebAssembly the shell owns the browser boundary: `BrowserFileStore` (upload
 staging and identity, bytes behind a lifetime lease in MEMFS), `FileSelectionService`
 (the asynchronous file pickers) and `BrowserPersistence` (the durable-settings bridge). A data-file
-pick (`selectAndStageFile`) opens its own `<input type=file>` and streams the `File` into a
-`BrowserFileStore::reserve()`d file through `BrowserFetch.h` (a `blob:` URL), so the wasm heap never
-holds it; the small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
+pick (`selectAndStageFile`) opens its own `<input type=file>` and never copies the `File`:
+`BrowserPickedFile` turns its `BrowserFileStore::reserve()`d path into a read-only MEMFS node that reads
+from the `File` on demand (`browser_picked_file.js`), so a pick may exceed the wasm32 address space and costs
+no memory while open; the small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
+
+Lazy picks, what they cost and how they fail:
+
+- **Reads.** With pthreads every file syscall runs on the browser main thread, which cannot await, so a read
+  posts a `file.slice()` to a reader Worker (`FileReaderSync` into a shared scratch buffer) and spins until it
+  answers: about 0.1–0.2 ms per round trip. A 1 MiB read-ahead block per node absorbs small sequential reads;
+  a read of 1 MiB or more goes straight through. A Worker the main thread waits on must already be running,
+  so the Workers start at pick time and the pick is reported only once they answer.
+- **Fingerprint.** `content_sha256` is plain SHA-256 (layouts and presets compare against it), and WebCrypto
+  cannot hash incrementally, so a hasher Worker runs an incremental JS SHA-256 at about 100 MB/s. A normal
+  open (`FileLoader::loadFromBrowserPicker`) hashes in the background (`Fingerprint::kInBackground`; the loader
+  keeps the result) and "Save Layout with Sources" reads it then, refusing to save while it is still running; layout
+  replay reselection and `DialogPresenter` picks wait for it (`kBeforeSelection`), because they compare it.
+- **A file changed on disk after the pick.** The browser then fails every read of it (`NotReadableError`),
+  surfaced as `EIO`. A `pread`-based source gets the error; a `std::istream`-based one takes it for the end of
+  the file. Either way the first failed read of a node raises one `kWarning` diagnostic
+  (`browser-file-read-failed`, `FileLoader`), saying its data may be incomplete, and drops the file's
+  fingerprint, so "Save Layout with Sources" refuses it. A source with lazy object pulls reads its file for the
+  whole session, so this can happen long after the load.
+- **Offsets past 2 GiB.** `long` is 32 bits on wasm32, so a loader that measures or seeks with `ftell` /
+  `fseek` fails on a larger pick; loaders use `ftello` / `fseeko` or `pread` (the MCAP reader does).
+- Not lazy: a drag-and-drop goes through Qt's drop handling, which copies the file into MEMFS, and preset
+  recordings download into MEMFS.
+
+Tests: `tests/wasm/ingress_file_selection.spec.js` (a sparse pick larger than the address space loads with flat
+memory; a file changed after the pick reports the failed read and leaves the next pick working), and the
+`content_sha256` checks of `persistence_layout.spec.js` (the JS hash against Node's).
 `PresetController` downloads through `pj_runtime`'s `fetchBytesWithLimit()` and streams recordings through `BrowserFetch.h` there ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)).
 Browser-only integration is tied to the executable's lifetime and policy, so it lives
 here rather than in a library.
@@ -479,6 +529,20 @@ Scene3D counterpart, reading the view through `SceneViewTestAccess`. With
 Python checks that the repo-root `tests/wasm/python.spec.js` asserts) and compiles
 `tests/wasm_python_stdlib_probe.cpp`, which walks what a strict script can reach and
 imports it from the embedded stdlib zip.
+
+## MCP server
+
+AI agents read and drive a running PlotJuggler over the Model Context Protocol, desktop only (`src/mcp/` is left out
+of the browser build). External agents come in through the stdio bridge `--mcp-bridge` with the public token (on
+by default); toolbox plugins lease a private, agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The design
+(tool sets, tokens and owners, lifetimes and revocation, discovery, the user-first rules, security, tests) is in
+[`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md).
+
+What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp`, `McpServer` (with
+`McpEndpointHost`), `McpServerTools.cpp` (the app tools over `MainWindow`'s public "agent control" block). The
+agent tools come from `pj_runtime`'s `pj_agent_tools`. The shell's part of the teardown order:
+`~ToolboxPanelSession` resets `mcp_endpoint` after `handle` and before every service, and `~MainWindow` destroys
+the server right after `teardownAllToolboxes`.
 
 ## Concrete codecs behind runtime interfaces
 
@@ -548,6 +612,14 @@ Suites that keep their own executable and ctest entry, and why:
   plugin-path definitions; also covers provider quiescence on teardown.
 - `layout_import_batch_test`: desktop-only, with both the mock file-source and the
   runtime host object-parser plugin paths.
+- `mcp_bridge_test` (Linux): runs the built `plotjuggler4 --mcp` offscreen and drives
+  `--mcp-bridge` over stdio under a private HOME/XDG sandbox: both eras, the forwarded
+  tool list, a load and a read, refused envelopes (deep nesting, an over-1 MiB line),
+  token, Origin and owner spoofing. `McpServerTest` (gui runner; the mock file, mock
+  layout stream and dialog-probe plugins) covers in process the held replies, the modal
+  gate, the agent-titled dialogs, the socket cap, export escaping and its row cap, the
+  empty-join refusal, a stop with an evaluation in flight and the Preferences switch;
+  `McpHttpParsing`/`McpEnvelope` (unit runner) the HTTP and JSON-RPC gates.
 - `splash_meme_pool_test` (`SplashMemePoolTest`): compiles `Splashscreen.cpp`
   standalone with `PJ_MEMES_SOURCE_DIR` and the shipped resources.
 

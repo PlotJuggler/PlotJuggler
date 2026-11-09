@@ -6,10 +6,13 @@
 // DataWriter / DataEngine / ObjectStore operations. raw() yields the C vtable;
 // flushPending() seals+commits. See docs/OBJECT_STORE_DESIGN.md (ABI bridge).
 
+#include <functional>
 #include <memory>
 #include <string_view>
 
+#include "pj_base/expected.hpp"
 #include "pj_base/plugin_data_api.h"
+#include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
 
 namespace PJ {
@@ -208,5 +211,28 @@ class DatastoreToolboxHost {
  private:
   std::unique_ptr<DatastoreToolboxHostState> state_;
 };
+
+/// The toolbox `read_series_arrow` read of `field`, limited to the samples stamped in [first, last] (raw ns) plus the
+/// last one before `first`, whose value holds at the window's start (none when the series starts inside the window,
+/// or when that sample is below the retention floor). [numeric_limits min, max] reads the whole series, which is what
+/// `read_series_arrow` does. Only the chunks the window touches are decoded, so the cost follows the window, not the
+/// series. Same layout and ownership as `read_series_arrow`: a struct of ["timestamp" int64, <field path> typed],
+/// both structs released by the caller. Finishes a derived series' pending replay first
+/// (DataEngine::awaitCompleteSeries), which only completes it for a caller on the GUI thread.
+[[nodiscard]] Status readSeriesArrowWindow(
+    const DataEngine& engine, PJ_field_handle_t field, Timestamp first, Timestamp last, struct ArrowSchema* out_schema,
+    struct ArrowArray* out_array);
+
+/// Consecutive samples of a series, stamped `timestamps`: `values` holds each one's value as a double, NaN at a
+/// null, or a single value every one of them holds.
+using SampleBlockCallback = std::function<void(Span<const Timestamp> timestamps, Span<const double> values)>;
+
+/// Walks the whole numeric series of `field` (the samples `read_series_arrow` returns) in time order, a block of one
+/// chunk at a time, without building an Arrow array: the cheap pass for a whole-series fact a windowed read still
+/// owes. A constant-encoded chunk is one block of a single value. A non-numeric field has no blocks. Same
+/// derived-series wait as readSeriesArrowWindow; `on_block` runs under the engine lock, must not call the engine, and
+/// sees spans valid only during the call.
+[[nodiscard]] Status scanSeriesValues(
+    const DataEngine& engine, PJ_field_handle_t field, const SampleBlockCallback& on_block);
 
 }  // namespace PJ

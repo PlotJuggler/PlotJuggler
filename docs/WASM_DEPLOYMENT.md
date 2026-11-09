@@ -47,6 +47,12 @@ node scripts/package_wasm.mjs \
   --presets resources/wasm-presets
 ```
 
+The whole module, including fetched dependencies, compiles and links with
+`-fexceptions` (root `CMakeLists.txt`): Emscripten drops the catch blocks of any
+translation unit built without it, so do not set it per target. These are
+Emscripten's JavaScript-based exceptions; `-fwasm-exceptions` would need a Qt
+kit built with `wasm_exceptions`, which the official kit is not.
+
 A public deployment also publishes the source offer
 ([licence and source offer](#licence-of-the-browser-bundle-and-the-source-offer)):
 `node scripts/wasm_source_offer.mjs --links --output build-wasm/deploy/sources`.
@@ -371,7 +377,11 @@ must answer them with `Access-Control-Allow-Origin` for the page.
 ## Browser-local state
 
 Uploaded files are staged in the page's temporary filesystem and receive opaque
-browser identities; they are not persisted across refreshes. Ordinary
+browser identities; they are not persisted across refreshes. A file opened from
+the picker is read from disk on demand rather than copied, so its size is not
+bounded by the tab's memory; it must stay unchanged on disk while it is open
+(a changed file reports that its data may be incomplete, see
+[`pj_app/docs/ARCHITECTURE.md`](../pj_app/docs/ARCHITECTURE.md#browser-webassembly-boundary)). Ordinary
 `QSettings` callers are likewise redirected to page-lifetime storage. The only
 durable browser state is the typed preference allowlist and a bounded list of
 source-free generic layout recipes owned by `BrowserPersistence`. Source-bound

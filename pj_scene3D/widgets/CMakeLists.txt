@@ -146,9 +146,6 @@ if(NOT EMSCRIPTEN AND QT_FEATURE_vulkan AND NOT TARGET WrapVulkanHeaders::WrapVu
     "cannot query the Vulkan 3D-texture limit and caps voxel grids at 256 cells per dimension.")
 endif()
 target_compile_options(pj_scene3d_widgets PRIVATE ${PJ_WARNING_FLAGS})
-if(EMSCRIPTEN)
-  target_compile_options(pj_scene3d_widgets PRIVATE -fexceptions)
-endif()
 target_link_libraries(pj_scene3d_widgets
   PUBLIC
     pj_scene3d_core
@@ -174,9 +171,6 @@ add_library(pj_scene3d_widgets_testing STATIC EXCLUDE_FROM_ALL testing/scene_vie
 target_include_directories(pj_scene3d_widgets_testing PUBLIC testing rhi)
 target_link_libraries(pj_scene3d_widgets_testing PUBLIC pj_scene3d_widgets)
 target_compile_options(pj_scene3d_widgets_testing PRIVATE ${PJ_WARNING_FLAGS})
-if(EMSCRIPTEN)
-  target_compile_options(pj_scene3d_widgets_testing PRIVATE -fexceptions)
-endif()
 
 # ---------------------------------------------------------------------------
 # Tests

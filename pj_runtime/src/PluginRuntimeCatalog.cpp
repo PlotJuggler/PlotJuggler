@@ -36,6 +36,11 @@ bool isStaticPath(const std::string& path) {
 }
 
 PluginCompatibilityResult descriptorCompatibility(const PluginDescriptor& descriptor) {
+  if (descriptor.id.starts_with(kAgentIdPrefix)) {
+    return {
+        false, "Plugin id \"" + descriptor.id + "\" is reserved: ids starting with \"" + std::string(kAgentIdPrefix) +
+                   "\" name AI agents"};
+  }
   return evaluatePluginCompatibility(
       {
           .version = descriptor.version,

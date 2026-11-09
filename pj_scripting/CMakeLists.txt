@@ -245,9 +245,8 @@ endif()
 if(NOT EMSCRIPTEN)
   target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="${_pj_python_home_define}")
 elseif(PJ_WASM_WITH_PYTHON)
-  # The stdlib zip is embedded at /lib/python314.zip; pybind11 reports Python errors by throwing.
+  # The stdlib zip is embedded at /lib/python314.zip.
   target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="/")
-  target_compile_options(pj_scripting PRIVATE -fexceptions)
 endif()
 
 # ---------------------------------------------------------------------------

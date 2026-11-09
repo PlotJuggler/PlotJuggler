@@ -180,6 +180,39 @@ TEST(DataProcessorsRuntimeHostTest, SecondPluginCannotSeeOrRemoveFirst) {
   ASSERT_EQ(a_ids->size(), 1u);  // A's is untouched
 }
 
+// A plugin's removal never takes another owner's work with it: with pluginB's transform reading pluginA's output,
+// pluginA's remove is refused naming that transform and its owner, and removes nothing. A chain of its own still
+// goes with it.
+TEST(DataProcessorsRuntimeHostTest, RemoveRefusesToCascadeIntoAnotherOwnersTransform) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  DataProcessorsRuntimeHost bridge_a(fx.service, "pluginA");
+  DataProcessorsRuntimeHost bridge_b(fx.service, "pluginB");
+  sdk::DataProcessorsHostView view_a(bridge_a.raw());
+  sdk::DataProcessorsHostView view_b(bridge_b.raw());
+  ASSERT_TRUE(createNegate(view_a, "negate", "speed", "mid"));
+  ASSERT_TRUE(createNegate(view_b, "negate", "mid", "theirs"));
+
+  const Status refused = view_a.remove("negate");
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("'theirs'"), std::string::npos) << refused.error();
+  EXPECT_NE(refused.error().find("pluginB"), std::string::npos) << refused.error();
+  EXPECT_EQ(fx.service.transformRecipes().size(), 2u);
+
+  ASSERT_TRUE(view_b.remove("negate"));
+  constexpr const char* kAgain = R"LUAU(-- pj-script: luau
+return { id="again", name="Again", output="same",
+  create = function(p) return { calculate = function(t, v) return -v end } end }
+)LUAU";
+  const std::string_view inputs[] = {"mid"};
+  const std::string_view outputs[] = {"mine"};
+  ASSERT_TRUE(view_a.createTransform(
+      "again", PJ::Span<const std::string_view>(inputs), PJ::Span<const std::string_view>(outputs), kAgain, "{}"));
+  const Status removed = view_a.remove("negate");
+  ASSERT_TRUE(removed) << removed.error();
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+}
+
 TEST(DataProcessorsRuntimeHostTest, TransformSurvivesBridgeDestruction) {
   // The exit-demo core: the plugin DSO unload is modeled by destroying the bridge.
   // The host owns the script + VM, so the transform node KEEPS RUNNING.

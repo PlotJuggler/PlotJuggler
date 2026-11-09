@@ -91,9 +91,11 @@ smaller size, all Appearance controls must remain reachable by scrolling.
 
 The original contribution was based on official `main-4.x` commit
 `0345ec513bde7f05ad3148548ac30401f2b6f7a7`. It now integrates official
-`0511b57bb1806b08c1ee3fee60d96c1e0448c358`, preserving the current asynchronous
-dataset merge, load diagnostics, browser replay, streamed browser file picks,
-file-picker hints, clock/time-offset controls, and derived-marker preferences. Its initial language infrastructure,
+`b9117bfbc31effacacac150656383516a2430dfe`, preserving the current asynchronous
+dataset merge, load diagnostics, browser replay, lazy browser file reads,
+file-picker hints, clock/time-offset controls, derived-marker preferences, and
+MCP controls. The integrated upstream also pins SDK 0.40; this contribution does
+not change MCP access policy or start the server from language tests. Its initial language infrastructure,
 translation strings, and focused tests were extracted from
 [`reliable-ly0411/PlotJuggler-zh-CN` commit `0c73d762`](https://github.com/reliable-ly0411/PlotJuggler-zh-CN/commit/0c73d7620ea60f2fec171f55314c46c72820723d);
 the stricter catalog validator comes from that fork's `203d29a8` snapshot.
@@ -120,7 +122,9 @@ behavior and let the complete source file remain in extraction. Explicit
 keep the runtime lookup contexts visible to the extractor. Deferred model
 error literals use `QT_TRANSLATE_NOOP` with that same runtime context.
 
-The browser file-picker `EM_JS` body uses double-quoted empty JavaScript strings.
-Qt 6.12 otherwise reads the single-quoted empty strings as unterminated C++
-characters and cannot extract the complete file reliably; the JavaScript value
-and browser behavior are unchanged.
+The browser file-picker implementation uses `BrowserPickedFile` and its separate
+`browser_picked_file.js` library for lazy file reads. `FileSelectionService.cpp`
+remains identical to the integrated upstream; all production C++ sources remain
+in Qt extraction. The catalog covers the extracted browser-read diagnostics and
+MCP status, prompt, and Preferences messages. Direct runtime-lookup regressions
+exercise these messages in Chinese and English without starting an MCP server.

@@ -476,7 +476,8 @@ void StreamingSourceManager::discardDataset(DatasetId dataset_id) {
   session_manager_.removeDataset(dataset_id);
 }
 
-void StreamingSourceManager::startSession(const QString& plugin_id) {
+void StreamingSourceManager::startSession(
+    const QString& plugin_id, const QString& dialog_title_prefix, const std::function<bool()>& still_allowed) {
   const LoadedDataSource* source_ptr = findDataSourceByIdentity(extensions_.streamSources(), {}, plugin_id);
   if (source_ptr == nullptr) {
     qCWarning(lcStream) << "Stream plugin not found:" << plugin_id;
@@ -484,15 +485,32 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
     return;
   }
   const LoadedDataSource& source = *source_ptr;
-  const QString source_name = QString::fromStdString(source.name);
   QString error;
-  std::unique_ptr<StreamingSession> session = createSession(source, source_name, error);
+  std::unique_ptr<StreamingSession> session = createSession(source, QString::fromStdString(source.name), error);
   if (session == nullptr) {
     emit setupError(error);
     return;
   }
   const DatasetId dataset_id = session->dataset_id;
 
+  if (!configureAndLaunch(source, session, dialog_title_prefix, still_allowed, error)) {
+    // createSession made the dataset before the dialog opened, so any exit that
+    // does not launch must take it back, or an empty dataset lingers and counts in
+    // the catalog's duplicate-label ordinals. The session goes first (as in
+    // startFromLayout) and the dataset is gone before the failure is reported.
+    session.reset();
+    discardDataset(dataset_id);
+    if (!error.isEmpty()) {
+      emit streamError(dataset_id, error);
+    }
+  }
+}
+
+bool StreamingSourceManager::configureAndLaunch(
+    const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session,
+    const QString& dialog_title_prefix, const std::function<bool()>& still_allowed, QString& error) {
+  error.clear();
+  const QString source_name = QString::fromStdString(source.name);
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source.name);
   std::string config = persisted_settings.value(config_key, QString()).toString().toStdString();
@@ -523,16 +541,20 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
       .initial_parser_config = initial_parser_config,
       .section_band_metrics =
           chrome_metrics_provider_ ? std::optional<ChromeMetrics>(chrome_metrics_provider_()) : std::nullopt,
+      .title_prefix = dialog_title_prefix,
   });
   if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
-    emit streamError(
-        dataset_id, tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
-                        .arg(QString::fromStdString(dlg.error)));
-    return;
+    error = tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
+                .arg(QString::fromStdString(dlg.error));
+    return false;
   }
   if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
     qCInfo(lcStream) << "User cancelled stream dialog for" << source_name;
-    return;
+    return false;
+  }
+  if (still_allowed && !still_allowed()) {
+    qCInfo(lcStream) << "Stream start no longer allowed after its dialog:" << source_name;
+    return false;
   }
   if (dlg.payload.has_value()) {
     config = dlg.payload->saved_config;
@@ -548,18 +570,15 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
       }
     }
     if (auto status = session->handle.loadConfig(config); !status) {
-      emit streamError(
-          dataset_id, tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
-                          .arg(source_name, QString::fromStdString(status.error())));
-      return;
+      error = tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                  .arg(source_name, QString::fromStdString(status.error()));
+      return false;
     }
   }
   persisted_settings.setValue(config_key, QString::fromStdString(config));
   session->config_template = QString::fromStdString(config);
 
-  if (!launchSession(std::move(session), error)) {
-    emit streamError(dataset_id, error);
-  }
+  return launchSession(std::move(session), error);
 }
 
 DatasetId StreamingSourceManager::startFromLayout(

@@ -140,6 +140,18 @@ class StreamingSourceManager : public QObject {
   // Test seam: runs one ingest tick for `dataset_id`. GUI thread only.
   void ingestTickForTests(DatasetId dataset_id);
 
+  // The interactive start of stream source `plugin_id` (display name), whatever the Stream combo
+  // shows: builds the session (createSession), configures it from the remembered settings and the
+  // plugin's dialog (its title prefixed by `dialog_title_prefix`, e.g. who asked), then launches
+  // it. The dialog is modal: this returns once the user has answered it. `still_allowed`, when
+  // given, is asked once the dialog is accepted: false abandons the start as a cancel does,
+  // applying none of the user's choices. Emits streamStarted() on success, setupError()/
+  // streamError() on a failure; nothing when the user cancels. A start that does not launch,
+  // a cancelled dialog included, leaves no dataset behind.
+  void startSession(
+      const QString& plugin_id, const QString& dialog_title_prefix = {},
+      const std::function<bool()>& still_allowed = {});
+
  public slots:
   // Wired from LeftPanel::streamingStartRequested. Starts a session for the
   // plugin currently held in selected_plugin_. There is no UI-driven stop —
@@ -188,8 +200,11 @@ class StreamingSourceManager : public QObject {
   // domain creation failed, etc.). No DatasetId is available yet.
   void setupError(QString message);
 
-  // Emitted on the UI thread for errors on an already-created session
-  // (dialog rejection, bind failure, plugin start/poll error). The session
+  // Emitted on the UI thread for a failure once the session's dataset exists:
+  // an interactive start that fails after its dialog opened (plugin contract
+  // violation, refused configuration, start() failure), or a launched session
+  // that fails while running (poll error). In the first case the dataset is
+  // already discarded and no streamStopped follows; in the second the session
   // typically stops shortly after via streamStopped().
   void streamError(DatasetId dataset_id, QString message);
 
@@ -212,11 +227,16 @@ class StreamingSourceManager : public QObject {
   // erasing the session.
   void rememberSkippedLazy(const StreamingSession& session);
 
-  // The interactive start: resolves the plugin by display name, builds the
-  // session (createSession), configures it from the remembered settings and the
-  // plugin's dialog, then launches it. Emits streamStarted() on success,
-  // setupError()/streamError() on a failure.
-  void startSession(const QString& plugin_id);
+  // What startSession does between createSession and the stream running:
+  // configures `session` from the remembered settings and the plugin's dialog
+  // (titled with `dialog_title_prefix`), asks `still_allowed` once the dialog is
+  // accepted, then launchSession()s it. Returns false when nothing launched, with
+  // `error` the failure to report (empty when the user cancelled the dialog or
+  // `still_allowed` refused). Owns no cleanup: the caller destroys `session` and
+  // discards its dataset.
+  [[nodiscard]] bool configureAndLaunch(
+      const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session,
+      const QString& dialog_title_prefix, const std::function<bool()>& still_allowed, QString& error);
 
   // The construction both starts share, up to and including bind(): handle,
   // time domain and dataset ("[stream] <label>", mirrored on the secondary

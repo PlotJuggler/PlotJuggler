@@ -178,6 +178,33 @@ if(NOT EMSCRIPTEN)
     )
 endif()
 
+# The agent tool layer (MIT, see CLAUDE.md): the tool registry and executors pj_app's MCP server
+# runs over a toolbox's host views. Its own Qt-free library, so a consumer (pj_app's unit tests)
+# links it without pj_runtime's closure. Desktop only, like the MCP server.
+if(NOT EMSCRIPTEN)
+    add_library(pj_agent_tools STATIC
+        src/agent_tools/derived_recipes.cpp
+        src/agent_tools/derived_tools.cpp
+        src/agent_tools/read_series.cpp
+        src/agent_tools/tool_registry.cpp
+        src/agent_tools/view_tools.cpp
+        src/agent_tools/tools_internal.hpp
+        include/pj_runtime/agent_tools/derived_recipes.hpp
+        include/pj_runtime/agent_tools/object_ops_catalog.hpp
+        include/pj_runtime/agent_tools/series_stats.hpp
+        include/pj_runtime/agent_tools/tool_context.hpp
+        include/pj_runtime/agent_tools/tool_registry.hpp
+    )
+    target_include_directories(pj_agent_tools PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_compile_options(pj_agent_tools PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(pj_agent_tools PUBLIC
+        plotjuggler_sdk::base
+        nlohmann_json::nlohmann_json
+    )
+endif()
+
 if(PJ_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
 
@@ -321,6 +348,19 @@ if(PJ_BUILD_TESTS)
             # The "pj.feature_catalog.v1" document composed from fakes. Desktop
             # only, like FeatureCatalogHost.
             tests/feature_catalog_host_test.cpp
+        )
+    endif()
+
+    # The agent tools against fake host views (tests/fake_*.hpp, recording_dp_host.hpp; MIT like
+    # the code they test). Qt-free, so a plain main.
+    if(TARGET pj_agent_tools)
+        pj_add_test_runner(pj_agent_tools_tests MAIN plain WARNINGS
+            SOURCES
+                tests/agent_tools_derived_recipes_test.cpp
+                tests/agent_tools_series_stats_test.cpp
+                tests/agent_tools_tool_registry_test.cpp
+            # plugin_sdk: the SDK's ToolboxTestStore (pj_plugins/testing) the read tools run against.
+            LIBS pj_agent_tools plotjuggler_sdk::plugin_sdk
         )
     endif()
 
@@ -497,6 +537,11 @@ if(PJ_BUILD_TESTS)
     target_compile_options(mock_data_source_malformed_version_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(mock_data_source_malformed_version_plugin PRIVATE plotjuggler_sdk::base)
 
+    add_library(mock_data_source_agent_id_plugin SHARED tests/mock_data_source_agent_id_plugin.cpp)
+    target_compile_features(mock_data_source_agent_id_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_agent_id_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_agent_id_plugin PRIVATE plotjuggler_sdk::base)
+
     add_library(mock_data_source_newer_sdk_plugin SHARED tests/mock_data_source_newer_sdk_plugin.cpp)
     target_compile_features(mock_data_source_newer_sdk_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_newer_sdk_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -526,6 +571,7 @@ if(PJ_BUILD_TESTS)
             PJ_MOCK_DATA_SOURCE_MALFORMED_FLOOR_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_floor_plugin>"
             PJ_MOCK_DATA_SOURCE_MALFORMED_VERSION_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_version_plugin>"
             PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_newer_sdk_plugin>"
+            PJ_MOCK_DATA_SOURCE_AGENT_ID_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_agent_id_plugin>"
             PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
             PJ_RUNTIME_WIDGET_PLUGIN_PATH="$<TARGET_FILE:runtime_widget_plugin>"
             PJ_RUNTIME_WIDGET_OTHER_QT_PLUGIN_PATH="$<TARGET_FILE:runtime_widget_other_qt_plugin>"
@@ -544,7 +590,7 @@ if(PJ_BUILD_TESTS)
         mock_data_source_plugin mock_data_source_v2_plugin
         mock_data_source_incompatible_plugin mock_data_source_incompatible_low_plugin
         mock_data_source_malformed_floor_plugin mock_data_source_malformed_version_plugin
-        mock_data_source_newer_sdk_plugin mock_toolbox_plugin
+        mock_data_source_newer_sdk_plugin mock_data_source_agent_id_plugin mock_toolbox_plugin
         runtime_widget_plugin runtime_widget_other_qt_plugin runtime_widget_other_compiler_plugin
     )
 endif()

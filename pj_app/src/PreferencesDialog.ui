@@ -489,7 +489,27 @@
            </property>
           </widget>
          </item>
-         <item row="11" column="0" colspan="2">
+         <item row="11" column="0">
+          <widget class="QLabel" name="labelMcpServer">
+           <property name="toolTip">
+            <string>Serve the Model Context Protocol on this computer only (127.0.0.1, behind a secret token), so AI agents such as Claude Code or Codex can open files, read series, and draw in their own tabs. The status bar names an agent while it is active. Shows whether outside agents may connect now (also when allowed with --mcp); on by default; applies on OK. An agent a toolbox plugin starts itself gets its own private access and does not need this.</string>
+           </property>
+           <property name="text">
+            <string>Let AI agents control PlotJuggler (MCP server):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="11" column="1">
+          <widget class="PJ::ToggleSwitch" name="mcpServerToggle" native="true">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+          </widget>
+         </item>
+         <item row="12" column="0" colspan="2">
           <spacer name="appearanceVerticalSpacer">
            <property name="orientation">
             <enum>Qt::Orientation::Vertical</enum>

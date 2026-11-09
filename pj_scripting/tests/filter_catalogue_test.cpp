@@ -45,6 +45,28 @@ TEST(FilterCatalogue, MakeProcessorBuildsALuaSisoTransform) {
   EXPECT_DOUBLE_EQ(std::get<double>(out->value()), -4.0);  // class "b" negates
 }
 
+TEST(FilterCatalogue, StandaloneClassScriptSelectsOneClassWithItsDefaults) {
+  FilterCatalogue cat(makeLuauEngine());
+  ASSERT_TRUE(cat.addBundledSource(
+                     R"LUAU(
+    local scale = { id="scale", name="Scale", parameters={ { name="k", default=3 } },
+      create=function(p) return { calculate=function(t,v) return v * p.k end } end }
+    local other = { id="other", name="Other", create=function(p) return { calculate=function(t,v) return 0 end } end }
+    return { other, scale }
+  )LUAU",
+                     "bundled")
+                  .has_value());
+  EXPECT_FALSE(cat.standaloneClassScript("missing").has_value());
+  const auto script = cat.standaloneClassScript("scale");
+  ASSERT_TRUE(script.has_value());
+  // Empty params: the class's own default (k = 3) applies.
+  auto p = cat.makeProcessorFromSource(*script, "scale", "{}");
+  ASSERT_TRUE(p.has_value()) << (p.has_value() ? "" : p.error());
+  auto out = (*p)->calculateNextPoint(PJ::proc::Sample::scalar(0, PJ::VarValue{2.0}));
+  ASSERT_TRUE(out.has_value());
+  EXPECT_DOUBLE_EQ(std::get<double>(out->value()), 6.0);
+}
+
 TEST(FilterCatalogue, UnknownIdIsAnError) {
   FilterCatalogue cat(makeLuauEngine());
   EXPECT_FALSE(cat.makeProcessor("nope", "{}").has_value());

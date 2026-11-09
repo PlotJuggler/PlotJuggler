@@ -156,6 +156,64 @@ class AppLanguageTest : public QObject {
     QCOMPARE(QCoreApplication::translate(context.constData(), source.constData()), QString::fromUtf8(source));
   }
 
+  void embeddedCatalogTranslatesMcpAndBrowserStatus_data() {
+    QTest::addColumn<QByteArray>("context");
+    QTest::addColumn<QByteArray>("source");
+    QTest::addColumn<QString>("expected");
+    QTest::newRow("mcp-browser-0")
+        << QByteArray("PJ::FileLoader")
+        << QByteArray(
+               "The browser can no longer read '%1': it changed or was removed on disk since it was opened. Data "
+               "loaded from it may be incomplete; open it again to reload it.")
+        << u"浏览器无法再读取“%1”：该文件自打开后已在磁盘上更改或移除。从中加载的数据可能不完整，请重新打开以重新加载。"_s;
+    QTest::newRow("mcp-browser-1")
+        << QByteArray("PJ::MainWindow")
+        << QByteArray(
+               "'%1' has no content fingerprint yet: it is still being computed, or the file changed since it was "
+               "picked. Save the layout again in a moment, or open the file again.")
+        << u"“%1”尚无内容指纹：仍在计算中，或文件自选取后发生了更改。请稍后再次保存布局，或重新打开文件。"_s;
+    QTest::newRow("mcp-browser-2")
+        << QByteArray("PJ::MainWindow")
+        << QByteArray("The MCP server could not listen on 127.0.0.1, so AI agents cannot reach PlotJuggler.")
+        << u"MCP 服务器无法监听 127.0.0.1，因此 AI 智能体无法连接 PlotJuggler。"_s;
+    QTest::newRow("mcp-browser-3") << QByteArray("PJ::MainWindow") << QByteArray("AI agent: %1") << u"AI 智能体：%1"_s;
+    QTest::newRow("mcp-browser-4")
+        << QByteArray("PJ::MainWindow")
+        << QByteArray("%1 is controlling PlotJuggler through MCP. Turn this off in Preferences → Appearance.")
+        << u"%1 正通过 MCP 控制 PlotJuggler。可在“首选项 → 外观”中关闭。"_s;
+    QTest::newRow("mcp-browser-5") << QByteArray("PJ::McpServer") << QByteArray("an MCP client")
+                                   << u"某个 MCP 客户端"_s;
+    QTest::newRow("mcp-browser-6") << QByteArray("PJ::McpServer") << QByteArray("AI agent (%1)")
+                                   << u"AI 智能体（%1）"_s;
+    QTest::newRow("mcp-browser-7") << QByteArray("PJ::McpServer") << QByteArray("An AI agent asked you to choose: ")
+                                   << u"AI 智能体请您选择："_s;
+    QTest::newRow("mcp-browser-8")
+        << QByteArray("PreferencesContent")
+        << QByteArray(
+               "Serve the Model Context Protocol on this computer only (127.0.0.1, behind a secret token), so AI "
+               "agents such as Claude Code or Codex can open files, read series, and draw in their own tabs. The "
+               "status bar names an agent while it is active. Shows whether outside agents may connect now (also when "
+               "allowed with --mcp); on by default; applies on OK. An agent a toolbox plugin starts itself gets its "
+               "own private access and does not need this.")
+        << u"仅在本机提供模型上下文协议服务（127.0.0.1，使用秘密令牌保护），让 Claude Code 或 Codex 等 AI 智能体能够打开文件、读取序列，并在各自的标签页中绘图。智能体活动时，状态栏会显示其名称。此开关显示当前是否允许外部智能体连接（包括通过 --mcp 允许的连接）；默认开启，点击“确定”后生效。工具箱插件自行启动的智能体拥有独立的私有访问权限，无需开启此项。"_s;
+    QTest::newRow("mcp-browser-9") << QByteArray("PreferencesContent")
+                                   << QByteArray("Let AI agents control PlotJuggler (MCP server):")
+                                   << u"允许 AI 智能体控制 PlotJuggler（MCP 服务器）："_s;
+  }
+
+  void embeddedCatalogTranslatesMcpAndBrowserStatus() {
+    QFETCH(QByteArray, context);
+    QFETCH(QByteArray, source);
+    QFETCH(QString, expected);
+    {
+      const PJ::AppLanguage chinese(*QCoreApplication::instance(), u"zh_CN"_s);
+      QVERIFY(chinese.catalogLoaded());
+      QCOMPARE(QCoreApplication::translate(context.constData(), source.constData()), expected);
+    }
+    const PJ::AppLanguage english(*QCoreApplication::instance(), u"en_US"_s);
+    QCOMPARE(QCoreApplication::translate(context.constData(), source.constData()), QString::fromUtf8(source));
+  }
+
   void englishUsesSourceTextAndDoesNotOverwriteThePreference() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

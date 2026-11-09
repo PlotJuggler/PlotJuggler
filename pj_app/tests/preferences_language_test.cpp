@@ -159,9 +159,13 @@ TEST(PreferencesLanguageTest, MinimumSizeKeepsTranslatedAppearanceControlsReacha
     auto* scroll = dialog.findChild<QScrollArea*>(u"appearanceScrollArea"_s);
     auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
     auto* notice = dialog.findChild<QLabel*>(u"labelLanguageRestart"_s);
-    auto* last_control = dialog.findChild<QWidget*>(u"systemFileDialogToggle"_s);
+    auto* last_control = dialog.findChild<QWidget*>(u"mcpServerToggle"_s);
     ASSERT_NE(last_control, nullptr);
-    // The system picker is offered only on supported platforms.
+    // Browser builds hide MCP; the system picker is also platform-dependent.
+    if (last_control->isHidden()) {
+      last_control = dialog.findChild<QWidget*>(u"systemFileDialogToggle"_s);
+    }
+    ASSERT_NE(last_control, nullptr);
     if (last_control->isHidden()) {
       last_control = dialog.findChild<QWidget*>(u"telemetryToggle"_s);
     }
