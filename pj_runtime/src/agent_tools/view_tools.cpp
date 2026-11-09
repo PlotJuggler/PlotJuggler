@@ -209,40 +209,44 @@ void listScalarTopics(
 }
 
 // Scalar-topic half of describe_topic, shared by the catalog-snapshot-v2 and
-// legacy-v1 paths (identical span shapes either way). A "dataset:" qualifier
-// narrows the search to that dataset and stays on the field paths, so
-// read_series takes them as they are.
+// legacy-v1 paths (identical span shapes either way). The topic resolves like a
+// read_series topic path, and the field paths carry its dataset when several are
+// loaded, so read_series takes them as they are.
 ToolResult describeScalarTopic(
     std::span<const PJ_topic_info_t> topics, std::span<const PJ_field_info_t> fields,
     std::span<const PJ_data_source_info_t> sources, const std::string& want) {
-  const QualifierMatch qm = matchDatasetQualifier(sources, topics.size(), want);
-  const std::string qualifier = want.substr(0, want.size() - qm.bare.size());
   const TopicDatasetMap topic_dataset = datasetByTopicIndex(sources);
-  for (std::uint32_t ti = qm.topic_lo; ti < qm.topic_hi; ++ti) {
-    const auto& topic = topics[ti];
-    if (std::string(PJ::sdk::toStringView(topic.name)) != qm.bare) {
-      continue;
-    }
-    json field_arr = json::array();
-    for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
-      const std::size_t idx = topic.first_field + fi;
-      if (idx >= fields.size()) {
-        break;
-      }
-      const std::string leaf(PJ::sdk::toStringView(fields[idx].name));
-      json entry = {
-          {"field", leaf},
-          {"path", qualifier + joinSeriesPath(qm.bare, leaf)},
-          {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}};
-      field_arr.push_back(entry);
-    }
-    json out = {{"topic", qm.bare}, {"kind", "scalar"}, {"fields", field_arr}};
-    if (auto it = topic_dataset.find(ti); it != topic_dataset.end()) {
-      out["dataset"] = it->second;
-    }
-    return ToolResult::success(out.dump());
+  const TopicLookup lookup = resolveTopicPath(topics, sources, want, topic_dataset);
+  if (lookup.ambiguous) {
+    SeriesLookup ambiguous;
+    ambiguous.ambiguous = true;
+    ambiguous.candidates = lookup.candidates;
+    return ToolResult::failure(seriesLookupError(want, ambiguous));
   }
-  return ToolResult::failure("no topic named '" + want + "' (use list_topics)");
+  if (!lookup.topic_index) {
+    return ToolResult::failure("no topic named '" + want + "' (use list_topics)");
+  }
+  const auto& topic = topics[*lookup.topic_index];
+  const std::string name(PJ::sdk::toStringView(topic.name));
+  const auto dataset_it = topic_dataset.find(*lookup.topic_index);
+  const std::string dataset = dataset_it == topic_dataset.end() ? std::string() : dataset_it->second;
+  json field_arr = json::array();
+  for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
+    const std::size_t idx = topic.first_field + fi;
+    if (idx >= fields.size()) {
+      break;
+    }
+    const std::string leaf(PJ::sdk::toStringView(fields[idx].name));
+    field_arr.push_back(
+        {{"field", leaf},
+         {"path", qualifyWithDataset(dataset, joinSeriesPath(name, leaf))},
+         {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}});
+  }
+  json out = {{"topic", name}, {"kind", "scalar"}, {"fields", field_arr}};
+  if (!dataset.empty()) {
+    out["dataset"] = dataset;
+  }
+  return ToolResult::success(out.dump());
 }
 
 // Object-topic half of describe_topic: the field table walked recursively

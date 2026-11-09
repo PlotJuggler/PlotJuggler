@@ -90,10 +90,6 @@ std::string qualifyWithDataset(const std::string& dataset, const std::string& na
   return dataset.empty() ? name : dataset + ":" + name;
 }
 
-QualifierMatch matchDatasetQualifier(const PJ::sdk::CatalogSnapshot& catalog, std::string_view series) {
-  return matchDatasetQualifier(catalog.dataSources(), catalog.topics().size(), series);
-}
-
 QualifierMatch matchDatasetQualifier(
     std::span<const PJ_data_source_info_t> sources, std::size_t topic_count, std::string_view series) {
   const auto topics_size = static_cast<std::uint32_t>(topic_count);
@@ -111,6 +107,53 @@ QualifierMatch matchDatasetQualifier(
   }
   if (qualifier_len != 0) {
     out.bare = std::string(series.substr(qualifier_len + 1));
+  }
+  return out;
+}
+
+// A topic path: the topic-only analogue of resolveSeriesPath's qualifier handling, tolerating a
+// leading '/' on either side (topic names carry one by host convention, a model may or may not
+// echo it back).
+TopicLookup resolveTopicPath(
+    std::span<const PJ_topic_info_t> topics, std::span<const PJ_data_source_info_t> sources, const std::string& series,
+    const TopicDatasetMap& topic_dataset) {
+  TopicLookup out;
+  const QualifierMatch qm = matchDatasetQualifier(sources, topics.size(), series);
+  std::string_view want = qm.bare;
+  while (!want.empty() && want.front() == '/') {
+    want.remove_prefix(1);
+  }
+  if (want.empty()) {
+    return out;
+  }
+
+  auto qualifiedName = [&](std::uint32_t ti, std::string_view name) {
+    const auto it = topic_dataset.find(ti);
+    return qualifyWithDataset(it == topic_dataset.end() ? std::string() : it->second, std::string(name));
+  };
+
+  for (std::uint32_t ti = qm.topic_lo; ti < qm.topic_hi; ++ti) {
+    std::string_view name = PJ::sdk::toStringView(topics[ti].name);
+    std::string_view bare_name = name;
+    while (!bare_name.empty() && bare_name.front() == '/') {
+      bare_name.remove_prefix(1);
+    }
+    if (bare_name != want) {
+      continue;
+    }
+    if (out.candidates.size() < kMaxCandidates) {
+      out.candidates.push_back(qualifiedName(ti, name));
+    }
+    if (!out.topic_index) {
+      out.topic_index = ti;
+    } else {
+      out.ambiguous = true;
+    }
+  }
+  if (out.ambiguous) {
+    out.topic_index.reset();
+  } else {
+    out.candidates.clear();
   }
   return out;
 }
@@ -218,7 +261,7 @@ SeriesLookup resolveSeriesPath(
   auto topics = catalog.topics();
   auto fields = catalog.fields();
 
-  const QualifierMatch qm = matchDatasetQualifier(catalog, series);
+  const QualifierMatch qm = matchDatasetQualifier(catalog.dataSources(), topics.size(), series);
   const std::string& bare = qm.bare;
 
   const auto want = pathSegments(bare);

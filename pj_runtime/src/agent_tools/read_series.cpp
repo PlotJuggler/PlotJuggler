@@ -453,70 +453,6 @@ bool isSignalField(PJ::PrimitiveType type, std::string_view field_name) {
   return field_name.rfind("header/", 0) != 0;
 }
 
-// Outcome of trying to resolve a read_series path as a bare TOPIC (no
-// field) -- used by expandRequestedPaths when a path fails to resolve as a
-// series. Exact match only: unlike a series path there is no abbreviated
-// form to fall back on, a topic is either named or it is not.
-struct TopicLookup {
-  std::optional<std::uint32_t> topic_index;  // into catalog.topics()
-  std::vector<std::string> candidates;       // qualified names, set only when ambiguous
-  bool ambiguous = false;
-};
-
-// Resolve one "topic" or "dataset:topic" path against the catalog: the
-// topic-only analogue of resolveSeriesPath's qualifier handling, with the
-// same dataset-qualifier rule (matched against the KNOWN source names,
-// longest match wins, rather than parsed at ':'). Tolerates a leading '/'
-// on either side, since topic names carry one by host convention but a
-// model may or may not echo it back. An unqualified name that exists in
-// several datasets is ambiguous, exactly like a series would be. Takes the
-// caller's own datasetByTopicIndex result so a call site working through
-// several topics builds it once rather than once per topic.
-TopicLookup resolveTopicPath(
-    const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset) {
-  TopicLookup out;
-  auto topics = catalog.topics();
-
-  const QualifierMatch qm = matchDatasetQualifier(catalog, series);
-  std::string_view want = qm.bare;
-  while (!want.empty() && want.front() == '/') {
-    want.remove_prefix(1);
-  }
-  if (want.empty()) {
-    return out;
-  }
-
-  auto qualifiedName = [&](std::uint32_t ti, std::string_view name) {
-    const auto it = topic_dataset.find(ti);
-    return qualifyWithDataset(it == topic_dataset.end() ? std::string() : it->second, std::string(name));
-  };
-
-  for (std::uint32_t ti = qm.topic_lo; ti < qm.topic_hi; ++ti) {
-    std::string_view name = PJ::sdk::toStringView(topics[ti].name);
-    std::string_view bare_name = name;
-    while (!bare_name.empty() && bare_name.front() == '/') {
-      bare_name.remove_prefix(1);
-    }
-    if (bare_name != want) {
-      continue;
-    }
-    if (out.candidates.size() < kMaxCandidates) {
-      out.candidates.push_back(qualifiedName(ti, name));
-    }
-    if (!out.topic_index) {
-      out.topic_index = ti;
-    } else {
-      out.ambiguous = true;
-    }
-  }
-  if (out.ambiguous) {
-    out.topic_index.reset();
-  } else {
-    out.candidates.clear();
-  }
-  return out;
-}
-
 // Every numeric field of one already-resolved topic, as read_series paths
 // in catalog order -- what a topic-only path expands to. Qualified with
 // "dataset:" using the same rule resolveSeriesPath's own qualifying does, so
@@ -626,7 +562,7 @@ json unreadDisclosure(
     auto it = by_topic.find(r.topic);
     if (it == by_topic.end()) {
       const std::string lookup_name = qualifyWithDataset(r.dataset, r.topic);
-      const TopicLookup topic = resolveTopicPath(catalog, lookup_name, topic_dataset);
+      const TopicLookup topic = resolveTopicPath(catalog.topics(), catalog.dataSources(), lookup_name, topic_dataset);
       if (!topic.topic_index) {
         continue;  // a series we just read always has an owning topic; defensive only
       }
@@ -763,7 +699,7 @@ std::vector<PathTask> expandRequestedPaths(
       continue;
     }
 
-    const TopicLookup topic = resolveTopicPath(catalog, want, topic_dataset);
+    const TopicLookup topic = resolveTopicPath(catalog.topics(), catalog.dataSources(), want, topic_dataset);
     if (topic.ambiguous) {
       SeriesLookup shim;
       shim.ambiguous = true;

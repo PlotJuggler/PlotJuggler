@@ -246,6 +246,16 @@ TEST(ToolRegistry, DescribeScalarTopicHonoursTheDatasetQualifier) {
     EXPECT_EQ(j["fields"][0]["path"], dataset + ":/imu/value");
   }
   EXPECT_FALSE(reg.execute("describe_topic", {{"topic", "run_monday.mcap:/speed"}}, ctx).ok);
+
+  // Resolved like read_series: a name on several datasets is refused with the qualified candidates, a unique one
+  // (leading '/' optional) answers with paths read_series takes as they are.
+  const auto ambiguous = reg.execute("describe_topic", {{"topic", "/imu"}}, ctx);
+  EXPECT_FALSE(ambiguous.ok);
+  EXPECT_NE(ambiguous.content.find("run_monday.mcap:/imu"), std::string::npos) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("run_friday.mcap:/imu"), std::string::npos) << ambiguous.content;
+  const auto unique = reg.execute("describe_topic", {{"topic", "speed"}}, ctx);
+  ASSERT_TRUE(unique.ok) << unique.content;
+  EXPECT_EQ(json::parse(unique.content)["fields"][0]["path"], "run_friday.mcap:/speed/value");
 }
 
 // describe_topic on an object topic walks its field table (PointCloud's own
