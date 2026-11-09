@@ -144,6 +144,8 @@ against `daily_plugin`. No identifier outlives the month it counts.
 Preferences → Appearance → **Anonymous usage statistics** (off = the ping is
 never sent) and **Anonymous feature usage** (off = nothing is counted or sent,
 and what was counted is deleted). Headless `--screenshot` runs send neither.
+Each switch's label links to its section of this page ("what is sent"), so
+keep the `#what-is-sent` and `#daily-usage-report` headings stable.
 
 The ping is suppressed outright for an unpackaged build, as above — which
 already covers every developer and CI launch of a build from this tree, and

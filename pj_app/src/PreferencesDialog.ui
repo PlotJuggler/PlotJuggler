@@ -432,7 +432,13 @@
             <string>On startup, send one anonymous ping to count daily users: a hashed machine id, OS name and version, CPU architecture, app version, and package type. Never any personal data, file names, paths, or usage behavior.</string>
            </property>
            <property name="text">
-            <string>Anonymous usage statistics:</string>
+            <string>Anonymous usage statistics (&lt;a href="https://github.com/PlotJuggler/PlotJuggler/blob/main/docs/TELEMETRY.md#what-is-sent"&gt;what is sent&lt;/a&gt;):</string>
+           </property>
+           <property name="textFormat">
+            <enum>Qt::TextFormat::RichText</enum>
+           </property>
+           <property name="openExternalLinks">
+            <bool>true</bool>
            </property>
           </widget>
          </item>
@@ -452,7 +458,13 @@
             <string>Once a day, send anonymous counters of which features and plugins were used: how often a plugin opened a file, streamed, decoded or created a panel, and which plugins are installed. Plugins that are not public are never named. Never any personal data, file names, paths, or topic names.</string>
            </property>
            <property name="text">
-            <string>Anonymous feature usage:</string>
+            <string>Anonymous feature usage (&lt;a href="https://github.com/PlotJuggler/PlotJuggler/blob/main/docs/TELEMETRY.md#daily-usage-report"&gt;what is sent&lt;/a&gt;):</string>
+           </property>
+           <property name="textFormat">
+            <enum>Qt::TextFormat::RichText</enum>
+           </property>
+           <property name="openExternalLinks">
+            <bool>true</bool>
            </property>
           </widget>
          </item>
