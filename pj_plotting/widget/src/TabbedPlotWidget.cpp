@@ -11,6 +11,7 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPointer>
 #include <QPushButton>
@@ -494,6 +495,42 @@ QWidget* TabbedPlotWidget::takeWidgetTab(QWidget* content) {
   return content;
 }
 
+PlotDocker* TabbedPlotWidget::duplicateTab(PlotDocker* source) {
+  const TabEntry* source_entry = findEntry(static_cast<QWidget*>(source));
+  if (source == nullptr || source_entry == nullptr) {
+    return nullptr;
+  }
+  QDomDocument doc;
+  QDomElement tab_element = source->xmlSaveState(doc);
+  // Empty ids make every restored docker, area and plot mint a fresh one.
+  for (const QString& attribute : {u"id"_s, u"history_exempt"_s, u"owner_plugin"_s, u"tab_id"_s}) {
+    tab_element.removeAttribute(attribute);
+  }
+  for (const QString& tag : {u"DockArea"_s, u"plot"_s}) {
+    const QDomNodeList nodes = tab_element.elementsByTagName(tag);
+    for (int index = 0; index < nodes.size(); ++index) {
+      nodes.at(index).toElement().removeAttribute(u"id"_s);
+    }
+  }
+  const auto source_index = static_cast<int>(source_entry - tabs_.data());
+  PlotDocker* copy = addTab(tr("%1 (copy)").arg(source->name()));
+  restoring_state_ = true;
+  const bool restored = copy->xmlLoadState(tab_element);
+  restoring_state_ = false;
+  if (!restored) {
+    closeTab(tabs_.back().frame, /*honor_veto=*/false);
+    return nullptr;
+  }
+  // addTab appended the copy; move it next to its source. The strip layout
+  // holds the tab frames at the same indexes as tabs_.
+  const int target_index = source_index + 1;
+  tabs_bar_layout_->removeWidget(tabs_.back().frame);
+  tabs_bar_layout_->insertWidget(target_index, tabs_.back().frame, 0, Qt::AlignVCenter);
+  std::rotate(tabs_.begin() + target_index, tabs_.end() - 1, tabs_.end());
+  emit undoableChange();
+  return copy;
+}
+
 void TabbedPlotWidget::closeTab(PlotDocker* docker) {
   if (docker == nullptr) {
     return;
@@ -573,6 +610,21 @@ void TabbedPlotWidget::onTabRenameRequested(PlotTabFrame* frame, const QString& 
 
 void TabbedPlotWidget::onTabCloseRequested(PlotTabFrame* frame) {
   closeTab(frame, /*honor_veto=*/true);
+}
+
+void TabbedPlotWidget::onTabContextMenuRequested(PlotTabFrame* frame, const QPoint& pos) {
+  const TabEntry* entry = findEntry(frame);
+  if (entry == nullptr || entry->docker == nullptr) {
+    return;  // widget tabs have no plot state to copy
+  }
+  QMenu menu(this);
+  QPointer<PlotDocker> docker(entry->docker);
+  connect(menu.addAction(tr("Duplicate tab")), &QAction::triggered, this, [this, docker]() {
+    if (docker != nullptr) {
+      duplicateTab(docker);
+    }
+  });
+  menu.exec(frame->mapToGlobal(pos));
 }
 
 void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {
@@ -727,7 +779,12 @@ void TabbedPlotWidget::selectEntry(const TabEntry& entry) {
 PlotDocker* TabbedPlotWidget::createDocker(const QString& tab_name) {
   auto* docker = new PlotDocker(tab_name, session_, catalog_, this);
   docker->setObjectWidgetFactory(object_widget_factory_);
-  connect(docker, &PlotDocker::undoableChange, this, &TabbedPlotWidget::undoableChange);
+  // A restore splits docks as it rebuilds a tab; those intermediate states are not undo steps.
+  connect(docker, &PlotDocker::undoableChange, this, [this]() {
+    if (!restoring_state_) {
+      emit undoableChange();
+    }
+  });
   return docker;
 }
 
@@ -745,6 +802,10 @@ PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name) {
     onTabRenameRequested(frame, new_name);
   });
   connect(frame, &PlotTabFrame::closeRequested, this, [this, frame]() { onTabCloseRequested(frame); });
+  frame->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(frame, &QWidget::customContextMenuRequested, this, [this, frame](const QPoint& pos) {
+    onTabContextMenuRequested(frame, pos);
+  });
   return frame;
 }
 
