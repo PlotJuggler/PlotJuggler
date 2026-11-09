@@ -32,7 +32,7 @@ credential and publish its saved artifacts without rebuilding:
 
 ```bash
 gh workflow run conda-release.yml --repo PlotJuggler/PlotJuggler \
-  --ref main-4.x -f publish_run_id=<tag-run-id>
+  --ref main -f publish_run_id=<tag-run-id>
 ```
 
 The retry checks that the saved run belongs to this workflow and still matches

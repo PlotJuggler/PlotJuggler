@@ -8,7 +8,7 @@ name: Pixi CI
 
 on:
   pull_request:
-    branches: [main, main-4.x, development, 'release-*']
+    branches: [main, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
     # Path-filtered to the pixi packaging inputs: the Conan workflows already
     # compile and test every C++ change on the PR. A pixi-only breakage from a

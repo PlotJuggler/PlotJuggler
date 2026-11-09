@@ -2,7 +2,7 @@ name: Windows CI
 
 on:
   pull_request:
-    branches: [main, main-4.x, development, 'release-*']
+    branches: [main, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
     # Nothing here builds or tests these.
     paths-ignore:
@@ -10,7 +10,7 @@ on:
       - '**/*.md'
       - 'packaging/**'
   push:
-    branches: [main, main-4.x, development, 'release-*']
+    branches: [main, development, 'release-*']
   workflow_dispatch:
 
 concurrency:

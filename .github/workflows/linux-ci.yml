@@ -2,7 +2,7 @@ name: Linux CI
 
 on:
   pull_request:
-    branches: [main, main-4.x, development, 'release-*']
+    branches: [main, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
     # Skip pull requests that only touch files nothing here builds or tests;
     # pre-commit.yml still lints them. packaging/smoke/ is scene3d_rhi_app_smoke's
@@ -14,7 +14,7 @@ on:
       - '!packaging/**'
       - 'packaging/smoke/**'
   push:
-    branches: [main, main-4.x, development, 'release-*']
+    branches: [main, development, 'release-*']
   workflow_dispatch:
 
 concurrency:

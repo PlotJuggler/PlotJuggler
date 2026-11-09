@@ -4,10 +4,10 @@ name: Pre-commit
 # which still need linting.
 on:
   pull_request:
-    branches: [main, main-4.x, development, 'release-*']
+    branches: [main, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [main, main-4.x, development, 'release-*']
+    branches: [main, development, 'release-*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
