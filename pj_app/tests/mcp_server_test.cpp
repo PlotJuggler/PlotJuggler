@@ -637,9 +637,7 @@ TEST_F(McpServerTest, ExportNpyIsANumpyStructuredArray) {
   EXPECT_TRUE(refused_error) << refused;
 
   // A path in a folder that does not exist yet creates the folder.
-  const QTemporaryDir dir;
-  ASSERT_TRUE(dir.isValid());
-  const QString target = dir.filePath(u"new/folder/out.npy"_s);
+  const QString target = data_.filePath(u"new/folder/out.npy"_s);
   const auto [text, error] = result(
       call("export_series", {{"paths", {"mock/file_data/value"}}, {"format", "npy"}, {"path", target.toStdString()}}));
   ASSERT_FALSE(error) << text;
@@ -662,6 +660,28 @@ TEST_F(McpServerTest, ExportNpyIsANumpyStructuredArray) {
   std::array<double, 2> first{};
   std::memcpy(first.data(), bytes.constData() + 12 + header_size, sizeof first);
   EXPECT_EQ(first[1], 10.0);  // the mock's first sample
+}
+
+// A computed NaN (sign bit set on x86, which MSVC's to_chars spells "-nan(ind)") exports as plain "nan", which every
+// CSV reader parses.
+TEST_F(McpServerTest, ExportWritesANaNAsNan) {
+  ASSERT_NE(loadMock(), 0);
+  const auto [added, add_error] = result(call(
+      "create_derived_series",
+      {{"name", "undefined"}, {"inputs", {"mock/file_data/value"}}, {"expression", "(value - value) / 0"}}));
+  ASSERT_FALSE(add_error) << added;
+  const std::string series = json::parse(added, nullptr, false).value("series", "");
+  ASSERT_FALSE(series.empty()) << added;
+  const auto [text, error] = result(call("export_series", {{"paths", {series}}}));
+  ASSERT_FALSE(error) << text;
+  QFile csv(QString::fromStdString(json::parse(text, nullptr, false).value("path", "")));
+  ASSERT_TRUE(csv.open(QIODevice::ReadOnly));
+  const QList<QByteArray> lines = csv.readAll().trimmed().split('\n');
+  csv.remove();
+  ASSERT_GT(lines.size(), 1);
+  for (qsizetype i = 1; i < lines.size(); ++i) {
+    EXPECT_EQ(lines[i].split(',').value(1).toStdString(), "nan") << lines[i].toStdString();
+  }
 }
 
 // The CSV holds every value exactly and in the C locale: a value needing more than ten significant digits reads back

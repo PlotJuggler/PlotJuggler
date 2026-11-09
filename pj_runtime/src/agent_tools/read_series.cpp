@@ -1095,7 +1095,7 @@ SeriesRead readOneWindowed(
     return r;
   }
   if (runs.samples() == 0) {
-    r.error = "series '" + want + "' is not a numeric time series";
+    r.error = "series '" + want + "' has no numeric samples";
     return r;
   }
   r.flat = runs.summary();

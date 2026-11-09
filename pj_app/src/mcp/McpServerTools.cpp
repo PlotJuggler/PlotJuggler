@@ -546,9 +546,12 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
       merged.clear();
       merged.reserve(stamps_grid.size() + static_cast<std::size_t>(last - first));
       std::set_union(stamps_grid.begin(), stamps_grid.end(), first, last, std::back_inserter(merged));
+      merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
       stamps_grid.swap(merged);
+      if (stamps_grid.size() > kMaxExportRows) {
+        break;  // the grid only grows: refused below, without merging the rest
+      }
     }
-    stamps_grid.erase(std::unique(stamps_grid.begin(), stamps_grid.end()), stamps_grid.end());
     rows = stamps_grid.size();
   }
   if (rows > kMaxExportRows) {
@@ -566,12 +569,13 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     if (temp->open()) {
       file = std::move(temp);
     }
-  } else if (
-      auto named = std::make_unique<QFile>(requested_path);
-      // An agent names a fresh folder as often as not: a missing one cost a failed call and a retry.
-      QDir().mkpath(QFileInfo(requested_path).absolutePath()) &&
-      named->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-    file = std::move(named);
+  } else {
+    // An agent often names a folder that does not exist yet.
+    QDir().mkpath(QFileInfo(requested_path).absolutePath());
+    auto named = std::make_unique<QFile>(requested_path);
+    if (named->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+      file = std::move(named);
+    }
   }
   if (file == nullptr) {
     reply(fail("cannot create " + (requested_path.isEmpty() ? QDir::tempPath() : requested_path).toStdString()));
@@ -596,16 +600,18 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
   // decimal comma would split a column). std::to_chars is ~2.5x faster than QByteArray::number, but Apple's libc++ has
   // its floating-point overloads only from macOS 13.3, above Qt's 13.0 floor, and does not advertise them.
   std::array<char, 32> digits{};
+  const auto append_value = [&](double value) {
+    if (std::isnan(value)) {
+      out += "nan";  // one spelling: to_chars writes a computed NaN as "-nan", or "-nan(ind)" with MSVC
+      return;
+    }
 #if defined(__cpp_lib_to_chars)
-  const auto append_value = [&out, &digits](double value) {
     out.append(digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), value).ptr);
-  };
 #else
-  const auto append_value = [&out](double value) {
     const QByteArray text = QByteArray::number(value, 'g', QLocale::FloatingPointShortest);
     out.append(text.constData(), static_cast<std::size_t>(text.size()));
-  };
 #endif
+  };
   // The time column: exact display seconds, to the nanosecond.
   const auto append_time = [&out, &digits](int64_t ns) {
     const uint64_t magnitude = ns < 0 ? 0 - static_cast<uint64_t>(ns) : static_cast<uint64_t>(ns);
