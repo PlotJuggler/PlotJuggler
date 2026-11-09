@@ -97,6 +97,7 @@ void TopicDemandController::registerPlot(PlotWidget* plot) {
       tracker_.removeReference(dataset_id, topic_name);
     }
     plot_topics_.erase(it);
+    emit displayedSeriesChanged();
   });
   syncPlot(plot);  // covers curves already present (e.g. restored before this call)
 }
@@ -123,6 +124,7 @@ void TopicDemandController::syncPlot(PlotWidget* plot) {
   }
   reportVisibleStart(plot, current);
   applyTopicDelta(std::move(current), plot_topics_[plot]);
+  emit displayedSeriesChanged();
 }
 
 void TopicDemandController::reportVisibleStart(
@@ -172,7 +174,9 @@ void TopicDemandController::registerSceneDock(SceneDockWidget* dock) {
     return;  // idempotent, mirroring registerPlot
   }
   scene_layer_topics_.emplace(dock, decltype(scene_layer_topics_)::mapped_type{});
+  connect(dock, &SceneDockWidget::configTopicsChanged, this, &TopicDemandController::displayedSeriesChanged);
   connect(dock, &SceneDockWidget::layerAdded, this, [this, dock](ObjectTopicId topic_id) {
+    emit displayedSeriesChanged();
     const auto resolved = resolveObjectTopic(topic_id);
     if (!resolved.has_value()) {
       return;
@@ -181,6 +185,7 @@ void TopicDemandController::registerSceneDock(SceneDockWidget* dock) {
     scene_layer_topics_[dock][topic_id.id] = *resolved;
   });
   connect(dock, &SceneDockWidget::layerRemoved, this, [this, dock](ObjectTopicId topic_id) {
+    emit displayedSeriesChanged();
     auto dock_it = scene_layer_topics_.find(dock);
     if (dock_it == scene_layer_topics_.end()) {
       return;
@@ -202,6 +207,7 @@ void TopicDemandController::registerSceneDock(SceneDockWidget* dock) {
       tracker_.removeReference(topic.first, topic.second);
     }
     scene_layer_topics_.erase(dock_it);
+    emit displayedSeriesChanged();
   });
 }
 
@@ -222,6 +228,7 @@ void TopicDemandController::registerStateTransitionsDock(StateTransitionsDockWid
       tracker_.removeReference(dataset_id, topic_name);
     }
     state_dock_topics_.erase(it);
+    emit displayedSeriesChanged();
   });
   syncStateTransitionsDock(dock);  // covers rows restored before this call
 }
@@ -234,6 +241,7 @@ void TopicDemandController::syncStateTransitionsDock(StateTransitionsDockWidget*
     current.emplace_back(dataset_id, topic_name);
   }
   applyTopicDelta(std::move(current), state_dock_topics_[dock]);
+  emit displayedSeriesChanged();
 }
 
 void TopicDemandController::registerCustomWidgetDock(CustomWidgetDockWidget* dock) {
@@ -251,12 +259,93 @@ void TopicDemandController::registerCustomWidgetDock(CustomWidgetDockWidget* doc
       tracker_.removeReference(dataset_id, topic_name);
     }
     custom_dock_topics_.erase(it);
+    emit displayedSeriesChanged();
   });
   syncCustomWidgetDock(dock);  // covers wires restored before this call
 }
 
 void TopicDemandController::syncCustomWidgetDock(CustomWidgetDockWidget* dock) {
   applyTopicDelta(dock->displayedTopics(), custom_dock_topics_[dock]);
+  emit displayedSeriesChanged();
+}
+
+QSet<QString> TopicDemandController::displayedKeys(const QWidget* root) const {
+  QSet<QString> keys;
+  if (root == nullptr) {
+    return keys;
+  }
+  const auto include = [root](const QWidget* widget) { return root->isAncestorOf(widget); };
+  const auto add_object_topic = [this, &keys](DatasetId dataset, ObjectTopicId topic_id) {
+    if (const auto key = catalog_.objectTopicKey(dataset, topic_id); key.has_value()) {
+      keys.insert(*key);
+    }
+  };
+  for (const auto& [plot, topics] : plot_topics_) {
+    if (!include(plot)) {
+      continue;
+    }
+    for (const auto& info : plot->curveList()) {
+      const auto* xy_series = info.curve != nullptr ? dynamic_cast<const PointSeriesXY*>(info.curve->data()) : nullptr;
+      if (xy_series != nullptr) {
+        keys.insert(xy_series->xSource().name);
+        keys.insert(xy_series->ySource().name);
+      } else {
+        keys.insert(info.source_name);
+      }
+    }
+  }
+  for (const auto& [dock, topics] : scene_layer_topics_) {
+    if (!include(dock)) {
+      continue;
+    }
+    // The dataset recorded when the layer was added is a fast first guess; a merge re-keys the topic under the
+    // anchor without touching the layer, and a config topic (TF) has no layer, so a miss asks the catalog by id.
+    const std::optional<DatasetId> any_dataset =
+        topics.empty() ? std::nullopt : std::optional<DatasetId>(topics.begin()->second.first);
+    const auto add_scene_topic = [&](ObjectTopicId topic_id) {
+      const auto recorded = topics.find(topic_id.id);
+      const std::optional<DatasetId> dataset = recorded != topics.end() ? recorded->second.first : any_dataset;
+      if (dataset.has_value()) {
+        if (const auto key = catalog_.objectTopicKey(*dataset, topic_id); key.has_value()) {
+          keys.insert(*key);
+          return;
+        }
+      }
+      if (const auto item = catalog_.objectTopicItem(topic_id); item.has_value()) {
+        keys.insert(item->key);
+      }
+    };
+    for (const SceneLayerInfo& layer : dock->layers()) {
+      add_scene_topic(layer.topic_id);
+    }
+    for (const SceneLayerInfo& config_topic : dock->configTopics()) {
+      add_scene_topic(config_topic.topic_id);
+    }
+  }
+  for (const auto& [dock, topics] : state_dock_topics_) {
+    if (!include(dock)) {
+      continue;
+    }
+    for (const QString& key : dock->controller()->currentSeriesKeys()) {
+      keys.insert(key);
+    }
+  }
+  for (const auto& [dock, topics] : custom_dock_topics_) {
+    if (!include(dock)) {
+      continue;
+    }
+    for (const WidgetWire& wire : dock->bindings()) {
+      if (!wire.resolved) {
+        continue;
+      }
+      if (wire.kind == WidgetInputKind::kObject) {
+        add_object_topic(wire.dataset, wire.target.object_topic);
+      } else {
+        keys.insert(wire.key);
+      }
+    }
+  }
+  return keys;
 }
 
 void TopicDemandController::handlePlaceholderPlotDrop(
@@ -282,6 +371,7 @@ void TopicDemandController::onCatalogItemsAdded(const std::vector<CatalogItem>& 
   // then census the freshly-advertised scalar placeholders.
   releaseCompletedPreviews(items);
   runCensus(items);
+  emit displayedSeriesChanged();
 }
 
 void TopicDemandController::releaseCompletedPreviews(const std::vector<CatalogItem>& items) {

@@ -33,8 +33,11 @@
 #include <string>
 #include <vector>
 
+#include "PendingDisplayBinder.h"
+#include "TopicDemandController.h"
 #include "dataset_test_helpers.h"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
@@ -412,6 +415,67 @@ TEST(CurveListPanelTest, UnsubscribedRowsFollowTheDemandTracker) {
   panel.setTopicDemandTracker(nullptr);
   EXPECT_FALSE(tree->isKeyUnsubscribed(key_a)) << "a detached tracker clears every flag";
   EXPECT_FALSE(tree->isKeyUnsubscribed(key_b));
+}
+
+// A row is marked displayed while a plot inside the panel's scope shows it, and the mark follows the scope (the
+// shell's selected dock), the Custom Topics view and the plot's lifetime.
+TEST(CurveListPanelTest, DisplayedRowsFollowTheWidgetsInScope) {
+  AppSession app_session;
+  SessionManager& session = app_session.sessionManager();
+  CatalogModel& catalog = app_session.catalogModel();
+  const DatasetId dataset = pj_test::createDataset(app_session, "file.mcap");
+  ASSERT_NE(pj_test::addScalarTopic(app_session, dataset, "/speed"), 0U);
+  QString key;
+  for (const CatalogItem& item : catalog.items()) {
+    if (item.topic_name == u"/speed"_s && isScalarField(item)) {
+      key = item.key;
+    }
+  }
+  ASSERT_FALSE(key.isEmpty());
+
+  PendingDisplayBinder binder(catalog, &app_session.topicDemandTracker());
+  TopicDemandController controller(
+      catalog, app_session.topicDemandTracker(), session.dataProcessorService(), binder, session.dataEngine());
+  QWidget selected_a;
+  QWidget selected_b;
+  auto* plot = new PlotWidget(&session, &catalog, &selected_a);
+  controller.registerPlot(plot);
+
+  CurveListPanel panel;
+  panel.setCatalog(&catalog);
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  const QWidget* selected = &selected_a;
+  panel.setTopicDemandController(&controller);
+  panel.setDisplayedScope([&selected]() { return selected; });
+  const auto marked = [&]() {
+    QCoreApplication::processEvents();  // the refresh runs on the next event-loop turn
+    return CurveTreeView::isMarkedDisplayed(findRowByCatalogKey(tree->invisibleRootItem(), key));
+  };
+
+  EXPECT_FALSE(marked());
+  ASSERT_NE(plot->addCurve(key), nullptr);
+  EXPECT_TRUE(marked());
+
+  selected = &selected_b;
+  panel.scheduleDisplayedKeysRefresh();
+  EXPECT_FALSE(marked()) << "a plot outside the scope marks nothing";
+  selected = &selected_a;
+  panel.scheduleDisplayedKeysRefresh();
+  EXPECT_TRUE(marked());
+
+  // A series listed under Custom Topics leaves the Datasets tree; its row there carries the mark instead.
+  auto* custom = panel.findChild<CurveTreeView*>(u"customView"_s);
+  ASSERT_NE(custom, nullptr);
+  panel.setCustomTopics({{.key = key, .owner = {}, .name = u"speed"_s}});
+  QCoreApplication::processEvents();
+  ASSERT_EQ(findRowByCatalogKey(tree->invisibleRootItem(), key), nullptr);
+  EXPECT_TRUE(CurveTreeView::isMarkedDisplayed(findRowByCatalogKey(custom->invisibleRootItem(), key)));
+
+  delete plot;
+  QCoreApplication::processEvents();
+  EXPECT_FALSE(CurveTreeView::isMarkedDisplayed(findRowByCatalogKey(custom->invisibleRootItem(), key)))
+      << "a destroyed plot releases its mark";
 }
 
 // A demand change walks the catalog only while some dataset can pause topics, and it reads that capability at every

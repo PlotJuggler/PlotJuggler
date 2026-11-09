@@ -235,6 +235,14 @@ class CurveTreeView : public QTreeWidget {
   // mark right now.
   [[nodiscard]] bool isTopicPathForced(const QString& topic_path);
 
+  // Full-set replace of the catalog keys some widget of interest displays (the host
+  // decides which widgets count). Their names paint semi-bold italic, and so does every group
+  // above them, so a collapsed group shows that it holds a displayed series.
+  // The set is retained and re-applied across rebuilds.
+  void setDisplayedKeys(const QSet<QString>& keys);
+  // Whether `item` carries the displayed mark: its own key is displayed, or a row below it is.
+  [[nodiscard]] static bool isMarkedDisplayed(const QTreeWidgetItem* item);
+
   // State of a derived (on-demand) topic's row: a display-only mirror of the host's
   // node state. `kIdle` and `kReady` paint no glyph.
   enum class DerivedGlyphState { kIdle, kPending, kReady, kMissingInput, kError };
@@ -485,6 +493,8 @@ class CurveTreeView : public QTreeWidget {
   QTreeWidgetItem* findTopicNode(const QString& topic_path);
   // Re-stamps kForcedRole from forced_topic_paths_ (clear-all then set).
   void applyForcedTopicMarks();
+  // Re-stamps the displayed mark from displayed_keys_ on every row.
+  void applyDisplayedMarks();
   // Re-stamps the derived-glyph role + tooltip from derived_topic_glyphs_
   // (clear-all then set), mirroring applyForcedTopicMarks.
   void applyDerivedTopicGlyphs();
@@ -650,6 +660,9 @@ class CurveTreeView : public QTreeWidget {
   // Topics currently marked as force-streamed (see setForcedTopicPaths);
   // retained so rebuilds re-stamp the marks.
   QSet<QString> forced_topic_paths_;
+  // Keys currently marked as displayed (see setDisplayedKeys); retained so
+  // rebuilds re-stamp the marks.
+  QSet<QString> displayed_keys_;
   // Derived-topic glyphs currently set (see setDerivedTopicGlyphs); retained so
   // rebuilds re-stamp them.
   QHash<QString, DerivedGlyph> derived_topic_glyphs_;

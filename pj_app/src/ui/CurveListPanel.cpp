@@ -599,7 +599,42 @@ void CurveListPanel::setTopicDemandTracker(TopicDemandTracker* tracker) {
 }
 
 void CurveListPanel::setTopicDemandController(TopicDemandController* controller) {
+  if (controller_ == controller) {
+    return;
+  }
+  if (controller_ != nullptr) {
+    disconnect(controller_, nullptr, this, nullptr);
+  }
   controller_ = controller;
+  if (controller_ != nullptr) {
+    connect(
+        controller_, &TopicDemandController::displayedSeriesChanged, this,
+        &CurveListPanel::scheduleDisplayedKeysRefresh);
+  }
+  scheduleDisplayedKeysRefresh();
+}
+
+void CurveListPanel::setDisplayedScope(std::function<const QWidget*()> scope) {
+  displayed_scope_ = std::move(scope);
+  scheduleDisplayedKeysRefresh();
+}
+
+void CurveListPanel::scheduleDisplayedKeysRefresh() {
+  if (displayed_refresh_scheduled_) {
+    return;
+  }
+  displayed_refresh_scheduled_ = true;
+  QTimer::singleShot(0, this, [this]() {
+    displayed_refresh_scheduled_ = false;
+    refreshDisplayedKeys();
+  });
+}
+
+void CurveListPanel::refreshDisplayedKeys() {
+  const QSet<QString> keys =
+      controller_ != nullptr && displayed_scope_ ? controller_->displayedKeys(displayed_scope_()) : QSet<QString>{};
+  tree_view_->setDisplayedKeys(keys);
+  custom_view_->setDisplayedKeys(keys);
 }
 
 void CurveListPanel::onPlaceholderPeekRequested(const QString& catalog_key) {

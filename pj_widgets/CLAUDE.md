@@ -69,7 +69,7 @@ Views and tables:
 
 | Header | What it is, and the one thing to know |
 |---|---|
-| `CurveTreeView.h` | Curve-catalog tree with caller-driven decorations (demand states, load progress with keep/discard stop affordances, drag opt-out, derived-topic glyphs). The header owns every contract. |
+| `CurveTreeView.h` | Curve-catalog tree with caller-driven decorations (demand states, load progress with keep/discard stop affordances, drag opt-out, derived-topic glyphs, displayed-series marks on rows and their groups). The header owns every contract. |
 | `HeaderResizePolicy.h`, `HeaderDividerHighlight.h` | Splitter-style header resizing and its divider highlight; install once per header, owned by it. |
 | `Scrollbar.h` | Fading pill scrollbar; `attachPillScrollbars` (reserved gutter) is the app-wide default, `kOverlayViewport` only for hosts owning a content-free viewport strip. |
 | `Timeline.h` | Multi-track Source Timeline: `TimelineScene` (Qt-free math) + `Timeline` (view). Runtime-agnostic: the host (`SourceTimelineController` in `pj_app`) converts. |

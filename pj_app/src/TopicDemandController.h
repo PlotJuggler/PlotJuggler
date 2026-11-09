@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <deque>
 #include <functional>
@@ -20,6 +21,7 @@
 #include "pj_runtime/Time.h"
 
 class QTimer;
+class QWidget;
 
 namespace PJ {
 
@@ -42,6 +44,10 @@ class TopicDemandTracker;
 // registerPlot()/registerSceneDock() at creation time (see makeSceneDock /
 // onPlotAdded); every reference this controller adds for a widget is released
 // automatically when that widget is destroyed.
+//
+// Because every widget that shows series registers here, the controller is also
+// the registry the curve list asks which catalog keys are displayed
+// (displayedKeys / displayedSeriesChanged).
 //
 // Threading: GUI-thread only (same as TopicDemandTracker and CatalogModel).
 class TopicDemandController : public QObject {
@@ -115,9 +121,20 @@ class TopicDemandController : public QObject {
   // memory, so a manual peek can always retry a topic the census skipped.
   void requestFieldPreview(DatasetId dataset_id, const QString& topic_name);
 
+  /// Catalog keys of everything displayed by the registered widgets inside `root` (none when null): plot curves
+  /// (both sources of an XY curve), scene layers and config topics, state-transitions rows and
+  /// resolved Custom Widget wires. Pending items (placeholder drops, unresolved wires) are not included. Read from the
+  /// widgets now, so it is only as fresh as the last displayedSeriesChanged().
+  [[nodiscard]] QSet<QString> displayedKeys(const QWidget* root) const;
+
   // Test seam: shortens the preview timeout so a timeout-release test need not
   // wait the production ~4 s. Applies to previews started after the call.
   void setPreviewTimeoutMsForTest(int timeout_ms);
+
+ signals:
+  /// What displayedKeys() returns may have changed: a registered widget gained or lost a series or
+  /// was destroyed, or the catalog listed new items (an object layer can exist before its key).
+  void displayedSeriesChanged();
 
  private:
   // Rebuilds `plot`'s current topic multiset and diffs it against
