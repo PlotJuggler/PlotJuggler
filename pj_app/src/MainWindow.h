@@ -127,6 +127,7 @@ class WelcomePresetsDialog;
 class RegistryManager;
 class FeatureCatalogHost;
 class TelemetryPing;
+class UsageReporter;
 class CoalescingTrigger;
 
 // Persisted as int under QSettings "MainWindow.legendStatus": the values are fixed.
@@ -269,6 +270,14 @@ class MainWindow : public QMainWindow {
   // is the caller's.
   void sendTelemetryPing(const QString& installation);
 
+#ifndef PJ_TARGET_WASM
+  // Starts the anonymous daily usage report (docs/TELEMETRY.md): enables usageCounters() on its storage file, keeps
+  // today's installed-plugin inventory current, flushes periodically and on destruction, and uploads the finished
+  // days once the public registry is known (its ids, with the shipped ones, are the plugins a report may name; a
+  // failed registry fetch sends nothing and keeps the days). The consent and automation gates are the caller's.
+  void startUsageReporting(const QString& installation);
+#endif
+
   // The PJ_INSTALLATION build stamp: decides where checkForUpdates() looks and how the toast offers an update.
   void setInstallation(const QString& installation);
 
@@ -310,6 +319,10 @@ class MainWindow : public QMainWindow {
 
   // Preferences key (bool): the platform's file picker (FileDialog::setUseSystemDialog).
   static constexpr QLatin1StringView kSystemFileDialogKey{"Preferences::system_file_dialog"};
+
+  // Preferences key (bool, default on): the anonymous daily usage report. Turning it off deletes what was counted at
+  // once; turning it on applies from the next launch.
+  static constexpr QLatin1StringView kUsageStatsKey{"Preferences::send_usage_stats"};
 
   // Preferences key (bool): wall-clock time labels in UTC instead of the system time zone.
   static constexpr QLatin1StringView kClockUtcKey{"Preferences::clock_utc"};
@@ -1260,6 +1273,13 @@ class MainWindow : public QMainWindow {
   UpdateChecker* update_checker_ = nullptr;
   QString installation_;
   TelemetryPing* telemetry_ping_ = nullptr;
+#ifndef PJ_TARGET_WASM
+  // The daily usage report (startUsageReporting): the uploader, the public-registry fetch that tells it which plugin
+  // ids it may name, and the periodic flush of the counters.
+  UsageReporter* usage_reporter_ = nullptr;
+  RegistryManager* usage_registry_ = nullptr;
+  QTimer* usage_flush_timer_ = nullptr;
+#endif
   // Rebound on each checkForUpdates(), so each check carries its own interactivity.
   QMetaObject::Connection update_available_conn_;
   QMetaObject::Connection up_to_date_conn_;

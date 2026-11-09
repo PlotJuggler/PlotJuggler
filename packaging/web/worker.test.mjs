@@ -178,6 +178,19 @@ test('installed releases keep reporting: /telemetry goes to the telemetry worker
   assert.equal(await forwarded[0].text(), '{"user_id":"u"}');
 });
 
+test('daily usage reports under /telemetry/ go to the telemetry worker; a lookalike prefix does not', async () => {
+  const { env, forwarded } = environment();
+  const response = await get(env, '/telemetry/v2/usage', {
+    method: 'POST', body: '{"schema":2}', headers: { 'Content-Type': 'application/json' },
+  });
+  assert.equal(response.status, 202);
+  assert.equal(forwarded.length, 1);
+  assert.equal(new URL(forwarded[0].url).pathname, '/telemetry/v2/usage');
+  assert.equal(await forwarded[0].text(), '{"schema":2}');
+  assert.notEqual((await get(env, '/telemetryx')).status, 202);
+  assert.equal(forwarded.length, 1);
+});
+
 test('the stats host is the telemetry worker, every path', async () => {
   const { env, forwarded } = environment();
   for (const path of ['/', '/api', '/analytics/daily-users?days=7']) {

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <initializer_list>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -274,6 +275,43 @@ TEST_F(ExtensionCatalogSeedTest, ConstructorStaticPluginsRegisterAndShadowSameId
     mock_count += plugin.id == kMockId ? 1 : 0;
   }
   EXPECT_EQ(mock_count, 1);
+}
+
+// The usage report may name a plugin only when it is public. A bundled one is, and lands in the installed inventory
+// with its kind and version.
+TEST_F(ExtensionCatalogSeedTest, BundledPluginIsShippedAndInventoried) {
+  placePlugin(bundled_.path(), PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
+  const auto service = makeDefaultModeService();
+
+  EXPECT_EQ(service->shippedPluginIds(), std::set<std::string>{kMockId});
+  const std::vector<InstalledPluginRecord> inventory = service->installedPluginInventory();
+  ASSERT_EQ(inventory.size(), 1u);
+  EXPECT_EQ(inventory[0].id, kMockId);
+  EXPECT_EQ(inventory[0].version, "1.0.0");
+  EXPECT_EQ(inventory[0].kind, "data_source");
+}
+
+// A plugin that is merely installed (marketplace, local archive, custom folder) is not shipped: only the public
+// registry can make it nameable.
+TEST_F(ExtensionCatalogSeedTest, InstalledPluginIsNotShipped) {
+  placePlugin(seededDir(), PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
+  const auto service = makeDefaultModeService();
+
+  ASSERT_NE(findMock(*service), nullptr);
+  EXPECT_TRUE(service->shippedPluginIds().empty());
+  EXPECT_EQ(service->installedPluginInventory().size(), 1u);
+}
+
+TEST_F(ExtensionCatalogSeedTest, CompiledInPluginIsShipped) {
+  static const PJ_data_source_vtable_t vt =
+      pj_mock::makeMockDataSourceVtable(R"({"id":"mock-data-source","name":"Static Mock","version":"0.1.0"})");
+  StaticPluginSet static_set;
+  static_set.data_sources.push_back({&vt, nullptr});
+  const ExtensionCatalogService service(
+      ExtensionCatalogService::Paths{{}, marketplace_.path(), bundled_.path()}, DiagnosticSink{}, std::move(static_set),
+      nullptr);
+
+  EXPECT_EQ(service.shippedPluginIds(), std::set<std::string>{kMockId});
 }
 
 // --plugin-dir mode: the CLI override reorders the load scan hierarchy, but the marketplace UI must keep tracking the
