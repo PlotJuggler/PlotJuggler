@@ -1778,10 +1778,10 @@ void PlotWidget::buildActions() {
   // Icons are re-applied with the current theme each time the
   // context menu opens (see canvasContextMenuTriggered), so they
   // don't need to be set here.
-  action_split_horizontal_ = new QAction(tr("&Split Horizontally"), this);
+  action_split_horizontal_ = new QAction(tr("Split &Horizontally"), this);
   connect(action_split_horizontal_, &QAction::triggered, this, &PlotWidget::splitHorizontal);
 
-  action_split_vertical_ = new QAction(tr("&Split Vertically"), this);
+  action_split_vertical_ = new QAction(tr("Split &Vertically"), this);
   connect(action_split_vertical_, &QAction::triggered, this, &PlotWidget::splitVertical);
 
   action_remove_all_curves_ = new QAction(tr("&Remove ALL curves"), this);
@@ -1794,13 +1794,13 @@ void PlotWidget::buildActions() {
     emit undoableChange();
   });
 
-  action_zoom_out_horizontal_ = new QAction(tr("&Zoom Out Horizontally"), this);
+  action_zoom_out_horizontal_ = new QAction(tr("Zoom Out Horizontally"), this);
   connect(action_zoom_out_horizontal_, &QAction::triggered, this, [this]() {
     onZoomOutHorizontalTriggered(true);
     emit undoableChange();
   });
 
-  action_zoom_out_vertical_ = new QAction(tr("&Zoom Out Vertically"), this);
+  action_zoom_out_vertical_ = new QAction(tr("Zoom Out Vertically"), this);
   connect(action_zoom_out_vertical_, &QAction::triggered, this, [this]() {
     onZoomOutVerticalTriggered(true);
     emit undoableChange();

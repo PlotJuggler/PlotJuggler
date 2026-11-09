@@ -27,7 +27,7 @@
       <string>Filter...</string>
      </property>
      <property name="filterFieldName">
-      <string>customWidgetFilter</string>
+      <string notr="true">customWidgetFilter</string>
      </property>
     </widget>
    </item>
