@@ -145,6 +145,12 @@ TEST_F(McpBridgeTest, AnAgentSessionOverStdio) {
 
   const json opened = call("open_file", {{"path", data_file_.toStdString()}});
   EXPECT_TRUE(opened.value("loaded", false));
+  // The instance's own instructions come through, with what it has loaded.
+  const json reinit = request("initialize", {{"protocolVersion", "2025-06-18"}});
+  EXPECT_NE(reinit["result"].value("instructions", "").find("mock/file_data"), std::string::npos) << reinit.dump();
+  const json rediscover = request("server/discover", json::object());
+  EXPECT_NE(rediscover["result"].value("instructions", "").find("mock/file_data"), std::string::npos)
+      << rediscover.dump();
   const json read = call(
       "read_series", {{"paths", {"mock/file_data/value"}}, {"mode", "raw"}, {"t_start_s", -1.0}, {"t_end_s", 1.0e9}});
   EXPECT_NE(read.dump().find("30"), std::string::npos) << read.dump();  // the mock's samples: 10, 20, 30

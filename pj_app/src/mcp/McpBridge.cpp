@@ -14,6 +14,7 @@
 #include <QThread>
 #include <algorithm>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -148,6 +149,21 @@ class Bridge {
     if (const std::string name = printableClientName(clientName(params)); !name.empty()) {
       client_ = name;
     }
+  }
+
+  /// The current instance's own instructions for `method` (initialize or server/discover), which say what it has
+  /// loaded; nullopt when none answers.
+  std::optional<std::string> instanceInstructions(const std::string& method, const json& params) {
+    const std::optional<Instance> target = currentInstance();
+    if (!target) {
+      return std::nullopt;
+    }
+    const Exchange answer = post(*target, request(method, params), client_, kProbeTimeoutMs);
+    if (answer.kind != Exchange::kOk || !answer.reply.contains("result")) {
+      return std::nullopt;
+    }
+    const json instructions = answer.reply["result"].value("instructions", json());
+    return instructions.is_string() ? std::optional<std::string>(instructions.get<std::string>()) : std::nullopt;
   }
 
   json listTools() {
@@ -384,6 +400,12 @@ int runBridge(int argc, char* argv[], const QString& version) {
         const json& params = message.params;
         reply = {{"jsonrpc", "2.0"}, {"id", message.id}};
         if (auto result = lifecycleResult(message.method, params, ToolSet::kFull)) {
+          // Both eras carry instructions: a 2026 client (Claude Code) reads them from server/discover alone.
+          if (result->contains("instructions")) {
+            if (auto instructions = bridge.instanceInstructions(message.method, params)) {
+              (*result)["instructions"] = std::move(*instructions);
+            }
+          }
           reply["result"] = std::move(*result);
         } else if (message.method == "tools/list") {
           reply["result"] = bridge.listTools();

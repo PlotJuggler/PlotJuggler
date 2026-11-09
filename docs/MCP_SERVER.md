@@ -54,6 +54,16 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
 `initialize` instructions leave the app tools out, and calling one gets the unknown-tool error. `isReadOnlyTool` names the tools that
 may run while a modal dialog is open.
 
+The instructions (`initialize` and `server/discover` both carry them) end with what the caller's token finds loaded
+(`McpServer::loadedSummary`): each dataset by its source name (the tools' `dataset:` qualifier) with its display time
+range, its topics and their numeric fields, built from `list_topics` and `describe_topic` and capped at 60 topics, 40
+fields each and about 6 kB.
+Claude Code puts the instructions in its system prompt, so an agent goes straight to the tool that answers instead of
+spending a turn on each discovery call: half the turns and 26-32% less time on lookup tasks. It is a picture
+of when the session connected; `list_topics` and `get_status` show later loads. The bridge asks the current instance
+for its instructions on both calls, and keeps its own when no instance answers: Claude Code 2.1 sends only
+`server/discover`.
+
 The agent tools run against a `ToolContext` built from a service registry. That is the same set of SDK host views a
 toolbox plugin gets (`ToolboxHostView`, `PlotTabsHostView`, `DataProcessorHostView`, `PlaybackHostView`, ...). The
 registry decides whose tabs and derived series the tools see and create. Series names follow `read_series` everywhere

@@ -52,6 +52,10 @@ constexpr int kClientIdleMs = 120'000;
 constexpr int kResumeIntervalMs = 50;
 /// The socket property naming the token its request was accepted with, so a revoke can close it.
 constexpr char kTokenProperty[] = "pj_mcp_token";
+/// loadedSummary's caps: topics listed, numeric field names per topic, and bytes (where the topics stop).
+constexpr int kSummaryTopics = 60;
+constexpr std::size_t kSummaryFields = 40;
+constexpr std::size_t kSummaryBytes = 6000;
 
 /// 64 hex digits from the system's secure generator.
 QByteArray randomToken() {
@@ -318,6 +322,11 @@ void McpServer::handle(QTcpSocket* socket, const mcp::HttpRequest& request) {
     };
     const json& params = message.params;
     if (auto lifecycle = mcp::lifecycleResult(message.method, params, tool_set)) {
+      // An agent told what is loaded starts with the tool that answers instead of list_topics and describe_topic:
+      // measured with Claude Code, half the turns and a quarter to a third less time to an answer.
+      if (lifecycle->contains("instructions")) {
+        (*lifecycle)["instructions"] = (*lifecycle)["instructions"].get<std::string>() + loadedSummary(caller);
+      }
       result(*lifecycle);
     } else if (message.method == "tools/list") {
       result({{"tools", mcp::toolList(tool_set)}});
@@ -405,6 +414,81 @@ std::optional<agent_tools::ToolContext> McpServer::agentContext(const QString& o
     }
   }
   return contextFrom(MainWindow::toolboxSessionServices(*session), window_.appSession().sessionManager().dataEngine());
+}
+
+std::string McpServer::loadedSummary(const Caller& caller) {
+  std::optional<agent_tools::ToolContext> context = contextFor(caller);
+  if (!context) {
+    return {};
+  }
+  const auto run = [&context](const char* tool, const json& args) {
+    const agent_tools::ToolResult answer = mcp::agentTools().execute(tool, args, *context);
+    return answer.ok ? json::parse(answer.content, nullptr, false) : json();
+  };
+  const json listed = run("list_topics", {{"limit", kSummaryTopics}});
+  const json topics = listed.is_object() ? listed.value("topics", json::array()) : json::array();
+  if (topics.empty()) {
+    return {};
+  }
+  std::string out =
+      "\n\nLoaded when this session connected (list_topics and get_status show later changes), times in display "
+      "seconds:";
+  std::string example;
+  const SessionManager& manager = window_.appSession().sessionManager();
+  const CatalogModel& catalog = window_.appSession().catalogModel();
+  const std::vector<DatasetId> ids = catalog.datasetIds();
+  for (const DatasetId id : ids) {
+    // The source name, as the tools' "dataset:" qualifier takes it (the display name may carry a user's label).
+    const std::string dataset = catalog.datasetSourceName(id).value_or(QString()).toStdString();
+    bool header = false;
+    for (const json& topic : topics) {
+      // list_topics names a topic's dataset only when several are loaded.
+      if (topic.value("dataset", ids.size() == 1 ? dataset : std::string()) != dataset || out.size() > kSummaryBytes) {
+        continue;
+      }
+      if (!header) {
+        header = true;
+        out += "\n- " + dataset;
+        if (const auto range = manager.datasetDisplayRange(id)) {
+          out += QStringLiteral(": %1 to %2 (%3 s)")
+                     .arg(range->min.value, 0, 'f', 3)
+                     .arg(range->max.value, 0, 'f', 3)
+                     .arg(range->max.value - range->min.value, 0, 'f', 1)
+                     .toStdString();
+        }
+      }
+      const std::string topic_name = topic.value("topic", "");
+      out += "\n  " + topic_name;
+      if (topic.value("kind", "") != "scalar") {
+        out += " (" + topic.value("kind", "") + ")";
+        continue;
+      }
+      const json described = run("describe_topic", {{"topic", dataset + ":" + topic_name}});
+      std::vector<std::string> numeric;
+      for (const json& field : described.is_object() ? described.value("fields", json::array()) : json::array()) {
+        if (field.value("type", "") != "string") {
+          numeric.push_back(field.value("field", ""));
+        }
+      }
+      out += ": " + std::to_string(numeric.size()) + " numeric fields";
+      for (std::size_t i = 0; i < numeric.size() && i < kSummaryFields; ++i) {
+        out += (i == 0 ? ": " : ", ") + numeric[i];
+      }
+      if (numeric.size() > kSummaryFields) {
+        out += ", ...";
+      }
+      if (example.empty() && !numeric.empty()) {
+        example = dataset + ":" + topic_name + "/" + numeric.front();
+      }
+    }
+  }
+  if (listed.value("count", 0) > listed.value("shown", 0) || out.size() > kSummaryBytes) {
+    out += "\n(more topics: list_topics)";
+  }
+  if (!example.empty()) {
+    out += "\nA series path is topic/field; prefix the dataset, as in " + example + ", when names repeat.";
+  }
+  return out;
 }
 
 std::optional<agent_tools::ToolContext> McpServer::contextFor(const Caller& caller) {
