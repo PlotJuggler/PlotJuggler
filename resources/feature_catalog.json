@@ -132,10 +132,10 @@
     {
       "id": "plot_tabs",
       "name": "Plot tabs, splits and XY plots",
-      "summary": "Organise plots in tabs and split a plot area into several. Drag series from the Datasets panel onto a plot to show them. An XY plot draws one series against another.",
-      "entry_point": "+ on the tab bar adds a tab; plot area toolbar (shown when you hover the top edge of a plot): Split horizontally / Split vertically / Fullscreen; XY plot: drag two series from the Datasets panel with the right mouse button onto an empty plot",
-      "evidence": "pj_plotting/widget/src/TabbedPlotWidget.cpp#onAddTabButtonPressed; pj_plotting/widget/src/DockToolbar.ui#Split horizontally; pj_plotting/widget/src/DockWidget.cpp#onCatalogItemsXyRequested",
-      "verified": "2026-10-21 in-app on release-4.1 e275111c: the + tab button and the hover toolbar; the XY right-drag not automated"
+      "summary": "Organise plots in tabs and split a plot area into several. Drag series from the Datasets panel onto a plot to show them. An XY plot draws one series against another. Right-click a tab to duplicate it, with its layout, curves and styles; duplicating a tab an AI agent or extension drew makes a copy that is yours, which the agent can no longer change.",
+      "entry_point": "+ on the tab bar adds a tab; right-click a tab: Duplicate tab; plot area toolbar (shown when you hover the top edge of a plot): Split horizontally / Split vertically / Fullscreen; XY plot: drag two series from the Datasets panel with the right mouse button onto an empty plot",
+      "evidence": "pj_plotting/widget/src/TabbedPlotWidget.cpp#onAddTabButtonPressed; pj_plotting/widget/src/TabbedPlotWidget.cpp#Duplicate tab; pj_plotting/widget/src/DockToolbar.ui#Split horizontally; pj_plotting/widget/src/DockWidget.cpp#onCatalogItemsXyRequested",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the + tab button and the hover toolbar; the XY right-drag not automated. 2026-11-09 in-app (Xvfb) on feat/duplicate-tab: Duplicate tab, its undo and redo"
     },
     {
       "id": "preferences",
