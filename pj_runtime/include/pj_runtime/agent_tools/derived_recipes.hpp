@@ -73,6 +73,10 @@ struct QualifierMatch {
 [[nodiscard]] QualifierMatch matchDatasetQualifier(
     std::span<const PJ_data_source_info_t> sources, std::size_t topic_count, std::string_view series);
 
+// A field read_series counts among a topic's signals: numeric (not string or bool) and not a header/* field (a ROS
+// header's stamp and seq are metadata). The one predicate every listing of a topic's fields uses.
+[[nodiscard]] bool isSignalField(PJ::PrimitiveType type, std::string_view field_name);
+
 // Join a topic name and a field path into the canonical curve path (tolerates a leading '/'
 // on the field).
 [[nodiscard]] std::string joinSeriesPath(std::string_view topic, std::string_view field);

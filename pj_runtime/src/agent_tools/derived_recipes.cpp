@@ -158,6 +158,16 @@ TopicLookup resolveTopicPath(
   return out;
 }
 
+bool isSignalField(PJ::PrimitiveType type, std::string_view field_name) {
+  if (type == PJ::PrimitiveType::kString || type == PJ::PrimitiveType::kBool) {
+    return false;
+  }
+  while (!field_name.empty() && field_name.front() == '/') {
+    field_name.remove_prefix(1);
+  }
+  return field_name.rfind("header/", 0) != 0;
+}
+
 // Join a topic name and a field path into the canonical curve path. Hosts
 // differ on whether leaf field names carry a leading '/' (the plot-markers
 // host does, main does not), so tolerate both — a naive '+ "/" +' join emits

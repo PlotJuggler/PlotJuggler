@@ -19,8 +19,11 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "MainWindow.h"
 #include "PluginPlotTabsController.h"
@@ -34,6 +37,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/agent_tools/derived_recipes.hpp"
 #include "pj_widgets/GraphicsApi.h"
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
@@ -322,10 +326,9 @@ void McpServer::handle(QTcpSocket* socket, const mcp::HttpRequest& request) {
     };
     const json& params = message.params;
     if (auto lifecycle = mcp::lifecycleResult(message.method, params, tool_set)) {
-      // An agent told what is loaded starts with the tool that answers instead of list_topics and describe_topic:
-      // measured with Claude Code, half the turns and a quarter to a third less time to an answer.
+      // An agent told what is loaded skips its list_topics and describe_topic turns.
       if (lifecycle->contains("instructions")) {
-        (*lifecycle)["instructions"] = (*lifecycle)["instructions"].get<std::string>() + loadedSummary(caller);
+        (*lifecycle)["instructions"].get_ref<std::string&>() += loadedSummary(caller);
       }
       result(*lifecycle);
     } else if (message.method == "tools/list") {
@@ -421,68 +424,85 @@ std::string McpServer::loadedSummary(const Caller& caller) {
   if (!context) {
     return {};
   }
-  const auto run = [&context](const char* tool, const json& args) {
-    const agent_tools::ToolResult answer = mcp::agentTools().execute(tool, args, *context);
-    return answer.ok ? json::parse(answer.content, nullptr, false) : json();
-  };
-  const json listed = run("list_topics", {{"limit", kSummaryTopics}});
-  const json topics = listed.is_object() ? listed.value("topics", json::array()) : json::array();
-  if (topics.empty()) {
+  // One snapshot walked here: each tool call would deep-copy the whole catalog again.
+  auto catalog = context->host.catalogSnapshotV2();
+  if (!catalog || catalog->dataSources().empty()) {
     return {};
   }
+  const auto topics = catalog->topics();
+  const auto fields = catalog->fields();
+  // A name from a file lands in the agent's system prompt: keep it on its line.
+  const auto one_line = [](std::string_view text) {
+    std::string line(text);
+    std::replace_if(
+        line.begin(), line.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; }, ' ');
+    return line;
+  };
+  std::map<std::string_view, int> name_uses;
+  for (const PJ_data_source_info_t& source : catalog->dataSources()) {
+    ++name_uses[PJ::sdk::toStringView(source.name)];
+  }
+
+  const SessionManager& manager = window_.appSession().sessionManager();
   std::string out =
       "\n\nLoaded when this session connected (list_topics and get_status show later changes), times in display "
       "seconds:";
   std::string example;
-  const SessionManager& manager = window_.appSession().sessionManager();
-  const CatalogModel& catalog = window_.appSession().catalogModel();
-  const std::vector<DatasetId> ids = catalog.datasetIds();
-  for (const DatasetId id : ids) {
+  int listed = 0;
+  bool more = false;
+  const auto room = [&] {
+    more = more || listed >= kSummaryTopics || out.size() > kSummaryBytes;
+    return !more;
+  };
+  for (const PJ_data_source_info_t& source : catalog->dataSources()) {
     // The source name, as the tools' "dataset:" qualifier takes it (the display name may carry a user's label).
-    const std::string dataset = catalog.datasetSourceName(id).value_or(QString()).toStdString();
-    bool header = false;
-    for (const json& topic : topics) {
-      // list_topics names a topic's dataset only when several are loaded.
-      if (topic.value("dataset", ids.size() == 1 ? dataset : std::string()) != dataset || out.size() > kSummaryBytes) {
-        continue;
-      }
-      if (!header) {
-        header = true;
-        out += "\n- " + dataset;
-        if (const auto range = manager.datasetDisplayRange(id)) {
-          out += QStringLiteral(": %1 to %2 (%3 s)")
-                     .arg(range->min.value, 0, 'f', 3)
-                     .arg(range->max.value, 0, 'f', 3)
-                     .arg(range->max.value - range->min.value, 0, 'f', 1)
-                     .toStdString();
-        }
-      }
-      const std::string topic_name = topic.value("topic", "");
-      out += "\n  " + topic_name;
-      if (topic.value("kind", "") != "scalar") {
-        out += " (" + topic.value("kind", "") + ")";
-        continue;
-      }
-      const json described = run("describe_topic", {{"topic", dataset + ":" + topic_name}});
+    const std::string dataset = one_line(PJ::sdk::toStringView(source.name));
+    const bool shared = name_uses[PJ::sdk::toStringView(source.name)] > 1;
+    out += "\n- " + dataset;
+    if (const auto range = manager.datasetDisplayRange(source.handle.id)) {
+      out += QStringLiteral(": %1 to %2 (%3 s)")
+                 .arg(range->min.value, 0, 'f', 3)
+                 .arg(range->max.value, 0, 'f', 3)
+                 .arg(range->max.value - range->min.value, 0, 'f', 1)
+                 .toStdString();
+    }
+    if (shared) {
+      out += " (another loaded dataset has this name, so a dataset: prefix cannot pick it)";
+    }
+    const std::size_t topic_end = std::min<std::size_t>(source.first_topic + source.topic_count, topics.size());
+    for (std::size_t ti = source.first_topic; ti < topic_end && room(); ++ti, ++listed) {
+      const PJ_topic_info_t& topic = topics[ti];
+      const std::string name = one_line(PJ::sdk::toStringView(topic.name));
       std::vector<std::string> numeric;
-      for (const json& field : described.is_object() ? described.value("fields", json::array()) : json::array()) {
-        if (field.value("type", "") != "string") {
-          numeric.push_back(field.value("field", ""));
+      for (std::size_t fi = topic.first_field; fi < topic.first_field + topic.field_count && fi < fields.size(); ++fi) {
+        if (agent_tools::isSignalField(PJ::sdk::fromAbiType(fields[fi].type), PJ::sdk::toStringView(fields[fi].name))) {
+          numeric.push_back(one_line(PJ::sdk::toStringView(fields[fi].name)));
         }
       }
-      out += ": " + std::to_string(numeric.size()) + " numeric fields";
+      out += "\n  " + name + ": " + std::to_string(numeric.size()) + " numeric fields";
       for (std::size_t i = 0; i < numeric.size() && i < kSummaryFields; ++i) {
         out += (i == 0 ? ": " : ", ") + numeric[i];
       }
       if (numeric.size() > kSummaryFields) {
         out += ", ...";
       }
-      if (example.empty() && !numeric.empty()) {
-        example = dataset + ":" + topic_name + "/" + numeric.front();
+      if (example.empty() && !numeric.empty() && !shared) {
+        example = agent_tools::qualifyWithDataset(dataset, agent_tools::joinSeriesPath(name, numeric.front()));
       }
     }
+    for (const PJ_object_topic_info_t& object : catalog->objectTopics()) {
+      const std::string_view name = PJ::sdk::toStringView(object.name);
+      if (object.source.id != source.handle.id || agent_tools::isMarkerObjectTopic(name)) {
+        continue;
+      }
+      if (!room()) {
+        break;
+      }
+      ++listed;
+      out += "\n  " + one_line(name) + " (object)";
+    }
   }
-  if (listed.value("count", 0) > listed.value("shown", 0) || out.size() > kSummaryBytes) {
+  if (more) {
     out += "\n(more topics: list_topics)";
   }
   if (!example.empty()) {

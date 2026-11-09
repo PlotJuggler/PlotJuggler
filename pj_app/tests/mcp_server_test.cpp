@@ -609,6 +609,24 @@ TEST_F(McpServerTest, InitializeSaysWhatIsLoaded) {
   // A 2026-era client reads the instructions from server/discover alone.
   const json discover = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "server/discover"}, {"params", json::object()}};
   EXPECT_EQ(rpcAs(token_, discover).body["result"].value("instructions", ""), loaded);
+
+  // Two files of one name: each dataset lists its own topics once, and the shared name is flagged.
+  QTemporaryDir other;
+  ASSERT_TRUE(other.isValid());
+  const auto [opened, open_error] =
+      result(call("open_file", {{"path", pj_app_test::makeMockFile(other, "a.mock").toStdString()}}));
+  ASSERT_FALSE(open_error) << opened;
+  const std::string twice = rpcAs(token_, initialize).body["result"].value("instructions", "");
+  const auto count = [&twice](const std::string& needle) {
+    std::size_t n = 0;
+    for (std::size_t at = twice.find(needle); at != std::string::npos; at = twice.find(needle, at + 1)) {
+      ++n;
+    }
+    return n;
+  };
+  EXPECT_EQ(count("\n- a.mock"), 2U) << twice;
+  EXPECT_EQ(count("mock/file_data: 1 numeric fields"), 2U) << twice;
+  EXPECT_EQ(count("another loaded dataset has this name"), 2U) << twice;
 }
 
 TEST_F(McpServerTest, ExportQuotesHeadersAndRefusesTooManyRows) {

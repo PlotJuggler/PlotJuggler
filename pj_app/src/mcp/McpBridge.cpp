@@ -151,28 +151,21 @@ class Bridge {
     }
   }
 
-  /// The current instance's own instructions for `method` (initialize or server/discover), which say what it has
-  /// loaded; nullopt when none answers.
-  std::optional<std::string> instanceInstructions(const std::string& method, const json& params) {
+  /// The current instance's result object for `method`; nullopt when none answers.
+  std::optional<json> askInstance(const std::string& method, const json& params = json::object()) {
     const std::optional<Instance> target = currentInstance();
     if (!target) {
       return std::nullopt;
     }
     const Exchange answer = post(*target, request(method, params), client_, kProbeTimeoutMs);
-    if (answer.kind != Exchange::kOk || !answer.reply.contains("result")) {
-      return std::nullopt;
-    }
-    const json instructions = answer.reply["result"].value("instructions", json());
-    return instructions.is_string() ? std::optional<std::string>(instructions.get<std::string>()) : std::nullopt;
+    const json result = answer.kind == Exchange::kOk ? answer.reply.value("result", json()) : json();
+    return result.is_object() ? std::optional<json>(result) : std::nullopt;
   }
 
   json listTools() {
     json tools;
-    if (const std::optional<Instance> target = currentInstance()) {
-      const Exchange answer = post(*target, request("tools/list"), client_, kProbeTimeoutMs);
-      if (answer.kind == Exchange::kOk && answer.reply.contains("result")) {
-        tools = answer.reply["result"].value("tools", json());
-      }
+    if (const std::optional<json> result = askInstance("tools/list")) {
+      tools = result->value("tools", json());
     }
     if (!tools.is_array()) {
       tools = toolList(ToolSet::kFull);  // nothing answers: this binary's own list
@@ -400,10 +393,12 @@ int runBridge(int argc, char* argv[], const QString& version) {
         const json& params = message.params;
         reply = {{"jsonrpc", "2.0"}, {"id", message.id}};
         if (auto result = lifecycleResult(message.method, params, ToolSet::kFull)) {
-          // Both eras carry instructions: a 2026 client (Claude Code) reads them from server/discover alone.
+          // The instance's own instructions say what it has loaded. Both eras carry them: a 2026 client (Claude
+          // Code) reads them from server/discover alone.
           if (result->contains("instructions")) {
-            if (auto instructions = bridge.instanceInstructions(message.method, params)) {
-              (*result)["instructions"] = std::move(*instructions);
+            if (const std::optional<json> own = bridge.askInstance(message.method, params);
+                own && own->value("instructions", json()).is_string()) {
+              (*result)["instructions"] = (*own)["instructions"];
             }
           }
           reply["result"] = std::move(*result);
