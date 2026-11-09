@@ -653,6 +653,58 @@ TEST_F(MainWindowHistoryExemptFixture, RedoDoesNotResurrectClosedOwnedTab) {
   EXPECT_EQ(PJ::MainWindowHistoryExemptTestPeer::ownedTab(window, u"missing-assistant"_s, u"removed"_s), nullptr);
 }
 
+// Duplicating a tab an agent owns forks it into an ordinary user tab: the agent
+// keeps addressing only its own tab, the copy is one undo step, and the copy
+// outlives the agent closing its tab.
+TEST_F(MainWindowHistoryExemptFixture, DuplicateOfOwnedTabIsUserTabTheOwnerCannotReach) {
+  PJ::MainWindow& window = mainWindow();
+  PJ::TabbedPlotWidget& tabs = PJ::MainWindowHistoryExemptTestPeer::tabs(window);
+  const QString owner = u"agent-claude"_s;
+  ASSERT_TRUE(PJ::MainWindowHistoryExemptTestPeer::createOwnedTab(window, owner, u"run"_s, u"Agent run"_s));
+  PJ::PlotDocker* owned = PJ::MainWindowHistoryExemptTestPeer::ownedTab(window, owner, u"run"_s);
+  ASSERT_NE(owned, nullptr);
+  PJ::PlotWidget* owned_plot = ensurePlot(owned);
+  ASSERT_NE(owned_plot, nullptr);
+  PJ::MainWindowHistoryExemptTestPeer::resetHistory(window);
+  const std::size_t undo_before = PJ::MainWindowHistoryExemptTestPeer::undoSize(window);
+  const auto find_copy = [&tabs]() {
+    return tabs.findDocker([](PJ::PlotDocker* docker) { return docker->name() == u"Agent run (copy)"_s; });
+  };
+
+  QPointer<PJ::PlotDocker> copy(tabs.duplicateTab(owned));
+
+  ASSERT_FALSE(copy.isNull());
+  EXPECT_EQ(PJ::MainWindowHistoryExemptTestPeer::undoSize(window), undo_before + 1);
+  EXPECT_TRUE(copy->ownerPlugin().isEmpty());
+  EXPECT_FALSE(copy->isHistoryExempt());
+  EXPECT_EQ(PJ::MainWindowHistoryExemptTestPeer::ownedTab(window, owner, u"run"_s), owned);
+  ASSERT_NE(ensurePlot(copy), nullptr);
+  EXPECT_NE(ensurePlot(copy)->stateId(), owned_plot->stateId());
+  const QString history = QString::fromUtf8(
+      PJ::MainWindowHistoryExemptTestPeer::xmlSaveState(
+          window, PJ::MainWindowHistoryExemptTestPeer::SnapshotScope::kHistory)
+          .toByteArray());
+  EXPECT_TRUE(history.contains(u"Agent run (copy)"_s));
+  EXPECT_FALSE(history.contains(u"agent-claude/run"_s));
+
+  PJ::MainWindowHistoryExemptTestPeer::undo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_TRUE(copy.isNull());
+  EXPECT_EQ(find_copy(), nullptr);
+  EXPECT_EQ(PJ::MainWindowHistoryExemptTestPeer::ownedTab(window, owner, u"run"_s), owned);
+
+  PJ::MainWindowHistoryExemptTestPeer::redo(window);
+  copy = find_copy();
+  ASSERT_FALSE(copy.isNull());
+  EXPECT_TRUE(copy->ownerPlugin().isEmpty());
+
+  ASSERT_TRUE(PJ::MainWindowHistoryExemptTestPeer::closeOwnedTab(window, owner, u"run"_s));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(PJ::MainWindowHistoryExemptTestPeer::ownedTab(window, owner, u"run"_s), nullptr);
+  EXPECT_FALSE(copy.isNull());
+  EXPECT_EQ(find_copy(), copy.data());
+}
+
 // (e) A failed kReplace restore's rollback preimage is captured at kFull scope:
 // an exempt transform present only in the live state (not in the failing
 // document) survives because the rollback replays the FULL live snapshot, not a
