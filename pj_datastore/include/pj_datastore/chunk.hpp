@@ -35,7 +35,8 @@ inline constexpr Timestamp kNoRetentionFloor = std::numeric_limits<Timestamp>::m
 struct ColumnStats {
   /// Number of null rows in this column within the chunk.
   uint32_t null_count = 0;
-  /// Number of value runs (for compression heuristics).
+  /// Number of value runs (for compression heuristics), counted in arrival order: seal sorts the rows by timestamp
+  /// afterwards, so it is not the stored rows' run count once rows arrived out of order.
   uint32_t run_count = 0;
   /// True if all non-null values are equal.
   bool is_constant = true;

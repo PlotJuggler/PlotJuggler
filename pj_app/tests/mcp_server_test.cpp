@@ -20,10 +20,12 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QtEndian>
 #include <algorithm>
 #include <array>
 #include <clocale>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <memory>
@@ -626,8 +628,65 @@ TEST_F(McpServerTest, ExportQuotesHeadersAndRefusesTooManyRows) {
   EXPECT_NE(big.find("more than 10000000 rows"), std::string::npos) << big;
 }
 
+// format "npy" writes what numpy.load reads as a structured array: a 3.0 header naming "time" and each series as
+// float64 fields, the data on a 64-byte boundary, one record per row.
+TEST_F(McpServerTest, ExportNpyIsANumpyStructuredArray) {
+  ASSERT_NE(loadMock(), 0);
+  const auto [refused, refused_error] =
+      result(call("export_series", {{"paths", {"mock/file_data/value"}}, {"format", "parquet"}}));
+  EXPECT_TRUE(refused_error) << refused;
+
+  // A path in a folder that does not exist yet creates the folder.
+  const QString target = data_.filePath(u"new/folder/out.npy"_s);
+  const auto [text, error] = result(
+      call("export_series", {{"paths", {"mock/file_data/value"}}, {"format", "npy"}, {"path", target.toStdString()}}));
+  ASSERT_FALSE(error) << text;
+  const json exported = json::parse(text, nullptr, false);
+  QFile npy(QString::fromStdString(exported.value("path", "")));
+  EXPECT_EQ(npy.fileName(), target);
+  ASSERT_TRUE(npy.open(QIODevice::ReadOnly));
+  const QByteArray bytes = npy.readAll();
+  npy.remove();
+  ASSERT_GT(bytes.size(), 12);
+  EXPECT_EQ(bytes.left(8), QByteArray("\x93NUMPY\x03\x00", 8));
+  const auto header_size = qFromLittleEndian<quint32>(bytes.constData() + 8);
+  EXPECT_EQ((12 + header_size) % 64, 0U);
+  const std::string header = bytes.mid(12, static_cast<qsizetype>(header_size)).toStdString();
+  const std::string column = exported["columns"][0].get<std::string>();
+  EXPECT_NE(header.find("[('time', '<f8'), ('" + column + "', '<f8')]"), std::string::npos) << header;
+  const std::size_t rows = exported.value("rows", std::size_t{0});
+  EXPECT_NE(header.find("'shape': (" + std::to_string(rows) + ",)"), std::string::npos) << header;
+  ASSERT_EQ(static_cast<std::size_t>(bytes.size()), 12 + header_size + rows * 2 * sizeof(double));
+  std::array<double, 2> first{};
+  std::memcpy(first.data(), bytes.constData() + 12 + header_size, sizeof first);
+  EXPECT_EQ(first[1], 10.0);  // the mock's first sample
+}
+
+// A computed NaN (sign bit set on x86, which MSVC's to_chars spells "-nan(ind)") exports as plain "nan", which every
+// CSV reader parses.
+TEST_F(McpServerTest, ExportWritesANaNAsNan) {
+  ASSERT_NE(loadMock(), 0);
+  const auto [added, add_error] = result(call(
+      "create_derived_series",
+      {{"name", "undefined"}, {"inputs", {"mock/file_data/value"}}, {"expression", "(value - value) / 0"}}));
+  ASSERT_FALSE(add_error) << added;
+  const std::string series = json::parse(added, nullptr, false).value("series", "");
+  ASSERT_FALSE(series.empty()) << added;
+  const auto [text, error] = result(call("export_series", {{"paths", {series}}}));
+  ASSERT_FALSE(error) << text;
+  QFile csv(QString::fromStdString(json::parse(text, nullptr, false).value("path", "")));
+  ASSERT_TRUE(csv.open(QIODevice::ReadOnly));
+  const QList<QByteArray> lines = csv.readAll().trimmed().split('\n');
+  csv.remove();
+  ASSERT_GT(lines.size(), 1);
+  for (qsizetype i = 1; i < lines.size(); ++i) {
+    EXPECT_EQ(lines[i].split(',').value(1).toStdString(), "nan") << lines[i].toStdString();
+  }
+}
+
 // The CSV holds every value exactly and in the C locale: a value needing more than ten significant digits reads back
-// unchanged, and a decimal-comma locale (where one is installed) does not split a number into two columns.
+// unchanged, a time is its exact display nanosecond (the mock writes a row every 100 ns), and a decimal-comma locale
+// (where one is installed) does not split a number into two columns.
 TEST_F(McpServerTest, ExportWritesNumbersExactlyWhateverTheLocale) {
   ASSERT_NE(loadMock(), 0);
   constexpr double kEpoch = 1731080000.123;  // a Unix time: 13 significant digits
@@ -661,12 +720,20 @@ TEST_F(McpServerTest, ExportWritesNumbersExactlyWhateverTheLocale) {
   ASSERT_TRUE(csv.open(QIODevice::ReadOnly));
   csv.readLine();  // header
   int rows = 0;
+  std::optional<qint64> first_ns;
+  qint64 row_index = 0;
   while (!csv.atEnd()) {
     const QList<QByteArray> fields = csv.readLine().trimmed().split(',');
     ASSERT_EQ(fields.size(), 2) << "comma locale: " << comma_locale << ", row: " << fields.join(',').toStdString();
-    bool ok = false;
-    fields[0].toDouble(&ok);
-    EXPECT_TRUE(ok) << fields[0].toStdString();
+    const QList<QByteArray> time = fields[0].split('.');
+    ASSERT_EQ(time.size(), 2) << fields[0].toStdString();
+    ASSERT_EQ(time[1].size(), 9) << fields[0].toStdString();
+    bool seconds_ok = false;
+    bool fraction_ok = false;
+    const qint64 ns = time[0].toLongLong(&seconds_ok) * 1'000'000'000 + time[1].toLongLong(&fraction_ok);
+    ASSERT_TRUE(seconds_ok && fraction_ok && !time[0].startsWith('-')) << fields[0].toStdString();
+    first_ns = first_ns.value_or(ns);
+    EXPECT_EQ(ns - *first_ns, 100 * row_index++) << fields[0].toStdString();
     if (!fields[1].isEmpty()) {
       EXPECT_EQ(fields[1].toDouble(), kEpoch) << fields[1].toStdString();
       ++rows;

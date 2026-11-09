@@ -2,15 +2,21 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <span>
 #include <string>
 #include <utility>
 
 namespace PJ::agent_tools {
 
 struct ToolContext;
+
+// Consecutive samples of a series, stamped `timestamps`: `values` holds each one's value (NaN at a null), or the single
+// value all of them hold. The spans are valid only during the call.
+using ValueBlockSink = std::function<void(std::span<const std::int64_t> timestamps, std::span<const double> values)>;
 
 // The outcome of a tool call, handed back to the model verbatim. `content` is
 // the text (usually compact JSON) the model reads; `ok=false` marks a failure
@@ -59,6 +65,18 @@ struct ToolContext {
   // is empty. Optional: `viewport` can only frame every tab the caller owns at once (its SDK contract), so a host
   // that can address one tab sets this, and plot_tab's zoom uses it instead.
   std::function<PJ::Status(const std::string& tab, std::optional<std::pair<double, double>> range)> zoom_tab;
+  // Reads `field` limited to raw ns [first, last] plus the sample before `first` (its value holds at the window's
+  // start), decoding only the chunks the window touches. Optional: unset, a windowed tool reads the whole series
+  // through `host` and cuts it, with the same result.
+  // ponytail: a host hook because the toolbox ABI's read_series_arrow has no window; a windowed tail slot on
+  // PJ_toolbox_host_vtable_t (ToolboxHostView) would serve every plugin and retire this hook.
+  std::function<PJ::Expected<PJ::sdk::MaterializedSeriesView>(
+      PJ::sdk::FieldHandle field, std::int64_t first, std::int64_t last)>
+      read_window;
+  // Hands `on_block` the whole numeric series of `field`, in time order, as blocks (ValueBlockSink), so a windowed read
+  // gets its whole-series flat facts without a full read (FlatRunAccumulator::addBlock). Optional, like read_window;
+  // a windowed read_series uses the two only together.
+  std::function<PJ::Status(PJ::sdk::FieldHandle field, const ValueBlockSink& on_block)> scan_values;
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
 };
 

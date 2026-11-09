@@ -714,7 +714,11 @@ of the module: its files keep their own SPDX and copyright lines.
   agent's own toolbox session, since a view may be invalidated between event-loop ticks.
   What an agent creates is owned by it, and the remove tools reach only that. `plot_tab`'s
   zoom uses the context's `zoom_tab` hook when the host sets it (one tab), else
-  `pj.viewport.v1` (every tab the caller owns).
+  `pj.viewport.v1` (every tab the caller owns). A windowed `read_series` (and `pj_app`'s
+  `export_series`) decodes only the window when the host sets `read_window`; `read_series`
+  also needs `scan_values`, a whole-series value walk, for the flat facts it reports for
+  the whole series (`FlatRunAccumulator`, `series_stats.hpp`). Unset, they read the whole
+  series and cut it, with the same answer.
 - **Errors are data.** Every failure is a `ToolResult` with `ok=false`;
   `ToolRegistry::execute` turns a throw from a wrongly typed, model-supplied argument
   into one.

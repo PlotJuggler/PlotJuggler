@@ -158,64 +158,101 @@ struct FlatRunSummary {
   std::int64_t flat_span_start_ns = 0;
 };
 
+// Builds a FlatRunSummary from a series fed in time order, in blocks of any size: a source that knows a block holds
+// one value (a constant-encoded chunk) hands it over as one, never expanding it into samples. Equal values merge into
+// runs across blocks. Feeding every sample as a block of one gives flatRunSummary.
+class FlatRunAccumulator {
+ public:
+  // `count` samples stamped first_ns..last_ns, all holding `value`.
+  void add(std::int64_t first_ns, std::int64_t last_ns, double value, std::size_t count) {
+    const bool continues = run_open_ && value == run_value_;
+    if (samples_ == 0) {
+      first_ns_ = first_ns;
+    } else if (!continues) {
+      constant_ = false;
+    }
+    samples_ += count;
+    last_ns_ = last_ns;
+    if (!std::isfinite(value)) {
+      // A non-finite sample can't equal anything (NaN) and can't be trusted as a repeated constant (inf) either: it
+      // breaks any run in progress and rules out the whole series being constant.
+      run_open_ = false;
+      constant_ = false;
+      return;
+    }
+    if (!continues) {
+      run_open_ = true;
+      run_value_ = value;
+      run_start_ns_ = first_ns;
+    }
+    if (last_ns - run_start_ns_ > best_len_ns_) {
+      best_len_ns_ = last_ns - run_start_ns_;
+      best_start_ns_ = run_start_ns_;
+    }
+  }
+
+  // Samples stamped `timestamps` holding `values`, one each, or the single value they all hold.
+  void addBlock(std::span<const std::int64_t> timestamps, std::span<const double> values) {
+    if (values.size() == 1) {
+      add(timestamps.front(), timestamps.back(), values[0], timestamps.size());
+      return;
+    }
+    for (std::size_t i = 0; i < timestamps.size(); ++i) {
+      add(timestamps[i], timestamps[i], values[i], 1);
+    }
+  }
+
+  [[nodiscard]] FlatRunSummary summary() const {
+    FlatRunSummary out;
+    if (samples_ == 0) {
+      return out;
+    }
+    if (samples_ == 1 || constant_) {
+      out.constant = true;
+      return out;
+    }
+    const double duration_s = static_cast<double>(last_ns_ - first_ns_) * 1e-9;
+    const double best_len_s = static_cast<double>(best_len_ns_) * 1e-9;
+    if (duration_s > 0.0 && best_len_s >= 0.05 * duration_s) {
+      out.has_flat_span = true;
+      out.flat_span_s = best_len_s;
+      out.flat_span_at_s = static_cast<double>(best_start_ns_ - first_ns_) * 1e-9;
+      out.flat_span_start_ns = best_start_ns_;
+    }
+    return out;
+  }
+
+  [[nodiscard]] std::size_t samples() const {
+    return samples_;
+  }
+  // The first and last sample's timestamps; meaningful once samples() > 0.
+  [[nodiscard]] std::int64_t firstNs() const {
+    return first_ns_;
+  }
+  [[nodiscard]] std::int64_t lastNs() const {
+    return last_ns_;
+  }
+
+ private:
+  std::size_t samples_ = 0;
+  std::int64_t first_ns_ = 0;
+  std::int64_t last_ns_ = 0;
+  bool constant_ = true;
+  bool run_open_ = false;
+  double run_value_ = 0.0;
+  std::int64_t run_start_ns_ = 0;
+  std::int64_t best_len_ns_ = 0;
+  std::int64_t best_start_ns_ = 0;
+};
+
 [[nodiscard]] inline FlatRunSummary flatRunSummary(
     std::span<const std::int64_t> timestamps, std::span<const double> values) {
-  FlatRunSummary out;
+  FlatRunAccumulator runs;
   const std::size_t n = std::min(timestamps.size(), values.size());
-  if (n == 0) {
-    return out;
-  }
-  if (n == 1) {
-    out.constant = true;
-    return out;
-  }
-
-  bool constant = true;
-  std::size_t run_start = 0;
-  bool run_open = false;
-  double best_len_s = 0.0;
-  double best_start_s = 0.0;
-  std::int64_t best_start_ns = 0;
   for (std::size_t i = 0; i < n; ++i) {
-    const double v = values[i];
-    if (!std::isfinite(v)) {
-      // A non-finite sample can't equal anything (NaN) and can't be trusted
-      // as a repeated constant (inf) either: it breaks any run in progress
-      // and rules out the whole series being constant.
-      run_open = false;
-      constant = false;
-      continue;
-    }
-    if (i > 0 && !(v == values[i - 1])) {
-      constant = false;
-    }
-    if (run_open && v == values[run_start]) {
-      // extends the open run
-    } else {
-      run_start = i;
-      run_open = true;
-    }
-    const double len_s = static_cast<double>(timestamps[i] - timestamps[run_start]) * 1e-9;
-    if (len_s > best_len_s) {
-      best_len_s = len_s;
-      best_start_s = static_cast<double>(timestamps[run_start] - timestamps[0]) * 1e-9;
-      best_start_ns = timestamps[run_start];
-    }
+    runs.add(timestamps[i], timestamps[i], values[i], 1);
   }
-
-  if (constant) {
-    out.constant = true;
-    return out;
-  }
-
-  const double duration_s = static_cast<double>(timestamps[n - 1] - timestamps[0]) * 1e-9;
-  if (duration_s > 0.0 && best_len_s >= 0.05 * duration_s) {
-    out.has_flat_span = true;
-    out.flat_span_s = best_len_s;
-    out.flat_span_at_s = best_start_s;
-    out.flat_span_start_ns = best_start_ns;
-  }
-  return out;
+  return runs.summary();
 }
 
 // Decimate into at most `max_points` equal-width time buckets, preserving the

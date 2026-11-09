@@ -9,11 +9,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iomanip>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
+#include <span>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -3225,6 +3228,97 @@ TEST(ToolRegistry, FlatSpanSurvivesAWindowOverAMovingPart) {
   ASSERT_TRUE(j["stats"].contains("flat_span_s")) << r.content;
   EXPECT_NEAR(j["stats"]["flat_span_s"].get<double>(), 4.0, 1e-9);
   EXPECT_NEAR(j["stats"]["flat_span_at_s"].get<double>(), 15.0, 1e-9);
+}
+
+// The host hooks a windowed read_series decodes only the window with, built over the store's whole read: read_window
+// serves the samples stamped in [first, last] plus the one before from a store of their own, so a read that leaned on
+// the rest of the series would find it missing; scan_values hands out blocks cut every third sample as chunk
+// boundaries cut them, a block of equal values as its one value as a constant chunk is. Each hook counts its calls
+// into `calls`.
+void addWindowHooks(ToolContext& ctx, int& calls) {
+  ctx.read_window = [host = ctx.host, &calls](
+                        PJ::sdk::FieldHandle field, std::int64_t first,
+                        std::int64_t last) -> PJ::Expected<PJ::sdk::MaterializedSeriesView> {
+    ++calls;
+    auto whole = host.readSeries(field);
+    if (!whole) {
+      return PJ::unexpected(whole.error());
+    }
+    const auto ts = whole->timestamps();
+    const double* v = whole->valuesAsFloat64();
+    auto lo = static_cast<std::size_t>(std::lower_bound(ts.begin(), ts.end(), first) - ts.begin());
+    lo = lo > 0 ? lo - 1 : 0;
+    const auto hi = static_cast<std::size_t>(std::upper_bound(ts.begin(), ts.end(), last) - ts.begin());
+    if (lo == hi) {
+      return PJ::sdk::MaterializedSeriesView{};  // the store cannot hold an empty field; the host reads it back empty
+    }
+    PJ::testing::ToolboxTestStore window;
+    window.addTopic("w").addField(
+        "w", "v", std::vector<std::int64_t>(ts.begin() + lo, ts.begin() + hi), std::vector<double>(v + lo, v + hi));
+    const PJ::sdk::ToolboxHostView window_host(window.makeHost());
+    return window_host.readSeries(window_host.catalogSnapshot()->fields()[0].handle);
+  };
+  ctx.scan_values = [host = ctx.host, &calls](
+                        PJ::sdk::FieldHandle field, const PJ::agent_tools::ValueBlockSink& on_block) -> PJ::Status {
+    ++calls;
+    auto whole = host.readSeries(field);
+    if (!whole) {
+      return PJ::unexpected(whole.error());
+    }
+    const auto ts = whole->timestamps();
+    const double* v = whole->valuesAsFloat64();
+    for (std::size_t i = 0; i < ts.size(); i += 3) {
+      const std::size_t n = std::min<std::size_t>(3, ts.size() - i);
+      const bool equal = std::all_of(v + i, v + i + n, [&](double x) { return x == v[i]; });
+      on_block(std::span<const std::int64_t>(ts.data() + i, n), std::span<const double>(v + i, equal ? 1 : n));
+    }
+    return PJ::okStatus();
+  };
+}
+
+// With the window hooks, a windowed read decodes only the window, and answers exactly what the whole read cut to the
+// window answers: the stats, the samples, the whole-series flat facts, and every error.
+TEST(ToolRegistry, WindowHooksGiveTheWholeReadsAnswers) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  for (int i = 0; i < 20; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * kSec);
+    v.push_back(i < 15 ? static_cast<double>(i % 5) : 42.0);
+  }
+  store.addField("/imu", "servo", ts, v);
+  store.addField("/imu", "gaps", {0, kSec, 2 * kSec, 3 * kSec}, {1.0, std::nan(""), std::nan(""), 2.0});
+  FakePlaybackHost pb;
+  pb.display_offset_ns = -2'000'000'000;  // display = absolute + 2 s
+  auto whole = makeCtx(store, nullptr);
+  whole.playback = pb.view();
+  auto hooked = makeCtx(store, nullptr);
+  hooked.playback = pb.view();
+  int hook_calls = 0;
+  addWindowHooks(hooked, hook_calls);
+
+  const std::vector<json> requests = {
+      {{"series", "/imu/servo"}, {"t_start_s", 7.0}, {"t_end_s", 12.0}},
+      {{"series", "/imu/servo"}, {"t_start_s", 7.0}, {"t_end_s", 12.0}, {"mode", "raw"}},
+      {{"series", "/imu/servo"}, {"t_start_s", 7.0}, {"t_end_s", 12.0}, {"mode", "buckets"}},
+      {{"series", "/imu/servo"}, {"t_start_s", 17.5}},
+      {{"series", "/imu/servo"}, {"t_end_s", 4.5}},
+      {{"series", "/imu/servo"}, {"t_start_s", 7.2}, {"t_end_s", 7.8}},      // between two samples
+      {{"series", "/imu/servo"}, {"t_start_s", 100.0}, {"t_end_s", 200.0}},  // after the series
+      {{"series", "/imu/servo"}, {"t_start_s", -50.0}, {"t_end_s", -40.0}},  // before it
+      {{"paths", {"/imu/x", "/imu/y", "/imu/gaps"}}, {"t_start_s", 3.0}, {"t_end_s", 5.0}},
+      {{"series", "/imu"}, {"t_start_s", 3.0}},
+      {{"series", "/imu/nope"}, {"t_start_s", 3.0}},
+  };
+  for (const json& args : requests) {
+    const auto expected = reg.execute("read_series", args, whole);
+    const auto got = reg.execute("read_series", args, hooked);
+    EXPECT_EQ(got.ok, expected.ok) << args.dump();
+    EXPECT_EQ(got.content, expected.content) << args.dump();
+  }
+  EXPECT_GT(hook_calls, 0);
 }
 
 TEST(ToolRegistry, WindowWithOneBoundOnly) {

@@ -13,6 +13,7 @@
 #include <functional>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -151,59 +152,57 @@ std::optional<double> toDisplaySeconds(
   return std::nullopt;
 }
 
-// Narrows a successfully-read series to [t_start_s, t_end_s] on the DISPLAY
-// axis (playback's, plot_tab zoom's, stats' own t_start_display_s) when
-// either bound was requested; a no-op otherwise. The series' own first
-// sample is the only anchor available for the ns<->display conversion (see
-// toDisplaySeconds): the affine offset it yields — display(ts.front()) minus
-// ts.front() in seconds — is applied to translate the window's bounds into
-// absolute ns (floor at the start, ceil at the end), and the series is
-// trimmed to that ns range via lower_bound/upper_bound before stats or
-// buckets ever see it. So a windowed read's t_start_display_s and bucket 't'
-// come out relative to the first sample INSIDE the window, never to
-// t_start_s itself.
-//
-// Failure — no anchor sample, no conversion available, or an empty result —
-// turns the entry into an error (r.ok becomes false) rather than silently
-// reinterpreting the window as relative ns, which would quietly answer a
-// different question than the one asked.
-void applyDisplayWindow(
-    SeriesRead& r, ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const std::optional<double>& t_start_s,
-    const std::optional<double>& t_end_s) {
-  if (!t_start_s && !t_end_s) {
-    return;
-  }
-  if (r.ts.empty()) {
-    r.ok = false;
-    r.error = "cannot map the display window for this series";
-    return;
-  }
-  const std::int64_t anchor_ns = r.ts.front();
+// The display window [t_start_s, t_end_s] (playback's axis, plot_tab zoom's, stats' own t_start_display_s) as raw-ns
+// bounds: floor at the start, ceil at the end, an absent bound left at the int64 limit. The series' own first sample is
+// the only anchor available for the ns<->display conversion (see toDisplaySeconds): the affine offset it yields —
+// display(anchor) minus anchor in seconds — translates the bounds. Empty when no conversion is available.
+struct NsWindow {
+  std::int64_t first = std::numeric_limits<std::int64_t>::min();
+  std::int64_t last = std::numeric_limits<std::int64_t>::max();
+  double offset_s = 0.0;          // display(ts) = ts*1e-9 + offset_s
+  double anchor_display_s = 0.0;  // display(anchor)
+};
+
+std::optional<NsWindow> nsWindow(
+    ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r, std::int64_t anchor_ns,
+    const std::optional<double>& t_start_s, const std::optional<double>& t_end_s) {
   const std::optional<double> anchor_display = toDisplaySeconds(ctx, catalog, r, anchor_ns);
   if (!anchor_display) {
-    r.ok = false;
-    r.error = "cannot map the display window for this series";
-    return;
+    return std::nullopt;
   }
-  const double offset = *anchor_display - static_cast<double>(anchor_ns) * 1e-9;
+  NsWindow window;
+  window.anchor_display_s = *anchor_display;
+  window.offset_s = *anchor_display - static_cast<double>(anchor_ns) * 1e-9;
   auto toAbsNs = [&](double display_s, bool round_up) {
-    const double ns = (display_s - offset) * 1e9;
+    const double ns = (display_s - window.offset_s) * 1e9;
     return static_cast<std::int64_t>(round_up ? std::ceil(ns) : std::floor(ns));
   };
-
-  auto lo_it = r.ts.begin();
-  auto hi_it = r.ts.end();
   if (t_start_s) {
-    lo_it = std::lower_bound(r.ts.begin(), r.ts.end(), toAbsNs(*t_start_s, /*round_up=*/false));
+    window.first = toAbsNs(*t_start_s, /*round_up=*/false);
   }
   if (t_end_s) {
-    hi_it = std::upper_bound(r.ts.begin(), r.ts.end(), toAbsNs(*t_end_s, /*round_up=*/true));
+    window.last = toAbsNs(*t_end_s, /*round_up=*/true);
   }
+  return window;
+}
+
+// Trims r's samples to `window` before stats or buckets ever see them, so a windowed read's t_start_display_s and
+// bucket 't' come out relative to the first sample INSIDE the window, never to t_start_s itself. r may hold the whole
+// series or already little more than the window; an empty window reports the whole series' span, which runs from the
+// window's anchor to series_last_ns.
+//
+// An empty result turns the entry into an error (r.ok becomes false) rather than silently reinterpreting the window as
+// relative ns, which would quietly answer a different question than the one asked.
+void cutToWindow(
+    SeriesRead& r, const NsWindow& window, std::int64_t series_last_ns, const std::optional<double>& t_start_s,
+    const std::optional<double>& t_end_s) {
+  const auto lo_it = std::lower_bound(r.ts.begin(), r.ts.end(), window.first);
+  const auto hi_it = std::upper_bound(r.ts.begin(), r.ts.end(), window.last);
   if (lo_it >= hi_it) {
-    const double series_start_display = *anchor_display;
-    const double series_end_display = static_cast<double>(r.ts.back()) * 1e-9 + offset;
+    const double series_end_display = static_cast<double>(series_last_ns) * 1e-9 + window.offset_s;
     std::ostringstream msg;
-    msg << "no samples in window; series spans display [" << series_start_display << ", " << series_end_display << "]";
+    msg << "no samples in window; series spans display [" << window.anchor_display_s << ", " << series_end_display
+        << "]";
     r.ok = false;
     r.error = msg.str();
     return;
@@ -220,7 +219,7 @@ void applyDisplayWindow(
       r.vals.begin() + static_cast<std::ptrdiff_t>(lo), r.vals.begin() + static_cast<std::ptrdiff_t>(hi));
   r.ts = std::move(windowed_ts);
   r.vals = std::move(windowed_vals);
-  r.display_offset_s = offset;
+  r.display_offset_s = window.offset_s;
 
   r.window = {{"axis", "display"}};
   if (t_start_s) {
@@ -229,6 +228,23 @@ void applyDisplayWindow(
   if (t_end_s) {
     r.window["t_end_s"] = *t_end_s;
   }
+}
+
+// Narrows a successfully-read whole series to the display window when either bound was requested; a no-op otherwise.
+// No conversion available turns the entry into an error, like an empty window (cutToWindow).
+void applyDisplayWindow(
+    SeriesRead& r, ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const std::optional<double>& t_start_s,
+    const std::optional<double>& t_end_s) {
+  if (!t_start_s && !t_end_s) {
+    return;
+  }
+  const auto window = r.ts.empty() ? std::nullopt : nsWindow(ctx, catalog, r, r.ts.front(), t_start_s, t_end_s);
+  if (!window) {
+    r.ok = false;
+    r.error = "cannot map the display window for this series";
+    return;
+  }
+  cutToWindow(r, *window, r.ts.back(), t_start_s, t_end_s);
 }
 
 // Round to `sig_figs` significant decimal digits before serializing: the raw
@@ -939,20 +955,35 @@ json statsWithDisplayStart(
   return stats_json;
 }
 
-SeriesRead readOne(
-    const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, const std::string& want,
+namespace {
+
+// Resolves `want` into r's path, topic and dataset, or explains in r.error why it does not name a series.
+std::optional<PJ::sdk::FieldHandle> resolveInto(
+    SeriesRead& r, const PJ::sdk::CatalogSnapshot& catalog, const std::string& want,
     const TopicDatasetMap& topic_dataset) {
-  SeriesRead r;
   r.path = want;
   auto lookup = resolveSeriesPath(catalog, want, topic_dataset);
   if (!lookup.resolved) {
     r.error = seriesLookupError(want, lookup);
-    return r;
+    return std::nullopt;
   }
   r.path = lookup.resolved->path;
   r.topic = lookup.resolved->topic;
   r.dataset = lookup.resolved->dataset;
-  auto view = ctx.host.readSeries(lookup.resolved->handle);
+  return lookup.resolved->handle;
+}
+
+}  // namespace
+
+SeriesRead readOne(
+    const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, const std::string& want,
+    const TopicDatasetMap& topic_dataset) {
+  SeriesRead r;
+  const auto handle = resolveInto(r, catalog, want, topic_dataset);
+  if (!handle) {
+    return r;
+  }
+  auto view = ctx.host.readSeries(*handle);
   if (!view) {
     r.error = "read failed for '" + want + "': " + view.error();
     return r;
@@ -968,6 +999,65 @@ SeriesRead readOne(
   r.ok = true;
   return r;
 }
+
+namespace {
+
+// readOne narrowed to the display window [t_start_s, t_end_s], answering exactly what readOne's whole read cut to the
+// window answers. With the host's read_window and scan_values, no Arrow array of the whole series is built: the
+// whole-series facts (the flat runs, the first sample that anchors the window, the span an empty window reports) come
+// from the cheaper value scan, and the samples from a read of the window only.
+SeriesRead readOneWindowed(
+    const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, const std::string& want,
+    const TopicDatasetMap& topic_dataset, const std::optional<double>& t_start_s,
+    const std::optional<double>& t_end_s) {
+  if ((!t_start_s && !t_end_s) || !ctx.read_window || !ctx.scan_values) {
+    SeriesRead r = readOne(catalog, ctx, want, topic_dataset);
+    if (r.ok) {
+      applyDisplayWindow(r, ctx, catalog, t_start_s, t_end_s);
+    }
+    return r;
+  }
+  SeriesRead r;
+  const auto handle = resolveInto(r, catalog, want, topic_dataset);
+  if (!handle) {
+    return r;
+  }
+  FlatRunAccumulator runs;
+  const auto scanned = ctx.scan_values(
+      *handle,
+      [&runs](std::span<const std::int64_t> ts, std::span<const double> values) { runs.addBlock(ts, values); });
+  if (!scanned) {
+    r.error = "read failed for '" + want + "': " + scanned.error();
+    return r;
+  }
+  if (runs.samples() == 0) {
+    r.error = "series '" + want + "' has no numeric samples";
+    return r;
+  }
+  r.flat = runs.summary();
+  const auto window = nsWindow(ctx, catalog, r, runs.firstNs(), t_start_s, t_end_s);
+  if (!window) {
+    r.error = "cannot map the display window for this series";
+    return r;
+  }
+  // Capped at the scan's last sample, so samples a stream appends between the two reads stay out of the window and
+  // the samples and the flat facts describe one snapshot (retention, GUI-thread only, cannot move in between).
+  auto view = ctx.read_window(*handle, window->first, std::min(window->last, runs.lastNs()));
+  if (!view) {
+    r.error = "read failed for '" + want + "': " + view.error();
+    return r;
+  }
+  // An empty read is a window outside the series, which cutToWindow reports.
+  if (view->rowCount() > 0 && !readSeriesDoubles(*view, r.ts, r.vals)) {
+    r.error = "series '" + want + "' is not a numeric time series";
+    return r;
+  }
+  r.ok = true;
+  cutToWindow(r, *window, runs.lastNs(), t_start_s, t_end_s);
+  return r;
+}
+
+}  // namespace
 
 // Coarsen until the serialized payload fits the response cap so spiky data
 // stays representable without overrunning the model's context. Returns
@@ -1033,11 +1123,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   // every mode below so 'stats' and 'buckets', single-path and batched, all
   // apply the same window the same way.
   auto readWindowed = [&](const std::string& want) {
-    SeriesRead r = readOne(*catalog, ctx, want, topic_dataset);
-    if (r.ok) {
-      applyDisplayWindow(r, ctx, *catalog, t_start_s, t_end_s);
-    }
-    return r;
+    return readOneWindowed(*catalog, ctx, want, topic_dataset, t_start_s, t_end_s);
   };
   auto readTask = [&](const PathTask& task) { return task.forced ? forcedFailure(task) : readWindowed(task.path); };
 

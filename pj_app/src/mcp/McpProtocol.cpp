@@ -130,13 +130,16 @@ json appToolEntries() {
           schema({{"dataset", dataset}}, {"dataset"})),
       tool(
           "export_series",
-          "Write several series to ONE time-aligned CSV for your own analysis (numpy/pandas): fits, "
+          "Write several series to ONE time-aligned file for your own analysis (numpy/pandas): fits, "
           "correlations, lags across signals. Works for every format PlotJuggler opened, so prefer it to "
           "decoding files yourself. Rows at every sample time of any series, or on a uniform rate_hz grid; "
-          "values sample-and-hold; time in display seconds (as playback). Returns the path.",
+          "values sample-and-hold; time in display seconds (as playback). Returns the path. format \"npy\" "
+          "writes a numpy structured array that numpy.load reads in well under a second, where numpy.loadtxt "
+          "takes seconds per million rows of CSV: use it beyond ~100k rows.",
           schema(
               {{"paths", paths},
-               {"path", {{"type", "string"}, {"description", "absolute .csv path (default: a temp file)"}}},
+               {"path", {{"type", "string"}, {"description", "absolute .csv or .npy path (default: a temp file)"}}},
+               {"format", {{"type", "string"}, {"enum", {"csv", "npy"}}, {"description", "csv (default) or npy"}}},
                {"rate_hz", {{"type", "number"}}},
                {"t0", {{"type", "number"}}},
                {"t1", {{"type", "number"}}}},

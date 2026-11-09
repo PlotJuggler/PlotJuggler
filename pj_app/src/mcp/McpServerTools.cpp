@@ -12,8 +12,11 @@
 #include <QTemporaryFile>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
+#include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <iterator>
 #include <limits>
@@ -126,10 +129,11 @@ using RawWindow = std::function<std::pair<int64_t, int64_t>(DatasetId)>;
 
 /// Resolves and reads `paths` the way read_series does (suffixes, "dataset:topic/field", the
 /// near-miss candidates in the error); a path resolving to a series already read is skipped. With
-/// `window`, only the samples inside it are copied, plus the one before it (its value holds at
-/// the window's start).
+/// `window`, only the samples inside it are kept, plus the one before it (its value holds at
+/// the window's start), and a context with `read_window` decodes only those.
 Expected<std::vector<Column>> readColumns(
-    const sdk::ToolboxHostView& host, const std::vector<std::string>& paths, const RawWindow& window = {}) {
+    const agent_tools::ToolContext& context, const std::vector<std::string>& paths, const RawWindow& window = {}) {
+  const sdk::ToolboxHostView& host = context.host;
   auto catalog = host.catalogSnapshot();
   if (!catalog) {
     return unexpected("catalog unavailable: " + catalog.error());
@@ -144,21 +148,23 @@ Expected<std::vector<Column>> readColumns(
     if (std::any_of(columns.begin(), columns.end(), [&](const Column& c) { return c.path == lookup.resolved->path; })) {
       continue;
     }
-    // ponytail: the host read materializes the whole series before the window applies, so peak
-    // memory is one full series (one at a time); a windowed host read is the upgrade path.
-    auto view = host.readSeries(lookup.resolved->handle);
-    if (!view) {
-      return unexpected("read failed for '" + want + "': " + view.error());
-    }
     Column column{.path = lookup.resolved->path, .dataset = 0, .stamps = {}, .values = {}};
     if (const auto source = agent_tools::dataSourceHandleFor(*catalog, lookup.resolved->dataset)) {
       column.dataset = source->id;
     }
+    const std::optional<std::pair<int64_t, int64_t>> bounds =
+        window ? std::optional(window(column.dataset)) : std::nullopt;
+    auto view = bounds && context.read_window
+                    ? context.read_window(lookup.resolved->handle, bounds->first, bounds->second)
+                    : host.readSeries(lookup.resolved->handle);
+    if (!view) {
+      return unexpected("read failed for '" + want + "': " + view.error());
+    }
     const auto stamps = view->timestamps();
     std::size_t begin = 0;
     std::size_t end = stamps.size();
-    if (window) {
-      const auto [first, last] = window(column.dataset);
+    if (bounds) {
+      const auto [first, last] = *bounds;
       begin = static_cast<std::size_t>(std::lower_bound(stamps.begin(), stamps.end(), first) - stamps.begin());
       begin = begin > 0 ? begin - 1 : 0;
       end = static_cast<std::size_t>(std::upper_bound(stamps.begin(), stamps.end(), last) - stamps.begin());
@@ -197,6 +203,36 @@ std::string csvField(const std::string& text) {
     out += c == '"' ? std::string("\"\"") : std::string(1, c);
   }
   return out + '"';
+}
+
+/// The header of a .npy file (format 3.0: UTF-8 field names) holding `rows` records of float64 fields: "time", then
+/// one per series, named by its path. numpy.load reads it as a structured array.
+std::string npyHeader(const json& names, std::size_t rows) {
+  const auto quoted = [](const std::string& text) {
+    std::string out = "'";
+    for (const char c : text) {
+      if (c == '\\' || c == '\'') {
+        out += '\\';
+      }
+      out += c;
+    }
+    return out + "'";
+  };
+  std::string dict = "{'descr': [('time', '<f8')";
+  for (const json& name : names) {
+    dict += ", (" + quoted(name.get<std::string>()) + ", '<f8')";
+  }
+  dict += "], 'fortran_order': False, 'shape': (" + std::to_string(rows) + ",), }";
+  // Magic, version and length come first, and the data must start on a 64-byte boundary.
+  constexpr std::size_t kPrefix = 6 + 2 + 4;
+  dict.append((64 - (kPrefix + dict.size() + 1) % 64) % 64, ' ');
+  dict += '\n';
+  std::string out = "\x93NUMPY";
+  out += {'\x03', '\x00'};
+  for (int shift = 0; shift < 32; shift += 8) {
+    out += static_cast<char>((dict.size() >> shift) & 0xFF);
+  }
+  return out + dict;
 }
 
 }  // namespace
@@ -425,11 +461,19 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     reply(fail("paths: a list of series paths"));
     return;
   }
+  const std::string format = args.value("format", "csv");
+  if (format != "csv" && format != "npy") {
+    reply(fail("format: csv or npy"));
+    return;
+  }
+  const bool npy = format == "npy";
   const QString requested_path = qs(args, "path");
   if (!requested_path.isEmpty() && !QFileInfo(requested_path).isAbsolute()) {
     reply(fail("path must be absolute"));
     return;
   }
+  constexpr int64_t kMinNs = std::numeric_limits<int64_t>::min();
+  constexpr int64_t kMaxNs = std::numeric_limits<int64_t>::max();
   const double t0 = args.value("t0", -std::numeric_limits<double>::infinity());
   const double t1 = args.value("t1", std::numeric_limits<double>::infinity());
   const double rate = args.value("rate_hz", 0.0);
@@ -450,56 +494,64 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     }
     const double raw_ns = seconds * 1e9 + static_cast<double>(offset.value.count());
     if (raw_ns >= 9.2e18) {
-      return std::numeric_limits<int64_t>::max();
+      return kMaxNs;
     }
     if (raw_ns <= -9.2e18) {
-      return std::numeric_limits<int64_t>::min();
+      return kMinNs;
     }
     return displaySecondsToRaw(DisplaySeconds(seconds), offset);
   };
-  auto columns = readColumns(context->host, *paths, [&](DatasetId dataset) {
+  auto columns = readColumns(*context, *paths, [&](DatasetId dataset) {
     const DisplayOffset offset = offsetOf(dataset);
-    return std::pair{
-        toRaw(t0, offset, std::numeric_limits<int64_t>::min()), toRaw(t1, offset, std::numeric_limits<int64_t>::max())};
+    return std::pair{toRaw(t0, offset, kMinNs), toRaw(t1, offset, kMaxNs)};
   });
   if (!columns) {
     reply(fail(columns.error()));
     return;
   }
-  std::vector<std::vector<double>> times;
-  for (const Column& column : *columns) {
-    const DisplayOffset offset = offsetOf(column.dataset);
-    std::vector<double>& t = times.emplace_back();
-    t.reserve(column.stamps.size());
-    for (const int64_t stamp : column.stamps) {
-      t.push_back(rawToDisplaySeconds(stamp, offset).value);
+  // Times stay integer display nanoseconds (each column's stamps, shifted in place), so rows a few ns apart stay apart
+  // and print exactly: as double seconds, an epoch-sized display time resolves only ~0.2 us.
+  for (Column& column : *columns) {
+    const int64_t offset_ns = offsetOf(column.dataset).value.count();
+    for (int64_t& stamp : column.stamps) {
+      stamp = checkedTimelineDifference(stamp, offset_ns).value_or(stamp < 0 ? kMinNs : kMaxNs);
     }
   }
+  const int64_t t0_ns = toRaw(t0, DisplayOffset{}, kMinNs);
+  const int64_t t1_ns = toRaw(t1, DisplayOffset{}, kMaxNs);
   // Rows: a uniform grid at rate_hz, else every sample time of any series, inside [t0, t1].
-  std::vector<double> stamps_grid;
-  double lo = std::numeric_limits<double>::infinity();
+  std::vector<int64_t> stamps_grid;
+  int64_t lo = kMaxNs;
   std::size_t rows = 0;
   if (rate > 0) {
-    double hi = -lo;
-    for (const auto& t : times) {
-      if (!t.empty()) {
-        lo = std::min(lo, t.front());
-        hi = std::max(hi, t.back());
+    int64_t hi = kMinNs;
+    for (const Column& column : *columns) {
+      if (!column.stamps.empty()) {
+        lo = std::min(lo, column.stamps.front());
+        hi = std::max(hi, column.stamps.back());
       }
     }
-    lo = std::max(lo, t0);
-    hi = std::min(hi, t1);
-    const double span = (hi - lo) * rate;
+    lo = std::max(lo, t0_ns);
+    hi = std::min(hi, t1_ns);
+    const double span = (static_cast<double>(hi) - static_cast<double>(lo)) * 1e-9 * rate;
     rows = hi >= lo
                ? (span < static_cast<double>(kMaxExportRows) ? static_cast<std::size_t>(span) + 1 : kMaxExportRows + 1)
                : 0;
   } else {
-    for (const auto& t : times) {
-      std::copy_if(
-          t.begin(), t.end(), std::back_inserter(stamps_grid), [t0, t1](double v) { return v >= t0 && v <= t1; });
+    // Each series is in time order, so a merge builds the grid; a sort of every stamp costs ~20x as much.
+    std::vector<int64_t> merged;
+    for (const Column& column : *columns) {
+      const auto first = std::lower_bound(column.stamps.begin(), column.stamps.end(), t0_ns);
+      const auto last = std::upper_bound(first, column.stamps.end(), t1_ns);
+      merged.clear();
+      merged.reserve(stamps_grid.size() + static_cast<std::size_t>(last - first));
+      std::set_union(stamps_grid.begin(), stamps_grid.end(), first, last, std::back_inserter(merged));
+      merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+      stamps_grid.swap(merged);
+      if (stamps_grid.size() > kMaxExportRows) {
+        break;  // the grid only grows: refused below, without merging the rest
+      }
     }
-    std::sort(stamps_grid.begin(), stamps_grid.end());
-    stamps_grid.erase(std::unique(stamps_grid.begin(), stamps_grid.end()), stamps_grid.end());
     rows = stamps_grid.size();
   }
   if (rows > kMaxExportRows) {
@@ -511,14 +563,19 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
   // The default file is created new, owner-only and randomly named, so no one can plant it first.
   std::unique_ptr<QFile> file;
   if (requested_path.isEmpty()) {
-    auto temp = std::make_unique<QTemporaryFile>(QDir::temp().filePath(u"plotjuggler_export_XXXXXX.csv"_s));
+    auto temp = std::make_unique<QTemporaryFile>(
+        QDir::temp().filePath(npy ? u"plotjuggler_export_XXXXXX.npy"_s : u"plotjuggler_export_XXXXXX.csv"_s));
     temp->setAutoRemove(false);
     if (temp->open()) {
       file = std::move(temp);
     }
-  } else if (
-      auto named = std::make_unique<QFile>(requested_path); named->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-    file = std::move(named);
+  } else {
+    // An agent often names a folder that does not exist yet.
+    QDir().mkpath(QFileInfo(requested_path).absolutePath());
+    auto named = std::make_unique<QFile>(requested_path);
+    if (named->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+      file = std::move(named);
+    }
   }
   if (file == nullptr) {
     reply(fail("cannot create " + (requested_path.isEmpty() ? QDir::tempPath() : requested_path).toStdString()));
@@ -526,38 +583,80 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
   }
   const QString path = file->fileName();
   bool written = true;
-  std::string out = "time";
   json names = json::array();
   for (const Column& column : *columns) {
-    out += ',' + csvField(column.path);
     names.push_back(column.path);
   }
-  out += '\n';
+  std::string out = npy ? npyHeader(names, rows) : "time";
+  for (const Column& column : *columns) {
+    out += npy ? std::string() : ',' + csvField(column.path);
+  }
+  out += npy ? "" : "\n";
   const auto flush = [&] {
     written = written && file->write(out.data(), static_cast<qint64>(out.size())) == static_cast<qint64>(out.size());
     out.clear();
   };
-  // Numbers are written in the C locale (a decimal comma would split a column): time to the nanosecond, each value as
-  // the shortest text that reads back to the same double.
-  const auto append_number = [&out](double number, char format, int precision) {
-    const QByteArray text = QByteArray::number(number, format, precision);
+  // Each value as the shortest text that reads back to the same double, in the C locale whatever the process's (a
+  // decimal comma would split a column). std::to_chars is ~2.5x faster than QByteArray::number, but Apple's libc++ has
+  // its floating-point overloads only from macOS 13.3, above Qt's 13.0 floor, and does not advertise them.
+  std::array<char, 32> digits{};
+  const auto append_value = [&](double value) {
+    if (std::isnan(value)) {
+      out += "nan";  // one spelling: to_chars writes a computed NaN as "-nan", or "-nan(ind)" with MSVC
+      return;
+    }
+#if defined(__cpp_lib_to_chars)
+    out.append(digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), value).ptr);
+#else
+    const QByteArray text = QByteArray::number(value, 'g', QLocale::FloatingPointShortest);
     out.append(text.constData(), static_cast<std::size_t>(text.size()));
+#endif
   };
-  // Sample-and-hold: each row holds every series' last value at or before its time (empty before the first).
+  // The time column: exact display seconds, to the nanosecond.
+  const auto append_time = [&out, &digits](int64_t ns) {
+    const uint64_t magnitude = ns < 0 ? 0 - static_cast<uint64_t>(ns) : static_cast<uint64_t>(ns);
+    if (ns < 0) {
+      out += '-';
+    }
+    out.append(
+        digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), magnitude / 1'000'000'000).ptr);
+    std::array<char, 10> fraction{'.', '0', '0', '0', '0', '0', '0', '0', '0', '0'};
+    for (uint64_t rest = magnitude % 1'000'000'000, i = 9; rest > 0; rest /= 10, --i) {
+      fraction[i] = static_cast<char>('0' + rest % 10);
+    }
+    out.append(fraction.data(), fraction.size());
+  };
+  static_assert(std::endian::native == std::endian::little, "npy records are written as little-endian <f8");
+  const auto append_raw = [&out](double value) { out.append(reinterpret_cast<const char*>(&value), sizeof value); };
+  // Sample-and-hold: each row holds every series' last value at or before its time (empty, or NaN in a .npy, before
+  // the first).
   std::vector<std::size_t> cursor(columns->size(), 0);
   for (std::size_t row = 0; row < rows && written; ++row) {
-    const double t = rate > 0 ? lo + static_cast<double>(row) / rate : stamps_grid[row];
-    append_number(t, 'f', 9);
+    const int64_t t = rate > 0 ? lo + std::llround(static_cast<double>(row) * 1e9 / rate) : stamps_grid[row];
+    if (npy) {
+      // Whole seconds and the rest apart, so the sum rounds once, to the double nearest the exact time.
+      append_raw(static_cast<double>(t / 1'000'000'000) + static_cast<double>(t % 1'000'000'000) * 1e-9);
+    } else {
+      append_time(t);
+    }
     for (std::size_t c = 0; c < columns->size(); ++c) {
-      while (cursor[c] < times[c].size() && times[c][cursor[c]] <= t) {
+      const Column& column = (*columns)[c];
+      while (cursor[c] < column.stamps.size() && column.stamps[cursor[c]] <= t) {
         ++cursor[c];
       }
+      const bool held = cursor[c] > 0;
+      if (npy) {
+        append_raw(held ? column.values[cursor[c] - 1] : std::numeric_limits<double>::quiet_NaN());
+        continue;
+      }
       out += ',';
-      if (cursor[c] > 0) {
-        append_number((*columns)[c].values[cursor[c] - 1], 'g', QLocale::FloatingPointShortest);
+      if (held) {
+        append_value(column.values[cursor[c] - 1]);
       }
     }
-    out += '\n';
+    if (!npy) {
+      out += '\n';
+    }
     if (out.size() > (1U << 22)) {
       flush();
     }
@@ -572,11 +671,14 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     reply(fail("writing " + path.toStdString() + " failed: " + why));
     return;
   }
-  reply(
-      ok({{"path", path.toStdString()},
-          {"rows", rows},
-          {"columns", names},
-          {"note", "time in display seconds (as playback); values sample-and-hold, empty before a series starts"}}));
+  reply(ok(
+      {{"path", path.toStdString()},
+       {"rows", rows},
+       {"columns", names},
+       {"format", format},
+       {"note", npy ? "numpy.load(path) is a structured array: d['time'] in display seconds (as playback), d[<column>] "
+                      "for each series, sample-and-hold, NaN before a series starts; pandas.DataFrame(d) makes a table"
+                    : "time in display seconds (as playback); values sample-and-hold, empty before a series starts"}}));
 }
 
 void McpServer::addScriptSeries(const json& args, const Caller& caller, Reply reply) {
@@ -594,7 +696,7 @@ void McpServer::addScriptSeries(const json& args, const Caller& caller, Reply re
     reply(fail(mcp::kNoServicesError));
     return;
   }
-  auto columns = readColumns(context->host, *inputs);
+  auto columns = readColumns(*context, *inputs);
   if (!columns) {
     reply(fail(columns.error()));
     return;
