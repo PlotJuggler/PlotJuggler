@@ -13,6 +13,7 @@ namespace {
 
 using PJ::agent_tools::bucketize;
 using PJ::agent_tools::computeStats;
+using PJ::agent_tools::FlatRunAccumulator;
 using PJ::agent_tools::flatRunSummary;
 
 constexpr std::int64_t kSec = 1'000'000'000;  // ns per second
@@ -277,6 +278,43 @@ TEST(FlatRunSummary, RunOfNaNsIsNotAFlatRun) {
   auto f = flatRunSummary(ts, v);
   EXPECT_FALSE(f.constant);
   EXPECT_FALSE(f.has_flat_span);
+}
+
+// A source that knows its equal runs feeds them as blocks, and one run may arrive as several blocks (a chunk boundary
+// splits it): the summary is the one the samples give.
+TEST(FlatRunAccumulator, BlocksGiveTheSampleSummary) {
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  for (int i = 0; i < 20; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * kSec);
+    v.push_back(i < 15 ? static_cast<double>(i % 5) : 42.0);
+  }
+  FlatRunAccumulator blocks;
+  for (int i = 0; i < 15; ++i) {
+    blocks.add(ts[i], ts[i], v[i], 1);
+  }
+  blocks.add(ts[15], ts[16], 42.0, 2);
+  blocks.add(ts[17], ts[19], 42.0, 3);
+  const auto expected = flatRunSummary(ts, v);
+  const auto got = blocks.summary();
+  ASSERT_TRUE(expected.has_flat_span);
+  EXPECT_EQ(got.constant, expected.constant);
+  EXPECT_EQ(got.has_flat_span, expected.has_flat_span);
+  EXPECT_DOUBLE_EQ(got.flat_span_s, expected.flat_span_s);
+  EXPECT_DOUBLE_EQ(got.flat_span_at_s, expected.flat_span_at_s);
+  EXPECT_EQ(got.flat_span_start_ns, expected.flat_span_start_ns);
+  EXPECT_EQ(blocks.samples(), 20u);
+  EXPECT_EQ(blocks.firstNs(), 0);
+  EXPECT_EQ(blocks.lastNs(), 19 * kSec);
+}
+
+TEST(FlatRunAccumulator, OneValueSplitAcrossBlocksIsConstant) {
+  FlatRunAccumulator blocks;
+  blocks.add(0, 9 * kSec, 7.0, 10);
+  blocks.add(10 * kSec, 19 * kSec, 7.0, 10);
+  EXPECT_TRUE(blocks.summary().constant);
+  blocks.add(20 * kSec, 20 * kSec, kNaN, 1);
+  EXPECT_FALSE(blocks.summary().constant);
 }
 
 }  // namespace

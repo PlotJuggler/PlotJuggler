@@ -18,6 +18,7 @@
 #include <QTcpSocket>
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <utility>
 
@@ -26,11 +27,13 @@
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/toolbox_plugin_base.hpp"
+#include "pj_datastore/plugin_data_host.hpp"
 #include "pj_runtime/ActiveWidgetsMarker.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PluginRuntimeCatalog.h"
+#include "pj_runtime/SessionManager.h"
 #include "pj_widgets/GraphicsApi.h"
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
@@ -57,10 +60,24 @@ QByteArray randomToken() {
   return QByteArray(reinterpret_cast<const char*>(random.data()), sizeof(random)).toHex();
 }
 
-/// The agent tool context over a toolbox session's services: the views a toolbox plugin gets.
-agent_tools::ToolContext contextFrom(PJ_service_registry_t registry) {
+/// The agent tool context over a toolbox session's services (the views a toolbox plugin gets), plus windowed reads of
+/// `engine`, the session's data: the SDK's read_series_arrow has no time window.
+agent_tools::ToolContext contextFrom(PJ_service_registry_t registry, const DataEngine& engine) {
   const sdk::ServiceRegistry services(registry);
   agent_tools::ToolContext context;
+  context.read_window = [&engine](
+                            sdk::FieldHandle field, std::int64_t first,
+                            std::int64_t last) -> Expected<sdk::MaterializedSeriesView> {
+    sdk::ArrowSchemaHolder schema;
+    sdk::ArrowArrayHolder array;
+    if (auto status = readSeriesArrowWindow(engine, field, first, last, schema.out(), array.out()); !status) {
+      return unexpected(status.error());
+    }
+    return sdk::MaterializedSeriesView(std::move(schema), std::move(array));
+  };
+  context.scan_values = [&engine](sdk::FieldHandle field, const agent_tools::ValueBlockSink& on_block) {
+    return scanSeriesValues(engine, field, on_block);
+  };
   context.host = services.get<sdk::ToolboxHostService>().value_or(sdk::ToolboxHostView{});
   context.dp = services.get<sdk::DataProcessorsHostService>().value_or(sdk::DataProcessorsHostView{});
   context.objects = services.get<sdk::ToolboxObjectReadHostService>().value_or(sdk::ToolboxObjectReadHostView{});
@@ -387,7 +404,7 @@ std::optional<agent_tools::ToolContext> McpServer::agentContext(const QString& o
       return std::nullopt;
     }
   }
-  return contextFrom(MainWindow::toolboxSessionServices(*session));
+  return contextFrom(MainWindow::toolboxSessionServices(*session), window_.appSession().sessionManager().dataEngine());
 }
 
 std::optional<agent_tools::ToolContext> McpServer::contextFor(const Caller& caller) {
@@ -396,7 +413,7 @@ std::optional<agent_tools::ToolContext> McpServer::contextFor(const Caller& call
   if (isPublic(caller)) {
     context = agentContext(owner);
   } else if (const auto token = plugin_tokens_.constFind(caller.token); token != plugin_tokens_.cend()) {
-    context = contextFrom(token->services);
+    context = contextFrom(token->services, window_.appSession().sessionManager().dataEngine());
     owner = token->owner;
   }
   if (context) {

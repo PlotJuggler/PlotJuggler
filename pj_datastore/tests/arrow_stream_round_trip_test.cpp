@@ -18,8 +18,14 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
+#include <functional>
+#include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "nanoarrow/nanoarrow.h"
@@ -47,9 +53,10 @@ struct BuiltStream {
   nanoarrow::UniqueArray array;
 };
 
+/// `nulls`, when given, marks the rows written as null instead of their value.
 BuiltStream makeStream(
     const std::vector<int64_t>& timestamps, const std::vector<double>& values,
-    ArrowType value_type = NANOARROW_TYPE_DOUBLE) {
+    ArrowType value_type = NANOARROW_TYPE_DOUBLE, const std::vector<bool>& nulls = {}) {
   EXPECT_EQ(timestamps.size(), values.size());
   const int64_t n = static_cast<int64_t>(timestamps.size());
 
@@ -68,7 +75,12 @@ BuiltStream makeStream(
   EXPECT_EQ(ArrowArrayStartAppending(result.array.get()), NANOARROW_OK);
   for (int64_t i = 0; i < n; ++i) {
     EXPECT_EQ(ArrowArrayAppendInt(result.array->children[0], timestamps[static_cast<std::size_t>(i)]), NANOARROW_OK);
-    EXPECT_EQ(ArrowArrayAppendDouble(result.array->children[1], values[static_cast<std::size_t>(i)]), NANOARROW_OK);
+    const auto row = static_cast<std::size_t>(i);
+    if (row < nulls.size() && nulls[row]) {
+      EXPECT_EQ(ArrowArrayAppendNull(result.array->children[1], 1), NANOARROW_OK);
+    } else {
+      EXPECT_EQ(ArrowArrayAppendDouble(result.array->children[1], values[row]), NANOARROW_OK);
+    }
     EXPECT_EQ(ArrowArrayFinishElement(result.array.get()), NANOARROW_OK);
   }
   EXPECT_EQ(ArrowArrayFinishBuildingDefault(result.array.get(), &err), NANOARROW_OK) << err.message;
@@ -447,6 +459,308 @@ TEST(ArrowStreamRoundTripTest, ReadSeriesArrowMergesChunksCommittedOutOfOrder) {
     ASSERT_EQ(timestamps[row], static_cast<int64_t>(row));
     ASSERT_DOUBLE_EQ(values[row], double(row) * 0.1);
   }
+}
+
+// ---------------------------------------------------------------------------
+// readSeriesArrowWindow
+// ---------------------------------------------------------------------------
+
+constexpr Timestamp kEver = std::numeric_limits<Timestamp>::min();
+constexpr Timestamp kNever = std::numeric_limits<Timestamp>::max();
+
+/// One read through readSeriesArrowWindow, row by row; a null value reads as nullopt.
+struct WindowRead {
+  std::vector<int64_t> ts;
+  std::vector<std::optional<double>> values;
+  std::vector<int64_t> ints;  ///< the values read as integers, exact for an integer column
+};
+
+WindowRead readWindow(DataEngine& engine, PJ_field_handle_t field, Timestamp first, Timestamp last) {
+  WindowRead out;
+  nanoarrow::UniqueSchema schema;
+  nanoarrow::UniqueArray array;
+  const Status status = readSeriesArrowWindow(engine, field, first, last, schema.get(), array.get());
+  EXPECT_TRUE(status) << status.error();
+  if (!status) {
+    return out;
+  }
+  nanoarrow::UniqueArrayView view;
+  ArrowError err;
+  EXPECT_EQ(ArrowArrayViewInitFromSchema(view.get(), schema.get(), &err), NANOARROW_OK) << err.message;
+  EXPECT_EQ(ArrowArrayViewSetArray(view.get(), array.get(), &err), NANOARROW_OK) << err.message;
+  for (int64_t i = 0; i < array->length; ++i) {
+    out.ts.push_back(ArrowArrayViewGetIntUnsafe(view->children[0], i));
+    const bool is_null = ArrowArrayViewIsNull(view->children[1], i);
+    out.values.push_back(is_null ? std::nullopt : std::optional(ArrowArrayViewGetDoubleUnsafe(view->children[1], i)));
+    out.ints.push_back(is_null ? 0 : ArrowArrayViewGetIntUnsafe(view->children[1], i));
+  }
+  return out;
+}
+
+/// The handle of the first field whose name contains `name_part` in `engine`'s toolbox catalog (the first field of the
+/// first topic for an empty `name_part`).
+PJ_field_handle_t fieldHandleOf(DataEngine& engine, std::string_view name_part = {}) {
+  ObjectStore object_store;
+  DatastoreToolboxHost toolbox_impl(engine, object_store);
+  auto snapshot = sdk::ToolboxHostView(toolbox_impl.raw()).catalogSnapshot();
+  EXPECT_TRUE(snapshot.has_value());
+  if (name_part.empty()) {
+    return snapshot->fields()[snapshot->topics()[0].first_field].handle;
+  }
+  for (const auto& f : snapshot->fields()) {
+    if (std::string_view(f.name.data, f.name.size).find(name_part) != std::string_view::npos) {
+      return f.handle;
+    }
+  }
+  ADD_FAILURE() << "no field named like " << name_part;
+  return {};
+}
+
+/// A scalar topic with one chunk per [first, last] batch of integer timestamps, committed in the given order, holding
+/// `value(t)` at each t. Returns the field's handle.
+PJ_field_handle_t writeBatches(
+    DataEngine& engine, const std::vector<std::pair<int, int>>& batches,
+    const std::function<NumericValue(int)>& value = [](int t) { return NumericValue(double(t) * 0.1); },
+    NumericType type = NumericType::kFloat64) {
+  const auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "src"});
+  EXPECT_TRUE(dataset.has_value());
+  DataWriter writer = engine.createWriter();
+  const auto handle = writer.registerScalarSeries(*dataset, "data", type);
+  EXPECT_TRUE(handle.has_value());
+  for (const auto& [first, last] : batches) {
+    for (int t = first; t <= last; ++t) {
+      writer.appendScalar(*handle, t, value(t));
+    }
+    EXPECT_FALSE(engine.commitChunks(writer.flushAll()).empty());
+  }
+  return fieldHandleOf(engine);
+}
+
+std::vector<int64_t> stamps(int64_t first, int64_t last) {
+  std::vector<int64_t> out;
+  for (int64_t t = first; t <= last; ++t) {
+    out.push_back(t);
+  }
+  return out;
+}
+
+// The window's samples plus the one before it, whose value holds at the window's start.
+TEST(ReadSeriesArrowWindowTest, ReturnsTheWindowPlusThePrecedingSample) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{0, 99}, {100, 199}, {200, 249}});
+  const WindowRead read = readWindow(engine, field, 150, 160);
+  EXPECT_EQ(read.ts, stamps(149, 160));
+  ASSERT_EQ(read.values.size(), read.ts.size());
+  for (std::size_t i = 0; i < read.ts.size(); ++i) {
+    ASSERT_TRUE(read.values[i].has_value());
+    EXPECT_DOUBLE_EQ(*read.values[i], double(read.ts[i]) * 0.1);
+  }
+}
+
+TEST(ReadSeriesArrowWindowTest, AWindowBeforeTheSeriesHasNoPrecedingSample) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{0, 99}, {100, 199}});
+  EXPECT_EQ(readWindow(engine, field, -10, 5).ts, stamps(0, 5));
+}
+
+// Past the end, the last sample is the value that still holds.
+TEST(ReadSeriesArrowWindowTest, AWindowPastTheEndReturnsTheLastSample) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{0, 99}, {100, 249}});
+  EXPECT_EQ(readWindow(engine, field, 300, 400).ts, (std::vector<int64_t>{249}));
+}
+
+TEST(ReadSeriesArrowWindowTest, TheUnboundedWindowIsTheWholeSeries) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{0, 99}, {100, 199}, {200, 249}});
+  const WindowRead read = readWindow(engine, field, kEver, kNever);
+  EXPECT_EQ(read.ts, stamps(0, 249));
+  ASSERT_EQ(read.values.size(), 250u);
+  EXPECT_DOUBLE_EQ(*read.values[249], 24.9);
+}
+
+// Chunks committed out of time order (an on-demand series' backfill) still read back in time order, in a window and
+// whole.
+TEST(ReadSeriesArrowWindowTest, ChunksCommittedOutOfOrderReadBackInTimeOrder) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{100, 199}, {0, 99}, {200, 249}});
+  EXPECT_EQ(readWindow(engine, field, 95, 105).ts, stamps(94, 105));
+  const WindowRead whole = readWindow(engine, field, kEver, kNever);
+  EXPECT_EQ(whole.ts, stamps(0, 249));
+  for (std::size_t i = 0; i < whole.ts.size(); ++i) {
+    ASSERT_DOUBLE_EQ(*whole.values[i], double(whole.ts[i]) * 0.1);
+  }
+}
+
+// A chunk whose values are all equal is stored constant-encoded; it reads back like any other.
+TEST(ReadSeriesArrowWindowTest, AConstantChunkReadsBackItsValue) {
+  DataEngine engine;
+  const auto field =
+      writeBatches(engine, {{0, 99}, {100, 199}}, [](int t) { return NumericValue(t < 100 ? 7.5 : double(t)); });
+  {
+    const auto lock = engine.lockEngine();
+    const auto& chunks = engine.getTopicStorage(field.topic.id)->sealedChunks();
+    ASSERT_EQ(chunks.size(), 2u);
+    EXPECT_EQ(chunks.front().columnEncoding(0), EncodingType::kConstant);
+  }
+  const WindowRead read = readWindow(engine, field, kEver, kNever);
+  ASSERT_EQ(read.values.size(), 200u);
+  EXPECT_DOUBLE_EQ(*read.values[0], 7.5);
+  EXPECT_DOUBLE_EQ(*read.values[99], 7.5);
+  EXPECT_DOUBLE_EQ(*read.values[100], 100.0);
+}
+
+// Integers beyond a double's 53-bit mantissa stay exact.
+TEST(ReadSeriesArrowWindowTest, Int64ValuesStayExact) {
+  DataEngine engine;
+  constexpr int64_t kBase = (int64_t{1} << 62) + 1;
+  const auto field = writeBatches(
+      engine, {{0, 99}, {100, 199}}, [](int t) { return NumericValue(kBase + 2 * t); }, NumericType::kInt64);
+  const WindowRead read = readWindow(engine, field, 50, 150);
+  ASSERT_EQ(read.ts, stamps(49, 150));
+  for (std::size_t i = 0; i < read.ts.size(); ++i) {
+    ASSERT_EQ(read.ints[i], kBase + 2 * read.ts[i]);
+  }
+}
+
+// Rows 1..8 holding 1..8, with rows 3 and 6 null.
+const std::vector<int64_t> kNullableStamps = stamps(1, 8);
+const std::vector<double> kNullableValues{1, 2, 3, 4, 5, 6, 7, 8};
+const std::vector<bool> kNullRows{false, false, true, false, false, true, false, false};
+
+/// The float64 field "metric/value" holding kNullableValues, written through the Arrow ingest path so the kNullRows
+/// rows are stored null.
+PJ_field_handle_t writeNullableMetric(DataEngine& engine) {
+  const auto td_id = engine.createTimeDomain("td");
+  const auto ds_id = engine.createDataset(DatasetDescriptor{.source_name = "src", .time_domain_id = *td_id});
+  DatastoreSourceWriteHost write_host(engine, PJ_data_source_handle_t{static_cast<uint32_t>(*ds_id)});
+  auto write_vtable = write_host.raw();
+  PJ_topic_handle_t topic{};
+  PJ_error_t err{};
+  EXPECT_TRUE(write_vtable.vtable->ensure_topic(write_vtable.ctx, PJ_string_view_t{"metric", 6}, &topic, &err));
+  ArrowArrayStream stream{};
+  initOneBatchStream(&stream, makeStream(kNullableStamps, kNullableValues, NANOARROW_TYPE_DOUBLE, kNullRows));
+  EXPECT_TRUE(
+      write_vtable.vtable->append_arrow_stream(write_vtable.ctx, topic, &stream, PJ_string_view_t{"ts_col", 6}, &err))
+      << err.message;
+  write_host.flushPending();
+  return fieldHandleOf(engine, "value");
+}
+
+// Null rows stay null, including the preceding sample.
+TEST(ReadSeriesArrowWindowTest, NullRowsStayNull) {
+  DataEngine engine;
+  const auto field = writeNullableMetric(engine);
+  const WindowRead whole = readWindow(engine, field, kEver, kNever);
+  ASSERT_EQ(whole.ts, kNullableStamps);
+  for (std::size_t i = 0; i < kNullRows.size(); ++i) {
+    EXPECT_EQ(whole.values[i].has_value(), !kNullRows[i]) << "row " << i;
+  }
+  const WindowRead window = readWindow(engine, field, 4, 5);  // preceded by the null at 3
+  ASSERT_EQ(window.ts, stamps(3, 5));
+  EXPECT_FALSE(window.values[0].has_value());
+  EXPECT_DOUBLE_EQ(*window.values[1], 4.0);
+}
+
+// Retention evicted the rows below its floor: the sample before the window is the first one kept, not an evicted one.
+TEST(ReadSeriesArrowWindowTest, NoPrecedingSampleBelowTheRetentionFloor) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{0, 99}, {100, 199}});
+  engine.enforceRetention(50);  // floor 149: the first chunk goes, the second straddles it
+  EXPECT_EQ(readWindow(engine, field, 0, 160).ts, stamps(149, 160));
+}
+
+// A field that appears mid-stream, backfilled before an older chunk's rows: the sample before the window is the
+// field's own last one, not the topic's (whose chunk does not hold the field).
+TEST(ReadSeriesArrowWindowTest, ThePrecedingSampleIsTheFieldsOwn) {
+  DataEngine engine;
+  const auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "src"});
+  DataWriter writer = engine.createWriter();
+  const auto topic = writer.registerTopic(*dataset, TopicDescriptor{.name = "multi", .dataset_id = *dataset});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_TRUE(writer.ensureColumn(*topic, "a", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.beginRow(*topic, 20).has_value());
+  writer.set<double>(*topic, 0, 1.0);
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  engine.commitChunks(writer.flushAll());  // a chunk without "b"
+
+  DataWriter backfill = engine.createWriter();
+  ASSERT_TRUE(backfill.ensureColumn(*topic, "b", PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(backfill.beginRow(*topic, 10).has_value());
+  backfill.set<double>(*topic, 0, 2.0);
+  backfill.set<double>(*topic, 1, 7.0);
+  ASSERT_TRUE(backfill.finishRow(*topic).has_value());
+  engine.commitChunks(backfill.flushAll());
+
+  const WindowRead read = readWindow(engine, fieldHandleOf(engine, "b"), 21, 30);
+  ASSERT_EQ(read.ts, (std::vector<int64_t>{10}));
+  EXPECT_DOUBLE_EQ(*read.values[0], 7.0);
+}
+
+/// scanSeriesValues' blocks, a constant block expanded to one value per sample.
+struct ScannedSeries {
+  std::vector<Timestamp> ts;
+  std::vector<double> values;
+  std::size_t blocks = 0;
+  std::size_t constant_blocks = 0;
+};
+
+ScannedSeries scan(const DataEngine& engine, PJ_field_handle_t field) {
+  ScannedSeries out;
+  const Status status = scanSeriesValues(engine, field, [&out](Span<const Timestamp> ts, Span<const double> values) {
+    ++out.blocks;
+    out.ts.insert(out.ts.end(), ts.begin(), ts.end());
+    if (values.size() == 1 && ts.size() > 1) {
+      ++out.constant_blocks;
+      out.values.insert(out.values.end(), ts.size(), values[0]);
+    } else {
+      EXPECT_EQ(values.size(), ts.size());
+      out.values.insert(out.values.end(), values.begin(), values.end());
+    }
+  });
+  EXPECT_TRUE(status.has_value()) << status.error();
+  return out;
+}
+
+// One block per chunk; a constant-encoded chunk is a single value.
+TEST(ScanSeriesValuesTest, AConstantChunkIsOneValue) {
+  DataEngine engine;
+  const auto field =
+      writeBatches(engine, {{0, 9}, {10, 19}}, [](int t) { return NumericValue(t < 10 ? 5.0 : double(t)); });
+  const auto scanned = scan(engine, field);
+  EXPECT_EQ(scanned.blocks, 2u);
+  EXPECT_EQ(scanned.constant_blocks, 1u);
+  EXPECT_EQ(scanned.ts, stamps(0, 19));
+  for (std::size_t i = 0; i < scanned.values.size(); ++i) {
+    EXPECT_DOUBLE_EQ(scanned.values[i], i < 10 ? 5.0 : double(i));
+  }
+}
+
+TEST(ScanSeriesValuesTest, NullsAreNaN) {
+  DataEngine engine;
+  const auto scanned = scan(engine, writeNullableMetric(engine));
+  ASSERT_EQ(scanned.ts, kNullableStamps);
+  for (std::size_t i = 0; i < scanned.values.size(); ++i) {
+    EXPECT_EQ(std::isnan(scanned.values[i]), static_cast<bool>(kNullRows[i])) << "row " << i;
+  }
+}
+
+// A backfilled chunk still comes as whole blocks, in time order.
+TEST(ScanSeriesValuesTest, ChunksCommittedOutOfOrderScanInTimeOrder) {
+  DataEngine engine;
+  const auto scanned = scan(engine, writeBatches(engine, {{100, 199}, {0, 99}, {200, 249}}));
+  EXPECT_EQ(scanned.blocks, 3u);
+  ASSERT_EQ(scanned.ts, stamps(0, 249));
+  for (std::size_t i = 0; i < scanned.values.size(); ++i) {
+    ASSERT_DOUBLE_EQ(scanned.values[i], double(i) * 0.1);
+  }
+}
+
+TEST(ScanSeriesValuesTest, StartsAtTheRetentionFloor) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{0, 99}, {100, 199}});
+  engine.enforceRetention(50);  // floor 149
+  EXPECT_EQ(scan(engine, field).ts, stamps(149, 199));
 }
 
 }  // namespace

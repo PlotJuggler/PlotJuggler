@@ -147,6 +147,11 @@ class RangeCursor {
   /// forEach for a globally ordered stream). Exhausts the cursor.
   void forEachChunk(std::function<void(const ChunkRowRange&)> callback);
 
+  /// Iterate in forEach's row order, a run of consecutive rows of one chunk at a time: each run is as long as the
+  /// merge allows, so chunks that do not overlap come as one run each and only an overlap splits them. Exhausts the
+  /// cursor.
+  void forEachOrderedRun(const std::function<void(const ChunkRowRange&)>& callback);
+
  private:
   const std::deque<TopicChunk>* chunks_;
   PJ::Timestamp t_min_;
@@ -303,6 +308,11 @@ class SeriesReader {
 // "no floor" value is kNoRetentionFloor.
 [[nodiscard]] std::optional<SampleRow> latestAt(
     const std::deque<TopicChunk>& chunks, PJ::Timestamp t, PJ::Timestamp retention_floor = kNoRetentionFloor);
+
+// latestAt among the chunks `include` accepts only, e.g. those holding a column that appeared mid-stream.
+[[nodiscard]] std::optional<SampleRow> latestAt(
+    const std::deque<TopicChunk>& chunks, PJ::Timestamp t, PJ::Timestamp retention_floor,
+    const std::function<bool(const TopicChunk&)>& include);
 
 // Create a range cursor
 [[nodiscard]] RangeCursor rangeQuery(const std::deque<TopicChunk>& chunks, PJ::Timestamp t_min, PJ::Timestamp t_max);

@@ -37,4 +37,4 @@ ThreadSanitizer entry points in `build.sh` and CI, with their 90-second timeouts
 | Write / read facades | `include/pj_datastore/writer.hpp`, `reader.hpp` |
 | Series / range / latest-at queries | `include/pj_datastore/query.hpp` |
 | Transform interfaces + built-ins | `include/pj_datastore/incremental_engine.hpp`, `builtin_transforms.hpp` |
-| C-ABI host bridges (source/parser/toolbox, object surfaces, catalog snapshot v2) | `include/pj_datastore/plugin_data_host.hpp` (the `DatastoreToolboxHost` comment owns the v2 rules), `docs/OBJECT_STORE_DESIGN.md` |
+| C-ABI host bridges (source/parser/toolbox, object surfaces, catalog snapshot v2), the windowed series read and value scan the MCP tools use | `include/pj_datastore/plugin_data_host.hpp` (the `DatastoreToolboxHost` comment owns the v2 rules), `docs/OBJECT_STORE_DESIGN.md` |

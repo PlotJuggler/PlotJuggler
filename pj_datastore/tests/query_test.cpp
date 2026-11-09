@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "pj_base/types.hpp"
@@ -397,6 +398,35 @@ TEST_F(SeriesReaderFloorTest, DefaultIsNoFloor) {
   const auto bounds = series.bounds();
   ASSERT_TRUE(bounds.has_value());
   EXPECT_EQ(bounds->time.min, 0);
+}
+
+// forEachOrderedRun's runs concatenate to forEach's rows, ties included, and only an overlap splits a chunk.
+TEST(QueryTest, OrderedRunsConcatenateToTheMergedRows) {
+  std::deque<TopicChunk> chunks;
+  chunks.push_back(makeChunkFromTimestamps({0, 2, 4, 6}));
+  chunks.push_back(makeChunkFromTimestamps({1, 2, 3, 8}));
+  chunks.push_back(makeChunkFromTimestamps({10, 11, 12}));
+  using Row = std::pair<const TopicChunk*, std::size_t>;
+  const std::vector<std::pair<Timestamp, Timestamp>> windows = {
+      {std::numeric_limits<Timestamp>::min(), std::numeric_limits<Timestamp>::max()}, {2, 6}, {3, 3}, {7, 9}, {10, 12}};
+  for (const auto& [t_min, t_max] : windows) {
+    std::vector<Row> merged;
+    RangeCursor(chunks, t_min, t_max).forEach([&](const SampleRow& row) {
+      merged.emplace_back(row.chunk, row.row_index);
+    });
+    std::vector<Row> runs;
+    std::size_t run_count = 0;
+    RangeCursor(chunks, t_min, t_max).forEachOrderedRun([&](const ChunkRowRange& run) {
+      ++run_count;
+      for (std::size_t row = run.row_start; row < run.row_end; ++row) {
+        runs.emplace_back(run.chunk, row);
+      }
+    });
+    EXPECT_EQ(runs, merged) << "window [" << t_min << ", " << t_max << "]";
+    if (t_min == 10) {
+      EXPECT_EQ(run_count, 1u);
+    }
+  }
 }
 
 }  // namespace
