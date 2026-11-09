@@ -10,7 +10,7 @@ in a single application.
      https://plotjuggler.io/videos/pj-plotting-800.jpg,
      https://plotjuggler.io/videos/pj-waymo-800.jpg. -->
 
-![Robot model, camera feeds, depth images and joint torque plots in a shared PJ4 workspace](docs/images/anymal.jpg)
+![Robot model, camera feeds, depth images and joint torque plots in a shared PJ4 workspace](docs/images/anymal.png)
 
 ## Analyze signals interactively
 
