@@ -589,6 +589,46 @@ TEST_F(McpServerTest, AWronglyTypedArgumentIsAToolError) {
   EXPECT_NE(text.find("bad arguments for open_file"), std::string::npos) << text;
 }
 
+// initialize and server/discover tell an agent what is loaded, with a path it can use as is, so it need not start with
+// list_topics and describe_topic; with nothing loaded it says nothing about data.
+TEST_F(McpServerTest, InitializeSaysWhatIsLoaded) {
+  const json initialize = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", json::object()}};
+  const std::string empty = rpcAs(token_, initialize).body["result"].value("instructions", "");
+  EXPECT_FALSE(empty.empty());
+  EXPECT_EQ(empty.find("Loaded when"), std::string::npos) << empty;
+
+  ASSERT_NE(loadMock(), 0);
+  const std::string loaded = rpcAs(token_, initialize).body["result"].value("instructions", "");
+  EXPECT_EQ(loaded.rfind(empty, 0), 0U) << loaded;  // the summary follows the usual instructions
+  EXPECT_NE(loaded.find("Loaded when"), std::string::npos) << loaded;
+  EXPECT_NE(loaded.find("mock/file_data: 1 numeric fields: value"), std::string::npos) << loaded;
+  const std::string example = "a.mock:mock/file_data/value";
+  EXPECT_NE(loaded.find(example), std::string::npos) << loaded;
+  const auto [read, read_error] = result(call("read_series", {{"paths", {example}}}));
+  EXPECT_FALSE(read_error) << read;  // the example path resolves
+  // A 2026-era client reads the instructions from server/discover alone.
+  const json discover = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "server/discover"}, {"params", json::object()}};
+  EXPECT_EQ(rpcAs(token_, discover).body["result"].value("instructions", ""), loaded);
+
+  // Two files of one name: each dataset lists its own topics once, and the shared name is flagged.
+  QTemporaryDir other;
+  ASSERT_TRUE(other.isValid());
+  const auto [opened, open_error] =
+      result(call("open_file", {{"path", pj_app_test::makeMockFile(other, "a.mock").toStdString()}}));
+  ASSERT_FALSE(open_error) << opened;
+  const std::string twice = rpcAs(token_, initialize).body["result"].value("instructions", "");
+  const auto count = [&twice](const std::string& needle) {
+    std::size_t n = 0;
+    for (std::size_t at = twice.find(needle); at != std::string::npos; at = twice.find(needle, at + 1)) {
+      ++n;
+    }
+    return n;
+  };
+  EXPECT_EQ(count("\n- a.mock"), 2U) << twice;
+  EXPECT_EQ(count("mock/file_data: 1 numeric fields"), 2U) << twice;
+  EXPECT_EQ(count("another loaded dataset has this name"), 2U) << twice;
+}
+
 TEST_F(McpServerTest, ExportQuotesHeadersAndRefusesTooManyRows) {
   ASSERT_NE(loadMock(), 0);
   // The first plottable path add_script_series reports.

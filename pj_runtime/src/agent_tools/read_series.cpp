@@ -444,31 +444,6 @@ json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::s
       cap, max_points);
 }
 
-// True for every primitive type read_series can plot as a numeric time
-// series -- everything except the two kinds readSeriesDoubles already
-// refuses (string, bool). Shared with the topic expansion below so "numeric"
-// means the same thing in both places.
-bool isNumericFieldType(PJ::PrimitiveType t) {
-  return t != PJ::PrimitiveType::kString && t != PJ::PrimitiveType::kBool;
-}
-
-// True for a field that counts as one of a topic's "real" signals: numeric,
-// and NOT header/*-style (a ROS header's stamp/seq are metadata, not
-// something to plot). One predicate for every place that enumerates a
-// topic's fields for read_series -- the bare-topic expansion
-// (topicNumericFieldPaths) and the unread-fields count
-// (topicNumericFieldNames) -- so a topic with a header spends its
-// buckets/raw batch cap on its actual channels, not on header/stamp/*.
-bool isSignalField(PJ::PrimitiveType type, std::string_view field_name) {
-  if (!isNumericFieldType(type)) {
-    return false;
-  }
-  while (!field_name.empty() && field_name.front() == '/') {
-    field_name.remove_prefix(1);
-  }
-  return field_name.rfind("header/", 0) != 0;
-}
-
 // Every numeric field of one already-resolved topic, as read_series paths
 // in catalog order -- what a topic-only path expands to. Qualified with
 // "dataset:" using the same rule resolveSeriesPath's own qualifying does, so

@@ -146,6 +146,10 @@ class McpServer : public QObject {
   /// The agent tool context `caller`'s token gives: the public owner's agentContext, or its plugin
   /// session's services. nullopt once the token is revoked or the services could not be built.
   [[nodiscard]] std::optional<agent_tools::ToolContext> contextFor(const Caller& caller);
+  /// What `caller` would find loaded (datasets with their display time ranges, topics, numeric fields), for the
+  /// initialize and server/discover instructions; empty when nothing is loaded. Capped, since a client repeats it in
+  /// every request. Runs on the GUI thread, over one catalog snapshot.
+  [[nodiscard]] std::string loadedSummary(const Caller& caller);
   /// Replies with `result`, or queues it on resume_tick_ while it is deferred. Drops it once
   /// `caller`'s token is revoked (a continuation's follow-up included).
   void runAgentTool(const std::string& tool, const Caller& caller, agent_tools::ToolResult result, Reply reply);
