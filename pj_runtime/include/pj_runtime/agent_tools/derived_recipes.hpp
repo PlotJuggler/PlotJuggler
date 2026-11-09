@@ -71,6 +71,9 @@ struct QualifierMatch {
   std::uint32_t topic_hi = 0;
 };
 [[nodiscard]] QualifierMatch matchDatasetQualifier(const PJ::sdk::CatalogSnapshot& catalog, std::string_view series);
+// The same over a catalog's sources and topic count, for the v2 snapshot as well.
+[[nodiscard]] QualifierMatch matchDatasetQualifier(
+    std::span<const PJ_data_source_info_t> sources, std::size_t topic_count, std::string_view series);
 
 // Join a topic name and a field path into the canonical curve path (tolerates a leading '/'
 // on the field).

@@ -209,13 +209,18 @@ void listScalarTopics(
 }
 
 // Scalar-topic half of describe_topic, shared by the catalog-snapshot-v2 and
-// legacy-v1 paths (identical span shapes either way).
+// legacy-v1 paths (identical span shapes either way). A "dataset:" qualifier
+// narrows the search to that dataset and stays on the field paths, so
+// read_series takes them as they are.
 ToolResult describeScalarTopic(
     std::span<const PJ_topic_info_t> topics, std::span<const PJ_field_info_t> fields,
-    const std::map<std::uint32_t, std::string>& topic_dataset, const std::string& want) {
-  for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
+    std::span<const PJ_data_source_info_t> sources, const std::string& want) {
+  const QualifierMatch qm = matchDatasetQualifier(sources, topics.size(), want);
+  const std::string qualifier = want.substr(0, want.size() - qm.bare.size());
+  const TopicDatasetMap topic_dataset = datasetByTopicIndex(sources);
+  for (std::uint32_t ti = qm.topic_lo; ti < qm.topic_hi; ++ti) {
     const auto& topic = topics[ti];
-    if (std::string(PJ::sdk::toStringView(topic.name)) != want) {
+    if (std::string(PJ::sdk::toStringView(topic.name)) != qm.bare) {
       continue;
     }
     json field_arr = json::array();
@@ -227,11 +232,11 @@ ToolResult describeScalarTopic(
       const std::string leaf(PJ::sdk::toStringView(fields[idx].name));
       json entry = {
           {"field", leaf},
-          {"path", joinSeriesPath(want, leaf)},
+          {"path", qualifier + joinSeriesPath(qm.bare, leaf)},
           {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}};
       field_arr.push_back(entry);
     }
-    json out = {{"topic", want}, {"kind", "scalar"}, {"fields", field_arr}};
+    json out = {{"topic", qm.bare}, {"kind", "scalar"}, {"fields", field_arr}};
     if (auto it = topic_dataset.find(ti); it != topic_dataset.end()) {
       out["dataset"] = it->second;
     }
@@ -491,14 +496,14 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
     if (lookup.resolved) {
       return describeObjectTopic(ctx, v2->dataSources(), lookup.resolved->info);
     }
-    return describeScalarTopic(v2->topics(), v2->fields(), datasetByTopicIndex(v2->dataSources()), want);
+    return describeScalarTopic(v2->topics(), v2->fields(), v2->dataSources(), want);
   }
 
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
-  return describeScalarTopic(catalog->topics(), catalog->fields(), datasetByTopicIndex(catalog->dataSources()), want);
+  return describeScalarTopic(catalog->topics(), catalog->fields(), catalog->dataSources(), want);
 }
 
 ToolResult playbackTool(const json& args, ToolContext& ctx) {
