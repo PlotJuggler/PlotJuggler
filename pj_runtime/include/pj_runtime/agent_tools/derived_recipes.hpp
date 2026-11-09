@@ -70,7 +70,8 @@ struct QualifierMatch {
   std::uint32_t topic_lo = 0;
   std::uint32_t topic_hi = 0;
 };
-[[nodiscard]] QualifierMatch matchDatasetQualifier(const PJ::sdk::CatalogSnapshot& catalog, std::string_view series);
+[[nodiscard]] QualifierMatch matchDatasetQualifier(
+    std::span<const PJ_data_source_info_t> sources, std::size_t topic_count, std::string_view series);
 
 // Join a topic name and a field path into the canonical curve path (tolerates a leading '/'
 // on the field).
@@ -104,6 +105,18 @@ struct SeriesLookup {
 [[nodiscard]] SeriesLookup resolveSeriesPath(
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset);
 [[nodiscard]] SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series);
+
+// A bare topic path ("topic" or "dataset:topic", no field) resolved against a catalog's topics.
+struct TopicLookup {
+  std::optional<std::uint32_t> topic_index;  // into the topics span
+  std::vector<std::string> candidates;       // qualified names, set only when ambiguous
+  bool ambiguous = false;
+};
+// Exact topic name, leading '/' optional; an unqualified name on several datasets is ambiguous, like a
+// series. Takes the caller's datasetByTopicIndex so a caller resolving several topics builds it once.
+[[nodiscard]] TopicLookup resolveTopicPath(
+    std::span<const PJ_topic_info_t> topics, std::span<const PJ_data_source_info_t> sources, const std::string& series,
+    const TopicDatasetMap& topic_dataset);
 
 // The error a failed lookup should produce, worded for the model (names the tools to check with).
 [[nodiscard]] std::string seriesLookupError(const std::string& series, const SeriesLookup& lookup);

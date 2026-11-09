@@ -229,6 +229,35 @@ TEST(ToolRegistry, DescribeObjectTopicHonoursTheDatasetQualifierAndReportsAmbigu
   EXPECT_EQ(json::parse(a.content)["type"], "kPointCloud");
 }
 
+// A scalar topic on two datasets: "dataset:name" describes that dataset's topic, and its field paths keep the
+// qualifier, so read_series takes them as they are.
+TEST(ToolRegistry, DescribeScalarTopicHonoursTheDatasetQualifier) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  for (const std::string dataset : {"run_monday.mcap", "run_friday.mcap"}) {
+    auto r = reg.execute("describe_topic", {{"topic", dataset + ":/imu"}}, ctx);
+    ASSERT_TRUE(r.ok) << r.content;
+    const json j = json::parse(r.content);
+    EXPECT_EQ(j["dataset"], dataset);
+    EXPECT_EQ(j["topic"], "/imu");
+    EXPECT_EQ(j["fields"][0]["path"], dataset + ":/imu/value");
+  }
+  EXPECT_FALSE(reg.execute("describe_topic", {{"topic", "run_monday.mcap:/speed"}}, ctx).ok);
+
+  // Resolved like read_series: a name on several datasets is refused with the qualified candidates, a unique one
+  // (leading '/' optional) answers with paths read_series takes as they are.
+  const auto ambiguous = reg.execute("describe_topic", {{"topic", "/imu"}}, ctx);
+  EXPECT_FALSE(ambiguous.ok);
+  EXPECT_NE(ambiguous.content.find("run_monday.mcap:/imu"), std::string::npos) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("run_friday.mcap:/imu"), std::string::npos) << ambiguous.content;
+  const auto unique = reg.execute("describe_topic", {{"topic", "speed"}}, ctx);
+  ASSERT_TRUE(unique.ok) << unique.content;
+  EXPECT_EQ(json::parse(unique.content)["fields"][0]["path"], "run_friday.mcap:/speed/value");
+}
+
 // describe_topic on an object topic walks its field table (PointCloud's own
 // fields, a list shown as "kind":"list", the raw "data" buffer carrying
 // nothing past its name/kind) and lists the operations a script may call on

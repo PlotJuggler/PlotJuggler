@@ -59,7 +59,8 @@ ToolRegistry::ToolRegistry() {
        "fields the conversation already lists — do not use it to confirm a path you can already "
        "see.",
        {{"type", "object"},
-        {"properties", {{"topic", {{"type", "string"}, {"description", "exact topic name"}}}}},
+        {"properties",
+         {{"topic", {{"type", "string"}, {"description", "exact topic name; \"dataset:topic\" picks one dataset"}}}}},
         {"required", json::array({"topic"})}},
        &describeTopic});
 
