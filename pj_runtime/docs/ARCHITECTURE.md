@@ -732,7 +732,7 @@ of the module: its files keep their own SPDX and copyright lines.
 
 - `httpGetWithTimeout` / `httpPostWithTimeout`: the callback runs on the caller's thread,
   also on error, abort or timeout; the reply is `deleteLater`'d after it, so never retain
-  it. Used by `UpdateChecker`, `TelemetryPing` and `pj_app`'s registry-URL probe.
+  it. Used by `UpdateChecker`, `TelemetryPing`, `UsageReporter` and `pj_app`'s registry-URL probe.
 - `fetchBytesWithLimit`: the size-capped GET of an untrusted body, on desktop over
   `httpGetWithLimit` and in the browser over `BrowserFetch.h`; returns a `CancelFetch`.
   Used by `pj_app`'s `PresetController` and Scene3D's `UrlFetcher`.
@@ -746,7 +746,17 @@ of the module: its files keep their own SPDX and copyright lines.
   enforced by `telemetry_ping_test`'s allowed-key set, updated together with
   [docs/TELEMETRY.md](../../docs/TELEMETRY.md). An unstamped installation (`source`, the
   self-built default, or empty) never sends. The shell owns the opt-out
-  (`Preferences::send_anonymous_stats`).
+  (`Preferences::send_anonymous_stats`). `TelemetryIdentity` (private, `src/`) holds what it
+  shares with the usage report: the machine identity, the salted hash, the channel gate.
+- `UsageCounters` / `UsageReporter`: the daily usage report. Call sites count into the
+  process-wide `usageCounters()` (disabled, so a no-op, until the shell enables it); each
+  plugin family is counted at one place: `ExtensionCatalogService::resolveParserRoutes`
+  (the winning parser per bound topic, never a declining probe), the stream launch and file
+  load in `pj_app`, the toolbox launch, and `CustomWidgetDockWidget::bindWidget`. Counting
+  never touches the disk (`flush()` does) and may run on any thread. `UsageReporter` names
+  only ids in the public set the shell passes (`shippedPluginIds()` plus the official
+  registry, never a user-configured one) and forgets a day only after a 2xx. Its key set is
+  pinned by `usage_reporter_test`, together with [docs/TELEMETRY.md](../../docs/TELEMETRY.md).
 
 ## Tests
 

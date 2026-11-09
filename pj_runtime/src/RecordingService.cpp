@@ -25,6 +25,7 @@
 #include "pj_runtime/McapRecordingWriter.h"
 #endif
 #include "pj_runtime/RecordingFormat.h"
+#include "pj_runtime/UsageCounters.h"
 
 using namespace Qt::StringLiterals;
 
@@ -324,6 +325,7 @@ Expected<QString> RecordingService::start(std::vector<RecordingTarget> targets, 
     published.push_back(entry.start);
   }
   const QString capture_directory = capture_directory_;
+  usageCounters().count(UsageFeature::kRecordingStart);
   emit started(capture_id_, capture_directory, published);
   return capture_directory;
 }

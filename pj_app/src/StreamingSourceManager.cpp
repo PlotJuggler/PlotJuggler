@@ -35,6 +35,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
+#include "pj_runtime/UsageCounters.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -633,6 +634,7 @@ bool StreamingSourceManager::launchSession(std::unique_ptr<StreamingSession> ses
   }
 
   session->capabilities = session->handle.capabilities();
+  usageCounters().countPlugin(PluginUse::kStreamStart, session->manifest_id);
   // Record the capability for the UI (CurveListPanel dims a topic as
   // "unsubscribed" only for a dataset that actually supports the pause — a
   // non-demand source sends everything regardless of display state).

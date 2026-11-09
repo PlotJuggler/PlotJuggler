@@ -14,7 +14,7 @@ App runtime services and contracts for PlotJuggler 4: the **services seam** betw
 - **GUI-thread APIs stay on the GUI thread**: `CatalogModel`, `TopicDemandTracker`, `TransformService` (its ingest-tap callback is the only worker entry), `RecordingService`, the `pj.data_processors.v1` bridges (`[main-thread]` slots). Callbacks that fire on plugin threads (`DataSourceRuntimeHost`'s `on_available_topics`, `RecordTap`) own their own marshaling.
 - **Whole-series readers on the GUI thread call `DataEngine::awaitCompleteSeries(topic)`** before reading, so they never see a partially materialized transform output.
 - **`ParserRoutingService` lock order**: `routing_mutex_` is taken before `catalog_mutex_`.
-- **File-format and privacy contracts**: renaming anything in `RecordingFormat.h` is a recording file-format break (the MCAP replay path reads it); extending the telemetry payload means updating `telemetry_ping_test`'s allowed-key set and [docs/TELEMETRY.md](../docs/TELEMETRY.md) together.
+- **File-format and privacy contracts**: renaming anything in `RecordingFormat.h` is a recording file-format break (the MCAP replay path reads it); extending the telemetry payload means updating `telemetry_ping_test`'s allowed-key set and [docs/TELEMETRY.md](../docs/TELEMETRY.md) together; the same holds for the usage report (`usage_reporter_test`), and a new `UsageFeature` needs its wire key and a TELEMETRY.md row. A plugin id reaches a usage report only through the public set the shell passes to `UsageReporter`.
 
 ## Public headers
 
@@ -32,6 +32,7 @@ Session, catalog and time:
 - `IDataWidget.h`, `IObjectViewer.h`: the contracts data widgets and object-store viewers implement for the shell. `IDataWidget::aboutToBeDiscarded()` runs once before the dock schedules a widget for deletion, so one that owns plugin-created objects destroys them synchronously.
 - `DiagnosticHistory.h`, `DiagnosticEmit.h`: diagnostics ring buffer and the fill-and-forward helper (no-op without a sink).
 - `HttpGet.h`, `UpdateChecker.h`, `UpdateVersion.h`, `TelemetryPing.h`: one-shot HTTP idiom (`fetchBytesWithLimit()` is the size-capped GET for untrusted bodies on desktop and in the browser, behind `pj_app`'s `PresetController` and Scene3D's `UrlFetcher`; `HttpUrl.h`'s `isHttpUrl()`, Qt6::Network-free, is the http(s) gate), the per-channel update check, version math, the anonymous launch ping.
+- `UsageCounters.h`, `UsageReporter.h`: the daily usage report: per-UTC-day counters behind the process-wide `usageCounters()` (thread-safe, a no-op until enabled; disabling deletes the stored file) and their upload (private plugin ids folded into `_private`).
 - `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend ([why](./docs/TECHNICAL_NOTES.md)); a pinned download is kept in Cache Storage across visits.
 - `PresetCatalog.h`: `parsePresetCatalog()` reads a deployment's browser `presets/index.json` into `PresetEntry`s (`findPreset()` looks one up by id); `kMaxPresetDownloadBytes` caps each small preset download (index, layout, thumbnail), `kMaxPresetDataBytes` each recording and a preset's recordings together.
 - `SourceConfigVariables.h`: `expandSourceConfigVariables()` expands `${deployment.ws_origin}` (the page's WebSocket origin) in a saved streaming-source configuration; any other `${deployment.*}` name is an error.

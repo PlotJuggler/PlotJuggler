@@ -52,11 +52,14 @@ add_library(pj_runtime STATIC
     src/ResultHistory.cpp
     src/ServiceRegistration.cpp
     src/SessionManager.cpp
+    src/TelemetryIdentity.cpp
     src/TelemetryPing.cpp
     src/ToolboxRuntimeHost.cpp
     src/TopicDemandTracker.cpp
     src/TransformService.cpp
     src/UpdateChecker.cpp
+    src/UsageCounters.cpp
+    src/UsageReporter.cpp
     src/ViewportRuntimeHost.cpp
     src/WidgetRuntimeHost.cpp
     src/ActiveWidgetsMarker.cpp
@@ -108,6 +111,8 @@ add_library(pj_runtime STATIC
     include/pj_runtime/TopicDemandTracker.h
     include/pj_runtime/TransformService.h
     include/pj_runtime/UpdateChecker.h
+    include/pj_runtime/UsageCounters.h
+    include/pj_runtime/UsageReporter.h
     include/pj_runtime/ToolboxTags.h
     include/pj_runtime/UpdateVersion.h
     include/pj_runtime/ViewportRuntimeHost.h
@@ -282,6 +287,10 @@ if(PJ_BUILD_TESTS)
         # QTcpServer — enforces the payload privacy contract on the wire (the
         # allowed-key set + salted-hash user id), no real network.
         tests/telemetry_ping_test.cpp
+        # The per-day usage counters (persistence, pruning, opt-out deletion) and the usage report
+        # upload: the payload's key set and the private-plugin fold are pinned on the wire.
+        tests/usage_counters_test.cpp
+        tests/usage_reporter_test.cpp
         tests/app_session_test.cpp
         tests/playback_engine_test.cpp
         # Qt6::Test supplies QSignalSpy for the displayOffsetChanged emission test.

@@ -692,7 +692,14 @@ ParserRouteSelection ExtensionCatalogService::resolveParserRoutes(
     std::string_view parser_config_json) const {
   const std::scoped_lock routing_lock(routing_mutex_);
   const std::shared_lock catalog_lock(catalog_mutex_);
-  return routing_.resolveParserRoutes(encoding, type_name, schema, parser_config_json);
+  ParserRouteSelection selection = routing_.resolveParserRoutes(encoding, type_name, schema, parser_config_json);
+  // One count per bound topic, for the parser that won it (probed candidates that declined are not
+  // uses). Runs on the source poll thread; the counters are thread-safe.
+  const auto& winner = selection.scalar ? selection.scalar : selection.object;
+  if (winner) {
+    usageCounters().countPlugin(PluginUse::kParserBind, winner->provider_id);
+  }
+  return selection;
 }
 
 std::optional<sdk::BuiltinObjectType> ExtensionCatalogService::classifyParserObjectRoute(
@@ -716,6 +723,40 @@ const std::vector<LoadedToolbox>& ExtensionCatalogService::toolboxes() const {
 
 const std::vector<LoadedWidget>& ExtensionCatalogService::widgets() const {
   return plugin_catalog_->widgets();
+}
+
+std::set<std::string> ExtensionCatalogService::shippedPluginIds() const {
+  std::set<std::string> ids;
+  for (const auto& [id, info] : bundled_plugin_versions_) {
+    ids.insert(id);
+  }
+  // Compiled-in plugins carry PluginRuntimeCatalog's synthetic "static://<id>" path.
+  const auto add_static = [&ids](const auto& plugins) {
+    for (const auto& plugin : plugins) {
+      if (plugin.path.starts_with("static://")) {
+        ids.insert(plugin.id);
+      }
+    }
+  };
+  add_static(dataSources());
+  add_static(messageParsers());
+  add_static(toolboxes());
+  add_static(widgets());
+  return ids;
+}
+
+std::vector<InstalledPluginRecord> ExtensionCatalogService::installedPluginInventory() const {
+  std::vector<InstalledPluginRecord> inventory;
+  const auto add = [&inventory](const auto& plugins, PluginUse use) {
+    for (const auto& plugin : plugins) {
+      inventory.push_back({plugin.id, plugin.version, std::string(usagePluginKind(use))});
+    }
+  };
+  add(dataSources(), PluginUse::kFileLoad);
+  add(messageParsers(), PluginUse::kParserBind);
+  add(toolboxes(), PluginUse::kToolboxOpen);
+  add(widgets(), PluginUse::kWidgetCreate);
+  return inventory;
 }
 
 std::vector<const LoadedDataSource*> ExtensionCatalogService::fileImportSources() const {

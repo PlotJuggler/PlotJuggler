@@ -125,6 +125,7 @@ class WelcomePresetsDialog;
 class RegistryManager;
 class FeatureCatalogHost;
 class TelemetryPing;
+class UsageReporter;
 class CoalescingTrigger;
 
 // Legend corner placement. Four corner buttons in the right toolbar act
@@ -307,6 +308,15 @@ class MainWindow : public QMainWindow {
   // consumer). The opt-out gate lives at the call site, not here.
   void sendTelemetryPing(const QString& installation);
 
+#ifndef PJ_TARGET_WASM
+  // Starts the anonymous daily usage report (docs/TELEMETRY.md): enables the process-wide
+  // usageCounters() on its storage file, keeps today's installed-plugin inventory current, flushes
+  // periodically and on destruction, and uploads the completed days once the public registry is
+  // known (its ids, with the shipped ones, are the plugins a report may name; a failed registry fetch
+  // sends nothing and keeps the days). The consent and automation gates live at the call site.
+  void startUsageReporting(const QString& installation);
+#endif
+
   // The PJ_INSTALLATION build stamp, passed by main.cpp. Decides where
   // checkForUpdates() looks for a newer release and how the toast offers it.
   void setInstallation(const QString& installation);
@@ -365,6 +375,10 @@ class MainWindow : public QMainWindow {
   // (FileDialog::setUseSystemDialog). Applied at construction and on
   // Preferences OK.
   static constexpr QLatin1StringView kSystemFileDialogKey{"Preferences::system_file_dialog"};
+
+  // Preferences key (bool, default on): the anonymous daily usage report. Turning it off in
+  // Preferences deletes what was counted at once; turning it on applies from the next launch.
+  static constexpr QLatin1StringView kUsageStatsKey{"Preferences::send_usage_stats"};
 
   // Preferences key (bool): wall-clock time labels show UTC instead of the
   // system time zone. Applied at construction and on Preferences OK.
@@ -1629,6 +1643,13 @@ class MainWindow : public QMainWindow {
   UpdateChecker* update_checker_ = nullptr;
   QString installation_;
   TelemetryPing* telemetry_ping_ = nullptr;
+#ifndef PJ_TARGET_WASM
+  // Daily usage report (startUsageReporting): the uploader, the public-registry fetch that tells it
+  // which plugin ids it may name, and the periodic flush of the counters.
+  UsageReporter* usage_reporter_ = nullptr;
+  RegistryManager* usage_registry_ = nullptr;
+  QTimer* usage_flush_timer_ = nullptr;
+#endif
   // Outcome handlers are rebound on each checkForUpdates() call so the check's
   // interactivity (silent startup vs. noisy Help ▸ Check for Updates) is captured
   // per-request rather than living in shared mutable state.

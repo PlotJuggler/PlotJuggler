@@ -723,6 +723,12 @@ int main(int argc, char* argv[]) {
       QSettings().value(u"Preferences::send_anonymous_stats"_s, true).toBool()) {
     QTimer::singleShot(0, &window, [&window]() { window.sendTelemetryPing(QStringLiteral(PJ_INSTALLATION_STRING)); });
   }
+  // Anonymous daily usage report (docs/TELEMETRY.md): its own opt-out, the same automation gates.
+  // An unpackaged build still counts locally, but UsageReporter never uploads from it.
+  if (!parser.isSet(screenshot_option) && !automated_environment &&
+      QSettings().value(PJ::MainWindow::kUsageStatsKey, true).toBool()) {
+    window.startUsageReporting(QStringLiteral(PJ_INSTALLATION_STRING));
+  }
 #endif
 
   // Exits non-zero when nothing usable was captured (no view, a null or single-colour

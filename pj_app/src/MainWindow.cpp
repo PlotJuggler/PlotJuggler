@@ -77,6 +77,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <unordered_set>
 #include <utility>
 
@@ -206,6 +207,8 @@
 #include "pj_runtime/ToolboxTags.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/UpdateChecker.h"
+#include "pj_runtime/UsageCounters.h"
+#include "pj_runtime/UsageReporter.h"
 #include "pj_runtime/ViewportRuntimeHost.h"
 #include "pj_runtime/XmlCdata.h"
 #ifdef PJ_WITH_SCENE2D
@@ -2181,6 +2184,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   // identical regardless of how the dock is later populated.
 #ifdef PJ_WITH_SCENE3D
   if (kind == "scene3d"_L1) {
+    usageCounters().count(UsageFeature::kPanelScene3D);
     auto* widget = new Scene3DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
     connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
@@ -2216,6 +2220,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
 #endif
 #ifdef PJ_WITH_SCENE2D
   if (kind == "scene2d"_L1) {
+    usageCounters().count(UsageFeature::kPanelScene2D);
     auto* widget = new Scene2DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
     connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
@@ -2416,6 +2421,7 @@ MainWindow::~MainWindow() {
   if (recording_service_ != nullptr) {
     recording_service_->stop();
   }
+  usageCounters().flush();  // a no-op unless the usage report is on
   // Dtor-without-closeEvent path (same precedent as teardownAllToolboxes
   // below): a still-running batch's host teardown fires on_ingest_finished ->
   // endIngest -> the still-connected observer, so the D1 teardown must run
@@ -3299,6 +3305,7 @@ void MainWindow::onFileLoaded(
   if (!isBrowserUploadIdentity(path)) {
     session_->sessionManager().recordLoadedSource(path, prefix, plugin_id, plugin_config_json, plugin_manifest_id);
   }
+  usageCounters().countPlugin(PluginUse::kFileLoad, plugin_manifest_id.toStdString());
   // Uploads, and on every platform a preset's staged downloads: what a
   // source-bound browser save describes them by.
   if (isBrowserUploadIdentity(path) && browser_layout_runtime_ != nullptr) {
@@ -3930,6 +3937,51 @@ void MainWindow::sendTelemetryPing(const QString& installation) {
   }
   telemetry_ping_->send(installation);
 }
+
+#ifndef PJ_TARGET_WASM
+void MainWindow::startUsageReporting(const QString& installation) {
+  if (usage_reporter_ != nullptr) {
+    return;
+  }
+  UsageCounters& counters = usageCounters();
+  counters.configure(
+      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + u"/usage_counters.json"_s,
+      QCoreApplication::applicationVersion());
+  counters.setEnabled(true);
+
+  ExtensionCatalogService& catalog = session_->extensionCatalog();
+  counters.setInstalledPlugins(catalog.installedPluginInventory());
+  connect(&catalog, &ExtensionCatalogService::catalogChanged, this, [this]() {
+    usageCounters().setInstalledPlugins(session_->extensionCatalog().installedPluginInventory());
+  });
+
+  // Counting never touches the disk; this bounds what a crash can lose. ~MainWindow flushes the rest.
+  usage_flush_timer_ = new QTimer(this);
+  usage_flush_timer_->setInterval(std::chrono::minutes(5));
+  connect(usage_flush_timer_, &QTimer::timeout, this, []() { usageCounters().flush(); });
+  usage_flush_timer_->start();
+
+  usage_reporter_ = new UsageReporter(counters, this);
+  if (counters.completedDays().empty()) {
+    return;  // nothing to upload this launch: skip the registry fetch too
+  }
+  // Its own fetch rather than the update scan's: that one is skipped when update checks are off, and
+  // it follows the user's registry setting. Only the official registry defines "public": a company's own
+  // registry lists exactly the in-house ids a report must never name.
+  usage_registry_ = new RegistryManager(this);
+  connect(usage_registry_, &RegistryManager::fetchFinished, this, [this, installation](bool ok) {
+    if (!ok) {
+      return;  // without the public list no plugin could be named: keep the days for the next launch
+    }
+    std::set<std::string> public_ids = session_->extensionCatalog().shippedPluginIds();
+    for (const Extension& extension : usage_registry_->extensions()) {
+      public_ids.insert(extension.id.toStdString());
+    }
+    usage_reporter_->send(installation, public_ids);
+  });
+  usage_registry_->fetchRegistry(QUrl(defaultRegistryUrl()));
+}
+#endif
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
   QMainWindow::resizeEvent(event);
@@ -5158,6 +5210,7 @@ void MainWindow::onLoadLayout() {
     return;
   }
   QSettings().setValue(kLastLayoutDirKey, QFileInfo(path).absolutePath());
+  usageCounters().count(UsageFeature::kLayoutLoad);
   loadLayoutFromPath(path, LayoutLoadInteractivity::kInteractive);
 #endif
 }
@@ -5203,6 +5256,7 @@ void MainWindow::onSaveLayout() {
   const QString save_path = layout_xml::ensureLayoutExtension(result.path);
   QSettings().setValue(kLastLayoutDirKey, QFileInfo(save_path).absolutePath());
   const bool include_data_source = !result.option_states.empty() && result.option_states[0];
+  usageCounters().count(UsageFeature::kLayoutSave);
   saveLayoutToPath(save_path, include_data_source);
 #endif
 }
@@ -5233,6 +5287,7 @@ void MainWindow::onLoadRecentLayout(const QString& path) {
   if (path.isEmpty()) {
     return;
   }
+  usageCounters().count(UsageFeature::kLayoutLoad);
 #ifdef PJ_TARGET_WASM
   BrowserPersistence* persistence = BrowserPersistence::instance();
   const std::optional<BrowserPersistence::LayoutRecipe> recipe =
@@ -10786,6 +10841,7 @@ void MainWindow::launchToolbox(
     report_error(source, tr("Failed to bind toolbox '%1': %2").arg(source, QString::fromStdString(status.error())));
     return;
   }
+  usageCounters().countPlugin(PluginUse::kToolboxOpen, toolbox->id);
   // Pre-populate for an in-place edit (Transform Editor pencil button): hand the
   // saved editor state to the toolbox before its dialog is built.
   if (!initial_config.isEmpty()) {

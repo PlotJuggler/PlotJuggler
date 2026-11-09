@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 #include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_runtime/ParserRoutingService.h"
 #include "pj_runtime/PluginRuntimeCatalog.h"
+#include "pj_runtime/UsageCounters.h"
 
 namespace PJ {
 
@@ -133,6 +135,14 @@ class ExtensionCatalogService : public QObject {
   // never unloaded, so an entry leaves this vector only when reload() withdraws a plugin the user
   // disabled; its library stays mapped and panels already running it keep working.
   const std::vector<LoadedWidget>& widgets() const;
+
+  // Ids of the loaded plugins this build ships (compiled in, or in the bundled share set): public by
+  // construction, so the usage report may name them. Main thread, like the family accessors above.
+  [[nodiscard]] std::set<std::string> shippedPluginIds() const;
+
+  // Every loaded plugin as the usage report's installed inventory (raw ids; the reporter decides
+  // which may be named). Main thread.
+  [[nodiscard]] std::vector<InstalledPluginRecord> installedPluginInventory() const;
 
   // Returns file-import capable DataSource plugins.
   std::vector<const LoadedDataSource*> fileImportSources() const;
