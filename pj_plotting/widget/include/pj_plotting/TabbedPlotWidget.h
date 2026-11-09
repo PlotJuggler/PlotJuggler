@@ -32,7 +32,8 @@ class SessionManager;
 
 // Custom tab strip + QStackedWidget. Each tab is a small QFrame
 // containing the tab name label and a close button; clicking a frame
-// switches the stack to its PlotDocker, double-clicking renames it.
+// switches the stack to its PlotDocker, double-clicking renames it, and
+// right-clicking a plot tab offers "Duplicate tab" (duplicateTab).
 // Same external API the previous QTabWidget-based version exposed.
 // Besides PlotDocker tabs, a tab can host an arbitrary widget
 // (addWidgetTab) — see that method for the lifecycle contract.
@@ -77,6 +78,14 @@ class TabbedPlotWidget : public QWidget {
   // tree against the app stylesheet, so it must happen once, at the destination.
   // Returns nullptr if content is not a widget tab.
   [[nodiscard]] QWidget* takeWidgetTab(QWidget* content);
+  // Inserts a copy of `source`'s plot tab right after it and selects it: same
+  // layout, curves and styles (via the tab's XML round-trip), named
+  // "<name> (copy)". The copy gets fresh tab/area/plot state ids, so it never
+  // aliases the source in id-keyed lookups (undo restore, pending bindings), and
+  // is an ordinary user tab: history-exempt and plugin-owner metadata are not
+  // copied. Emits undoableChange. Returns nullptr if `source` is not a plot tab
+  // here or its state fails to restore (the half-built copy is then closed).
+  PlotDocker* duplicateTab(PlotDocker* source);
   // Close a plot tab programmatically. Honours the same path as the tab's
   // close button, including the last-serializable-tab rule.
   void closeTab(PlotDocker* docker);
@@ -178,6 +187,7 @@ class TabbedPlotWidget : public QWidget {
   void onTabFrameClicked(PlotTabFrame* frame);
   void onTabRenameRequested(PlotTabFrame* frame, const QString& new_name);
   void onTabCloseRequested(PlotTabFrame* frame);
+  void onTabContextMenuRequested(PlotTabFrame* frame, const QPoint& pos);
 
  private:
   struct TabEntry {
@@ -238,6 +248,7 @@ class TabbedPlotWidget : public QWidget {
   QString name_;
   QString state_id_;
   int tab_suffix_count_ = 0;
+  // True while xmlLoadState / duplicateTab rebuild dockers: their undoableChange is not forwarded.
   bool restoring_state_ = false;
   std::vector<TabEntry> tabs_;
 };

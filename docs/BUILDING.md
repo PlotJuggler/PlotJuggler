@@ -28,10 +28,10 @@ sudo apt-get install -y \
   libva-dev libdrm-dev xvfb zstd
 ```
 
-Clone the public PJ4 branch with its submodules. `main` contains PJ3:
+Clone PJ4 (the `main` branch; PJ3 lives on `main-3.x`) with its submodules:
 
 ```bash
-git clone --branch main-4.x --recurse-submodules https://github.com/PlotJuggler/PlotJuggler.git
+git clone --recurse-submodules https://github.com/PlotJuggler/PlotJuggler.git
 cd PlotJuggler
 ```
 

@@ -15,7 +15,9 @@
 #include <QPushButton>
 #include <QtGlobal>
 
+#include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
+#include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 using namespace Qt::StringLiterals;
 
@@ -435,6 +437,79 @@ TEST(TabbedWidgetTab, PreCloseThatClosesTheTabItselfDoesNotTearDownTwice) {
   EXPECT_EQ(close_count, 1);
   EXPECT_EQ(tabbed.tabCount(), 1);
   EXPECT_TRUE(content.isNull());
+}
+
+// The tab's XML with every state id removed, to compare layouts across tabs.
+QString idFreeXml(const PJ::PlotDocker& docker) {
+  QDomDocument doc;
+  QDomElement tab = docker.xmlSaveState(doc);
+  tab.removeAttribute(u"id"_s);
+  for (const QString& tag : {u"DockArea"_s, u"plot"_s}) {
+    const QDomNodeList nodes = tab.elementsByTagName(tag);
+    for (int index = 0; index < nodes.size(); ++index) {
+      nodes.at(index).toElement().removeAttribute(u"id"_s);
+    }
+  }
+  doc.appendChild(tab);
+  return doc.toString();
+}
+
+TEST(TabbedPlotDuplicate, CopiesLayoutNextToSourceWithFreshIdsAndOneUndoStep) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* source = tabbed.dockerAt(0);
+  ASSERT_NE(source, nullptr);
+  QDomDocument layout;
+  ASSERT_TRUE(
+      layout.setContent(uR"(
+      <Tab id="src" containers="1"><Container>
+      <DockSplitter orientation="|" count="2" sizes="0.25;0.75">
+      <DockArea id="a" name="pos"><plot id="p" mode="TimeSeries" line_width="3.0"/></DockArea>
+      <DockArea id="b" name="vel"><placeholder/></DockArea>
+      </DockSplitter></Container></Tab>)"_s));
+  ASSERT_TRUE(source->xmlLoadState(layout.documentElement()));
+  source->setName(u"joints"_s);
+  source->setHistoryExempt(true);
+  source->setOwnerMetadata(u"assistant"_s, u"run"_s);
+  ASSERT_EQ(source->plotCount(), 2);
+  PJ::PlotWidget* source_plot = source->plotAt(0)->plotWidget();
+  ASSERT_NE(source_plot, nullptr);
+  PJ::PlotDocker* last = tabbed.addTab(u"last"_s);
+
+  int undo_steps = 0;
+  QObject::connect(&tabbed, &PJ::TabbedPlotWidget::undoableChange, [&undo_steps]() { ++undo_steps; });
+
+  PJ::PlotDocker* copy = tabbed.duplicateTab(source);
+
+  ASSERT_NE(copy, nullptr);
+  EXPECT_EQ(undo_steps, 1);
+  EXPECT_EQ(copy->plotCount(), 2);
+  EXPECT_EQ(tabbed.dockerCount(), 3);
+  EXPECT_EQ(tabbed.dockerAt(0), source);
+  EXPECT_EQ(tabbed.dockerAt(1), copy);
+  EXPECT_EQ(tabbed.dockerAt(2), last);
+  EXPECT_EQ(tabbed.currentTab(), copy);
+  EXPECT_EQ(copy->name(), u"joints (copy)"_s);
+  EXPECT_FALSE(copy->isHistoryExempt());
+  EXPECT_TRUE(copy->ownerPlugin().isEmpty());
+
+  EXPECT_NE(copy->stateId(), source->stateId());
+  PJ::PlotWidget* copy_plot = copy->plotAt(0)->plotWidget();
+  ASSERT_NE(copy_plot, nullptr);
+  EXPECT_NE(copy_plot, source_plot);
+  EXPECT_NE(copy_plot->stateId(), source_plot->stateId());
+  EXPECT_NE(copy->plotAt(0)->stateId(), source->plotAt(0)->stateId());
+
+  copy->setHistoryExempt(true);  // the only intended difference was the dropped exempt/owner flags
+  copy->setOwnerMetadata(u"assistant"_s, u"run"_s);
+  EXPECT_EQ(idFreeXml(*copy), idFreeXml(*source));
+}
+
+TEST(TabbedPlotDuplicate, IgnoresWidgetTabsAndForeignDockers) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker foreign(u"foreign"_s);
+  EXPECT_EQ(tabbed.duplicateTab(&foreign), nullptr);
+  EXPECT_EQ(tabbed.duplicateTab(nullptr), nullptr);
+  EXPECT_EQ(tabbed.dockerCount(), 1);
 }
 
 }  // namespace
