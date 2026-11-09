@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
 #include <QVariant>
 #include <QtGlobal>
 #include <memory>
@@ -1119,6 +1120,58 @@ TEST(CurveTreeViewTest, CatalogKeysUnderCollectsSelfAndDescendants) {
   QTreeWidgetItem* leaf_x = findChild(topic, u"x"_s);
   ASSERT_NE(leaf_x, nullptr);
   EXPECT_EQ(PJ::CurveTreeView::catalogKeysUnder(leaf_x), (QStringList{u"k_x"_s}));
+}
+
+TEST(CurveTreeViewTest, DisplayedKeysMarkTheirRowsAndAncestorsAndSurviveRebuild) {
+  PJ::CurveTreeView view;
+  view.setViewMode(PJ::CurveTreeView::ViewMode::kShowTopics);
+  const auto add_all = [&view]() {
+    view.addCatalogItems({
+        PJ::CurveTreeView::CurvePath{.key = u"k_x"_s, .dataset = u"robot"_s, .topic = u"/imu/data"_s, .field = u"x"_s},
+        PJ::CurveTreeView::CurvePath{.key = u"k_y"_s, .dataset = u"robot"_s, .topic = u"/imu/data"_s, .field = u"y"_s},
+        PJ::CurveTreeView::CurvePath{.key = u"k_v"_s, .dataset = u"robot"_s, .topic = u"/odom"_s, .field = u"v"_s},
+    });
+  };
+  const auto row_of = [&view](const QString& key) -> QTreeWidgetItem* {
+    for (QTreeWidgetItemIterator it(&view); *it != nullptr; ++it) {
+      if (PJ::CurveTreeView::catalogKeyOf(*it) == key) {
+        return *it;
+      }
+    }
+    return nullptr;
+  };
+  // Whether `row` and every group above it carry the mark.
+  const auto chain_marked = [](const QTreeWidgetItem* row) {
+    for (; row != nullptr; row = row->parent()) {
+      if (!PJ::CurveTreeView::isMarkedDisplayed(row)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  add_all();
+  ASSERT_NE(row_of(u"k_x"_s), nullptr);
+  EXPECT_FALSE(PJ::CurveTreeView::isMarkedDisplayed(row_of(u"k_x"_s)));
+
+  view.setDisplayedKeys({u"k_x"_s});
+  EXPECT_TRUE(chain_marked(row_of(u"k_x"_s))) << "the row and every group above it";
+  EXPECT_FALSE(PJ::CurveTreeView::isMarkedDisplayed(row_of(u"k_y"_s))) << "a sibling is not";
+  const QTreeWidgetItem* odom_row = row_of(u"k_v"_s);
+  EXPECT_FALSE(PJ::CurveTreeView::isMarkedDisplayed(odom_row));
+  EXPECT_FALSE(PJ::CurveTreeView::isMarkedDisplayed(odom_row->parent())) << "a group holding nothing displayed is not";
+
+  view.setDisplayedKeys({u""_s});
+  EXPECT_FALSE(PJ::CurveTreeView::isMarkedDisplayed(odom_row->parent())) << "an empty key never matches a group row";
+
+  view.setDisplayedKeys({u"k_x"_s});
+  view.clearCurves();
+  add_all();
+  EXPECT_TRUE(chain_marked(row_of(u"k_x"_s))) << "the set is retained across a rebuild";
+
+  view.setDisplayedKeys({});
+  for (QTreeWidgetItemIterator it(&view); *it != nullptr; ++it) {
+    EXPECT_FALSE(PJ::CurveTreeView::isMarkedDisplayed(*it)) << "full-set replace clears rows and groups";
+  }
 }
 
 TEST(CurveTreeViewTest, ForcedTopicMarksLandOnTheTopicNodeAndSurviveRebuild) {

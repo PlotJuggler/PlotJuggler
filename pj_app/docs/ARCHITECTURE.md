@@ -188,6 +188,21 @@ meaning. Dataset-level menus still support multiple selected datasets.
 `CurveListPanelTest` covers the real press/context path, XY payload, single-topic
 toggle and dataset menu.
 
+The curve list writes in semi-bold italic what the selected widget displays, and the
+groups above those rows, so a collapsed topic still shows that it holds a displayed
+series. The selected widget is `MainWindow::activeFocusedDock()`, the dock the
+settings panel follows; `CurveListPanel` asks for it lazily on each refresh (it is
+often the first dock of the tab, which changes without a focus event), and
+`onDockFocused` re-schedules the refresh on a focus change or a tab switch.
+`TopicDemandController::displayedKeys(root)` reads the catalog keys from the
+registered widgets of every family inside that dock (plot curves, scene layers and
+config topics, state-transitions rows, Custom Widget wires) and emits
+`displayedSeriesChanged` when they or the catalog change; a scene dock reports its
+config topics through `SceneDockWidget::configTopicsChanged`. The panel coalesces
+refreshes to one per event-loop turn. Pending items (an advertised placeholder
+dropped before its first sample, an unresolved wire) are not marked, nor are scene
+views embedded in a toolbox panel, which are not docks.
+
 `StreamingSourceManager::onIngestTick` is the GUI half of one 50 ms poll cycle
 (`ingestTickForTests` drives it): eager processors advance over every topic of the
 dataset (skipped while paused), then retention trims the engine being written,

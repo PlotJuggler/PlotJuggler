@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QList>
 #include <QPoint>
+#include <QPointer>
 #include <QSet>
 #include <QStringList>
 #include <QWidget>
@@ -101,6 +102,15 @@ class CurveListPanel : public QWidget {
   // preview (and arms the one-shot auto-expand). Optional — without it a
   // double-click peek is a no-op.
   void setTopicDemandController(TopicDemandController* controller);
+
+  /// Where the tree's displayed marks come from (see CurveTreeView::setDisplayedKeys): the series of
+  /// the registered widgets inside the widget `scope` returns (the shell: the selected dock), read
+  /// from the TopicDemandController. `scope` is asked again on every refresh, so a selection that
+  /// changes without a series change must call scheduleDisplayedKeysRefresh().
+  void setDisplayedScope(std::function<const QWidget*()> scope);
+  /// Re-marks the displayed rows on the next event-loop turn; a burst (a layout load) coalesces
+  /// into one refresh. Also runs on every TopicDemandController::displayedSeriesChanged.
+  void scheduleDisplayedKeysRefresh();
 
   // Resolves a dataset's tracked on-disk source path (empty when the dataset was
   // not loaded from a file, e.g. streaming/test data). Gates the per-dataset
@@ -260,6 +270,8 @@ class CurveListPanel : public QWidget {
   // accent-painted topic marks. Runs on forcedTopicsChanged and after any
   // rebuild (the marks live on tree nodes, which rebuilds recreate).
   void refreshForcedMarks();
+  // Pushes the controller's displayed keys within displayed_scope_ to both trees.
+  void refreshDisplayedKeys();
   // Handles CurveTreeView::placeholderPeekRequested: resolves the catalog key,
   // asks the controller for a bounded field preview, and arms the tree's
   // one-shot auto-expand at the topic's path. No-op without a controller.
@@ -302,7 +314,9 @@ class CurveListPanel : public QWidget {
   Ui::CurveListPanel* ui_;
   CatalogModel* catalog_ = nullptr;
   TopicDemandTracker* tracker_ = nullptr;
-  TopicDemandController* controller_ = nullptr;
+  QPointer<TopicDemandController> controller_;
+  std::function<const QWidget*()> displayed_scope_;
+  bool displayed_refresh_scheduled_ = false;
   DatasetSourcePathResolver source_path_resolver_;
   CurveTreeView* tree_view_ = nullptr;
   CurveTreeView* custom_view_ = nullptr;
