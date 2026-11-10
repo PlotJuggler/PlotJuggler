@@ -92,6 +92,18 @@ bool CustomWidgetDockWidget::callOrDisable(Call&& call) {
   return true;
 }
 
+template <typename Task>
+void CustomWidgetDockWidget::deferOnce(bool& scheduled, Task&& task) {
+  if (scheduled) {
+    return;
+  }
+  scheduled = true;
+  QTimer::singleShot(0, this, [&scheduled, task = std::forward<Task>(task)]() mutable {
+    scheduled = false;
+    task();
+  });
+}
+
 CustomWidgetDockWidget::CustomWidgetDockWidget(
     SessionManager* session, CatalogModel* catalog, ExtensionCatalogService* extensions, PlaybackEngine* playback,
     QWidget* parent)
@@ -119,6 +131,17 @@ CustomWidgetDockWidget::CustomWidgetDockWidget(
   const auto on_offset_changed = [this]() { pushValues(currentPushTime(), /*force=*/false); };
   connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, on_offset_changed);
   connect(session_, qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this, on_offset_changed);
+  // A widget that shows more than the sample at the tracker (a whole log) learns of what the
+  // unchanged-sample rule hides: the transport starting or stopping, and entries arriving on a wired
+  // object topic (after the tracker, or at a time it already passed).
+  if (playback_ != nullptr) {
+    connect(playback_, &PlaybackEngine::playingChanged, this, [this]() { requestUpdate(); });
+  }
+  connect(session_, &SessionManager::samplesIngested, this, [this]() {
+    if (wiredObjectContentChanged()) {
+      requestUpdate();
+    }
+  });
 }
 
 CustomWidgetDockWidget::~CustomWidgetDockWidget() {
@@ -131,6 +154,12 @@ void CustomWidgetDockWidget::setDiagnosticSink(DiagnosticSink sink) {
 
 void CustomWidgetDockWidget::setActiveWidgetsMarker(std::shared_ptr<ActiveWidgetsMarker> marker) {
   marker_ = std::move(marker);
+}
+
+void CustomWidgetDockWidget::setPlaybackTimeMappers(
+    PlaybackControlHost::TimeMapper mapper, PlaybackControlHost::SourceTimeMapper source_mapper) {
+  time_mapper_ = std::move(mapper);
+  source_time_mapper_ = std::move(source_mapper);
 }
 
 QString CustomWidgetDockWidget::widgetName() const {
@@ -179,6 +208,7 @@ void CustomWidgetDockWidget::releasePlugin() {
     marker_->remove(this);
   }
   registry_.reset();
+  playback_host_.reset();
   host_.reset();
   delete placeholder_.data();
   placeholder_.clear();
@@ -303,6 +333,12 @@ bool CustomWidgetDockWidget::bindWidget(const QString& plugin_id, const QString&
   registry_ = std::make_unique<ServiceRegistryBuilder>();
   if (const Status status = host_->registerServices(*registry_); !status) {
     return fail(QString::fromStdString(status.error()));
+  }
+  if (playback_ != nullptr) {
+    playback_host_ = std::make_unique<PlaybackControlHost>(*playback_, time_mapper_, source_time_mapper_);
+    if (const Status status = playback_host_->registerServices(*registry_); !status) {
+      return fail(QString::fromStdString(status.error()));
+    }
   }
   Status bound = okStatus();
   if (!callOrDisable([&]() { bound = handle_->bind(registry_->view()); })) {
@@ -466,14 +502,38 @@ void CustomWidgetDockWidget::onInputsChangedFromPlugin() {
   }
   // The widget announced it from inside one of its own calls (on_update, load_config, ...): the
   // list must not change under that call, so reconcile once it returned.
-  if (reconcile_scheduled_) {
+  deferOnce(reconcile_scheduled_, [this]() { reconcileInputs(); });
+}
+
+void CustomWidgetDockWidget::requestUpdate() {
+  if (!handle_) {
     return;
   }
-  reconcile_scheduled_ = true;
-  QTimer::singleShot(0, this, [this]() {
-    reconcile_scheduled_ = false;
-    reconcileInputs();
+  if (!update_scheduled_) {
+    updates_at_request_ = updates_delivered_;
+  }
+  // Deferred: playingChanged may come from the widget's own play() or pause(), with its code on the stack.
+  deferOnce(update_scheduled_, [this]() {
+    if (updates_delivered_ == updates_at_request_) {
+      refresh();
+    }
   });
+}
+
+bool CustomWidgetDockWidget::wiredObjectContentChanged() const {
+  const std::vector<WidgetWire>& wires = bindings_.wires();
+  const ObjectStore& objects = session_->objectStore();
+  for (std::size_t i = 0; i < wires.size(); ++i) {
+    const std::optional<WireTarget> target = bindings_.currentTarget(wires[i]);
+    if (!target || target->kind != WidgetInputKind::kObject) {
+      continue;
+    }
+    const std::uint64_t content = objects.contentIdentity(target->object_topic).content;
+    if (i >= object_content_.size() || object_content_[i] != content) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void CustomWidgetDockWidget::afterBindingsEdited() {
@@ -648,6 +708,13 @@ void CustomWidgetDockWidget::pushValues(double time, bool force) {
     values_.push_back(makeWidgetValue(
         static_cast<std::uint32_t>(wires[i].input_index), wires[i].slot, targets_[i] ? *targets_[i] : kNoTarget,
         samples_[i], wires[i].label));
+  }
+  ++updates_delivered_;
+  object_content_.assign(wires.size(), 0);
+  for (std::size_t i = 0; i < wires.size(); ++i) {
+    if (targets_[i] && targets_[i]->kind == WidgetInputKind::kObject) {
+      object_content_[i] = objects.contentIdentity(targets_[i]->object_topic).content;
+    }
   }
   callOrDisable([&]() { handle_->onUpdate(Span<const PJ_widget_value_t>(values_.data(), values_.size()), time); });
 }

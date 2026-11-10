@@ -22,6 +22,8 @@
 #include <cstddef>
 #include <functional>
 #include <limits>
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/widget_plugin_base.hpp>
 #include <stdexcept>
 #include <string>
@@ -83,6 +85,8 @@ struct PluginStats {
   bool corrupt_inputs = false;             ///< "faulty_widgets" reports an impossible input name
   bool corrupt_saved_config = false;       ///< "faulty_widgets" reports an impossible save_config length
   std::function<void()> on_create_widget;  ///< runs at the start of createWidget
+  bool offered_playback = false;           ///< bind found pj.playback.v1
+  sdk::PlaybackHostView playback;          ///< the live instance's pj.playback.v1; invalid once it is destroyed
 };
 inline PluginStats g;
 
@@ -109,6 +113,7 @@ class TestPlugin : public WidgetPluginBase {
 
   ~TestPlugin() override {
     ++g.destroyed;
+    g.playback = {};
     if (label_ != nullptr) {
       // The host must have taken the widget out of the tree before this runs.
       if (label_->parent() != nullptr) {
@@ -117,6 +122,16 @@ class TestPlugin : public WidgetPluginBase {
       delete label_.data();
       ++g.widgets_deleted_by_plugin;
     }
+  }
+
+  Status bind(sdk::ServiceRegistry services) override {
+    Status bound = WidgetPluginBase::bind(services);
+    if (bound) {
+      const auto playback = services.get<sdk::PlaybackHostService>();
+      g.offered_playback = playback.has_value();
+      g.playback = playback.value_or(sdk::PlaybackHostView{});
+    }
+    return bound;
   }
 
   std::vector<WidgetInput> inputs() const override {

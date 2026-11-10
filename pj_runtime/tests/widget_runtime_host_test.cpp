@@ -310,6 +310,31 @@ TEST_F(WidgetRuntimeHostTest, ObjectHistoryDeliversPayloadAndTypeName) {
   EXPECT_DOUBLE_EQ(out.back().time, 1.0);
 }
 
+TEST_F(WidgetRuntimeHostTest, AHistoryTimeConvertsBackToItsSampleFarFromTheOrigin) {
+  // Near an epoch a double steps ~238 ns: the nearest one to a stamp may convert back before it.
+  auto topic = objects_.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/epoch"});
+  ASSERT_TRUE(topic.has_value());
+  constexpr int64_t kFirst = 1'731'234'567'000'000'005;
+  constexpr int64_t kSpacing = 1'000'003;
+  constexpr int kEntries = 64;
+  for (int k = 0; k < kEntries; ++k) {
+    ASSERT_TRUE(objects_.pushOwned(*topic, kFirst + k * kSpacing, {static_cast<uint8_t>(k)}).has_value());
+  }
+  WireTarget wire;
+  wire.kind = WidgetInputKind::kObject;
+  wire.object_topic = *topic;
+  wires_.push_back(wire);
+
+  std::vector<Sample> out;
+  ASSERT_TRUE(query(0, 0, -1e300, 1e300, 0, out));
+  ASSERT_EQ(out.size(), static_cast<std::size_t>(kEntries));
+  for (int k = 0; k < kEntries; ++k) {
+    const Timestamp back = displaySecondsToRaw(displaySeconds(out[k].time), DisplayOffset{});
+    EXPECT_GE(back, kFirst + k * kSpacing) << "entry " << k;
+    EXPECT_LT(back, kFirst + (k + 1) * kSpacing) << "entry " << k;
+  }
+}
+
 TEST_F(WidgetRuntimeHostTest, InputsChangedAndMessagesReachTheCallbacks) {
   const PJ_widget_host_t host = host_->raw();
   host.vtable->notify_inputs_changed(host.ctx);

@@ -862,6 +862,11 @@ class MainWindow : public QMainWindow {
 
   /// `SessionManager::displayTimeForSource` on the ABI's source handle, unwrapped to the axis double.
   [[nodiscard]] std::optional<double> displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const;
+  /// displayTimeForSource on the dataset owning `topic` (empty: representativeDatasetId()); nullopt for an
+  /// unknown topic. The `to_display_time` of every `pj.playback.v1` the shell offers.
+  [[nodiscard]] std::optional<double> displayTimeForTopic(std::string_view topic, int64_t absolute_ns) const;
+  /// Gives a Custom Widget panel the two conversions above for the `pj.playback.v1` its widget is offered.
+  void setPlaybackTimeMappers(CustomWidgetDockWidget& dock);
 
   // Convenience: emit a diagnostic into the session's sink. Source/id
   // are stable string literals; message is a translated QString. The

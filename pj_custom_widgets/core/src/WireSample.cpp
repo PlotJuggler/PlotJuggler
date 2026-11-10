@@ -137,7 +137,7 @@ PJ_widget_value_t makeWidgetValue(
     std::uint32_t input, std::uint32_t slot, const WireTarget& target, const WireSample& sample,
     std::string_view label) {
   const double time =
-      sample.kind == PJ_WIDGET_VALUE_NONE ? 0.0 : rawToDisplaySeconds(sample.stamp, target.offset).value;
+      sample.kind == PJ_WIDGET_VALUE_NONE ? 0.0 : rawToDisplaySecondsAtOrAfter(sample.stamp, target.offset).value;
   PJ_widget_value_t value = baseWidgetValue(input, slot, sample.kind, time, label);
   switch (sample.kind) {
     case PJ_WIDGET_VALUE_NUMBER:

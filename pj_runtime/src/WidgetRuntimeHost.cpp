@@ -137,8 +137,8 @@ Expected<uint32_t> WidgetRuntimeHost::historyNumber(
     }
     const SeriesSample sample = cursor.current();
     PJ_widget_value_t value = baseWidgetValue(
-        query.input, query.slot, PJ_WIDGET_VALUE_NUMBER, rawToDisplaySeconds(sample.timestamp, target.offset).value,
-        wire.label);
+        query.input, query.slot, PJ_WIDGET_VALUE_NUMBER,
+        rawToDisplaySecondsAtOrAfter(sample.timestamp, target.offset).value, wire.label);
     value.number = sample.value;
     if (!sink(value)) {
       break;
@@ -186,7 +186,7 @@ Expected<uint32_t> WidgetRuntimeHost::historyText(
     const SampleRow& row = rows[i];
     const std::string_view text = row.chunk->readString(target.column, row.row_index);
     PJ_widget_value_t value = baseWidgetValue(
-        query.input, query.slot, PJ_WIDGET_VALUE_TEXT, rawToDisplaySeconds(row.timestamp, target.offset).value,
+        query.input, query.slot, PJ_WIDGET_VALUE_TEXT, rawToDisplaySecondsAtOrAfter(row.timestamp, target.offset).value,
         wire.label);
     value.text = PJ_string_view_t{text.data(), text.size()};
     if (!sink(value)) {
@@ -223,8 +223,8 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
       continue;
     }
     PJ_widget_value_t value = baseWidgetValue(
-        query.input, query.slot, PJ_WIDGET_VALUE_OBJECT, rawToDisplaySeconds(entry->timestamp, target.offset).value,
-        wire.label);
+        query.input, query.slot, PJ_WIDGET_VALUE_OBJECT,
+        rawToDisplaySecondsAtOrAfter(entry->timestamp, target.offset).value, wire.label);
     value.bytes = PJ_bytes_view_t{payload->bytes.data(), payload->bytes.size()};
     value.type_name = PJ_string_view_t{target.object_type_name.data(), target.object_type_name.size()};
     if (!sink(value)) {

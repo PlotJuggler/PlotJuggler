@@ -303,6 +303,147 @@ TEST_F(CustomWidgetDockTest, AnObjectWireWithoutParserDeliversItsStoredBytes) {
   EXPECT_EQ(g.last_values[0].bytes, (std::vector<uint8_t>{'o', 'p', 'a', 'q', 'u', 'e'}));
 }
 
+TEST_F(CustomWidgetDockTest, EveryWidgetIsOfferedThePlaybackServiceForTheLifeOfItsInstance) {
+  auto dock = makeBound();
+  ASSERT_TRUE(g.offered_playback);
+  ASSERT_TRUE(g.playback.valid());
+  PlaybackEngine& engine = app_->playbackEngine();
+  engine.setRange(displayRange(0.0, 10.0));
+  ASSERT_TRUE(g.playback.seek(4.0).has_value());
+  EXPECT_DOUBLE_EQ(toAxisDouble(engine.currentTime()), 4.0);
+  const auto state = g.playback.state();
+  ASSERT_TRUE(state.has_value());
+  EXPECT_DOUBLE_EQ(state->current_time_s, 4.0);
+
+  dock->aboutToBeDiscarded();
+  EXPECT_FALSE(g.playback.valid()) << "the instance died with its handle, before the service it held";
+  EXPECT_EQ(g.destroyed, 1);
+}
+
+/// A seek to the time of a delivered object sample shows that same sample, wherever the display axis
+/// sits: near its origin a double holds every nanosecond, near an epoch it steps ~238 ns.
+TEST_F(CustomWidgetDockTest, SeekingToADeliveredSampleTimeShowsThatSample) {
+  PlaybackEngine& engine = app_->playbackEngine();
+  engine.setRange(displayRange(-1e10, 1e10));
+  auto dock = makeBound(u"viewer"_s);
+  // What MainWindow wires: the playhead drives every dock.
+  QObject::connect(&engine, &PlaybackEngine::currentTimeChanged, dock.get(), &CustomWidgetDockWidget::onTrackerTime);
+  ObjectStore& objects = app_->sessionManager().objectStore();
+
+  const auto check_topic = [&](const char* name, int64_t first_ns) {
+    SCOPED_TRACE(name);
+    auto topic =
+        objects.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = name, .metadata_json = {}});
+    ASSERT_TRUE(topic.has_value());
+    constexpr int kEntries = 64;
+    constexpr int64_t kSpacing = 1'000'003;  // ~1 ms, not a multiple of the double's step
+    for (int k = 0; k < kEntries; ++k) {
+      ASSERT_TRUE(objects.pushOwned(*topic, first_ns + k * kSpacing, {static_cast<uint8_t>(k)}).has_value());
+    }
+    ASSERT_TRUE(dock->tryAcceptObjectTopic(*topic, sdk::BuiltinObjectType::kImage, QString::fromLatin1(name)));
+    for (int k = 0; k < kEntries; ++k) {
+      // Halfway to the next entry: the wire holds entry k.
+      dock->onTrackerTime(rawToDisplaySeconds(first_ns + k * kSpacing + kSpacing / 2, DisplayOffset{}).value);
+      ASSERT_EQ(g.last_values.back().bytes, (std::vector<uint8_t>{static_cast<uint8_t>(k)}));
+      const double delivered = g.last_values.back().time;
+      ASSERT_TRUE(g.playback.seek(delivered).has_value());
+      ASSERT_EQ(g.last_values.back().bytes, (std::vector<uint8_t>{static_cast<uint8_t>(k)}))
+          << "entry " << k << ": the seek to its time " << delivered << " showed another entry";
+      EXPECT_EQ(g.last_values.back().time, delivered);
+    }
+    dock->removeBinding(u"frame"_s, 0);
+  };
+  check_topic("/near_origin", 1'000'000'007);
+  check_topic("/epoch", 1'731'234'567'000'000'005);
+}
+
+TEST_F(CustomWidgetDockTest, PlayAndPauseEachBringOneDeferredUpdate) {
+  auto dock = makeBound();
+  ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));
+  dock->onTrackerTime(1.0);
+  PlaybackEngine& engine = app_->playbackEngine();
+  engine.setRange(displayRange(0.0, 10.0));
+  const int base = g.updates;
+
+  engine.play();
+  EXPECT_EQ(g.updates, base) << "deferred: play() may come from the widget's own call";
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 1);
+  EXPECT_DOUBLE_EQ(g.last_values[0].number, 10.0) << "the same values, delivered again";
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 1);
+
+  engine.pause();
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 2);
+
+  // Requests before the deferred update ran collapse into it.
+  engine.play();
+  engine.pause();
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 3);
+
+  // An on_update that reaches the widget meanwhile already carries the new state.
+  engine.play();
+  dock->onTrackerTime(2.0);
+  EXPECT_EQ(g.updates, base + 4);
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 4);
+  engine.pause();
+  QCoreApplication::processEvents();
+}
+
+TEST_F(CustomWidgetDockTest, NewEntriesOnAWiredObjectTopicBringOneUpdate) {
+  auto dock = makeBound(u"viewer"_s);
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto wired =
+      objects.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/cam", .metadata_json = {}});
+  auto other =
+      objects.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/other", .metadata_json = {}});
+  ASSERT_TRUE(wired.has_value() && other.has_value());
+  ASSERT_TRUE(objects.pushOwned(*wired, kSecond, {1}).has_value());
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(*wired, sdk::BuiltinObjectType::kImage, u"/cam"_s));
+  dock->onTrackerTime(1.5);
+  const int base = g.updates;
+  SessionManager& session = app_->sessionManager();
+
+  session.notifyIngest({}, /*live=*/true);
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base) << "nothing new on the wired topic";
+
+  ASSERT_TRUE(objects.pushOwned(*other, 2 * kSecond, {9}).has_value());
+  session.notifyIngest({}, /*live=*/true);
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base) << "an unwired topic grew";
+
+  // After the tracker: the sample at the tracker is still entry 1, yet the widget hears of it.
+  ASSERT_TRUE(objects.pushOwned(*wired, 5 * kSecond, {5}).has_value());
+  ASSERT_TRUE(objects.pushOwned(*wired, 6 * kSecond, {6}).has_value());
+  session.notifyIngest({}, /*live=*/true);
+  session.notifyIngest({}, /*live=*/true);
+  EXPECT_EQ(g.updates, base);
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 1);
+  ASSERT_EQ(g.last_values.size(), 1U);
+  EXPECT_EQ(g.last_values[0].bytes, (std::vector<uint8_t>{1}));
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 1);
+}
+
+TEST_F(CustomWidgetDockTest, APanelDestroyedWithAnUpdatePendingNeverCallsItsPlugin) {
+  auto dock = makeBound();
+  app_->playbackEngine().setRange(displayRange(0.0, 10.0));
+  const int base = g.updates;
+  app_->playbackEngine().play();
+  dock.reset();
+  EXPECT_EQ(g.destroyed, 1);
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base);
+  app_->playbackEngine().pause();
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base);
+}
+
 TEST_F(CustomWidgetDockTest, ReconciliationKeepsWiresByNameAndDropsTheOthers) {
   auto dock = makeBound();
   ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));

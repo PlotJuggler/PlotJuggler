@@ -19,6 +19,7 @@
 // DEMAND a DisplayOffset so the raw->display subtraction can't be skipped.
 
 #include <chrono>
+#include <cmath>
 #include <compare>
 #include <limits>
 #include <optional>
@@ -151,6 +152,20 @@ using DisplayRange = PJ::Range<DisplaySeconds>;
 /// Display-relative seconds -> raw int64-ns (inverse of rawToDisplaySeconds).
 [[nodiscard]] constexpr Timestamp displaySecondsToRaw(DisplaySeconds seconds, DisplayOffset offset) noexcept {
   return toRaw(toAbsolute(seconds, offset));
+}
+
+/// rawToDisplaySeconds raised to the first double that displaySecondsToRaw maps back to `raw_ns` or later.
+/// Far from the display origin a double does not hold every nanosecond (near 1.7e9 s it steps ~238 ns),
+/// and the nearest one can convert back to an instant before `raw_ns`: a seek to that time would show
+/// the sample before. The time of a sample handed to a Widget plugin, so that seeking to it shows that
+/// sample (or a later one less than a step after it).
+[[nodiscard]] inline DisplaySeconds rawToDisplaySecondsAtOrAfter(Timestamp raw_ns, DisplayOffset offset) noexcept {
+  DisplaySeconds seconds = rawToDisplaySeconds(raw_ns, offset);
+  // Each step moves the converted instant by one double step; two cover the rounding of both conversions.
+  for (int step = 0; step < 4 && displaySecondsToRaw(seconds, offset) < raw_ns; ++step) {
+    seconds.value = std::nextafter(seconds.value, std::numeric_limits<double>::infinity());
+  }
+  return seconds;
 }
 
 // --- Qwt / IDataWidget edge: DisplaySeconds <-> bare double (axis stays double) ---

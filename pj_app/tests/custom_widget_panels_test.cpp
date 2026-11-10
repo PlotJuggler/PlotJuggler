@@ -547,6 +547,29 @@ TEST_F(CustomWidgetShellFlowTest, FifthIconOpensThePickerAndAChoiceBuildsABoundP
   EXPECT_EQ(g.widgets_created, 1) << "the choice is spent";
 }
 
+TEST_F(CustomWidgetShellFlowTest, ThePanelsWidgetGetsThePlaybackServiceWithTheShellsTimeMappers) {
+  PJ::AppSession& app = Peer::session(*window_);
+  app.sessionManager().setUseTimeOffset(false);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "mapped");
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+
+  clickIcon("buttonVizCustomWidget");
+  auto* list = picker_->findChild<QListWidget*>(u"listCustomWidgets"_s);
+  emit list->itemClicked(itemNamed(list, u"Gauge"_s));
+  ASSERT_NE(dock_->objectWidget(), nullptr);
+  ASSERT_TRUE(g.offered_playback);
+  ASSERT_TRUE(g.playback.valid());
+
+  const auto display = g.playback.toDisplayTime("/signal", 3'000'000'000);
+  ASSERT_TRUE(display.has_value()) << display.error();
+  EXPECT_DOUBLE_EQ(*display, 3.0);
+  EXPECT_FALSE(g.playback.toDisplayTime("/nowhere", 0).has_value());
+  const auto by_source =
+      g.playback.toDisplayTimeForSource(PJ::sdk::DataSourceHandle{static_cast<uint32_t>(dataset)}, 4'000'000'000);
+  ASSERT_TRUE(by_source.has_value()) << by_source.error();
+  EXPECT_DOUBLE_EQ(*by_source, 4.0);
+}
+
 TEST_F(CustomWidgetShellFlowTest, AChoiceForAPanelFilledMeanwhileDoesNothing) {
   clickIcon("buttonVizCustomWidget");
   clickIcon("buttonVizPlot");

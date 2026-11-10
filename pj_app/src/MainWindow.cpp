@@ -2235,6 +2235,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
         &session_->sessionManager(), &session_->catalogModel(), &session_->extensionCatalog(),
         &session_->playbackEngine(), parent);
     widget->setDiagnosticSink(diagnosticSink());
+    setPlaybackTimeMappers(*widget);
     if (custom_widgets_ != nullptr) {
       custom_widgets_->attachDock(*widget);
     }
@@ -4981,6 +4982,22 @@ void MainWindow::syncWidgetsToCatalog() {
 std::optional<double> MainWindow::displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const {
   const auto seconds = session_->sessionManager().displayTimeForSource(source.id, absolute_ns);
   return seconds.has_value() ? std::optional<double>(toAxisDouble(*seconds)) : std::nullopt;
+}
+
+std::optional<double> MainWindow::displayTimeForTopic(std::string_view topic, int64_t absolute_ns) const {
+  const DatasetId dataset_id = topic.empty()
+                                   ? representativeDatasetId()
+                                   : session_->catalogModel().datasetForTopic(
+                                         QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size())));
+  return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, absolute_ns);
+}
+
+void MainWindow::setPlaybackTimeMappers(CustomWidgetDockWidget& dock) {
+  dock.setPlaybackTimeMappers(
+      [this](std::string_view topic, int64_t absolute_ns) { return displayTimeForTopic(topic, absolute_ns); },
+      [this](PJ_data_source_handle_t source, int64_t absolute_ns) {
+        return displayTimeForSource(source, absolute_ns);
+      });
 }
 
 void MainWindow::linkedZoomOut() {
@@ -10616,13 +10633,7 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
   // touch session state and widgets directly.
   session->playback_host = std::make_unique<PlaybackControlHost>(
       session_->playbackEngine(),
-      [this](std::string_view topic, int64_t absolute_ns) -> std::optional<double> {
-        const DatasetId dataset_id = topic.empty()
-                                         ? representativeDatasetId()
-                                         : session_->catalogModel().datasetForTopic(
-                                               QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size())));
-        return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, absolute_ns);
-      },
+      [this](std::string_view topic, int64_t absolute_ns) { return displayTimeForTopic(topic, absolute_ns); },
       [this](PJ_data_source_handle_t source_handle, int64_t absolute_ns) {
         return displayTimeForSource(source_handle, absolute_ns);
       });
