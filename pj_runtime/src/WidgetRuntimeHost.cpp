@@ -64,10 +64,15 @@ class Decimator {
     return true;
   }
 
+  /// Index of the `j`-th of `cap` samples spread evenly over `total` (first and last included).
+  [[nodiscard]] static std::size_t pick(std::size_t j, std::size_t total, std::size_t cap) {
+    const std::size_t denominator = std::max<std::size_t>(cap - 1, 1);
+    return static_cast<std::size_t>(static_cast<unsigned long long>(j) * (total - 1) / denominator);
+  }
+
  private:
   [[nodiscard]] std::size_t target(std::size_t j) const {
-    const std::size_t denominator = std::max<std::size_t>(cap_ - 1, 1);
-    return static_cast<std::size_t>(static_cast<unsigned long long>(j) * (total_ - 1) / denominator);
+    return pick(j, total_, cap_);
   }
 
   std::size_t total_;
@@ -203,35 +208,68 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
   const Timestamp to = toRawSaturating(query.to, target.offset);
   // rangeByTime is (lo, hi]; the history range is inclusive on both ends.
   const Timestamp lo = saturatingSub(from, 1);
-  const auto entries = objects_.rangeByTime(target.object_topic, lo, to);
-  if (entries.empty()) {
-    return 0U;
-  }
-  Decimator decimator(entries.size(), effectiveCap(query));
-  for (std::size_t i = 0; i < entries.size(); ++i) {
-    if (!decimator.take(i)) {
-      continue;
+
+  // Count and choose the delivered entries by binary search over the sorted timestamps, so a call that
+  // delivers few samples (a widget probing a range with max_samples 1) costs O(log n), not a copy of the
+  // whole window. A chosen entry is named by its timestamp and its rank among the entries sharing it.
+  std::size_t total = 0;
+  bool deliver_all = false;
+  std::vector<std::pair<Timestamp, std::size_t>> chosen;
+  {
+    const EntryTimestampsView stamps = objects_.entryTimestamps(target.object_topic);
+    const Timestamp* first = std::upper_bound(stamps.begin(), stamps.end(), lo);
+    const Timestamp* last = std::upper_bound(first, stamps.end(), to);
+    total = static_cast<std::size_t>(last - first);
+    if (total == 0) {
+      return 0U;
     }
-    // Resolved one at a time, outside any store lock: a lazy entry may refetch. An entry evicted
-    // since rangeByTime, or whose fetch failed or did not encode, has no payload to deliver and is skipped.
-    const auto entry = objects_.at(target.object_topic, entries[i].uid);
+    const std::size_t cap = std::max<std::size_t>(effectiveCap(query), 1);
+    deliver_all = total <= cap;
+    if (!deliver_all) {
+      chosen.reserve(cap);
+      for (std::size_t j = 0; j < cap; ++j) {
+        const std::size_t index = Decimator::pick(j, total, cap);
+        const Timestamp stamp = first[index];
+        const auto rank = static_cast<std::size_t>(first + index - std::lower_bound(first, first + index, stamp));
+        chosen.emplace_back(stamp, rank);
+      }
+    }
+  }
+
+  // Resolved one at a time, outside any store lock: a lazy entry may refetch. An entry evicted since it was
+  // counted, or whose fetch failed or did not encode, has no payload to deliver and is skipped.
+  const auto deliver = [&](SequentialUID uid) {
+    const auto entry = objects_.at(target.object_topic, uid);
     if (!entry || entry->fetch_failed) {
-      continue;
+      return true;
     }
     const Expected<sdk::PayloadView> payload = encoder_ ? encoder_(target, *entry) : entry->payload;
     if (!payload) {
-      continue;
+      return true;
     }
     PJ_widget_value_t value = baseWidgetValue(
         query.input, query.slot, PJ_WIDGET_VALUE_OBJECT,
         rawToDisplaySecondsAtOrAfter(entry->timestamp, target.offset).value, wire.label);
     value.bytes = PJ_bytes_view_t{payload->bytes.data(), payload->bytes.size()};
     value.type_name = PJ_string_view_t{target.object_type_name.data(), target.object_type_name.size()};
-    if (!sink(value)) {
-      break;
+    return sink(value);
+  };
+
+  if (deliver_all) {
+    for (const auto& entry : objects_.rangeByTime(target.object_topic, lo, to)) {
+      if (!deliver(entry.uid)) {
+        break;
+      }
+    }
+  } else {
+    for (const auto& [stamp, rank] : chosen) {
+      const auto at_stamp = objects_.rangeByTime(target.object_topic, saturatingSub(stamp, 1), stamp);
+      if (rank < at_stamp.size() && !deliver(at_stamp[rank].uid)) {
+        break;
+      }
     }
   }
-  return saturatedTotal(entries.size());
+  return saturatedTotal(total);
 }
 
 }  // namespace PJ
