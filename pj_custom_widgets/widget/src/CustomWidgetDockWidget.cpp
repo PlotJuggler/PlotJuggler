@@ -138,6 +138,13 @@ CustomWidgetDockWidget::CustomWidgetDockWidget(
     connect(playback_, &PlaybackEngine::playingChanged, this, [this]() { requestUpdate(); });
   }
   connect(session_, &SessionManager::samplesIngested, this, [this]() {
+    // An object topic registers in the ObjectStore with its first ingested entries, which the catalog
+    // does not report when the topic was already listed (advertised by the file's summary): a wire
+    // saved against it stays pending unless it is retried here.
+    if (bindings_.hasPendingWires() && bindings_.retryPending()) {
+      afterCatalogChange(true);
+      return;
+    }
     if (wiredObjectContentChanged()) {
       requestUpdate();
     }
