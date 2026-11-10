@@ -17,7 +17,7 @@ Without ROS: `pixi global install -c conda-forge -c https://prefix.dev/plotjuggl
 # PJ4's own dependency packages (recipes/), once:
 pixi exec --spec "rattler-build>=0.66,<0.67" rattler-build build \
   --recipe recipes/luau --recipe recipes/libmcap --recipe recipes/cloudini \
-  --recipe recipes/kissfft --recipe recipes/libnanoarrow \
+  --recipe recipes/kissfft \
   -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 packaging/conda/build_conda.sh --channel ./local-channel   # -> conda-output/
 ```
@@ -44,7 +44,10 @@ A conda environment holds one version of each library, so the package has to
 build against what RoboStack's ROS packages were built against:
 
 - **Pins** in `variants.yaml` and `recipes/variants.yaml` follow RoboStack's
-  `conda_build_config.yaml`: GCC 14 on Linux, clang 19 on macOS, and fmt 12.1.
+  `conda_build_config.yaml`: GCC 14 on Linux, clang 19 on macOS, fmt 12.1, and
+  Qt 6.11 (`qt6_main`; the build passes it to CMake as `PJ_QT_MIN_VERSION`, below
+  the release kit in `versions.env`). There is one build per Python RoboStack
+  ships (3.12 and 3.14), since the embedded interpreter links that `libpython`.
 - **ffmpeg** and **libarchive** come from conda-forge's LGPL builds (PJ4 is
   MPL-2.0; the GPL libarchive links lzo). There are two builds, one per ffmpeg
   major, because RoboStack's OpenCV pins it: Jazzy is on 9, Kilted on 8.
@@ -53,7 +56,7 @@ build against what RoboStack's ROS packages were built against:
 | --- | --- |
 | Jazzy | installs (ffmpeg 9 build) |
 | Kilted | installs (ffmpeg 8 build) |
-| Humble | does not solve: its snapshot holds Qt 6.10, PJ4 needs `PJ_QT_VERSION` from `versions.env`. Humble users are on Ubuntu 22.04: use the [apt repository](../deb/README.md). |
+| Humble | installs (ffmpeg 9, Python 3.14 build) |
 
 The marketplace ROS 2 plugin is built against `/opt/ros` and does not load in
 a RoboStack environment yet.

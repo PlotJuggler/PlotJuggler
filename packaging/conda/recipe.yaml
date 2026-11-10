@@ -3,7 +3,8 @@
 # PlotJuggler 4 as a conda package, for the PlotJuggler prefix.dev channel.
 # It installs next to RoboStack's ROS 2 packages in one environment, which is
 # how ROS users on conda get PJ4. Built by build_conda.sh, which supplies
-# PJ_QT_VERSION and PJ_VERSION from versions.env (or the release tag).
+# PJ_VERSION from versions.env (or the release tag); Qt and Python come from
+# variants.yaml, like the rest of the pins.
 
 context:
   version: ${{ env.get("PJ_VERSION") }}
@@ -19,6 +20,10 @@ build:
   number: 0
   skip:
     - win
+  script:
+    file: build.sh
+    env:
+      PJ_QT_MIN_VERSION: ${{ qt6_main }}
 
 requirements:
   build:
@@ -30,13 +35,14 @@ requirements:
     - ninja
     - pkg-config
   host:
-    - qt6-main ${{ env.get("PJ_QT_VERSION") }}.*
+    # The Qt 6 of the environment it installs into (variants.yaml).
+    - qt6-main ${{ qt6_main }}.*
     - qwt 6.3.*
     - fmt
     - tsl_robin_map 1.4.*
     - glm 1.0.*
     - nlohmann_json 3.12.*
-    - python 3.12.*
+    - python
     - pybind11 2.13.*
     - zstd 1.5.*
     - lz4-c
@@ -65,7 +71,7 @@ requirements:
     - libmcap 2.1.*
     - cloudini 1.4.*
     - kissfft 131.1.*
-    - libnanoarrow 0.7.*
+    - libnanoarrow >=0.9
   # ffmpeg's run_export demands at least the patch release built against,
   # often newer than a RoboStack snapshot's; the ABI holds within a major.
   ignore_run_exports:
@@ -74,7 +80,7 @@ requirements:
   run:
     # The embedded interpreter links libpython and loads the stdlib from the
     # env; python's run_exports only pin the ABI, not the package itself.
-    - python 3.12.*
+    - python
     - ${{ pin_compatible('ffmpeg', lower_bound='x.x', upper_bound='x') }}
     # PJ4 ships MPL-2.0 and must not pull GPL builds into the environment.
     - ffmpeg * lgpl_*

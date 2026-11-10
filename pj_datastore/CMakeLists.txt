@@ -28,6 +28,28 @@ if(PJ_BUILD_TESTS AND NOT PJ_ENABLE_MSAN)
 endif()
 
 # --- nanoarrow core ---
+# nanoarrow >= 0.8 links its IPC target to zstd::libzstd and lz4::lz4, but its
+# config looks neither up (no find_dependency), and some lz4 packages ship no
+# CMake config at all: provide whichever target is missing before nanoarrow.
+find_package(zstd CONFIG QUIET)
+find_package(lz4 CONFIG QUIET)
+foreach(_pj_codec IN ITEMS zstd lz4)
+  if(_pj_codec STREQUAL "zstd")
+    set(_pj_codec_target zstd::libzstd)
+  else()
+    set(_pj_codec_target lz4::lz4)
+  endif()
+  if(NOT TARGET ${_pj_codec_target})
+    find_library(PJ_${_pj_codec}_LIBRARY NAMES ${_pj_codec} lib${_pj_codec})
+    find_path(PJ_${_pj_codec}_INCLUDE_DIR NAMES ${_pj_codec}.h)
+    if(PJ_${_pj_codec}_LIBRARY AND PJ_${_pj_codec}_INCLUDE_DIR)
+      add_library(${_pj_codec_target} UNKNOWN IMPORTED)
+      set_target_properties(${_pj_codec_target} PROPERTIES
+        IMPORTED_LOCATION "${PJ_${_pj_codec}_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${PJ_${_pj_codec}_INCLUDE_DIR}")
+    endif()
+  endif()
+endforeach()
 find_package(nanoarrow CONFIG QUIET)
 
 set(PJ_NANOARROW_TARGET "")
