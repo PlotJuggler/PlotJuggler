@@ -424,14 +424,16 @@ double computeBandPower(const SeriesView& sv, double fLo, double fHi) {
   }
   mean /= static_cast<double>(n);
 
-  std::vector<double> data(n);
+  // Float, like the kissfft build this replaces: half the memory of double on pocketfft's
+  // Bluestein path (~76 vs ~152 bytes per sample), ~1e-7 relative accuracy.
+  std::vector<float> data(n);
   for (std::size_t i = 0; i < n; ++i) {
-    data[i] = sv.values[i] - mean;
+    data[i] = static_cast<float>(sv.values[i] - mean);
   }
   try {
     // O(n log n) for any n (Bluestein for large prime factors). In place, the output is
     // FFTPACK half-complex: re0, re1, im1, re2, im2, ..., re(n/2) (n even).
-    pocketfft::detail::pocketfft_r<double>(n).exec(data.data(), 1.0, true);
+    pocketfft::detail::pocketfft_r<float>(n).exec(data.data(), 1.0f, true);
   } catch (const std::bad_alloc&) {
     return 0.0;
   }
@@ -441,7 +443,8 @@ double computeBandPower(const SeriesView& sv, double fLo, double fHi) {
   for (std::size_t i = 0; i < n / 2; ++i) {
     const double f = static_cast<double>(i) * (1.0 / dt_seconds) / nd;
     if (f >= fLo && f <= fHi) {
-      const double amp = (i == 0 ? std::abs(data[0]) : std::hypot(data[2 * i - 1], data[2 * i])) / nd;
+      const double amp =
+          static_cast<double>(i == 0 ? std::abs(data[0]) : std::hypot(data[2 * i - 1], data[2 * i])) / nd;
       power += amp * amp;
     }
   }
