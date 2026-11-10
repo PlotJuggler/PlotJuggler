@@ -242,6 +242,14 @@ void DockWidget::setPlaceholderWidget() {
       placeholder_widget_, &VisualizationPlaceholderWidget::contextMenuAboutToShow, this,
       &DockWidget::updatePlaceholderPasteAction);
   updatePlaceholderPasteAction();
+  placeholder_widget_->setCustomWidgetsAvailable(custom_widgets_available_);
+}
+
+void DockWidget::setCustomWidgetsAvailable(bool available) {
+  custom_widgets_available_ = available;
+  if (placeholder_widget_ != nullptr) {
+    placeholder_widget_->setCustomWidgetsAvailable(available);
+  }
 }
 
 void DockWidget::onVisualizationRequested(VisualizationKind kind) {

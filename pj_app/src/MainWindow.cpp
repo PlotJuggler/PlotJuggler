@@ -1696,8 +1696,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
     plugin_plot_tabs_->refreshAvailability();
     syncCustomTopicsEditor();
+    refreshCustomWidgetsAvailability();
   });
   syncCustomTopicsEditor();
+  refreshCustomWidgetsAvailability();
 
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
@@ -4208,8 +4210,12 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
   connect(docker, &PlotDocker::topicRefused, this, [this](const QString& reason) { showToast(reason); });
+  connect(
+      docker, &PlotDocker::dockAdded, this,
+      [this](DockWidget* dock) { dock->setCustomWidgetsAvailable(custom_widgets_available_); }, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
+      dock->setCustomWidgetsAvailable(custom_widgets_available_);
       onPlotAdded(dock->plotWidget());
     }
   }
@@ -4856,6 +4862,13 @@ void MainWindow::forEachCustomWidgetDock(const std::function<void(CustomWidgetDo
       operation(custom);
     }
   });
+}
+
+void MainWindow::refreshCustomWidgetsAvailability() {
+  const auto& widgets = session_->extensionCatalog().widgets();
+  custom_widgets_available_ =
+      std::ranges::any_of(widgets, [](const LoadedWidget& library) { return !library.widgets.empty(); });
+  forEachDock([this](DockWidget* dock) { dock->setCustomWidgetsAvailable(custom_widgets_available_); });
 }
 
 void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) {

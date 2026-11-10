@@ -871,6 +871,8 @@ class MainWindow : public QMainWindow {
 
   // Refreshes the streaming source selector from loaded plugins.
   void refreshStreamingCombo();
+  // Recomputes whether any Custom Widget type is installed and pushes it to every dock's placeholder.
+  void refreshCustomWidgetsAvailability();
 
   // Wires callbacks for plots already present after UI setup.
   void wireExistingPlots();
@@ -2038,6 +2040,8 @@ class MainWindow : public QMainWindow {
 
   // A refreshCustomTopicsPanel is queued by scheduleCustomTopicsSync and has not run yet.
   bool custom_topics_sync_pending_ = false;
+  // At least one Custom Widget type is installed; applied to every dock's placeholder.
+  bool custom_widgets_available_ = false;
   int custom_topics_syncs_ = 0;            ///< refreshCustomTopicsPanel runs, read by the coalescing test
   int custom_topics_transform_scans_ = 0;  ///< transform-row rebuilds, read by the refresh test
   /// One Custom Topics row of a transform output, as the last rebuild matched it to the catalog.

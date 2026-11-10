@@ -458,6 +458,8 @@ class CustomWidgetShellFlowTest : public ::testing::Test {
     ASSERT_TRUE(extensions_dir_.isValid());
     window_ = std::make_unique<PJ::MainWindow>(extensions_dir_.path());
     ASSERT_TRUE(Peer::session(*window_).extensionCatalog().pluginCatalog().registerStaticWidget(goodVtable()));
+    // A raw registration does not notify; announce it the way a reload does.
+    emit Peer::session(*window_).extensionCatalog().catalogChanged();
     auto* tabbed = window_->findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
     ASSERT_NE(tabbed, nullptr);
     dock_ = tabbed->currentTab()->plotAt(0);
@@ -490,6 +492,35 @@ class CustomWidgetShellFlowTest : public ::testing::Test {
   PJ::CustomWidgetConfigPanel* config_ = nullptr;
   QStackedWidget* stack_ = nullptr;
 };
+
+TEST(CustomWidgetShellAvailabilityTest, FifthIconFollowsTheInstalledWidgetCatalog) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  pj_cw_test::g = pj_cw_test::PluginStats{};
+  PJ::MainWindow window(extensions_dir.path());
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  PJ::DockWidget* dock = tabbed->currentTab()->plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  dock->setPlaceholderWidget();
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  QToolButton* button = placeholder->customWidgetButton();
+  ASSERT_NE(button, nullptr);
+  EXPECT_FALSE(button->isEnabled());
+
+  PJ::ExtensionCatalogService& extensions = Peer::session(window).extensionCatalog();
+  ASSERT_TRUE(extensions.pluginCatalog().registerStaticWidget(goodVtable()));
+  emit extensions.catalogChanged();
+  EXPECT_TRUE(button->isEnabled());
+  EXPECT_EQ(button->toolTip(), u"Custom Widget"_s);
+
+  PJ::DockWidget* split = dock->splitHorizontal();
+  ASSERT_NE(split, nullptr);
+  auto* split_placeholder = split->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(split_placeholder, nullptr);
+  EXPECT_TRUE(split_placeholder->customWidgetButton()->isEnabled()) << "a new dock starts with the current state";
+}
 
 TEST_F(CustomWidgetShellFlowTest, FifthIconOpensThePickerAndAChoiceBuildsABoundPanel) {
   clickIcon("buttonVizCustomWidget");
