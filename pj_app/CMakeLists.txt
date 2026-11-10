@@ -368,6 +368,11 @@ if(EMSCRIPTEN)
     set_target_properties(pj_app PROPERTIES
         AUTORCC ON
         QT_WASM_INITIAL_MEMORY "256MB")
+    # Browser-only CJK fallback font: desktop builds use the system's fonts.
+    qt_add_resources(pj_app pj_wasm_cjk_font
+        PREFIX "/resources"
+        BASE "${CMAKE_SOURCE_DIR}/resources"
+        FILES "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSansSC/NotoSansSC-Subset.otf")
     target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
     set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
@@ -427,7 +432,7 @@ if(PJ_BUILD_TESTS)
             src/LayoutXml.h
             src/KeySequence.cpp
             src/RasterKeyMap.cpp
-        LIBS Qt6::Widgets Qt6::Xml
+        LIBS Qt6::Widgets Qt6::Xml pj_app_language
     )
     set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
     # The MCP server's HTTP and JSON-RPC gates (desktop only, like the server).

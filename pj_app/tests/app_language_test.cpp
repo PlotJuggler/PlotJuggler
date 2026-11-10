@@ -70,7 +70,6 @@ class AppLanguageTest : public QObject {
     QVERIFY(language.catalogLoaded());
     QVERIFY(QFile::exists(u":/i18n/plotjuggler4_zh_CN.qm"_s));
     QCOMPARE(language.language(), u"zh_CN"_s);
-    QCOMPARE(QCoreApplication::instance()->property("interfaceLanguage").toString(), u"zh_CN"_s);
     const QString label = QCoreApplication::translate("PreferencesContent", "Language:");
     QVERIFY(!label.isEmpty());
     QVERIFY(label != "Language:"_L1);

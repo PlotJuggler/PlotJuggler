@@ -12,6 +12,7 @@ namespace PJ {
 // Owns the startup translator for the entire UI lifetime. Construct after the
 // settings backend is ready and before any window; destroy before the app.
 // Changing the saved preference never retranslates an existing widget tree.
+// The translator uninstalls itself on destruction.
 class AppLanguage final {
  public:
   static inline const QString kPreferenceKey = QStringLiteral("Preferences::language");
@@ -23,7 +24,6 @@ class AppLanguage final {
   [[nodiscard]] static QString preferredLanguage(const QSettings& settings);
 
   explicit AppLanguage(QCoreApplication& app, const QString& language);
-  ~AppLanguage();
 
   AppLanguage(const AppLanguage&) = delete;
   AppLanguage& operator=(const AppLanguage&) = delete;
@@ -36,7 +36,6 @@ class AppLanguage final {
   }
 
  private:
-  QCoreApplication& app_;
   QString language_;
   QTranslator translator_;
   bool catalog_loaded_ = false;

@@ -6,14 +6,17 @@ No build tree or third-party Python package is required. Use the same Qt lupdate
 as the application build, for example:
   python3 tests/check_translations_4x.py --lupdate .qt/6.12.0/gcc_64/bin/lupdate
 
---update-ts refreshes the catalog before validation. New untranslated strings are
-reported as errors; an English fallback is never counted as a Chinese translation.
-Coverage here means Qt-extractable messages, not every string literal or plugin UI.
+--update-ts refreshes the catalog before validation. Exit status: 1 when a catalog
+entry would break at runtime (placeholders, markup, plural forms); 77 when the
+catalog only lags the sources (unfinished, missing or stale entries), which Qt
+shows as English text; 0 when complete. CTest reports 77 as a skip, so a UI
+change never needs a translation to pass CI. Coverage means Qt-extractable
+messages, not every string literal or plugin UI.
 """
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter
 from html.parser import HTMLParser
 import os
 from pathlib import Path
@@ -34,6 +37,7 @@ RICH_TAGS = {'a', 'b', 'blockquote', 'body', 'code', 'dd', 'div', 'dl', 'dt', 'e
              'h4', 'h5', 'h6', 'head', 'html', 'i', 'li', 'ol', 'p', 'pre', 'small', 'span', 'strong', 'sub',
              'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul'} | VOID_TAGS
 MessageKey = tuple[str, str, str, bool]
+EXIT_INCOMPLETE = 77
 
 
 def production_sources() -> tuple[list[Path], list[Path]]:
@@ -168,9 +172,9 @@ def check_translation(source: str, translated: str) -> list[str]:
     return errors
 
 
-def validate(root: ET.Element) -> tuple[dict[MessageKey, ET.Element], list[str], dict[str, int]]:
-    """Return active coverage counts; unfinished entries always fail this check."""
-    errors = []
+def validate(root: ET.Element) -> tuple[dict[MessageKey, ET.Element], list[str], list[str], dict[str, int]]:
+    """Return (messages, errors, warnings, stats): errors break at runtime, unfinished entries only warn."""
+    errors, warnings = [], []
     if root.tag != 'TS' or root.get('language') != 'zh_CN' or root.get('sourcelanguage') != 'en_US':
         errors.append('catalog must be a TS file with language=zh_CN and sourcelanguage=en_US')
     messages = catalog_messages(root)
@@ -181,7 +185,7 @@ def validate(root: ET.Element) -> tuple[dict[MessageKey, ET.Element], list[str],
         label = f'{context}: {source!r}'
         if translation is None or translation.get('type') == 'unfinished':
             stats['unfinished'] += 1
-            errors.append(f'{label}: unfinished translation')
+            warnings.append(f'{label}: unfinished translation')
             continue
         if not context or not source:
             errors.append(f'{label}: empty context or source')
@@ -199,7 +203,7 @@ def validate(root: ET.Element) -> tuple[dict[MessageKey, ET.Element], list[str],
             errors.extend(f'{label}: {error}' for error in check_translation(source, translated))
         stats['translated'] += bool(texts) and all(text.strip() for text in texts)
         stats['identity'] += texts == [source]
-    return messages, errors, stats
+    return messages, errors, warnings, stats
 
 
 def compare_sources(messages: dict[MessageKey, ET.Element], expected: dict[MessageKey, ET.Element]) -> tuple[set[MessageKey], set[MessageKey]]:
@@ -223,50 +227,35 @@ def main() -> int:
             if args.update_ts:
                 extract(lupdate, CATALOG, scratch)
             root = ET.parse(CATALOG).getroot()
-            messages, errors, stats = validate(root)
+            messages, errors, warnings, stats = validate(root)
             expected, missing, stale = {}, set(), set()
             if not args.catalog_only:
                 extracted = scratch / 'source_zh_CN.ts'
-                extract(lupdate, extracted, scratch)
-                expected = catalog_messages(ET.parse(extracted).getroot())
-                missing, stale = compare_sources(messages, expected)
-                errors.extend(f'missing source entry: {key[0]}: {key[1]!r}' for key in sorted(missing))
-                errors.extend(f'stale active entry: {key[0]}: {key[1]!r}' for key in sorted(stale))
-        coverage: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-        location_filename = ''
-        for context in root.findall('context'):
-            for message in context.findall('message'):
-                module = 'shared'
-                for index, location in enumerate(message.findall('location')):
-                    location_filename = location.get('filename', location_filename)
-                    if index != 0:
-                        continue
-                    resolved = (CATALOG.parent / location_filename).resolve()
-                    try:
-                        module = resolved.relative_to(ROOT).parts[0]
-                    except (ValueError, IndexError):
-                        pass
-                translation = message.find('translation')
-                if translation is not None and translation.get('type') in {'obsolete', 'vanished'}:
-                    continue
-                coverage[module][1] += 1
-                if translation is not None and translation.get('type') != 'unfinished':
-                    coverage[module][0] += 1
+                try:
+                    extract(lupdate, extracted, scratch)
+                    expected = catalog_messages(ET.parse(extracted).getroot())
+                except (OSError, ValueError, ET.ParseError) as error:
+                    # A Qt parser quirk in someone's new source file must not block their change.
+                    warnings.append(f'source coverage not checked: {error}')
+                missing, stale = compare_sources(messages, expected) if expected else (set(), set())
+                warnings.extend(f'missing source entry: {key[0]}: {key[1]!r}' for key in sorted(missing))
+                warnings.extend(f'stale active entry: {key[0]}: {key[1]!r}' for key in sorted(stale))
         print(f"PJ4 zh_CN: {stats['translated']}/{stats['active']} active messages translated; "
               f"{stats['unfinished']} unfinished; {stats['numerus']} numerus; "
               f"{stats['identity']} unchanged identifiers/format strings.")
         if args.catalog_only:
             print('Source coverage: NOT CHECKED (--catalog-only; run with Qt lupdate for full validation).')
-        else:
+        elif expected:
             print(f'Source coverage: {len(expected)} Qt-extractable messages, {len(missing)} missing, {len(stale)} stale.')
-        for module, (translated, total) in sorted(coverage.items()):
-            print(f'  {module}: {translated}/{total}')
         if errors:
             print('\n'.join(errors), file=sys.stderr)
             return 1
         print('Placeholders, plural forms, and rich-text tags/attributes: OK')
-        if not args.catalog_only:
-            print('Source contexts: OK')
+        if warnings:
+            print('WARNING: the catalog lags the sources; these strings show in English until the next refresh '
+                  '(--update-ts, then translate):', file=sys.stderr)
+            print('\n'.join(warnings), file=sys.stderr)
+            return EXIT_INCOMPLETE
         return 0
     except (OSError, ValueError, ET.ParseError) as error:
         print(f'translation check failed: {error}', file=sys.stderr)

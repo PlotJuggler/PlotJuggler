@@ -366,6 +366,14 @@ int main(int argc, char* argv[]) {
   }
   QFont app_font = QApplication::font();
   app_font.setFamily(u"Noto Sans"_s);
+#ifdef PJ_TARGET_WASM
+  // The browser has no system font fallback, so Chinese text (the zh_CN UI,
+  // and Chinese series or file names) needs a bundled CJK fallback family.
+  if (QFontDatabase::addApplicationFont(u":/resources/fonts/NotoSansSC/NotoSansSC-Subset.otf"_s) < 0) {
+    qWarning("Failed to load bundled Noto Sans SC font");
+  }
+  app_font.setFamilies({u"Noto Sans"_s, u"Noto Sans SC"_s});
+#endif
   QApplication::setFont(app_font);
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
@@ -483,6 +491,12 @@ int main(int argc, char* argv[]) {
   // alive until every window is destroyed; a CLI override never changes the
   // saved preference or the locale used to parse and format numeric data.
   const QSettings language_settings;
+  if (parser.isSet(language_option) && parser.value(language_option) != "en_US"_L1 &&
+      PJ::AppLanguage::normalizedLanguage(parser.value(language_option)) == "en_US"_L1) {
+    qWarning(
+        "Unsupported --language '%s' (use zh_CN or en_US); using English",
+        qUtf8Printable(parser.value(language_option)));
+  }
   const PJ::AppLanguage app_language(
       app, parser.isSet(language_option) ? parser.value(language_option)
                                          : PJ::AppLanguage::preferredLanguage(language_settings));

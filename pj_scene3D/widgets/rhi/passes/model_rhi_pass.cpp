@@ -294,8 +294,7 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
     if (prepared.draws > kSceneLimits.max_model_draws_per_layer ||
         prepared.triangles > kSceneLimits.max_model_triangles_per_layer) {
       layer->modelLayer().noteRenderFailure(
-          QCoreApplication::translate(
-              "pj::scene3d::SceneViewWidget", "Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
+          SceneText::tr("Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
               .arg(
                   QString::number(prepared.draws), QString::number(prepared.triangles),
                   QString::number(kSceneLimits.max_model_draws_per_layer),
@@ -304,9 +303,7 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
     }
     if (has_color && !tryConsumeModels(prepared.draws, prepared.triangles, remaining_draws, remaining_triangles)) {
       layer->modelLayer().noteRenderFailure(
-          QCoreApplication::translate(
-              "pj::scene3d::SceneViewWidget",
-              "Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
+          SceneText::tr("Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
               .arg(
                   QString::number(prepared.draws), QString::number(prepared.triangles),
                   QString::number(remaining_draws), QString::number(remaining_triangles)));
@@ -317,8 +314,7 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
         prepared.shadow_triangles > kSceneLimits.max_model_triangles_per_layer ||
         !tryConsumeModels(
             prepared.shadow_draws, prepared.shadow_triangles, remaining_shadow_draws, remaining_shadow_triangles)) {
-      shadow_warning = QCoreApplication::translate(
-          "pj::scene3d::SceneViewWidget", "Model shadows exceed this view's draw/triangle budget");
+      shadow_warning = SceneText::tr("Model shadows exceed this view's draw/triangle budget");
       for (Call& call : prepared.calls) {
         call.shadow = false;
       }
@@ -442,8 +438,7 @@ void ModelRhiPass::buildInstances(QRhi* rhi, const glm::dvec3& render_origin, co
       MeshGpu& mesh = *gpu_mesh;
       const bool lines = prepared.wireframe;
       if (lines && !ensureEdges(rhi, mesh)) {
-        layer->modelLayer().noteRenderFailure(
-            QCoreApplication::translate("pj::scene3d::SceneViewWidget", "Could not allocate a model wireframe buffer"));
+        layer->modelLayer().noteRenderFailure(SceneText::tr("Could not allocate a model wireframe buffer"));
         edges_failed = true;
         continue;
       }
@@ -850,7 +845,7 @@ bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& g
     remaining_layer_pixels -= std::min(remaining_layer_pixels, mesh.texture_pixels);
   }
   const auto fail = [&](const char* reason) {
-    layer->modelLayer().noteRenderFailure(QCoreApplication::translate("pj::scene3d::SceneViewWidget", reason));
+    layer->modelLayer().noteRenderFailure(SceneText::tr(reason));
     releaseLayerGpu(gpu);
     return false;
   };

@@ -8,17 +8,6 @@
 
 using namespace Qt::StringLiterals;
 
-// A reference from this object forces the resource object out of the static
-// archive. Q_INIT_RESOURCE must live outside the PJ namespace. Register once
-// even when tests construct more than one language owner in the same process.
-static void initializeTranslationResources() {
-  static const bool initialized = []() {
-    Q_INIT_RESOURCE(pj_app_translations);
-    return true;
-  }();
-  Q_UNUSED(initialized);
-}
-
 namespace PJ {
 
 QString AppLanguage::normalizedLanguage(const QString& language) {
@@ -29,29 +18,20 @@ QString AppLanguage::preferredLanguage(const QSettings& settings) {
   return normalizedLanguage(settings.value(kPreferenceKey, u"en_US"_s).toString());
 }
 
-AppLanguage::AppLanguage(QCoreApplication& app, const QString& language)
-    : app_(app), language_(normalizedLanguage(language)) {
-  initializeTranslationResources();
-  app_.setProperty("interfaceLanguage", language_);
+AppLanguage::AppLanguage(QCoreApplication& app, const QString& language) : language_(normalizedLanguage(language)) {
   if (language_ == "zh_CN"_L1) {
-    catalog_loaded_ = translator_.load(u":/i18n/plotjuggler4_zh_CN.qm"_s) && app_.installTranslator(&translator_);
+    catalog_loaded_ = translator_.load(u":/i18n/plotjuggler4_zh_CN.qm"_s) && app.installTranslator(&translator_);
     if (!catalog_loaded_) {
       qWarning("Simplified Chinese translation catalog is missing; using English source text");
     }
   }
 }
 
-AppLanguage::~AppLanguage() {
-  if (catalog_loaded_) {
-    app_.removeTranslator(&translator_);
-  }
-}
-
 }  // namespace PJ
 
-// Qt 6.11.1's qtbase_zh_CN still carries the older QFileDialog labels and
-// file-icon context. Keep the current runtime keys, including accelerators
-// and platform disambiguation, in the application catalog as a small override.
+// The pinned Qt's qtbase_zh_CN lacks the current QFileDialog labels and
+// file-icon keys. Extract them into the application catalog so the merged
+// catalog covers them; drop an entry once Qt's own catalog carries it.
 [[maybe_unused]] static const char* const kQtFileDialogKeys[] = {
     QT_TRANSLATE_NOOP("QFileDialog", "&Look in:"),
     QT_TRANSLATE_NOOP("QFileDialog", "Files of &type:"),

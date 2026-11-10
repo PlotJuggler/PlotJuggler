@@ -76,5 +76,5 @@ Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction
 `AppLanguage` owns the startup Qt translator and embedded catalog. English is
 the fresh-profile and invalid-value fallback. Preferences saves a next-launch
 selection; `--language` is session-only and does not alter numeric locale or
-serialized identifiers. See [`docs/localization/README.md`](../docs/localization/README.md)
+serialized identifiers. See [`docs/LOCALIZATION.md`](../docs/LOCALIZATION.md)
 for catalog maintenance, scope, and focused tests.

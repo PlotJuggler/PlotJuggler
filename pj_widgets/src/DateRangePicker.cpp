@@ -611,7 +611,11 @@ RangeCalendarWidget::RangeCalendarWidget(QWidget* parent)
                                       QT_TR_NOOP("July"),    QT_TR_NOOP("August"),   QT_TR_NOOP("September"),
                                       QT_TR_NOOP("October"), QT_TR_NOOP("November"), QT_TR_NOOP("December")};
   for (int m = 1; m <= 12; ++m) {
-    month_combo_->addItem(tr(month_names[m - 1]), m);
+    // A translated interface names months in its language; untranslated, the
+    // system locale's name is kept (an English UI on a German system: "Januar").
+    const QString translated = tr(month_names[m - 1]);
+    const bool has_translation = translated != QLatin1StringView(month_names[m - 1]);
+    month_combo_->addItem(has_translation ? translated : QLocale().standaloneMonthName(m), m);
   }
   year_combo_ = new ComboBox;
   year_combo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);

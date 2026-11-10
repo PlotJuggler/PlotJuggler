@@ -20,6 +20,7 @@
 #include <array>
 #include <utility>
 
+#include "AppLanguage.h"
 #include "LoadInput.h"
 
 #if defined(PJ_TARGET_WASM) && defined(PJ_WASM_ENABLE_INGRESS_PROBE)
@@ -503,8 +504,9 @@ std::optional<QVariant> BrowserPersistence::sanitizePreference(const QString& ke
       return value.toString();
     }
     case ValueKind::kLanguage: {
+      // Only a canonical supported code: aliases and unknown values are dropped.
       if (value.metaType().id() != QMetaType::QString ||
-          (value.toString() != "zh_CN"_L1 && value.toString() != "en_US"_L1)) {
+          AppLanguage::normalizedLanguage(value.toString()) != value.toString()) {
         return std::nullopt;
       }
       return value.toString();

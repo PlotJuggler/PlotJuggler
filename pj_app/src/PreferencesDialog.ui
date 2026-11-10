@@ -141,8 +141,21 @@
        <property name="currentIndex">
         <number>3</number>
        </property>
+       <widget class="QScrollArea" name="appearanceScrollArea">
+        <property name="frameShape">
+         <enum>QFrame::NoFrame</enum>
+        </property>
+        <property name="widgetResizable">
+         <bool>true</bool>
+        </property>
        <widget class="QWidget" name="pageAppearance">
         <layout class="QFormLayout" name="appearanceLayout">
+         <property name="rowWrapPolicy">
+          <enum>QFormLayout::WrapLongRows</enum>
+         </property>
+         <property name="sizeConstraint">
+          <enum>QLayout::SetMinimumSize</enum>
+         </property>
          <property name="leftMargin">
           <number>16</number>
          </property>
@@ -172,7 +185,11 @@
           </widget>
          </item>
          <item row="0" column="1">
-          <widget class="PJ::ComboBox" name="languageCombo"/>
+          <widget class="PJ::ComboBox" name="languageCombo">
+           <property name="sizeAdjustPolicy">
+            <enum>QComboBox::AdjustToContents</enum>
+           </property>
+          </widget>
          </item>
          <item row="1" column="0" colspan="2">
           <widget class="QLabel" name="labelLanguageRestart">
@@ -497,6 +514,9 @@
            <property name="text">
             <string>Let AI agents control PlotJuggler (MCP server):</string>
            </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
           </widget>
          </item>
          <item row="11" column="1">
@@ -523,6 +543,7 @@
           </spacer>
          </item>
         </layout>
+       </widget>
        </widget>
        <widget class="QWidget" name="pagePlotting">
         <layout class="QFormLayout" name="plottingLayout">

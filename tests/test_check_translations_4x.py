@@ -53,9 +53,13 @@ class TranslationGuardTest(unittest.TestCase):
     def test_incorrect_nesting_fails(self) -> None:
         self.assertTrue(check_translation('<b><i>Text</i></b>', '<b><i>文字</b></i>'))
 
-    def test_unfinished_or_empty_translation_fails(self) -> None:
-        for translation in ('<translation type="unfinished">你好 %1</translation>', '<translation/>'):
-            self.assertTrue(validate(self.catalog(translation))[1])
+    def test_empty_translation_fails(self) -> None:
+        self.assertTrue(validate(self.catalog('<translation/>'))[1])
+
+    def test_unfinished_translation_only_warns(self) -> None:
+        _messages, errors, warnings, _stats = validate(self.catalog('<translation type="unfinished">你好 %1</translation>'))
+        self.assertFalse(errors)
+        self.assertTrue(warnings)
 
     def test_chinese_requires_one_plural_form(self) -> None:
         correct = '<translation><numerusform>%n 个数据源</numerusform></translation>'

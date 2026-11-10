@@ -45,8 +45,7 @@ TEST(PreferencesLanguageTest, AcceptSavesNextLaunchLanguageWithoutRetranslatingT
     EXPECT_FALSE(QSettings().contains(PJ::AppLanguage::kPreferenceKey));
     dialog.accept();
   }
-  EXPECT_EQ(QSettings().value(PJ::AppLanguage::kPreferenceKey).toString(), u"en_US"_s);
-  EXPECT_EQ(qApp->property("interfaceLanguage").toString(), u"zh_CN"_s);
+  EXPECT_EQ(PJ::AppLanguage::preferredLanguage(QSettings()), u"en_US"_s);
   EXPECT_NE(QCoreApplication::translate("PreferencesContent", "Language:"), u"Language:"_s);
   PJ::PreferencesDialog reopened(theme);
   const auto* combo = reopened.findChild<PJ::ComboBox*>(u"languageCombo"_s);
@@ -69,7 +68,6 @@ TEST(PreferencesLanguageTest, EnglishToChineseTakesEffectOnlyOnNextLaunch) {
     EXPECT_EQ(QSettings().value(PJ::AppLanguage::kPreferenceKey).toString(), u"en_US"_s);
     dialog.accept();
     EXPECT_EQ(QSettings().value(PJ::AppLanguage::kPreferenceKey).toString(), u"zh_CN"_s);
-    EXPECT_EQ(qApp->property("interfaceLanguage").toString(), u"en_US"_s);
     EXPECT_EQ(QCoreApplication::translate("PreferencesContent", "Language:"), u"Language:"_s);
   }
   const PJ::AppLanguage restarted(*qApp, PJ::AppLanguage::preferredLanguage(QSettings()));
@@ -78,8 +76,17 @@ TEST(PreferencesLanguageTest, EnglishToChineseTakesEffectOnlyOnNextLaunch) {
   const auto* combo = reopened.findChild<PJ::ComboBox*>(u"languageCombo"_s);
   ASSERT_NE(combo, nullptr);
   EXPECT_EQ(combo->currentData().toString(), u"zh_CN"_s);
-  EXPECT_EQ(qApp->property("interfaceLanguage").toString(), u"zh_CN"_s);
   EXPECT_NE(QCoreApplication::translate("PreferencesContent", "Language:"), u"Language:"_s);
+}
+
+TEST(PreferencesLanguageTest, OkKeepsASavedLanguageThisBuildDoesNotSupport) {
+  QSettings().setValue(PJ::AppLanguage::kPreferenceKey, u"ja_JP"_s);
+  PJ::Theme theme;
+  {
+    PJ::PreferencesDialog dialog(theme);
+    dialog.accept();
+  }
+  EXPECT_EQ(QSettings().value(PJ::AppLanguage::kPreferenceKey).toString(), u"ja_JP"_s);
 }
 
 TEST(PreferencesLanguageTest, CancelLeavesTheSavedLanguageAlone) {
@@ -104,7 +111,6 @@ TEST(PreferencesLanguageTest, SessionOverrideDoesNotChangeTheNextLaunchSelection
   const auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
   ASSERT_NE(combo, nullptr);
   EXPECT_EQ(combo->currentData().toString(), u"zh_CN"_s);
-  EXPECT_EQ(qApp->property("interfaceLanguage").toString(), u"en_US"_s);
 }
 
 TEST(PreferencesLanguageTest, LanguageSelectorHonorsBothSizeHintsAcrossFonts) {

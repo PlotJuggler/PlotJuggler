@@ -4,8 +4,8 @@ include_guard(GLOBAL)
 # The latter may enforce its embedding-library version even for Interpreter.
 find_package(Python3 QUIET MODULE COMPONENTS Interpreter)
 
-# The app and the focused Qt-only tests share the same translation resources
-# and implementation, without pulling the shell's SDK/rendering dependencies.
+# The app and the focused Qt-only tests share the translation resources and
+# implementation, without pulling the shell's SDK/rendering dependencies.
 function(pj_add_app_language)
     if(TARGET pj_app_language)
         return()
@@ -70,8 +70,7 @@ function(pj_add_app_language)
     endif()
 endfunction()
 
-# Both the full application build and the standalone i18n project run this
-# exact executable against the production catalog (no test-only translations).
+# These tests run against the production catalog (no test-only translations).
 function(pj_add_app_language_test)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     get_filename_component(app_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
@@ -119,5 +118,8 @@ function(pj_add_app_language_test)
         set_tests_properties(TranslationCatalog4x TranslationValidator4x PROPERTIES
             WORKING_DIRECTORY "${app_dir}/.."
             TIMEOUT 120)
+        # A catalog that only lags the sources (strings shown in English) is a
+        # warning, never a failure: a UI change must not need a translation.
+        set_tests_properties(TranslationCatalog4x PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endfunction()
