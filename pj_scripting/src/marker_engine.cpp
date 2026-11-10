@@ -405,14 +405,39 @@ int l_createBandMarker(lua_State* L) {
 
 // ---- bandPower(series, fLo, fHi): summed FFT power in [fLo,fHi] Hz, DC-removed --
 
+// Same rule as toolbox_fft's fftLength (pj-official-plugins): pocketfft's Bluestein path (large
+// prime factors) needs ~76 bytes per sample, so above the budget analyze the largest even
+// 11-smooth length instead (~12 bytes per sample; drops well under 1% of the samples).
+#ifdef __EMSCRIPTEN__
+constexpr std::size_t kBandPowerMemoryBudgetBytes = 350'000'000;
+#else
+constexpr std::size_t kBandPowerMemoryBudgetBytes = 700'000'000;
+#endif
+
+std::size_t bandPowerLength(std::size_t count) {
+  std::size_t n = count & ~std::size_t{1};
+  if (n <= kBandPowerMemoryBudgetBytes / 80) {
+    return n;
+  }
+  const auto smooth = [](std::size_t m) {
+    for (const std::size_t p : {2U, 3U, 5U, 7U, 11U}) {
+      while (m % p == 0) {
+        m /= p;
+      }
+    }
+    return m == 1;
+  };
+  while (!smooth(n)) {
+    n -= 2;
+  }
+  return n;
+}
+
 double computeBandPower(const SeriesView& sv, double fLo, double fHi) {
-  std::size_t n = sv.values.size();
-  if (n < 4 || sv.timestamps.size() != n) {
+  if (sv.values.size() < 4 || sv.timestamps.size() != sv.values.size()) {
     return 0.0;
   }
-  if (n % 2 != 0) {
-    --n;
-  }
+  const std::size_t n = bandPowerLength(sv.values.size());
   const double dt_seconds =
       static_cast<double>(sv.timestamps[n - 1] - sv.timestamps[0]) / (static_cast<double>(n - 1) * 1e9);
   if (dt_seconds <= 0.0) {
