@@ -91,10 +91,11 @@ smaller size, all Appearance controls must remain reachable by scrolling.
 
 The original contribution was based on official `main-4.x` commit
 `0345ec513bde7f05ad3148548ac30401f2b6f7a7`. It now integrates official
-`b9117bfbc31effacacac150656383516a2430dfe`, preserving the current asynchronous
+`main` commit `2b8e34316f71e50e291a85f3fbb2d28925a09761`, preserving the current asynchronous
 dataset merge, load diagnostics, browser replay, lazy browser file reads,
-file-picker hints, clock/time-offset controls, derived-marker preferences, and
-MCP controls. The integrated upstream also pins SDK 0.40; this contribution does
+file-picker hints, clock/time-offset controls, derived-marker preferences,
+MCP controls, tab duplication, and selected-widget series highlighting. The
+integrated upstream also pins SDK 0.40; this contribution does
 not change MCP access policy or start the server from language tests. Its initial language infrastructure,
 translation strings, and focused tests were extracted from
 [`reliable-ly0411/PlotJuggler-zh-CN` commit `0c73d762`](https://github.com/reliable-ly0411/PlotJuggler-zh-CN/commit/0c73d7620ea60f2fec171f55314c46c72820723d);
@@ -128,3 +129,19 @@ remains identical to the integrated upstream; all production C++ sources remain
 in Qt extraction. The catalog covers the extracted browser-read diagnostics and
 MCP status, prompt, and Preferences messages. Direct runtime-lookup regressions
 exercise these messages in Chinese and English without starting an MCP server.
+
+## Translation terminology
+
+Use 话题 for data topics and 主题 for the interface theme. The dataset action
+“刷新派生标记” re-runs marker rules; source promotion means conversion to a
+file-backed data source, not persistence. Use 数据流 for a stream, 流式数据源 for
+a streaming source, and 流数据插件 for its plugin. GPU streaming terminology is
+separate. Spell out 二维/三维 views, retain canonical type names such as
+`SceneEntities`, and use 网络托管的布局 for a web-hosted layout.
+
+Chinese quotation marks belong in visible prose, never in HTML attributes,
+identifiers, format placeholders, or serialized keys. UI properties marked
+`notr="true"` (object names and stylesheets) must stay out of the catalog. Menu
+mnemonics follow the current English source keys; the focused tests exercise
+both their Chinese lookup and English fallback, as well as the absence of the
+non-UI keys from the embedded catalog.

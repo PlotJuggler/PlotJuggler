@@ -123,7 +123,7 @@
         <item>
          <widget class="QLabel" name="detail_title_">
           <property name="text"><string/></property>
-          <property name="styleSheet"><string>font-weight:700; font-size:14px;</string></property>
+          <property name="styleSheet"><string notr="true">font-weight:700; font-size:14px;</string></property>
          </widget>
         </item>
         <item>

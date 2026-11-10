@@ -104,6 +104,9 @@ constexpr int kDatasetRowKeyRole = Qt::UserRole + 15;
 constexpr int kDerivedGlyphStateRole = Qt::UserRole + 16;
 // Short grey tag painted after the Name text (CurvePath::badge); presentation only.
 constexpr int kBadgeRole = Qt::UserRole + 17;
+// True on a row whose catalog key is displayed (see setDisplayedKeys) and on every
+// ancestor of such a row, so a collapsed group still shows that it holds one.
+constexpr int kDisplayedRole = Qt::UserRole + 18;
 constexpr int kAnimationIntervalMs = 1000 / 30;
 
 QStringList splitPath(const QString& name) {
@@ -236,6 +239,12 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
     if (dimmed) {
       painter->save();
       painter->setOpacity(painter->opacity() * 0.5);
+    }
+    if (index.column() == kNameColumn && name_index.data(kDisplayedRole).toBool()) {
+      // A font style, not a hue: blue is the forced mark and pink the time cursor and failures.
+      opt.font.setWeight(QFont::DemiBold);
+      opt.font.setItalic(true);
+      opt.fontMetrics = QFontMetrics(opt.font);  // paintBadge places the badge after the styled name
     }
     if (index.column() == kNameColumn && name_index.data(kForcedRole).toBool()) {
       // Forced streaming: accent the topic's name so the state is visible —
@@ -557,6 +566,9 @@ void CurveTreeView::mutateStructure(const std::function<void()>& mutate) {
   // filter is re-applied by rebuildProgressDecorations' tail (see its contract).
   expandPendingGroups();
   applyForcedTopicMarks();
+  if (!displayed_keys_.isEmpty()) {  // new rows start unmarked; an empty set has nothing to stamp
+    applyDisplayedMarks();
+  }
   if (!derived_topic_glyphs_.isEmpty()) {  // a view never given glyphs has nothing to re-stamp or clear
     applyDerivedTopicGlyphs();
   }
@@ -1776,6 +1788,40 @@ void CurveTreeView::applyForcedTopicMarks() {
       node->setData(kNameColumn, kForcedRole, true);
     }
   }
+}
+
+namespace {
+// Stamps kDisplayedRole below `item`; returns whether any row there carries it.
+bool markDisplayedRows(QTreeWidgetItem* item, const QSet<QString>& keys) {
+  bool any = false;
+  for (int i = 0; i < item->childCount(); ++i) {
+    QTreeWidgetItem* child = item->child(i);
+    const bool below = markDisplayedRows(child, keys);
+    const QString key = catalogKeyForItem(child);  // empty on a group row: never matched, only propagated
+    const bool marked = below || (!key.isEmpty() && keys.contains(key));
+    if (child->data(kNameColumn, kDisplayedRole).toBool() != marked) {
+      child->setData(kNameColumn, kDisplayedRole, marked);
+    }
+    any = any || marked;
+  }
+  return any;
+}
+}  // namespace
+
+void CurveTreeView::setDisplayedKeys(const QSet<QString>& keys) {
+  if (displayed_keys_ == keys) {
+    return;
+  }
+  displayed_keys_ = keys;
+  applyDisplayedMarks();
+}
+
+bool CurveTreeView::isMarkedDisplayed(const QTreeWidgetItem* item) {
+  return item != nullptr && item->data(kNameColumn, kDisplayedRole).toBool();
+}
+
+void CurveTreeView::applyDisplayedMarks() {
+  markDisplayedRows(invisibleRootItem(), displayed_keys_);
 }
 
 void CurveTreeView::setDerivedTopicGlyphs(const QHash<QString, DerivedGlyph>& by_topic_path) {

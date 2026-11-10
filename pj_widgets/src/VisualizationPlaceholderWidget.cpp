@@ -92,10 +92,10 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   setAcceptDrops(true);
   setObjectName(u"VisualizationPlaceholderWidget"_s);
 
-  action_split_horizontal_ = new QAction(tr("&Split Horizontally"), this);
+  action_split_horizontal_ = new QAction(tr("Split &Horizontally"), this);
   connect(action_split_horizontal_, &QAction::triggered, this, [this]() { emit splitHorizontalRequested(); });
 
-  action_split_vertical_ = new QAction(tr("&Split Vertically"), this);
+  action_split_vertical_ = new QAction(tr("Split &Vertically"), this);
   connect(action_split_vertical_, &QAction::triggered, this, [this]() { emit splitVerticalRequested(); });
 
   action_paste_ = new QAction(tr("&Paste"), this);

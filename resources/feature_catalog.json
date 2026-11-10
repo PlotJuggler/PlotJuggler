@@ -60,7 +60,7 @@
     {
       "id": "datasets_tree",
       "name": "Datasets panel",
-      "summary": "Every loaded file or stream is a dataset, listed with its topics and fields as a tree. The filter box searches by name, three buttons show or hide plot series, 2D image topics and 3D scene topics, and right-clicking a dataset offers Info, Merge, Reload, Replace and Remove.",
+      "summary": "Every loaded file or stream is a dataset, listed with its topics and fields as a tree. The filter box searches by name, three buttons show or hide plot series, 2D image topics and 3D scene topics, and right-clicking a dataset offers Info, Merge, Reload, Replace and Remove. The series and topics the selected plot or view shows are written in semi-bold italic, together with the groups that contain them.",
       "entry_point": "Datasets panel → Filter... box; right-click a dataset for its options",
       "evidence": "pj_app/src/ui/CurveListPanel.ui#labelTimeseries; pj_widgets/src/Search.cpp#tr(\"Filter...\"); pj_app/src/ui/CurveListPanel.cpp#tr(\"Info\")",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: the Filter... box, the three show/hide buttons and the dataset right-click menu"

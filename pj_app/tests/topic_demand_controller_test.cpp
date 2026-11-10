@@ -11,6 +11,8 @@
 #include <QEventLoop>
 #include <QMimeData>
 #include <QRectF>
+#include <QSet>
+#include <QSignalSpy>
 #include <QTimer>
 #include <QtGlobal>
 #include <memory>
@@ -206,6 +208,31 @@ class StubSceneDockWidget : public PJ::SceneDockWidget {
     return object_type == PJ::sdk::BuiltinObjectType::kPointCloud;
   }
   void syncViewLayers(const std::vector<PJ::ISceneLayer*>& /*ordered_layers*/) override {}
+  // A topic titled "/tf" is consumed as a config topic, the way a 3D view takes FrameTransforms.
+  bool handleSceneConfigTopic(
+      ObjectTopicId topic_id, PJ::sdk::BuiltinObjectType object_type, const QString& title) override {
+    if (title != u"/tf"_s) {
+      return false;
+    }
+    config_topics_.push_back(PJ::SceneLayerInfo{topic_id, object_type, title, u"stub"_s, true});
+    emit configTopicsChanged();
+    return true;
+  }
+  bool removeSceneConfigTopic(ObjectTopicId topic_id) override {
+    if (std::erase_if(config_topics_, [&](const PJ::SceneLayerInfo& info) { return info.topic_id == topic_id; }) == 0) {
+      return false;
+    }
+    emit configTopicsChanged();
+    return true;
+  }
+
+ public:
+  [[nodiscard]] std::vector<PJ::SceneLayerInfo> configTopics() const override {
+    return config_topics_;
+  }
+
+ private:
+  std::vector<PJ::SceneLayerInfo> config_topics_;
 };
 
 void wireSceneDock(StubSceneDockWidget& dock, PJ::AppSession& app_session) {
@@ -670,6 +697,121 @@ TEST_F(TopicDemandControllerTest, CustomWidgetWireAddRemoveTracksDemand) {
 
   dock.removeBinding(u"value"_s, 0);
   EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
+}
+
+TEST_F(TopicDemandControllerTest, DisplayedKeysCoverEveryFamilyInsideTheRoot) {
+  ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticWidget(pj_cw_test::goodVtable()));
+  const QString speed = addScalarTopic(*app_session_, dataset_id_, "/speed");
+  const QString x_key = addScalarTopic(*app_session_, dataset_id_, "/pose_x");
+  const QString y_key = addScalarTopic(*app_session_, dataset_id_, "/pose_y");
+  const QString gauge = addScalarTopic(*app_session_, dataset_id_, "/gauge");
+  const QString state = addStringTopic(*app_session_, dataset_id_, "/robot/state");
+  addObjectTopic(*app_session_, dataset_id_, u"/points"_s);
+  addObjectTopic(*app_session_, dataset_id_, u"/tf"_s);
+  const ObjectTopicId points_id = findObjectTopicId(app_session_->catalogModel(), u"/points"_s);
+  const ObjectTopicId tf_id = findObjectTopicId(app_session_->catalogModel(), u"/tf"_s);
+  const auto points = app_session_->catalogModel().objectTopicItem(points_id);
+  const auto tf = app_session_->catalogModel().objectTopicItem(tf_id);
+  ASSERT_TRUE(points.has_value());
+  ASSERT_TRUE(tf.has_value());
+
+  // Two roots, as the shell's selected dock and another one: declared first, so they outlive their children.
+  QWidget everything;
+  QWidget selected(&everything);
+  PJ::PlotWidget plot(&app_session_->sessionManager(), &app_session_->catalogModel());
+  PJ::PlotWidget xy_plot(&app_session_->sessionManager(), &app_session_->catalogModel());
+  StubSceneDockWidget scene;
+  wireSceneDock(scene, *app_session_);
+  PJ::StateTransitionsDockWidget strip(
+      &app_session_->sessionManager(), &app_session_->catalogModel(), &app_session_->playbackEngine());
+  PJ::CustomWidgetDockWidget custom(
+      &app_session_->sessionManager(), &app_session_->catalogModel(), &app_session_->extensionCatalog(),
+      &app_session_->playbackEngine());
+  ASSERT_TRUE(custom.bindToWidget(u"test_widgets"_s, u"gauge"_s));
+  plot.setParent(&selected);
+  scene.setParent(&selected);
+  xy_plot.setParent(&everything);
+  strip.setParent(&everything);
+  custom.setParent(&everything);
+  controller_->registerPlot(&plot);
+  controller_->registerPlot(&xy_plot);
+  controller_->registerSceneDock(&scene);
+  controller_->registerStateTransitionsDock(&strip);
+  controller_->registerCustomWidgetDock(&custom);
+
+  EXPECT_TRUE(controller_->displayedKeys(&everything).isEmpty());
+  EXPECT_TRUE(controller_->displayedKeys(nullptr).isEmpty());
+
+  QSignalSpy changed(controller_.get(), &PJ::TopicDemandController::displayedSeriesChanged);
+  const auto emits_on = [&changed](const auto& mutate) {
+    changed.clear();
+    mutate();
+    return changed.count() > 0;
+  };
+  EXPECT_TRUE(emits_on([&] { ASSERT_NE(plot.addCurve(speed), nullptr); }));
+  xy_plot.setModeXY(true);
+  EXPECT_TRUE(emits_on([&] { ASSERT_NE(xy_plot.addCurveXY(x_key, y_key, u"xy"_s), nullptr); }));
+  EXPECT_TRUE(
+      emits_on([&] { ASSERT_TRUE(scene.addTopic(points_id, PJ::sdk::BuiltinObjectType::kPointCloud, u"/points"_s)); }));
+  EXPECT_TRUE(emits_on([&] { ASSERT_TRUE(strip.controller()->addSeries(state)); }));
+  EXPECT_TRUE(emits_on([&] { ASSERT_TRUE(custom.setBinding(u"value"_s, 0, gauge)); }));
+  EXPECT_TRUE(emits_on([&] { ASSERT_TRUE(scene.addTopic(tf_id, PJ::sdk::BuiltinObjectType::kPointCloud, u"/tf"_s)); }))
+      << "a config topic has no layer signal";
+
+  EXPECT_EQ(
+      controller_->displayedKeys(&everything),
+      (QSet<QString>{speed, x_key, y_key, points->key, tf->key, state, gauge}));
+  EXPECT_EQ(controller_->displayedKeys(&selected), (QSet<QString>{speed, points->key, tf->key}))
+      << "only the widgets inside the root (the shell: the selected dock)";
+
+  EXPECT_TRUE(emits_on([&] { scene.removeTopic(points_id); }));
+  EXPECT_TRUE(controller_->displayedKeys(&everything).contains(tf->key)) << "a view left with only TF keeps its mark";
+  EXPECT_TRUE(emits_on([&] { scene.removeTopic(tf_id); }));
+  const QSet<QString> after_removal = controller_->displayedKeys(&everything);
+  EXPECT_FALSE(after_removal.contains(points->key));
+  EXPECT_FALSE(after_removal.contains(tf->key));
+}
+
+// A merge moves a topic under the anchor dataset without touching the layer that shows it.
+TEST_F(TopicDemandControllerTest, DisplayedSceneTopicFollowsADatasetMerge) {
+  const DatasetId other = createDataset(*app_session_);
+  ASSERT_NE(addScalarTopic(*app_session_, dataset_id_, "/a"), QString());
+  ASSERT_NE(addScalarTopic(*app_session_, other, "/b"), QString());
+  addObjectTopic(*app_session_, other, u"/points"_s);
+  const ObjectTopicId points_id = findObjectTopicId(app_session_->catalogModel(), u"/points"_s);
+  QWidget root;
+  StubSceneDockWidget scene;
+  wireSceneDock(scene, *app_session_);
+  scene.setParent(&root);
+  controller_->registerSceneDock(&scene);
+  ASSERT_TRUE(scene.addTopic(points_id, PJ::sdk::BuiltinObjectType::kPointCloud, u"/points"_s));
+
+  ASSERT_EQ(app_session_->mergeDatasets({dataset_id_, other}), dataset_id_);
+  app_session_->catalogModel().rebuildFromDatastore();
+  const auto merged = app_session_->catalogModel().objectTopicItem(points_id);
+  ASSERT_TRUE(merged.has_value());
+  ASSERT_EQ(merged->dataset_id, dataset_id_) << "the topic now belongs to the anchor";
+  EXPECT_TRUE(controller_->displayedKeys(&root).contains(merged->key));
+}
+
+TEST_F(TopicDemandControllerTest, DisplayedSeriesChangedFollowsDestructionAndLateCatalogItems) {
+  const QString state = addStringTopic(*app_session_, dataset_id_, "/robot/state");
+  QWidget root;
+  auto strip = std::make_unique<PJ::StateTransitionsDockWidget>(
+      &app_session_->sessionManager(), &app_session_->catalogModel(), &app_session_->playbackEngine(), &root);
+  controller_->registerStateTransitionsDock(strip.get());
+  ASSERT_TRUE(strip->controller()->addSeries(state));
+  ASSERT_EQ(controller_->displayedKeys(&root), QSet<QString>{state});
+
+  QSignalSpy changed(controller_.get(), &PJ::TopicDemandController::displayedSeriesChanged);
+  strip.reset();
+  EXPECT_EQ(changed.count(), 1) << "a destroyed widget no longer displays anything";
+  EXPECT_TRUE(controller_->displayedKeys(&root).isEmpty());
+
+  // An object layer may resolve to its key only once the catalog lists it, so new catalog items are a change too.
+  changed.clear();
+  addObjectTopic(*app_session_, dataset_id_, u"/late"_s);
+  EXPECT_GE(changed.count(), 1);
 }
 
 TEST_F(TopicDemandControllerTest, CustomWidgetDestructionReleasesReferences) {

@@ -163,6 +163,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
  signals:
   void layerAdded(ObjectTopicId topic_id);
   void layerRemoved(ObjectTopicId topic_id);
+  /// What configTopics() returns changed, during a restore too. A family that keeps config topics emits it.
+  void configTopicsChanged();
   void layerVisibilityChanged(ObjectTopicId topic_id, bool visible);
   /// Emitted after reorderLayers() changed the draw order; read layers() for it.
   void layersReordered();

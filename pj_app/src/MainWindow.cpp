@@ -1079,6 +1079,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
   ui_->curveListPanel->setTopicDemandTracker(&session_->topicDemandTracker());
   ui_->curveListPanel->setTopicDemandController(topic_demand_controller_.get());
+  // The curve list marks what the selected widget shows; onDockFocused re-schedules it.
+  ui_->curveListPanel->setDisplayedScope([this]() -> const QWidget* { return activeFocusedDock(); });
 
   // Wire the progressive ingest controller to the SessionManager and curve list
   // panel through the one shared seam (IngestProgressWiring).
@@ -9402,6 +9404,7 @@ DockWidget* MainWindow::activeFocusedDock() const {
 
 void MainWindow::onDockFocused(DockWidget* dock) {
   bindEditorToPlot(dock != nullptr ? dock->plotWidget() : nullptr);
+  ui_->curveListPanel->scheduleDisplayedKeysRefresh();
 
   // Placeholder docks (3-icon picker) and unknown widget kinds fall
   // through to the empty page — "nothing to configure" is the honest

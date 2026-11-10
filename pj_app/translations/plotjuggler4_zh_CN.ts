@@ -85,22 +85,22 @@
         <message>
             <location line="+44" />
             <source>Custom Topics</source>
-            <translation>自定义主题</translation>
+            <translation>自定义话题</translation>
         </message>
         <message>
             <location line="+15" />
             <source>Add custom topic</source>
-            <translation>添加自定义主题</translation>
+            <translation>添加自定义话题</translation>
         </message>
         <message>
             <location line="+12" />
             <source>Edit the selected custom topic</source>
-            <translation>编辑选中的自定义主题</translation>
+            <translation>编辑选中的自定义话题</translation>
         </message>
         <message>
             <location line="+11" />
             <source>Custom topics options</source>
-            <translation>自定义主题选项</translation>
+            <translation>自定义话题选项</translation>
         </message>
     </context>
     <context>
@@ -111,12 +111,7 @@
             <translation>自定义控件</translation>
         </message>
         <message>
-            <location line="+3" />
-            <source>labelWidgetName</source>
-            <translation>labelWidgetName</translation>
-        </message>
-        <message>
-            <location line="+80" />
+            <location line="+83" />
             <source>Inputs</source>
             <translation>输入</translation>
         </message>
@@ -141,14 +136,9 @@
             <translation>筛选…</translation>
         </message>
         <message>
-            <location line="+3" />
-            <source>customWidgetSeriesFilter</source>
-            <translation>customWidgetSeriesFilter</translation>
-        </message>
-        <message>
-            <location line="+13" />
+            <location line="+16" />
             <source>Double-click a series to wire it.</source>
-            <translation>双击序列以连接。</translation>
+            <translation>双击序列即可将其接入此输入。</translation>
         </message>
         <message>
             <location line="+13" />
@@ -169,12 +159,7 @@
             <translation>筛选…</translation>
         </message>
         <message>
-            <location line="+3" />
-            <source>customWidgetFilter</source>
-            <translation>customWidgetFilter</translation>
-        </message>
-        <message>
-            <location line="+10" />
+            <location line="+13" />
             <source>Choose the widget to show in the selected panel.</source>
             <translation>选择要在所选面板中显示的控件。</translation>
         </message>
@@ -248,7 +233,7 @@
         <message>
             <location line="+11" />
             <source>canonical %1</source>
-            <translation>标准类型 %1</translation>
+            <translation>%1（规范格式）</translation>
         </message>
         <message>
             <location line="+5" />
@@ -263,7 +248,7 @@
         <message>
             <location line="+6" />
             <source>These object topics share a name but have incompatible types, formats or marker descriptions, so the datasets cannot be merged:</source>
-            <translation>这些对象主题名称相同，但类型、格式或标记描述不兼容，因此无法合并数据集：</translation>
+            <translation>这些对象话题名称相同，但类型、格式或标记描述不兼容，因此无法合并数据集：</translation>
         </message>
         <message>
             <location line="+5" />
@@ -618,7 +603,7 @@
         <message>
             <location line="+6" />
             <source>Data source '%1' is a file on a local machine, which a web layout cannot open.</source>
-            <translation>数据源“%1”是本机文件，网页版布局无法打开。</translation>
+            <translation>数据源“%1”是本机文件，网络托管的布局无法打开。</translation>
         </message>
         <message>
             <location line="+8" />
@@ -654,7 +639,7 @@
             <location line="+20" />
             <location line="+45" />
             <source>The layout records its streaming sources more than once.</source>
-            <translation>布局重复记录了流式数据源。</translation>
+            <translation>布局中的流式数据源列表出现了多次。</translation>
         </message>
         <message>
             <location line="-27" />
@@ -677,7 +662,7 @@
         <message>
             <location line="+14" />
             <source>Stream</source>
-            <translation>流数据</translation>
+            <translation>数据流</translation>
         </message>
         <message>
             <location line="+13" />
@@ -702,12 +687,12 @@
         <message>
             <location line="+34" />
             <source>Start streaming</source>
-            <translation>开始接收流数据</translation>
+            <translation>开始接收数据流</translation>
         </message>
         <message>
             <location line="+16" />
             <source>Pause streaming</source>
-            <translation>暂停接收流数据</translation>
+            <translation>暂停接收数据流</translation>
         </message>
         <message>
             <location line="+12" />
@@ -722,7 +707,7 @@
         <message>
             <location line="+24" />
             <source>Streaming buffer length (seconds)</source>
-            <translation>流数据缓冲时长（秒）</translation>
+            <translation>数据流缓冲时长（秒）</translation>
         </message>
         <message>
             <location line="+1" />
@@ -732,12 +717,12 @@
         <message>
             <location line="+8" />
             <source>Streaming buffer (seconds)</source>
-            <translation>流数据缓冲（秒）</translation>
+            <translation>数据流缓冲（秒）</translation>
         </message>
         <message>
             <location line="+40" />
             <source>Open cloud browser</source>
-            <translation>打开云端浏览器</translation>
+            <translation>浏览云端文件</translation>
         </message>
     </context>
     <context>
@@ -788,12 +773,12 @@
         <message>
             <location line="+6" />
             <source>Data Streamers</source>
-            <translation>流数据源</translation>
+            <translation>流数据插件</translation>
         </message>
         <message>
             <location line="+1" />
             <source>Extensions that stream data continuously</source>
-            <translation>用于持续接收流数据的扩展</translation>
+            <translation>用于持续接收数据流的扩展</translation>
         </message>
         <message>
             <location line="+6" />
@@ -856,12 +841,7 @@
             <translation>插件设置：打开“首选项 ▸ 插件”</translation>
         </message>
         <message>
-            <location line="+46" />
-            <source>font-weight:700; font-size:14px;</source>
-            <translation>font-weight:700; font-size:14px;</translation>
-        </message>
-        <message>
-            <location line="+49" />
+            <location line="+95" />
             <source>Details</source>
             <translation>详情</translation>
         </message>
@@ -1039,7 +1019,7 @@
         <message>
             <location line="+103" />
             <source>Not subscribed. Drop it into a view to start streaming.</source>
-            <translation>尚未订阅。拖入视图即可开始接收流数据。</translation>
+            <translation>尚未订阅。拖入视图即可开始接收数据流。</translation>
         </message>
         <message>
             <location line="+9" />
@@ -1073,7 +1053,7 @@
             <translation>右键查看信息…</translation>
         </message>
         <message>
-            <location line="+71" />
+            <location line="+106" />
             <source>%1 topics were left out of the drag: no view can display them.</source>
             <translation>拖动时已跳过 %1 个话题：没有视图能够显示它们。</translation>
         </message>
@@ -1105,7 +1085,7 @@
         <message>
             <location line="+4" />
             <source>Refresh derived</source>
-            <translation>刷新派生主题</translation>
+            <translation>刷新派生标记</translation>
         </message>
         <message>
             <location line="+2" />
@@ -1115,12 +1095,12 @@
         <message>
             <location line="+58" />
             <source>Stop forced streaming</source>
-            <translation>停止强制接收流数据</translation>
+            <translation>停止强制接收数据流</translation>
         </message>
         <message>
             <location line="+0" />
             <source>Force topic streaming</source>
-            <translation>强制接收话题流数据</translation>
+            <translation>强制接收话题数据流</translation>
         </message>
         <message>
             <location line="+110" />
@@ -1185,13 +1165,13 @@
         <message>
             <location line="+3" />
             <source>Edit the selected custom topic</source>
-            <translation>编辑选中的自定义主题</translation>
+            <translation>编辑选中的自定义话题</translation>
         </message>
     </context>
     <context>
         <name>PJ::CurveTreeView</name>
         <message>
-            <location filename="../../pj_widgets/src/CurveTreeView.cpp" line="+394" />
+            <location filename="../../pj_widgets/src/CurveTreeView.cpp" line="+403" />
             <source>Name</source>
             <translation>名称</translation>
         </message>
@@ -1201,7 +1181,7 @@
             <translation>值</translation>
         </message>
         <message>
-            <location line="+985" />
+            <location line="+988" />
             <source>Stop loading and keep the data received so far</source>
             <translation>停止加载并保留已接收的数据</translation>
         </message>
@@ -1281,7 +1261,7 @@
         <message>
             <location line="+0" />
             <source>Double-click a series to wire it.</source>
-            <translation>双击序列以连接。</translation>
+            <translation>双击序列即可将其接入此输入。</translation>
         </message>
     </context>
     <context>
@@ -1465,7 +1445,7 @@ from %2</source>
             <location line="+6" />
             <location line="+4" />
             <source>Descriptor</source>
-            <translation>描述信息</translation>
+            <translation>描述符</translation>
         </message>
         <message>
             <location line="+6" />
@@ -1602,12 +1582,12 @@ from %2</source>
         <message>
             <location filename="../../pj_plotting/widget/src/DockWidget.cpp" line="+465" />
             <source>"%1" cannot be displayed on its own, but a plugin panel can read it.</source>
-            <translation>"%1" 无法单独显示，但插件面板可以读取它。</translation>
+            <translation>“%1”无法单独显示，但插件面板可以读取它。</translation>
         </message>
         <message>
             <location line="+4" />
             <source>%1 topics cannot be displayed on their own, but a plugin panel can read them.</source>
-            <translation>%1 个主题无法单独显示，但插件面板可以读取它们。</translation>
+            <translation>%1 个话题无法单独显示，但插件面板可以读取它们。</translation>
         </message>
         <message>
             <location line="+493" />
@@ -1650,7 +1630,7 @@ from %2</source>
         <message>
             <location filename="../../pj_marketplace/src/core/ExtensionManager.cpp" line="+904" />
             <source>Not available for this platform (%1)</source>
-            <translation>此平台不可用（%1）</translation>
+            <translation>不适用于此平台（%1）</translation>
         </message>
     </context>
     <context>
@@ -1742,7 +1722,7 @@ from %2</source>
         <message>
             <location line="-408" />
             <source>Plugin '%1': the saved configuration is not a JSON object and cannot be replayed.</source>
-            <translation>插件 '%1'：已保存的配置不是 JSON 对象，无法重新应用。</translation>
+            <translation>插件“%1”：已保存的配置不是 JSON 对象，无法重新应用。</translation>
         </message>
         <message>
             <location line="+5" />
@@ -1801,7 +1781,7 @@ from %2</source>
             <location line="+207" />
             <location line="+8" />
             <source>Import discarded</source>
-            <translation>导入已丢弃</translation>
+            <translation>已放弃导入</translation>
         </message>
         <message>
             <location line="-209" />
@@ -1839,7 +1819,7 @@ from %2</source>
         <message>
             <location line="+200" />
             <source>Could not load '%1': %2</source>
-            <translation>无法加载 '%1'：%2</translation>
+            <translation>无法加载“%1”：%2</translation>
         </message>
         <message>
             <location line="+16" />
@@ -2019,7 +1999,7 @@ from %2</source>
             <source>Undistort the image using its matching CameraInfo. Turn off to show the raw image,
 for example when the stream is already rectified.</source>
             <translation>使用匹配的 CameraInfo 对图像进行畸变校正。关闭此选项可显示原始图像，
-例如当流已经过校正时。</translation>
+例如当数据流已经过校正时。</translation>
         </message>
     </context>
     <context>
@@ -2101,12 +2081,12 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+22" />
             <source>descriptor refused by provider</source>
-            <translation>提供方拒绝了描述信息</translation>
+            <translation>提供方拒绝了描述符</translation>
         </message>
         <message>
             <location line="+3" />
             <source>Provider '%1' refused the import descriptor for '%2'%3</source>
-            <translation>提供方“%1”拒绝了“%2”的导入描述信息%3</translation>
+            <translation>提供方“%1”拒绝了“%2”的导入描述符%3</translation>
         </message>
         <message>
             <location line="+39" />
@@ -2246,12 +2226,12 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+177" />
             <source>Resume streaming</source>
-            <translation>恢复接收流数据</translation>
+            <translation>恢复接收数据流</translation>
         </message>
         <message>
             <location line="+0" />
             <source>Pause streaming</source>
-            <translation>暂停接收流数据</translation>
+            <translation>暂停接收数据流</translation>
         </message>
         <message>
             <location line="+10" />
@@ -2360,7 +2340,7 @@ for example when the stream is already rectified.</source>
             <translation>无法在二维视图中显示此对象话题（类型为 %1）。通常是因为数据源未为该话题注册解析器，或者内置查看器尚不支持此类型。</translation>
         </message>
         <message>
-            <location line="+143" />
+            <location line="+145" />
             <location line="+2239" />
             <location line="+87" />
             <source>dataset removed</source>
@@ -2369,7 +2349,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="-1946" />
             <source>Start Streaming</source>
-            <translation>开始接收流数据</translation>
+            <translation>开始接收数据流</translation>
         </message>
         <message>
             <location line="+0" />
@@ -2383,7 +2363,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+5" />
             <source>Streaming</source>
-            <translation>流数据</translation>
+            <translation>数据流</translation>
         </message>
         <message>
             <location line="+0" />
@@ -2607,13 +2587,13 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+831" />
             <source>Nothing to record: start a streaming source first.</source>
-            <translation>没有可录制的内容：请先启动一个流数据源。</translation>
+            <translation>没有可录制的内容：请先启动一个流式数据源。</translation>
         </message>
         <message numerus="yes">
             <location line="+1" />
             <source>Nothing to record: %n active source(s) write decoded samples directly, which cannot be recorded.</source>
             <translation>
-                <numerusform>没有可录制的内容：%n 个活动数据源直接写入解码后的采样，无法录制。</numerusform>
+                <numerusform>没有可录制的内容：%n 个活动数据源直接写入解码后的样本，无法录制。</numerusform>
             </translation>
         </message>
         <message>
@@ -2625,7 +2605,7 @@ for example when the stream is already rectified.</source>
             <location line="+6" />
             <source>%n source(s) write decoded samples directly and are not recorded: %1</source>
             <translation>
-                <numerusform>%n 个数据源直接写入解码后的采样，未参与录制：%1</numerusform>
+                <numerusform>%n 个数据源直接写入解码后的样本，未参与录制：%1</numerusform>
             </translation>
         </message>
         <message>
@@ -2773,7 +2753,7 @@ for example when the stream is already rectified.</source>
             <location line="-252" />
             <location line="+264" />
             <source>'%1' cannot be loaded: %2</source>
-            <translation>无法加载 '%1'：%2</translation>
+            <translation>无法加载“%1”：%2</translation>
         </message>
         <message>
             <location line="-246" />
@@ -2785,7 +2765,7 @@ for example when the stream is already rectified.</source>
             <location line="-269" />
             <source>Layout '%1' records %n streaming source(s); the desktop loader does not start them.</source>
             <translation>
-                <numerusform>布局 '%1' 记录了 %n 个流数据源；桌面加载器不会启动它们。</numerusform>
+                <numerusform>布局“%1”包含 %n 个流式数据源；桌面加载器不会启动它们。</numerusform>
             </translation>
         </message>
         <message>
@@ -2852,7 +2832,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+20" />
             <source>Stream '%1' cannot start: %2</source>
-            <translation>流 '%1' 无法启动：%2</translation>
+            <translation>数据流“%1”无法启动：%2</translation>
         </message>
         <message>
             <location line="+44" />
@@ -2862,7 +2842,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+19" />
             <source>Data source '%1' records a malformed content fingerprint.</source>
-            <translation>数据源 '%1' 记录的内容指纹格式错误。</translation>
+            <translation>数据源“%1”记录的内容指纹格式错误。</translation>
         </message>
         <message>
             <location line="+14" />
@@ -2908,7 +2888,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+100" />
             <source>Select '%1' to replay this layout (selected '%2').</source>
-            <translation>请选择“%1”以重放此布局（当前选择的是“%2”）。</translation>
+            <translation>请选择“%1”以重新载入此布局（当前选择的是“%2”）。</translation>
         </message>
         <message>
             <location line="+12" />
@@ -2928,17 +2908,17 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+77" />
             <source>Data source '%1' could not be downloaded: %2</source>
-            <translation>无法下载数据源 '%1'：%2</translation>
+            <translation>无法下载数据源“%1”：%2</translation>
         </message>
         <message>
             <location line="+9" />
             <source>The layout's data sources exceed the %1 MiB a downloaded layout may load.</source>
-            <translation>布局的数据源超过了下载的布局可加载的 %1 MiB 限制。</translation>
+            <translation>布局的数据源总大小超过了下载布局允许加载的上限（%1 MiB）。</translation>
         </message>
         <message>
             <location line="+21" />
             <source>Data source '%1' is not the file its layout was saved with (its content fingerprint differs).</source>
-            <translation>数据源 '%1' 不是保存布局时所用的文件（内容指纹不同）。</translation>
+            <translation>数据源“%1”不是保存布局时所用的文件（内容指纹不同）。</translation>
         </message>
         <message>
             <location line="+67" />
@@ -2984,7 +2964,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+60" />
             <source>Stream '%1' could not start: %2</source>
-            <translation>流 '%1' 未能启动：%2</translation>
+            <translation>数据流“%1”未能启动：%2</translation>
         </message>
         <message>
             <location line="+83" />
@@ -2994,7 +2974,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+110" />
             <source>'%1' could not be downloaded: %2</source>
-            <translation>无法下载 '%1'：%2</translation>
+            <translation>无法下载“%1”：%2</translation>
         </message>
         <message>
             <location line="+47" />
@@ -3116,34 +3096,34 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+168" />
             <source>'%1' has no owner and cannot be deleted from here</source>
-            <translation>'%1' 没有所有者，无法在此删除</translation>
+            <translation>“%1”没有所有者，无法在此删除</translation>
         </message>
         <message>
             <location line="+1" />
             <source>'%1' was created by %2 and cannot be deleted from here</source>
-            <translation>'%1' 由 %2 创建，无法在此删除</translation>
+            <translation>“%1”由 %2 创建，无法在此删除</translation>
         </message>
         <message>
             <location line="+5" />
             <source>'%1' cannot be deleted: '%2' of %3 reads its output</source>
-            <translation>无法删除 '%1'：%3 的 '%2' 正在读取其输出</translation>
+            <translation>无法删除“%1”：%3 的“%2”正在读取其输出</translation>
         </message>
         <message>
             <location line="+6" />
             <source>'%1' cannot be deleted: the protected '%2' reads its output</source>
-            <translation>无法删除 '%1'：受保护的 '%2' 正在读取其输出</translation>
+            <translation>无法删除“%1”：受保护的“%2”正在读取其输出</translation>
         </message>
         <message>
             <location line="+75" />
             <source>Delete derived topic?</source>
-            <translation>删除派生主题？</translation>
+            <translation>删除派生话题？</translation>
         </message>
         <message>
             <location line="+1" />
             <source>These derived topics read what you are deleting. They stay, but report a missing input:
 
 • %1</source>
-            <translation>以下派生主题读取您将要删除的内容。它们会保留，但会报告缺少输入：
+            <translation>以下派生话题读取了将要删除的内容。它们会保留，但会报告缺少输入：
 
 • %1</translation>
         </message>
@@ -3181,7 +3161,7 @@ for example when the stream is already rectified.</source>
             <location line="+6" />
             <source>%n scene layer(s) could not be rebound and were omitted.</source>
             <translation>
-                <numerusform>%n 个场景图层无法重新绑定，已省略。</numerusform>
+                <numerusform>%n 个场景图层无法重新绑定，已跳过。</numerusform>
             </translation>
         </message>
         <message numerus="yes">
@@ -3253,7 +3233,7 @@ for example when the stream is already rectified.</source>
             <translation>无法从布局重建图表标签页。</translation>
         </message>
         <message>
-            <location line="+235" />
+            <location line="+236" />
             <source>Link X axis</source>
             <translation>联动 X 轴</translation>
         </message>
@@ -3280,7 +3260,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+20" />
             <source>Show point in plot</source>
-            <translation>显示图表中的数据点</translation>
+            <translation>显示光标处数据点的数值</translation>
         </message>
         <message>
             <location line="+2" />
@@ -3370,7 +3350,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+2" />
             <source>Sticks</source>
-            <translation>棒状</translation>
+            <translation>针状线</translation>
         </message>
         <message>
             <location line="+2" />
@@ -3415,7 +3395,7 @@ for example when the stream is already rectified.</source>
         <message>
             <location line="+16" />
             <source>Failed to publish the source-promotion service for '%1': %2</source>
-            <translation>无法为“%1”发布数据源持久化服务：%2</translation>
+            <translation>无法为“%1”发布数据源转换服务：%2</translation>
         </message>
         <message>
             <location line="+25" />
@@ -3938,7 +3918,7 @@ Details: %1</source>
         <message>
             <location filename="../../pj_plotting/widget/src/PlotWidget.cpp" line="-91" />
             <source>%1 vs %2</source>
-            <translation>%1 对 %2</translation>
+            <translation>%1 vs %2</translation>
         </message>
         <message>
             <location line="+38" />
@@ -3989,16 +3969,26 @@ Details: %1</source>
         </message>
         <message>
             <location line="+57" />
-            <source>&amp;Split Horizontally</source>
-            <translation>水平拆分(&amp;S)</translation>
+            <source>Split &amp;Horizontally</source>
+            <translation>水平拆分(&amp;H)</translation>
         </message>
         <message>
             <location line="+3" />
-            <source>&amp;Split Vertically</source>
-            <translation>垂直拆分(&amp;S)</translation>
+            <source>Split &amp;Vertically</source>
+            <translation>垂直拆分(&amp;V)</translation>
         </message>
         <message>
-            <location line="+3" />
+            <location line="+13" />
+            <source>Zoom Out Horizontally</source>
+            <translation>水平缩小至全范围</translation>
+        </message>
+        <message>
+            <location line="+6" />
+            <source>Zoom Out Vertically</source>
+            <translation>垂直缩小至全范围</translation>
+        </message>
+        <message>
+            <location line="-16" />
             <source>&amp;Remove ALL curves</source>
             <translation>移除全部曲线(&amp;R)</translation>
         </message>
@@ -4008,17 +3998,7 @@ Details: %1</source>
             <translation>缩小至全范围(&amp;Z)</translation>
         </message>
         <message>
-            <location line="+6" />
-            <source>&amp;Zoom Out Horizontally</source>
-            <translation>水平方向缩小至全范围(&amp;H)</translation>
-        </message>
-        <message>
-            <location line="+6" />
-            <source>&amp;Zoom Out Vertically</source>
-            <translation>垂直方向缩小至全范围(&amp;V)</translation>
-        </message>
-        <message>
-            <location line="+188" />
+            <location line="+200" />
             <source>Apply Filter...</source>
             <translation>应用滤波器…</translation>
         </message>
@@ -4078,7 +4058,7 @@ Details: %1</source>
         <message>
             <location line="+0" />
             <source>per plot</source>
-            <translation>每个图表</translation>
+            <translation>按图表</translation>
         </message>
         <message>
             <location line="+1" />
@@ -4192,12 +4172,12 @@ Details: %1</source>
         <message>
             <location line="+6" />
             <source>Preset '%1' cannot be opened: this page's preset list is invalid.</source>
-            <translation>无法打开预设 '%1'：此页面的预设列表无效。</translation>
+            <translation>无法打开预设“%1”：此页面的预设列表无效。</translation>
         </message>
         <message>
             <location line="+2" />
             <source>This page has no preset named '%1'.</source>
-            <translation>此页面没有名为 '%1' 的预设。</translation>
+            <translation>此页面没有名为“%1”的预设。</translation>
         </message>
     </context>
     <context>
@@ -4326,7 +4306,7 @@ Details: %1</source>
         <message>
             <location filename="../src/ui/Scene3DConfigPanel.cpp" line="+279" />
             <source>Topics</source>
-            <translation>主题</translation>
+            <translation>话题</translation>
         </message>
         <message>
             <location line="+10" />
@@ -4382,7 +4362,7 @@ Details: %1</source>
         <message>
             <location line="+18" />
             <source>Line grid</source>
-            <translation>线框网格</translation>
+            <translation>线条网格</translation>
         </message>
         <message>
             <location line="+1" />
@@ -4442,7 +4422,7 @@ Details: %1</source>
         <message>
             <location line="+1" />
             <source>Topic</source>
-            <translation>主题</translation>
+            <translation>话题</translation>
         </message>
         <message>
             <location line="+1" />
@@ -4462,12 +4442,12 @@ Details: %1</source>
         <message>
             <location line="+21" />
             <source>Show/hide visual meshes</source>
-            <translation>显示或隐藏可视网格</translation>
+            <translation>显示或隐藏外观模型网格</translation>
         </message>
         <message>
             <location line="+7" />
             <source>Meshes opacity</source>
-            <translation>网格不透明度</translation>
+            <translation>模型网格不透明度</translation>
         </message>
         <message>
             <location line="+6" />
@@ -4528,15 +4508,15 @@ Details: %1</source>
         <message>
             <location filename="../../pj_scene3D/widgets/src/Scene3DDockWidget.cpp" line="+248" />
             <location line="+368" />
-            <location line="+279" />
-            <location line="+1145" />
+            <location line="+282" />
+            <location line="+1149" />
             <location line="+110" />
             <location line="+3" />
             <source>3D View</source>
             <translation>三维视图</translation>
         </message>
         <message>
-            <location line="-1794" />
+            <location line="-1801" />
             <source>Orbit</source>
             <translation>环绕</translation>
         </message>
@@ -4562,19 +4542,19 @@ Details: %1</source>
         </message>
         <message>
             <location line="+245" />
-            <location line="+279" />
-            <location line="+1258" />
+            <location line="+282" />
+            <location line="+1262" />
             <source>3D View - %1</source>
             <translation>三维视图 - %1</translation>
         </message>
         <message>
-            <location line="-1525" />
+            <location line="-1532" />
             <location line="+21" />
             <source>Robot model</source>
             <translation>机器人模型</translation>
         </message>
         <message>
-            <location line="+185" />
+            <location line="+186" />
             <source>Create trail for '%1'</source>
             <translation>创建“%1”的轨迹</translation>
         </message>
@@ -4589,7 +4569,7 @@ Details: %1</source>
             <translation>跟随此坐标系</translation>
         </message>
         <message>
-            <location line="+695" />
+            <location line="+701" />
             <source>Frame '%1' can't be resolved</source>
             <translation>无法解析坐标系“%1”</translation>
         </message>
@@ -4601,7 +4581,7 @@ Details: %1</source>
         <message>
             <location line="+105" />
             <source>Only depth-encoded images can be displayed in a 3D view. Use a 2D view for colour images.</source>
-            <translation>3D 视图只能显示深度编码图像。彩色图像请使用 2D 视图。</translation>
+            <translation>三维视图只能显示深度编码图像。彩色图像请使用二维视图。</translation>
         </message>
     </context>
     <context>
@@ -4619,7 +4599,7 @@ Details: %1</source>
         <message>
             <location line="+863" />
             <source>This view shows dataset %1; a topic from dataset %2 cannot be added to it.</source>
-            <translation>此视图显示数据集 %1；无法向其中添加数据集 %2 的主题。</translation>
+            <translation>此视图显示数据集 %1；无法向其中添加数据集 %2 的话题。</translation>
         </message>
         <message>
             <location line="+11" />
@@ -4646,7 +4626,7 @@ Details: %1</source>
         <message>
             <location line="+44" />
             <source>promoted</source>
-            <translation>已持久化</translation>
+            <translation>已转为文件数据源</translation>
         </message>
         <message>
             <location line="+5" />
@@ -4684,7 +4664,7 @@ Details: %1</source>
         <message>
             <location filename="../src/StreamingSourceManager.cpp" line="+259" />
             <source>No stream source selected.</source>
-            <translation>未选择流数据源。</translation>
+            <translation>未选择流式数据源。</translation>
         </message>
         <message>
             <location line="+225" />
@@ -4739,12 +4719,12 @@ Details: %1</source>
         <message>
             <location line="+17" />
             <source>Stream plugin '%1' is not installed.</source>
-            <translation>未安装流插件 '%1'。</translation>
+            <translation>未安装流数据插件“%1”。</translation>
         </message>
         <message>
             <location line="+13" />
             <source>Plugin '%1' refused the saved configuration: %2</source>
-            <translation>插件 '%1' 拒绝了已保存的配置：%2</translation>
+            <translation>插件“%1”拒绝了已保存的配置：%2</translation>
         </message>
         <message>
             <location line="+27" />
@@ -4755,7 +4735,7 @@ Details: %1</source>
     <context>
         <name>PJ::TabbedPlotWidget</name>
         <message>
-            <location filename="../../pj_plotting/widget/src/TabbedPlotWidget.cpp" line="+326" />
+            <location filename="../../pj_plotting/widget/src/TabbedPlotWidget.cpp" line="+327" />
             <source>Toggle left panel</source>
             <translation>显示或隐藏左侧面板</translation>
         </message>
@@ -4768,6 +4748,16 @@ Details: %1</source>
             <location line="+1" />
             <source>Toggle right panel</source>
             <translation>显示或隐藏右侧面板</translation>
+        </message>
+        <message>
+            <location line="+187" />
+            <source>%1 (copy)</source>
+            <translation>%1（副本）</translation>
+        </message>
+        <message>
+            <location line="+106" />
+            <source>Duplicate tab</source>
+            <translation>复制标签页</translation>
         </message>
     </context>
     <context>
@@ -4806,7 +4796,7 @@ Details: %1</source>
         <message>
             <location line="+98" />
             <source>Streaming: pause playback to interact with the timeline</source>
-            <translation>正在接收流数据：暂停回放后可操作时间轴</translation>
+            <translation>正在接收数据流：暂停回放后可操作时间轴</translation>
         </message>
     </context>
     <context>
@@ -4858,13 +4848,13 @@ Details: %1</source>
         <name>PJ::VisualizationPlaceholderWidget</name>
         <message>
             <location filename="../../pj_widgets/src/VisualizationPlaceholderWidget.cpp" line="+95" />
-            <source>&amp;Split Horizontally</source>
-            <translation>水平拆分(&amp;S)</translation>
+            <source>Split &amp;Horizontally</source>
+            <translation>水平拆分(&amp;H)</translation>
         </message>
         <message>
             <location line="+3" />
-            <source>&amp;Split Vertically</source>
-            <translation>垂直拆分(&amp;S)</translation>
+            <source>Split &amp;Vertically</source>
+            <translation>垂直拆分(&amp;V)</translation>
         </message>
         <message>
             <location line="+3" />
@@ -4879,7 +4869,7 @@ Details: %1</source>
         <message>
             <location line="+1" />
             <source>State Transitions</source>
-            <translation>状态变化</translation>
+            <translation>状态转换</translation>
         </message>
         <message>
             <location line="+2" />
@@ -5068,7 +5058,7 @@ Details: %1</source>
         <message>
             <location line="+52" />
             <source>Rescale a plot's vertical axis to fit its curves whenever a curve is added or removed (the shared time axis is left unchanged).</source>
-            <translation>添加或移除曲线时，自动调整图表纵轴以适合曲线范围（共享时间轴保持不变）。</translation>
+            <translation>添加或移除曲线时，自动调整图表纵轴以适应曲线范围（共享时间轴保持不变）。</translation>
         </message>
         <message>
             <location line="+3" />
@@ -5083,7 +5073,7 @@ Details: %1</source>
         <message>
             <location line="+17" />
             <source>Automatic re-runs a changed marker rule on its own, at the reload rate below. Manual only flags it as needing a refresh, reachable from the dataset's "Refresh derived" action.</source>
-            <translation>自动模式按下方的重新加载频率自动重新运行已更改的标记规则。手动模式仅将其标记为需要刷新，可通过数据集的“刷新派生主题”操作进行刷新。</translation>
+            <translation>自动模式按下方的重新加载频率自动重新运行已更改的标记规则。手动模式仅将其标记为需要刷新，可通过数据集的“刷新派生标记”操作进行刷新。</translation>
         </message>
         <message>
             <location line="+3" />
@@ -5144,7 +5134,7 @@ Details: %1</source>
         <message>
             <location line="+74" />
             <source>Every Record press creates one folder here holding one standard MCAP file per recorded source. Recordings capture the raw messages of the topics each stream is subscribed to; sources that write decoded samples directly (no message format) are not recorded.</source>
-            <translation>每次点击录制都会在此创建一个文件夹，为每个参与录制的数据源保存一个标准 MCAP 文件。录制内容为各数据流已订阅话题的原始消息；直接写入解码后采样的数据源（无消息格式）不会参与录制。</translation>
+            <translation>每次点击录制都会在此创建一个文件夹，为每个参与录制的数据源保存一个标准 MCAP 文件。录制内容为各数据流已订阅话题的原始消息；直接写入解码后样本的数据源（无消息格式）不会参与录制。</translation>
         </message>
         <message>
             <location line="+3" />
@@ -5344,7 +5334,7 @@ Details: %1</source>
             <location filename="../src/FileLoader.cpp" line="-2057" />
             <location line="+90" />
             <location line="+7" />
-            <location filename="../src/MainWindow.cpp" line="-10591" />
+            <location filename="../src/MainWindow.cpp" line="-10594" />
             <source>OK</source>
             <translation>确定</translation>
         </message>
@@ -5426,9 +5416,9 @@ Details: %1</source>
             <translation>移至停靠面板</translation>
         </message>
         <message>
-            <location filename="../src/ui/CurveListPanel.cpp" line="-1098" />
+            <location filename="../src/ui/CurveListPanel.cpp" line="-1133" />
             <source>Camera calibration topic, used automatically by 2D and 3D views. It cannot be displayed on its own, but a plugin panel can read it.</source>
-            <translation>相机标定主题，由 2D 和 3D 视图自动使用。无法单独显示，但插件面板可以读取。</translation>
+            <translation>相机标定话题，由二维和三维视图自动使用。无法单独显示，但插件面板可以读取。</translation>
         </message>
         <message>
             <location line="+4" />
@@ -5455,7 +5445,7 @@ Details: %1</source>
         <message>
             <location filename="../../pj_scene3D/widgets/src/layers/scene_entities_layer.cpp" line="+968" />
             <source>SceneEntities decode received no snapshot</source>
-            <translation>场景实体解码未收到快照</translation>
+            <translation>SceneEntities 解码未收到快照</translation>
         </message>
         <message>
             <location filename="../../pj_scene3D/widgets/src/marker_geometry.cpp" line="+110" />
@@ -5480,12 +5470,12 @@ Details: %1</source>
         <message>
             <location line="+3" />
             <source>SceneEntities conversion failed: %1</source>
-            <translation>场景实体转换失败：%1</translation>
+            <translation>SceneEntities 转换失败：%1</translation>
         </message>
         <message>
             <location filename="../../pj_widgets/src/StateTransitionsView.cpp" line="+306" />
             <source>start</source>
-            <translation>开始</translation>
+            <translation>起始</translation>
         </message>
         <message>
             <location line="+0" />
@@ -5573,7 +5563,7 @@ Details: %1</source>
         <message>
             <location line="+15" />
             <source>computed at %1 s</source>
-            <translation>计算于 %1 秒</translation>
+            <translation>在 %1 秒处计算</translation>
         </message>
     </context>
     <context>
@@ -5586,7 +5576,7 @@ Details: %1</source>
         <message>
             <location line="+6" />
             <source>The source configuration uses %1, which is not a deployment variable this PlotJuggler knows.</source>
-            <translation>数据源配置使用了 %1，但此 PlotJuggler 无法识别该部署变量。</translation>
+            <translation>数据源配置使用了 %1，但当前版本的 PlotJuggler 无法识别该部署变量。</translation>
         </message>
         <message>
             <location line="+95" />
@@ -5966,7 +5956,7 @@ Details: %1</source>
         <message>
             <location line="+5" />
             <source>Occupancy updates in this seek window exceed the %1 MiB limit</source>
-            <translation>此定位窗口内的占据栅格更新超出 %1 MiB 上限</translation>
+            <translation>此跳转时间窗口内的占据栅格更新超出 %1 MiB 上限</translation>
         </message>
         <message>
             <location line="+164" />
@@ -6204,7 +6194,7 @@ Details: %1</source>
         <message>
             <location line="+18" />
             <source>Override color:</source>
-            <translation>覆盖颜色：</translation>
+            <translation>自定义颜色：</translation>
         </message>
         <message>
             <location line="+16" />
@@ -6227,7 +6217,7 @@ Details: %1</source>
         <message>
             <location line="+357" />
             <source>Topic</source>
-            <translation>主题</translation>
+            <translation>话题</translation>
         </message>
         <message>
             <location line="+1" />
@@ -6298,7 +6288,7 @@ Details: %1</source>
         <message>
             <location line="+1" />
             <source>Visual</source>
-            <translation>可视模型</translation>
+            <translation>视觉模型</translation>
         </message>
         <message>
             <location line="+1" />
@@ -6552,7 +6542,7 @@ Details: %1</source>
         <message>
             <location line="+19" />
             <source>Override color:</source>
-            <translation>覆盖颜色：</translation>
+            <translation>自定义颜色：</translation>
         </message>
         <message>
             <location line="+14" />
@@ -6718,7 +6708,7 @@ Details: %1</source>
         <message>
             <location line="+132" />
             <source>A scene pipeline has no HDR variant on this GPU</source>
-            <translation>此 GPU 上的场景管线没有 HDR 版本</translation>
+            <translation>此 GPU 上某个场景管线没有 HDR 变体</translation>
         </message>
         <message>
             <location line="+280" />

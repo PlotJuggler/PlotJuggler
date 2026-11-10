@@ -5,6 +5,7 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTranslator>
 
 #include "AppLanguage.h"
 
@@ -212,6 +213,126 @@ class AppLanguageTest : public QObject {
     }
     const PJ::AppLanguage english(*QCoreApplication::instance(), u"en_US"_s);
     QCOMPARE(QCoreApplication::translate(context.constData(), source.constData()), QString::fromUtf8(source));
+  }
+
+  void embeddedCatalogTranslatesReviewedMessages_data() {
+    QTest::addColumn<QByteArray>("context");
+    QTest::addColumn<QByteArray>("source");
+    QTest::addColumn<int>("numerus");
+    QTest::addColumn<QString>("expected");
+    QTest::newRow("review-0") << QByteArray("CurveListPanel") << QByteArray("Custom Topics") << -1 << u"自定义话题"_s;
+    QTest::newRow("review-1") << QByteArray("PJ::Scene3DConfigPanel") << QByteArray("Topics") << -1 << u"话题"_s;
+    QTest::newRow("review-2") << QByteArray("QObject")
+                              << QByteArray(
+                                     "Camera calibration topic, used automatically by 2D and 3D views. It cannot be "
+                                     "displayed on its own, but a plugin panel can read it.")
+                              << -1 << u"相机标定话题，由二维和三维视图自动使用。无法单独显示，但插件面板可以读取。"_s;
+    QTest::newRow("review-3") << QByteArray("pj::scene3d::RobotModelLayer") << QByteArray("Topic") << -1 << u"话题"_s;
+    QTest::newRow("review-4") << QByteArray("PJ::PlotWidget") << QByteArray("Split &Horizontally") << -1
+                              << u"水平拆分(&H)"_s;
+    QTest::newRow("review-5") << QByteArray("PJ::PlotWidget") << QByteArray("Split &Vertically") << -1
+                              << u"垂直拆分(&V)"_s;
+    QTest::newRow("review-6") << QByteArray("PJ::VisualizationPlaceholderWidget") << QByteArray("Split &Horizontally")
+                              << -1 << u"水平拆分(&H)"_s;
+    QTest::newRow("review-7") << QByteArray("PJ::VisualizationPlaceholderWidget") << QByteArray("Split &Vertically")
+                              << -1 << u"垂直拆分(&V)"_s;
+    QTest::newRow("review-8") << QByteArray("PJ::PlotWidget") << QByteArray("Zoom Out Horizontally") << -1
+                              << u"水平缩小至全范围"_s;
+    QTest::newRow("review-9") << QByteArray("PJ::PlotWidget") << QByteArray("Zoom Out Vertically") << -1
+                              << u"垂直缩小至全范围"_s;
+    QTest::newRow("review-10") << QByteArray("PJ::TabbedPlotWidget") << QByteArray("Duplicate tab") << -1
+                               << u"复制标签页"_s;
+    QTest::newRow("review-11") << QByteArray("PJ::TabbedPlotWidget") << QByteArray("%1 (copy)") << -1
+                               << u"%1（副本）"_s;
+    QTest::newRow("review-12") << QByteArray("PJ::CurveListPanel") << QByteArray("Refresh derived") << -1
+                               << u"刷新派生标记"_s;
+    QTest::newRow("review-13")
+        << QByteArray("PreferencesContent")
+        << QByteArray(
+               "Automatic re-runs a changed marker rule on its own, at the reload rate below. Manual only flags it as "
+               "needing a refresh, reachable from the dataset's \"Refresh derived\" action.")
+        << -1
+        << u"自动模式按下方的重新加载频率自动重新运行已更改的标记规则。手动模式仅将其标记为需要刷新，可通过数据集的“刷新派生标记”操作进行刷新。"_s;
+    QTest::newRow("review-14") << QByteArray("PJ::MainWindow") << QByteArray("Show point in plot") << -1
+                               << u"显示光标处数据点的数值"_s;
+    QTest::newRow("review-15") << QByteArray("DatasetMergeActions") << QByteArray("canonical %1") << -1
+                               << u"%1（规范格式）"_s;
+    QTest::newRow("review-16") << QByteArray("PJ::ExtensionManager")
+                               << QByteArray("Not available for this platform (%1)") << -1 << u"不适用于此平台（%1）"_s;
+    QTest::newRow("review-17") << QByteArray("PJ::SourcePromotionHost") << QByteArray("promoted") << -1
+                               << u"已转为文件数据源"_s;
+    QTest::newRow("review-18") << QByteArray("PJ::MainWindow")
+                               << QByteArray("Failed to publish the source-promotion service for '%1': %2") << -1
+                               << u"无法为“%1”发布数据源转换服务：%2"_s;
+    QTest::newRow("review-19") << QByteArray("PJ::Scene3DConfigPanel") << QByteArray("Meshes opacity") << -1
+                               << u"模型网格不透明度"_s;
+    QTest::newRow("review-20") << QByteArray("PJ::Scene3DConfigPanel") << QByteArray("Show/hide visual meshes") << -1
+                               << u"显示或隐藏外观模型网格"_s;
+    QTest::newRow("review-21")
+        << QByteArray("PJ::Scene3DDockWidget")
+        << QByteArray("Only depth-encoded images can be displayed in a 3D view. Use a 2D view for colour images.") << -1
+        << u"三维视图只能显示深度编码图像。彩色图像请使用二维视图。"_s;
+    QTest::newRow("review-22") << QByteArray("QObject") << QByteArray("SceneEntities decode received no snapshot") << -1
+                               << u"SceneEntities 解码未收到快照"_s;
+    QTest::newRow("review-23") << QByteArray("QObject") << QByteArray("SceneEntities conversion failed: %1") << -1
+                               << u"SceneEntities 转换失败：%1"_s;
+    QTest::newRow("review-24") << QByteArray("LayoutXml")
+                               << QByteArray(
+                                      "Data source '%1' is a file on a local machine, which a web layout cannot open.")
+                               << -1 << u"数据源“%1”是本机文件，网络托管的布局无法打开。"_s;
+    QTest::newRow("review-25")
+        << QByteArray("PJ::MainWindow")
+        << QByteArray("Layout '%1' records %n streaming source(s); the desktop loader does not start them.") << 7
+        << u"布局“%1”包含 7 个流式数据源；桌面加载器不会启动它们。"_s;
+    QTest::newRow("review-26") << QByteArray("QObject") << QByteArray("computed at %1 s") << -1 << u"在 %1 秒处计算"_s;
+    QTest::newRow("review-27") << QByteArray("PJ::PlotWidget") << QByteArray("%1 vs %2") << -1 << u"%1 vs %2"_s;
+    QTest::newRow("review-28") << QByteArray("PJ::FileLoader") << QByteArray("Could not load '%1': %2") << -1
+                               << u"无法加载“%1”：%2"_s;
+    QTest::newRow("review-29")
+        << QByteArray("PJ::MainWindow")
+        << QByteArray(
+               "Nothing to record: %n active source(s) write decoded samples directly, which cannot be recorded.")
+        << 7 << u"没有可录制的内容：7 个活动数据源直接写入解码后的样本，无法录制。"_s;
+    QTest::newRow("review-30") << QByteArray("PJ::MainWindow")
+                               << QByteArray("%n source(s) write decoded samples directly and are not recorded: %1")
+                               << 7 << u"7 个数据源直接写入解码后的样本，未参与录制：%1"_s;
+  }
+
+  void embeddedCatalogTranslatesReviewedMessages() {
+    QFETCH(QByteArray, context);
+    QFETCH(QByteArray, source);
+    QFETCH(int, numerus);
+    QFETCH(QString, expected);
+    {
+      const PJ::AppLanguage chinese(*QCoreApplication::instance(), u"zh_CN"_s);
+      QVERIFY(chinese.catalogLoaded());
+      QCOMPARE(QCoreApplication::translate(context.constData(), source.constData(), nullptr, numerus), expected);
+    }
+    const PJ::AppLanguage english(*QCoreApplication::instance(), u"en_US"_s);
+    const QString fallback =
+        numerus < 0 ? QString::fromUtf8(source) : QString::fromUtf8(source).replace(u"%n"_s, QString::number(numerus));
+    QCOMPARE(QCoreApplication::translate(context.constData(), source.constData(), nullptr, numerus), fallback);
+  }
+
+  void embeddedCatalogOmitsObjectNamesAndStyles_data() {
+    QTest::addColumn<QByteArray>("context");
+    QTest::addColumn<QByteArray>("source");
+    QTest::newRow("title-object-name") << QByteArray("CustomWidgetConfigPanel") << QByteArray("labelWidgetName");
+    QTest::newRow("series-filter-name") << QByteArray("CustomWidgetConfigPanel")
+                                        << QByteArray("customWidgetSeriesFilter");
+    QTest::newRow("widget-filter-name") << QByteArray("CustomWidgetPickerPanel") << QByteArray("customWidgetFilter");
+    QTest::newRow("detail-title-style") << QByteArray("MarketplaceWindow")
+                                        << QByteArray("font-weight:700; font-size:14px;");
+  }
+
+  void embeddedCatalogOmitsObjectNamesAndStyles() {
+    QFETCH(QByteArray, context);
+    QFETCH(QByteArray, source);
+    const PJ::AppLanguage chinese(*QCoreApplication::instance(), u"zh_CN"_s);
+    QVERIFY(chinese.catalogLoaded());
+    QTranslator catalog;
+    QVERIFY(catalog.load(u":/i18n/plotjuggler4_zh_CN.qm"_s));
+    QVERIFY(catalog.translate(context.constData(), source.constData()).isEmpty());
   }
 
   void englishUsesSourceTextAndDoesNotOverwriteThePreference() {
