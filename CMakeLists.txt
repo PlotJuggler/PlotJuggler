@@ -343,7 +343,9 @@ endif()
 set(ADS_VERSION "4.5.0" CACHE STRING "" FORCE)
 set(BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-add_subdirectory(3rdparty/Qt-Advanced-Docking)
+# EXCLUDE_FROM_ALL: linked statically into the app, so its own install rules
+# (headers, static library, CMake package) stay out of `cmake --install`.
+add_subdirectory(3rdparty/Qt-Advanced-Docking EXCLUDE_FROM_ALL)
 add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
 # Qt 6.12 deprecates Q_ENUMS, which the fork's ads_globals.h still uses; as a
 # system include its warnings stay out of our -Werror targets.
