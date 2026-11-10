@@ -35,10 +35,9 @@ Timestamp toRawSaturating(double seconds, DisplayOffset offset) {
   return saturatingAdd(*display_ns, offset.value.count());
 }
 
-/// Samples one call may deliver: `max_samples`, 0 meaning the default, never above the hard cap.
+/// Samples one call may deliver: `max_samples`, 0 meaning the default.
 uint32_t effectiveCap(const WidgetHistoryQuery& query) {
-  return query.max_samples == 0 ? WidgetRuntimeHost::kDefaultMaxSamples
-                                : std::min(query.max_samples, WidgetRuntimeHost::kMaxSamplesLimit);
+  return query.max_samples == 0 ? WidgetRuntimeHost::kDefaultMaxSamples : query.max_samples;
 }
 
 /// The range count reported as `out_total`: saturated, the ABI field is 32-bit.

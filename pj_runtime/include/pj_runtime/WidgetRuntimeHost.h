@@ -52,10 +52,10 @@ class WidgetRuntimeHost {
     std::function<void(WidgetMessageLevel level, std::string_view message)> report_message;
   };
 
-  /// Samples delivered when the plugin passes `max_samples == 0`.
+  /// Samples delivered when the plugin passes `max_samples == 0`. An explicit `max_samples` is
+  /// honoured as asked: a widget that wants a whole history (a log) counts it first (`out_total`) and
+  /// asks for that many; the call then delivers every sample on the GUI thread.
   static constexpr uint32_t kDefaultMaxSamples = 10'000;
-  /// Hard cap on one call whatever the plugin asks for, so a widget cannot pull a whole dataset.
-  static constexpr uint32_t kMaxSamplesLimit = 100'000;
 
   /// @param reader   scalar data (must outlive this host).
   /// @param objects  object topics (must outlive this host).

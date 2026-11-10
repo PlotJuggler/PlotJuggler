@@ -165,6 +165,34 @@ TEST_F(WidgetRuntimeHostTest, CapKeepsFirstAndLastAndStaysAscending) {
   }
 }
 
+TEST_F(WidgetRuntimeHostTest, ZeroMaxSamplesTakesTheDefaultAndAnExplicitOneIsHonoured) {
+  // More samples than the default cap, and more than any fixed per-call limit a widget could hit when
+  // it counts a whole log and then asks for all of it.
+  constexpr uint32_t kCount = 150'000;
+  DataWriter writer = engine_.createWriter();
+  auto handle = writer.registerScalarSeries(dataset_, "/dense", NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value());
+  for (uint32_t i = 0; i < kCount; ++i) {
+    writer.appendScalar(*handle, static_cast<int64_t>(i) * 1'000'000, static_cast<double>(i));
+  }
+  ASSERT_FALSE(engine_.commitChunks(writer.flushAll()).empty());
+  WireTarget wire;
+  wire.kind = WidgetInputKind::kNumber;
+  wire.topic_id = handle->topic_id;
+  wires_.push_back(wire);
+
+  std::vector<Sample> out;
+  uint32_t total = 0;
+  ASSERT_TRUE(query(0, 0, -1e300, 1e300, 0, out, nullptr, &total));
+  EXPECT_EQ(out.size(), WidgetRuntimeHost::kDefaultMaxSamples);
+  EXPECT_EQ(total, kCount);
+
+  out.clear();
+  ASSERT_TRUE(query(0, 0, -1e300, 1e300, total, out, nullptr, &total));
+  ASSERT_EQ(out.size(), kCount) << "an explicit max_samples is not clamped";
+  EXPECT_DOUBLE_EQ(out.back().number, static_cast<double>(kCount - 1));
+}
+
 TEST_F(WidgetRuntimeHostTest, TotalCountsTheRangeBeforeTheCap) {
   addNumberWire();
   std::vector<Sample> out;
