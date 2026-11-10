@@ -234,6 +234,8 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   QDomDocument preserved_;  ///< verbatim element of a widget that could not be created
 
   WidgetBindings bindings_;
+  /// Turns a stored object entry into the canonical bytes the widget reads, for pushes and history alike.
+  ObjectPayloadEncoder object_encoder_;
 
   // Destruction runs bottom-up: the handle (and with it the plugin's widget) first, then the
   // registry the plugin may still hold, then the host service it points to, then the reader.

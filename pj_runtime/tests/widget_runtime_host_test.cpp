@@ -12,12 +12,17 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/builtin/log_codec.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
+#include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_plugins/sdk/widget_plugin_base.hpp"
+#include "pj_runtime/CanonicalObjectPayload.h"
+#include "pj_runtime/SessionManager.h"
 #include "pj_runtime/WidgetRuntimeHost.h"
 
 namespace PJ {
@@ -294,6 +299,136 @@ TEST_F(WidgetRuntimeHostTest, RegistersTheServiceUnderItsName) {
   EXPECT_EQ(registry.size(), 1U);
   // One service per panel: a second registration of the name in the same registry is a wiring bug.
   EXPECT_FALSE(host_->registerServices(registry).has_value());
+}
+
+// --- Canonical object bytes (a parser-backed topic stores wire messages, not canonical objects) ---
+
+constexpr std::string_view kLogSchema = "test_log";
+
+/// Decodes a payload of plain text into a kLog whose message is that text; "bad" fails, as a corrupt
+/// wire message would.
+class TextLogParser : public MessageParserPluginBase {
+ public:
+  TextLogParser() {
+    sdk::SchemaHandler handler;
+    handler.object_type = sdk::BuiltinObjectType::kLog;
+    handler.parse_object = [](Timestamp ts, sdk::PayloadView payload) -> Expected<sdk::ObjectRecord> {
+      const std::string text(reinterpret_cast<const char*>(payload.bytes.data()), payload.bytes.size());
+      if (text == "bad") {
+        return unexpected(std::string("corrupt message"));
+      }
+      sdk::Log log;
+      log.timestamp_ns = ts;
+      log.level = sdk::Log::Level::kWarning;
+      log.message = text;
+      log.name = "node";
+      log.file = "node.cpp";
+      log.line = 42;
+      return sdk::ObjectRecord{ts, sdk::BuiltinObject{log}};
+    };
+    registerSchemaHandler(kLogSchema, std::move(handler));
+  }
+};
+
+std::unique_ptr<MessageParserHandle> makeTextLogParser() {
+  static constexpr const char* kManifest =
+      R"({"id":"text-log-parser","name":"Text Log Parser","version":"1.0.0","encoding":["mock"]})";
+  auto handle = std::make_unique<MessageParserHandle>(
+      MessageParserPluginBase::vtableWithCreate([]() noexcept -> void* { return new TextLogParser(); }, kManifest));
+  EXPECT_TRUE(handle->valid());
+  EXPECT_TRUE(handle->bindSchema(kLogSchema, {}).has_value());
+  return handle;
+}
+
+class WidgetRuntimeHostCanonicalTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto dataset = session_.dataEngine().createDataset(DatasetDescriptor{.source_name = "robot.mcap"});
+    ASSERT_TRUE(dataset.has_value()) << dataset.error();
+    dataset_ = *dataset;
+    reader_ = std::make_unique<DataReader>(session_.createReader());
+    host_ = std::make_unique<WidgetRuntimeHost>(
+        *reader_, session_.objectStore(),
+        [this](uint32_t input, uint32_t slot) -> std::optional<WidgetRuntimeHost::ResolvedWire> {
+          if (slot != 0 || input >= wires_.size()) {
+            return std::nullopt;
+          }
+          return WidgetRuntimeHost::ResolvedWire{wires_[input], {}};
+        },
+        WidgetRuntimeHost::Callbacks{}, canonicalObjectEncoder(session_));
+  }
+
+  /// An object topic of `type` holding one entry per payload, at t = 0, 1, 2... s; wired as input 0.
+  ObjectTopicId addObjectWire(sdk::BuiltinObjectType type, const std::vector<std::string>& payloads) {
+    auto topic =
+        session_.objectStore().registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/rosout"});
+    EXPECT_TRUE(topic.has_value());
+    for (std::size_t i = 0; i < payloads.size(); ++i) {
+      EXPECT_TRUE(session_.objectStore()
+                      .pushOwned(
+                          *topic, static_cast<int64_t>(i) * kSecond,
+                          std::vector<uint8_t>(payloads[i].begin(), payloads[i].end()))
+                      .has_value());
+    }
+    WireTarget wire;
+    wire.kind = WidgetInputKind::kObject;
+    wire.object_topic = *topic;
+    wire.object_type = type;
+    wire.object_type_name = sdk::name(type);
+    wires_.push_back(wire);
+    return *topic;
+  }
+
+  bool query(double from, double to, std::vector<Sample>& out, uint32_t* total = nullptr) {
+    PJ_error_t error{};
+    const PJ_widget_host_t host = host_->raw();
+    Collector collector{&out, 0};
+    return host.vtable->query_history(host.ctx, 0, 0, from, to, 0, &collect, &collector, total, &error);
+  }
+
+  SessionManager session_;
+  std::unique_ptr<DataReader> reader_;
+  std::unique_ptr<WidgetRuntimeHost> host_;
+  DatasetId dataset_ = 0;
+  std::vector<WireTarget> wires_;
+};
+
+TEST_F(WidgetRuntimeHostCanonicalTest, AParserBackedTopicDeliversCanonicalBytes) {
+  const ObjectTopicId topic = addObjectWire(sdk::BuiltinObjectType::kLog, {"started", "running"});
+  session_.registerObjectTopicParser(topic, makeTextLogParser());
+
+  std::vector<Sample> out;
+  ASSERT_TRUE(query(0.0, 10.0, out));
+  ASSERT_EQ(out.size(), 2U);
+  EXPECT_EQ(out[0].type_name, "kLog");
+  const auto log = deserializeLog(out[1].bytes.data(), out[1].bytes.size());
+  ASSERT_TRUE(log.has_value()) << log.error();
+  EXPECT_EQ(log->message, "running");
+  EXPECT_EQ(log->level, sdk::Log::Level::kWarning);
+  EXPECT_EQ(log->file, "node.cpp");
+  EXPECT_EQ(log->line, 42U);
+  EXPECT_EQ(log->timestamp_ns, kSecond);
+}
+
+TEST_F(WidgetRuntimeHostCanonicalTest, AnEntryThatDoesNotDecodeIsSkippedButCounted) {
+  const ObjectTopicId topic = addObjectWire(sdk::BuiltinObjectType::kLog, {"one", "bad", "three"});
+  session_.registerObjectTopicParser(topic, makeTextLogParser());
+
+  std::vector<Sample> out;
+  uint32_t total = 0;
+  ASSERT_TRUE(query(0.0, 10.0, out, &total));
+  ASSERT_EQ(out.size(), 2U);
+  EXPECT_DOUBLE_EQ(out[0].time, 0.0);
+  EXPECT_DOUBLE_EQ(out[1].time, 2.0);
+  EXPECT_EQ(total, 3U) << "the range still holds three entries";
+}
+
+TEST_F(WidgetRuntimeHostCanonicalTest, ATopicWithoutParserDeliversItsStoredBytes) {
+  addObjectWire(sdk::BuiltinObjectType::kImage, {"raw"});
+  std::vector<Sample> out;
+  ASSERT_TRUE(query(0.0, 10.0, out));
+  ASSERT_EQ(out.size(), 1U);
+  EXPECT_EQ(out[0].bytes, (std::vector<uint8_t>{'r', 'a', 'w'}));
 }
 
 }  // namespace

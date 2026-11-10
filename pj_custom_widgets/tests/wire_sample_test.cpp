@@ -89,7 +89,7 @@ TEST_F(WireSampleTest, ObjectResolvesIdentityFirstAndPayloadOnFetch) {
   ASSERT_EQ(sample.kind, PJ_WIDGET_VALUE_OBJECT);
   EXPECT_FALSE(sample.object.has_value()) << "the identity pass must not resolve the payload";
   EXPECT_EQ(sample.stamp, kSecond);
-  fetchObjectPayload(objects, target, sample);
+  fetchObjectPayload(objects, target, {}, sample);
   ASSERT_TRUE(sample.object.has_value());
 
   const PJ_widget_value_t value = makeWidgetValue(2, 1, target, sample, "/cam");
@@ -128,12 +128,12 @@ TEST_F(WireSampleTest, AnEntryStillShownIsNotFetchedAgain) {
 
   WireSample sample;
   refreshWireSample(*reader_, objects, target, fromRaw(kSecond), sample);
-  fetchObjectPayload(objects, target, sample);
+  fetchObjectPayload(objects, target, {}, sample);
   ASSERT_TRUE(sample.object.has_value());
   EXPECT_EQ(fetches, 1);
 
   refreshWireSample(*reader_, objects, target, fromRaw(3 * kSecond / 2), sample);
-  fetchObjectPayload(objects, target, sample);
+  fetchObjectPayload(objects, target, {}, sample);
   ASSERT_TRUE(sample.object.has_value());
   EXPECT_EQ(fetches, 1) << "same entry: the payload already held is pushed again";
 

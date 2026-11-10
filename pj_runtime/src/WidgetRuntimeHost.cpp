@@ -80,8 +80,9 @@ class Decimator {
 }  // namespace
 
 WidgetRuntimeHost::WidgetRuntimeHost(
-    const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks)
-    : reader_(reader), objects_(objects), resolver_(std::move(resolver)) {
+    const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks,
+    ObjectPayloadEncoder encoder)
+    : reader_(reader), objects_(objects), resolver_(std::move(resolver)), encoder_(std::move(encoder)) {
   bridge_.history = [this](const WidgetHistoryQuery& query, const WidgetValueSink& sink) {
     return history(query, sink);
   };
@@ -213,15 +214,19 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
       continue;
     }
     // Resolved one at a time, outside any store lock: a lazy entry may refetch. An entry evicted
-    // since rangeByTime, or whose fetch failed, has no payload to deliver and is skipped.
+    // since rangeByTime, or whose fetch failed or did not encode, has no payload to deliver and is skipped.
     const auto entry = objects_.at(target.object_topic, entries[i].uid);
     if (!entry || entry->fetch_failed) {
+      continue;
+    }
+    const Expected<sdk::PayloadView> payload = encoder_ ? encoder_(target, *entry) : entry->payload;
+    if (!payload) {
       continue;
     }
     PJ_widget_value_t value = baseWidgetValue(
         query.input, query.slot, PJ_WIDGET_VALUE_OBJECT, rawToDisplaySeconds(entry->timestamp, target.offset).value,
         wire.label);
-    value.bytes = PJ_bytes_view_t{entry->payload.bytes.data(), entry->payload.bytes.size()};
+    value.bytes = PJ_bytes_view_t{payload->bytes.data(), payload->bytes.size()};
     value.type_name = PJ_string_view_t{target.object_type_name.data(), target.object_type_name.size()};
     if (!sink(value)) {
       break;

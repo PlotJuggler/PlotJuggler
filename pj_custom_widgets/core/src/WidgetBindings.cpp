@@ -174,7 +174,8 @@ bool WidgetBindings::fillObject(WidgetWire& wire, ObjectTopicId topic) const {
   wire.target = WireTarget{};
   wire.target.kind = WidgetInputKind::kObject;
   wire.target.object_topic = topic;
-  wire.target.object_type_name = sdk::name(objectTypeFromMetadata(descriptor.metadata_json));
+  wire.target.object_type = objectTypeFromMetadata(descriptor.metadata_json);
+  wire.target.object_type_name = sdk::name(wire.target.object_type);
   wire.target.offset = session_->displayOffset(descriptor.dataset_id);
   wire.label = topic_name.toStdString();
   wire.resolved = true;

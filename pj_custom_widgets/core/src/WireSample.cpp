@@ -95,7 +95,8 @@ void refreshWireSample(
   sample = WireSample{};
 }
 
-void fetchObjectPayload(const ObjectStore& objects, const WireTarget& target, WireSample& sample) {
+void fetchObjectPayload(
+    const ObjectStore& objects, const WireTarget& target, const ObjectPayloadEncoder& encoder, WireSample& sample) {
   if (sample.kind != PJ_WIDGET_VALUE_OBJECT || sample.object) {
     return;
   }
@@ -103,6 +104,14 @@ void fetchObjectPayload(const ObjectStore& objects, const WireTarget& target, Wi
   if (!entry || entry->fetch_failed) {
     sample = WireSample{};
     return;
+  }
+  if (encoder) {
+    auto payload = encoder(target, *entry);
+    if (!payload) {
+      sample = WireSample{};
+      return;
+    }
+    entry->payload = std::move(*payload);
   }
   sample.object = std::move(entry);
 }

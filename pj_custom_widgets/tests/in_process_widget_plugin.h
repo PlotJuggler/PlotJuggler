@@ -44,6 +44,26 @@ struct ValueCopy {
   std::string label;
 };
 
+inline ValueCopy copyValue(const PJ_widget_value_t& v) {
+  ValueCopy copy;
+  copy.input = v.input;
+  copy.slot = v.slot;
+  copy.kind = v.kind;
+  copy.time = v.time;
+  copy.number = v.number;
+  if (v.text.data != nullptr) {
+    copy.text.assign(v.text.data, v.text.size);
+  }
+  if (v.bytes.data != nullptr) {
+    copy.bytes.assign(v.bytes.data, v.bytes.data + v.bytes.size);
+  }
+  if (v.type_name.data != nullptr) {
+    copy.type_name.assign(v.type_name.data, v.type_name.size);
+  }
+  copy.label.assign(v.label.data == nullptr ? "" : v.label.data, v.label.size);
+  return copy;
+}
+
 // What the plugin saw, reset by every test fixture.
 struct PluginStats {
   int instances = 0;
@@ -58,6 +78,7 @@ struct PluginStats {
   bool history_ok = false;
   std::string last_config;
   std::vector<ValueCopy> last_values;
+  std::vector<ValueCopy> history_values;   ///< what the last history read delivered
   bool null_widget = false;                ///< createWidget returns null
   bool corrupt_inputs = false;             ///< "faulty_widgets" reports an impossible input name
   bool corrupt_saved_config = false;       ///< "faulty_widgets" reports an impossible save_config length
@@ -142,23 +163,7 @@ class TestPlugin : public WidgetPluginBase {
     }
     g.last_values.clear();
     for (const PJ_widget_value_t& v : values) {
-      ValueCopy copy;
-      copy.input = v.input;
-      copy.slot = v.slot;
-      copy.kind = v.kind;
-      copy.time = v.time;
-      copy.number = v.number;
-      if (v.text.data != nullptr) {
-        copy.text.assign(v.text.data, v.text.size);
-      }
-      if (v.bytes.data != nullptr) {
-        copy.bytes.assign(v.bytes.data, v.bytes.data + v.bytes.size);
-      }
-      if (v.type_name.data != nullptr) {
-        copy.type_name.assign(v.type_name.data, v.type_name.size);
-      }
-      copy.label.assign(v.label.data == nullptr ? "" : v.label.data, v.label.size);
-      g.last_values.push_back(std::move(copy));
+      g.last_values.push_back(copyValue(v));
     }
     if (has("history")) {
       readHistory();
@@ -189,8 +194,11 @@ class TestPlugin : public WidgetPluginBase {
  private:
   void readHistory() {
     g.history_samples = 0;
-    const Expected<uint32_t> total =
-        widgetHost().queryHistory(0, 0, 0.0, 100.0, 0, [](const PJ_widget_value_t&) { ++g.history_samples; });
+    g.history_values.clear();
+    const Expected<uint32_t> total = widgetHost().queryHistory(0, 0, 0.0, 100.0, 0, [](const PJ_widget_value_t& v) {
+      ++g.history_samples;
+      g.history_values.push_back(copyValue(v));
+    });
     g.history_ok = total.has_value();
     g.history_total = total ? *total : 0U;
   }

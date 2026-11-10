@@ -10,6 +10,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/host/widget_host_bridge.hpp"
+#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/WireTarget.h"
 
 namespace PJ {
@@ -59,8 +60,11 @@ class WidgetRuntimeHost {
   /// @param reader   scalar data (must outlive this host).
   /// @param objects  object topics (must outlive this host).
   /// @param resolver wire lookup, called on the main thread inside each history call.
+  /// @param encoder  the bytes of each object sample delivered (canonicalObjectEncoder); an entry it
+  ///                 fails on is skipped like an evicted one. Empty: the stored bytes as they are.
   WidgetRuntimeHost(
-      const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks = {});
+      const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks = {},
+      ObjectPayloadEncoder encoder = {});
 
   WidgetRuntimeHost(const WidgetRuntimeHost&) = delete;
   WidgetRuntimeHost& operator=(const WidgetRuntimeHost&) = delete;
@@ -89,6 +93,7 @@ class WidgetRuntimeHost {
   const DataReader& reader_;
   const ObjectStore& objects_;
   WireResolver resolver_;
+  ObjectPayloadEncoder encoder_;
   WidgetHostBridge bridge_;
 };
 

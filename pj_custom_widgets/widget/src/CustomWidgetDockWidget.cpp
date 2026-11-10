@@ -101,6 +101,7 @@ CustomWidgetDockWidget::CustomWidgetDockWidget(
       extensions_(extensions),
       playback_(playback),
       bindings_(session, catalog),
+      object_encoder_(canonicalObjectEncoder(*session)),
       reader_(session->createReader()) {
   layout_ = new QVBoxLayout(this);
   layout_->setContentsMargins(0, 0, 0, 0);
@@ -297,7 +298,8 @@ bool CustomWidgetDockWidget::bindWidget(const QString& plugin_id, const QString&
                     toDiagnosticLevel(level),
                     QString::fromUtf8(message.data(), static_cast<qsizetype>(message.size())));
               },
-      });
+      },
+      object_encoder_);
   registry_ = std::make_unique<ServiceRegistryBuilder>();
   if (const Status status = host_->registerServices(*registry_); !status) {
     return fail(QString::fromStdString(status.error()));
@@ -641,7 +643,7 @@ void CustomWidgetDockWidget::pushValues(double time, bool force) {
   values_.clear();
   for (std::size_t i = 0; i < wires.size(); ++i) {
     if (targets_[i]) {
-      fetchObjectPayload(objects, *targets_[i], samples_[i]);
+      fetchObjectPayload(objects, *targets_[i], object_encoder_, samples_[i]);
     }
     values_.push_back(makeWidgetValue(
         static_cast<std::uint32_t>(wires[i].input_index), wires[i].slot, targets_[i] ? *targets_[i] : kNoTarget,

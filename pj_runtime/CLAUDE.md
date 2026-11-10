@@ -43,7 +43,7 @@ Plugin hosts and extensions:
 - `ExtensionCatalogService.h`, `PluginRuntimeCatalog.h`, `ParserRoutingService.h`: the loaded plugin set (scan hierarchy, bundled seeding, duplicate resolution, admission gate) and route-aware parser selection.
 - `PlaybackControlHost.h`, `ViewportRuntimeHost.h`, `PlotTabsRuntimeHost.h`: SDK `pj.playback.v1`, `pj.viewport.v1`, `pj.plot_tabs.v1`.
 - `ServiceRegistration.h`: host-to-plugin service registration with logged rejection.
-- `WidgetRuntimeHost.h`, `WireTarget.h`, `WidgetValue.h`, `ActiveWidgetsMarker.h`: the Widget family: the per-panel `pj.widget_host.v1` host, where a wire reads from, the common fields of a `PJ_widget_value_t`, and the per-process record of live Custom Widget plugins the startup crash review reads. `ExtensionCatalogService::widgets()` / `findWidget()` list them; a Widget plugin leaves the catalog only by a user disable ([docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Widget plugins").
+- `WidgetRuntimeHost.h`, `WireTarget.h`, `WidgetValue.h`, `CanonicalObjectPayload.h`, `ActiveWidgetsMarker.h`: the Widget family: the per-panel `pj.widget_host.v1` host, where a wire reads from, the common fields of a `PJ_widget_value_t`, the canonical bytes a widget receives for an object entry (decoded through the topic's parser and re-serialized, or passed through when no parser is bound), and the per-process record of live Custom Widget plugins the startup crash review reads. `ExtensionCatalogService::widgets()` / `findWidget()` list them; a Widget plugin leaves the catalog only by a user disable ([docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Widget plugins").
 - `FeatureCatalogHost.h`, `ToolboxTags.h`: the optional `pj.feature_catalog.v1` service (desktop only; built from injected providers, never fetches) and the manifest tags (`cloud`, `hidden`) the Toolbox menu, the Sources panel and the catalog read.
 - `ObjectIngestTap.h`: session-scoped exclusive consumers of builtin object bytes; the payload view is call-lifetime only.
 - `parse_locked.h`: decode one object through a topic's parser under the binding's per-topic mutex (parsers are not thread-safe).
@@ -74,7 +74,7 @@ Recording and source cache:
 
 Sanitizer support: `TsanAnnotations.h` (tells TSan about hand-offs inside prebuilt Qt; no-ops outside a TSan build).
 
-Private headers (`src/`): `RuntimeHostSlot.h` (the shared C-ABI slot guard of the SDK host bridges), `ObjectDecode.h` (parser-or-canonical object decode, shared by `InputStager` and `TransformService`), `OnDemandRun.h` (run result and lane choice), `SeriesKey.h` (`seriesKeyBelongsToTopic`: `imu` is not `imu_raw`), `TextCompare.h` (CRLF-insensitive text equality for recipe comparison).
+Private headers (`src/`): `RuntimeHostSlot.h` (the shared C-ABI slot guard of the SDK host bridges), `ObjectDecode.h` (parser-or-canonical object decode, shared by `InputStager`, `TransformService` and `CanonicalObjectPayload`), `OnDemandRun.h` (run result and lane choice), `SeriesKey.h` (`seriesKeyBelongsToTopic`: `imu` is not `imu_raw`), `TextCompare.h` (CRLF-insensitive text equality for recipe comparison).
 
 ## Tests
 
