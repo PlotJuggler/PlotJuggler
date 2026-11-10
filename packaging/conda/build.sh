@@ -15,7 +15,8 @@ cmake -G Ninja -S . -B build-conda ${CMAKE_ARGS} \
   -DPJ_BUILD_DEMOS=OFF \
   -DPJ_DEBUG_INFO=none \
   -DPJ_VERSION="${PKG_VERSION}" \
-  -DPJ_INSTALLATION=conda
+  -DPJ_INSTALLATION=conda \
+  -DPJ_QT_MIN_VERSION="${PJ_QT_MIN_VERSION}"
 cmake --build build-conda --target pj_app
 
 # No `install -D`: BSD install on macOS lacks it.

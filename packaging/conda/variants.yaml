@@ -2,6 +2,15 @@
 # so plotjuggler4 installs into the same environment as their ROS packages.
 fmt:
   - "12.1"
+# conda-forge's and RoboStack's Qt 6 pin; Qt 6 keeps binary compatibility
+# within the major, so the package also runs with a newer qt6-main.
+qt6_main:
+  - "6.11"
+# The embedded interpreter's Python, one build each: RoboStack's Humble, Jazzy
+# and Rolling are on 3.14, Kilted on 3.12, Lyrical on both.
+python:
+  - "3.12"
+  - "3.14"
 # One build per ffmpeg major, since a ROS environment's OpenCV fixes it: jazzy
 # is on 9, kilted on 8 (ffmpeg 9 needs a protobuf newer than kilted pins).
 ffmpeg:
