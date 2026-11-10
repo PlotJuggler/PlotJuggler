@@ -75,7 +75,13 @@ function expand(value, variables) {
 // to the one with a pin (the first is a local directory).
 export async function declaredDependencies() {
   const cmake = (await readdir(path.join(ROOT, 'cmake'))).filter(name => /^PjWasm.*\.cmake$/.test(name));
-  const files = [...cmake.map(name => `cmake/${name}`), 'CMakeLists.txt', '3rdparty/qwt/CMakeLists.txt'];
+  const files = [
+    ...cmake.map(name => `cmake/${name}`),
+    'CMakeLists.txt',
+    '3rdparty/qwt/CMakeLists.txt',
+    // Shared with the desktop build, which prefers an installed pocketfft over this fetch.
+    'pj_scripting/cmake/PjPocketfft.cmake',
+  ];
   // The root CMakeLists.txt derives the SDK version from the conanfile.
   const sdkVersion = (await read('conanfile.txt')).match(/^plotjuggler_sdk\/([0-9][0-9A-Za-z.-]*)/m)?.[1];
   const found = new Map();

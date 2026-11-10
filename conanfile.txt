@@ -20,7 +20,8 @@ nlohmann_json/3.12.0
 # PUC-Lua/sol2 LuaProcessor's lua/5.4.7 dep was dropped in M9; the standalone
 # engine_shootout benchmarks pin their own lua/luajit via their own conanfiles.)
 luau/0.700
-kissfft/131.1.0  # FFT for the marker-analysis bandPower primitive (pj_scripting)
+# Header-only FFT for the marker-analysis bandPower primitive (pj_scripting).
+pocketfft/0.0.0.cci.20240801
 # Embedded CPython for the Python Data Processors backend (pj_scripting's
 # PythonEngine). pybind11 provides the embed target; cpython is pinned explicitly.
 cpython/3.12.7
@@ -49,6 +50,8 @@ assimp/6.0.5
 
 [options]
 fmt/*:header_only=True
+# bandPower runs one FFT per call: no worker pool.
+pocketfft/*:multithreading=False
 # Embedded CPython needs only the language + stdlib (no GUI). Drop tkinter (pulls
 # the big xorg/system -dev set) and curses. Also drop gdbm: it only backs Python's
 # rarely-used `dbm.gnu` stdlib module (irrelevant to running filter scripts), and

@@ -6,9 +6,7 @@ include_guard(GLOBAL)
 if(NOT EMSCRIPTEN OR NOT PJ_WASM_WITH_FFT)
     return()
 endif()
-if(NOT TARGET kissfft::kissfft)
-    message(FATAL_ERROR "PJ_WASM_WITH_FFT requires the pinned kissfft target")
-endif()
+include("${CMAKE_SOURCE_DIR}/pj_scripting/cmake/PjPocketfft.cmake")
 pj_wasm_require_official_plugin_sources(_pj_fft_dir toolbox_fft
     fft_plugin.cpp fft_algorithm.cpp fft_algorithm.hpp fft_dialog.ui manifest.json)
 
@@ -20,11 +18,12 @@ add_library(pj_wasm_fft STATIC
     "${_pj_fft_dir}/fft_algorithm.cpp")
 target_compile_features(pj_wasm_fft PRIVATE cxx_std_20)
 target_include_directories(pj_wasm_fft PRIVATE "${_pj_fft_dir}")
-target_include_directories(pj_wasm_fft SYSTEM PRIVATE "${PJ_WASM_KISSFFT_PREFIXED_INCLUDE_DIR}")
+# One FFT per click, and the browser build has no threads for pocketfft's pool.
+target_compile_definitions(pj_wasm_fft PRIVATE POCKETFFT_NO_MULTITHREADING)
 target_link_libraries(pj_wasm_fft PRIVATE
     plotjuggler_sdk::plugin_sdk
     nlohmann_json::nlohmann_json
-    kissfft::kissfft)
+    pocketfft::pocketfft)
 
 pj_embed_ui(pj_wasm_fft
     UI_FILE "${_pj_fft_dir}/fft_dialog.ui"

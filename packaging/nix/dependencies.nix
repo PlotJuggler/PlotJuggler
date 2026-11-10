@@ -126,6 +126,25 @@ in
     )
   );
 
+  # Header-only; pj_scripting/cmake/PjPocketfft.cmake finds the header. Same commit as
+  # that module's fetch fallback (pocketfft has no releases).
+  pocketfft = stdenv.mkDerivation {
+    pname = "pj4-pocketfft";
+    version = "0-unstable-2026-10-18";
+    src = fetchurl {
+      url = "https://github.com/mreineck/pocketfft/archive/4d865cba24359b05b37da4e75aee24498c3b78e7.tar.gz";
+      sha256 = "db236e44b1020dd0b415e5040ce10d8be604fefb7ce83ec0b32bc0f78975aa2f";
+    };
+    dontConfigure = true;
+    dontBuild = true;
+    installPhase = ''
+      runHook preInstall
+      install -Dm644 pocketfft_hdronly.h "$out/include/pocketfft_hdronly.h"
+      runHook postInstall
+    '';
+    meta.license = lib.licenses.bsd3;
+  };
+
   mcap = stdenv.mkDerivation (
     {
       pname = "pj4-mcap";

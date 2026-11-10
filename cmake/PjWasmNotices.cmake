@@ -226,7 +226,7 @@ function(pj_wasm_write_notices output python_notices)
   pj_wasm_notice("${output}" lz4 "LZ4 library" "BSD-2-Clause" lib/LICENSE)
   pj_wasm_notice("${output}" zstd "Zstandard" "BSD-3-Clause" LICENSE)
   pj_wasm_notice("${output}" Luau "Luau" "MIT" LICENSE.txt)
-  pj_wasm_notice("${output}" kissfft "KISS FFT" "BSD-3-Clause" COPYING LICENSES/BSD-3-Clause)
+  pj_wasm_notice("${output}" pocketfft "pocketfft" "BSD-3-Clause" LICENSE.md)
   pj_wasm_notice("${output}" pj_wasm_libjpeg_turbo "libjpeg-turbo" "IJG AND BSD-3-Clause AND Zlib" LICENSE.md README.ijg)
   pj_wasm_notice("${output}" pj_wasm_libpng "libpng" "libpng-2.0" LICENSE)
   pj_wasm_notice("${output}" pj_wasm_ffmpeg "FFmpeg (libavcodec, libavutil, libswscale)" "LGPL-2.1-or-later"

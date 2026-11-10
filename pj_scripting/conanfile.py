@@ -7,24 +7,25 @@ class PjScriptingCoreConan(ConanFile):
     """The Luau scripting engine + whole-series marker analysis, packaged so the
     standalone official-plugins repo (the GUI Anomaly Detector + the headless
     anomaly_runner) can link the SAME engine the app uses — one engine, GUI ==
-    headless. Depends only on pj_base (via plotjuggler_sdk) + Luau + kissfft; the
+    headless. Depends only on pj_base (via plotjuggler_sdk) + Luau + pocketfft; the
     SISO DataProcessor adapter (which needs pj_datastore) is NOT part of this
     package and is built only in-tree by the app."""
 
     name = "pj_scripting_core"
-    version = "0.2.0"
+    version = "0.3.0"
     license = "MPL-2.0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     # Consumers that link the engine into a shared lib (the GUI plugin .so) need a PIC
     # Luau; default it here so the package's own Luau binary id matches theirs.
-    default_options = {"luau/*:fPIC": True}
+    default_options = {"luau/*:fPIC": True, "pocketfft/*:multithreading": False}
     exports_sources = (
         "CMakeLists.txt",
         "src/luau_engine.cpp",
         "src/marker_engine.cpp",
         "src/luau_sandbox_state.h",
         "include/*",
+        "cmake/*",
     )
 
     def requirements(self):
@@ -33,11 +34,11 @@ class PjScriptingCoreConan(ConanFile):
         self.requires("plotjuggler_sdk/0.20.0", transitive_headers=True)
         self.requires("nlohmann_json/3.12.0", transitive_headers=True)
         # A static lib does NOT absorb its static deps — pj_scripting_core.a only
-        # *references* the Luau/kissfft symbols, so consumers must link them at the
+        # *references* the Luau symbols, so consumers must link them at the
         # final link. They are therefore propagated (visible), even though they are
         # not in any public header.
         self.requires("luau/0.700")
-        self.requires("kissfft/131.1.0")
+        self.requires("pocketfft/0.0.0.cci.20240801")  # header-only: bandPower's FFT
 
     def layout(self):
         cmake_layout(self)
@@ -56,5 +57,5 @@ class PjScriptingCoreConan(ConanFile):
         self.cpp_info.libs = ["pj_scripting_core"]
         self.cpp_info.set_property("cmake_file_name", "pj_scripting_core")
         self.cpp_info.set_property("cmake_target_name", "pj_scripting_core::pj_scripting_core")
-        # No explicit cpp_info.requires: default to requiring ALL direct deps so Luau +
-        # kissfft propagate to consumers (a static lib doesn't absorb its static deps).
+        # No explicit cpp_info.requires: default to requiring ALL direct deps so Luau
+        # (and the header-only pocketfft) propagate to consumers (a static lib doesn't absorb its static deps).

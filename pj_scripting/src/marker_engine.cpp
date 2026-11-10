@@ -13,7 +13,7 @@
 
 #include "pj_scripting/marker_engine.h"
 
-#include <kiss_fftr.h>
+#include <pocketfft_hdronly.h>
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <new>
 #include <optional>
 #include <string>
 #include <vector>
@@ -423,24 +424,24 @@ double computeBandPower(const SeriesView& sv, double fLo, double fHi) {
   }
   mean /= static_cast<double>(n);
 
-  std::vector<kiss_fft_scalar> input(n);
+  std::vector<double> data(n);
   for (std::size_t i = 0; i < n; ++i) {
-    input[i] = static_cast<kiss_fft_scalar>(sv.values[i] - mean);
+    data[i] = sv.values[i] - mean;
   }
-  std::vector<kiss_fft_cpx> out(n / 2 + 1);
-  kiss_fftr_cfg cfg = kiss_fftr_alloc(static_cast<int>(n), 0, nullptr, nullptr);
-  if (cfg == nullptr) {
+  try {
+    // O(n log n) for any n (Bluestein for large prime factors). In place, the output is
+    // FFTPACK half-complex: re0, re1, im1, re2, im2, ..., re(n/2) (n even).
+    pocketfft::detail::pocketfft_r<double>(n).exec(data.data(), 1.0, true);
+  } catch (const std::bad_alloc&) {
     return 0.0;
   }
-  kiss_fftr(cfg, input.data(), out.data());
-  KISS_FFT_FREE(cfg);
 
   const double nd = static_cast<double>(n);
   double power = 0.0;
   for (std::size_t i = 0; i < n / 2; ++i) {
     const double f = static_cast<double>(i) * (1.0 / dt_seconds) / nd;
     if (f >= fLo && f <= fHi) {
-      const double amp = std::hypot(static_cast<double>(out[i].r), static_cast<double>(out[i].i)) / nd;
+      const double amp = (i == 0 ? std::abs(data[0]) : std::hypot(data[2 * i - 1], data[2 * i])) / nd;
       power += amp * amp;
     }
   }

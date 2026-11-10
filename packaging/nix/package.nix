@@ -14,7 +14,6 @@
   robin-map,
   glm,
   nlohmann_json,
-  kissfft,
   python312,
   python312Packages,
   fast-float,
@@ -82,10 +81,6 @@ stdenv.mkDerivation {
     robin-map
     glm
     nlohmann_json
-    (kissfft.override {
-      datatype = "float";
-      enableStatic = true;
-    })
     python312
     python312Packages.pybind11
     fast-float
@@ -101,11 +96,12 @@ stdenv.mkDerivation {
     dependencies.nanoarrow
     dependencies.cloudini
     dependencies.mcap
+    dependencies.pocketfft
     dependencies.ffmpeg
   ];
 
   cmakeFlags = [
-    # kissfft's installed config still declares a pre-3.5 CMake policy version.
+    # Some dependency configs still declare a pre-3.5 CMake policy version.
     "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     "-DPJ_BUILD_TESTS=OFF"
     "-DPJ_BUILD_DEMOS=OFF"

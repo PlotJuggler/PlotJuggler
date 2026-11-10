@@ -6,11 +6,11 @@
 #    marker analysis) AND pj_scripting (the SISO DataProcessor/IncrementalEngine
 #    adapter) AND the tests.
 #  - STANDALONE (Conan, `conan create`): builds ONLY pj_scripting_core against the
-#    Conan plotjuggler_sdk::base + Luau + kissfft, and installs it. The SDK-only
+#    Conan plotjuggler_sdk::base + Luau + pocketfft, and installs it. The SDK-only
 #    headless runner and the GUI plugin link this same engine, so a rule runs
 #    identically GUI <-> headless.
 #
-# Qt-free. core: pj_base + Luau (+ kissfft) — NOT pj_datastore. MPL-2.0.
+# Qt-free. core: pj_base + Luau (+ pocketfft) — NOT pj_datastore. MPL-2.0.
 # ---------------------------------------------------------------------------
 
 if(NOT TARGET plotjuggler_sdk::base)
@@ -26,17 +26,7 @@ set(_PJS_BASE plotjuggler_sdk::base)
 
 find_package(Luau REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(kissfft REQUIRED)
-
-# Conan's generated kissfft config defines kissfft::kissfft directly; upstream's
-# installed config (conda/pixi, recipes/kissfft) only defines the datatype-suffixed
-# target unless a datatype COMPONENT is requested — and requesting one would break
-# the Conan side, which validates components. Bridge the float variant instead
-# (same pattern as the cpython::embed bridge below).
-if(NOT TARGET kissfft::kissfft)
-  add_library(kissfft::kissfft INTERFACE IMPORTED)
-  target_link_libraries(kissfft::kissfft INTERFACE kissfft::kissfft-float)
-endif()
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/PjPocketfft.cmake)
 if(NOT EMSCRIPTEN)
   # Conan's cpython package ships a build module that runs its own bin/python3.12 to
   # cross-check the version. That interpreter carries no RUNPATH, so with a shared
@@ -134,7 +124,7 @@ if(NOT WIN32 AND _pj_python_home)
 endif()
 
 # --- pj_scripting_core: the Luau engine + whole-series marker analysis ---------
-# Depends ONLY on pj_base + Luau (+ kissfft for bandPower) — NOT pj_datastore. This
+# Depends ONLY on pj_base + Luau (+ pocketfft for bandPower) — NOT pj_datastore. This
 # is the shareable unit.
 add_library(pj_scripting_core STATIC
   src/luau_engine.cpp
@@ -144,6 +134,9 @@ target_include_directories(pj_scripting_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+# bandPower runs one FFT per call: no pocketfft worker pool (the browser build has no
+# threads to give it anyway).
+target_compile_definitions(pj_scripting_core PRIVATE POCKETFFT_NO_MULTITHREADING)
 target_compile_features(pj_scripting_core PUBLIC cxx_std_20)
 set_target_properties(pj_scripting_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(PJ_ASSERT_THROWS)
@@ -158,7 +151,7 @@ target_link_libraries(pj_scripting_core
   PRIVATE
     Luau::VM                      # Luau backend (hand-bound) — luau_engine.cpp / marker_engine.cpp
     Luau::Compiler
-    kissfft::kissfft              # FFT for marker_engine's bandPower primitive
+    pocketfft::pocketfft          # header-only FFT for marker_engine's bandPower primitive
 )
 
 if(_PJS_STANDALONE)
