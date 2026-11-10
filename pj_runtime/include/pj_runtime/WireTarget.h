@@ -22,10 +22,8 @@ struct WireTarget {
   std::size_t column = 0;
   /// kObject: the object topic.
   ObjectTopicId object_topic{};
-  /// kObject: the topic's object type, and its name handed to the plugin to pick its codec (static
-  /// storage, `sdk::name(object_type)`).
+  /// kObject: the topic's object type; `sdk::name(object_type)` is what the plugin receives to pick its codec.
   sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;
-  std::string_view object_type_name;
   /// The dataset's display offset, to move between stored absolute time and the display axis.
   DisplayOffset offset{};
 };

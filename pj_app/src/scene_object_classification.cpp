@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "scene_object_classification.h"
 
+#include "pj_runtime/CatalogModel.h"
+
 #ifdef PJ_WITH_SCENE2D
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #endif
@@ -50,6 +52,10 @@ QString sceneKindForObjectType(sdk::BuiltinObjectType type) {
 
 bool isDroppableObjectType(sdk::BuiltinObjectType type) {
   return !sceneKindForObjectType(type).isEmpty();
+}
+
+bool isCustomWidgetObjectType(sdk::BuiltinObjectType type) {
+  return type != sdk::BuiltinObjectType::kNone && !isPanelOnlyObjectType(type) && !isDroppableObjectType(type);
 }
 
 }  // namespace PJ

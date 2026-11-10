@@ -273,8 +273,7 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   std::uint64_t bind_generation_ = 0;  ///< bumped by every bind; a scheduled disable checks it
   bool reconcile_scheduled_ = false;
   bool update_scheduled_ = false;
-  std::uint64_t updates_delivered_ = 0;   ///< on_update calls made, to drop a stale requestUpdate
-  std::uint64_t updates_at_request_ = 0;  ///< updates_delivered_ when the pending request was made
+  bool update_wanted_ = false;  ///< a requestUpdate no on_update has answered yet
   /// Per wire, the content revision of its object topic at the last on_update (0 for other kinds).
   std::vector<std::uint64_t> object_content_;
   /// Identity of what the widget was last handed (see mixWireSample); unset = push unconditionally.

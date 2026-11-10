@@ -131,15 +131,14 @@ QString undisplayableObjectTooltip(sdk::BuiltinObjectType type) {
     case sdk::BuiltinObjectType::kOccupancyGridUpdate:
       return QObject::tr(
           "Incremental map update, applied automatically to its occupancy grid. "
-          "It cannot be displayed on its own.");
+          "It cannot be displayed on its own, but a Custom Widget panel can read it.");
     case sdk::BuiltinObjectType::kMeshMapUpdate:
       return QObject::tr(
           "Incremental mesh map update, applied automatically to its mesh map. "
-          "It cannot be displayed on its own.");
-    case sdk::BuiltinObjectType::kLog:
-      return QObject::tr("Log topic. Drop it on a log Custom Widget.");
+          "It cannot be displayed on its own, but a Custom Widget panel can read it.");
     default:
-      return QObject::tr("No view can display this topic type.");
+      return isCustomWidgetObjectType(type) ? QObject::tr("Drop it on a Custom Widget panel.")
+                                            : QObject::tr("No view can display this topic type.");
   }
 }
 
@@ -208,8 +207,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
       .selectable = scalar != nullptr || (advertised != nullptr && !placeholder_is_object),
       // String fields drag onto the State Transitions strip (plots keep
       // refusing them via the curveDescriptor gate, so a plot drop is a no-op).
-      .draggable =
-          !object_undisplayable || isPanelOnlyObjectType(object_type) || isCustomWidgetOnlyObjectType(object_type),
+      .draggable = !object_undisplayable || isPanelOnlyObjectType(object_type) || isCustomWidgetObjectType(object_type),
       .tooltip = object_undisplayable ? undisplayableObjectTooltip(object_type) : QString{},
       .is_image_topic = isImageFamilyObjectType(object_type),
       .is_3d_object_topic = is3dSceneObjectType(object_type),

@@ -284,7 +284,7 @@ TEST_F(WidgetRuntimeHostTest, ObjectHistoryDeliversPayloadAndTypeName) {
   WireTarget wire;
   wire.kind = WidgetInputKind::kObject;
   wire.object_topic = *topic;
-  wire.object_type_name = "kImage";
+  wire.object_type = sdk::BuiltinObjectType::kImage;
   wires_.push_back(wire);
 
   std::vector<Sample> out;
@@ -323,7 +323,7 @@ class WidgetRuntimeHostObjectHistoryTest : public WidgetRuntimeHostTest {
     WireTarget wire;
     wire.kind = WidgetInputKind::kObject;
     wire.object_topic = *topic;
-    wire.object_type_name = "kLog";
+    wire.object_type = sdk::BuiltinObjectType::kLog;
     wires_.push_back(wire);
   }
 
@@ -554,7 +554,6 @@ class WidgetRuntimeHostCanonicalTest : public ::testing::Test {
     wire.kind = WidgetInputKind::kObject;
     wire.object_topic = *topic;
     wire.object_type = type;
-    wire.object_type_name = sdk::name(type);
     wires_.push_back(wire);
     return *topic;
   }

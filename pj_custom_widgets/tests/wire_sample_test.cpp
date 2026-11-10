@@ -83,7 +83,7 @@ TEST_F(WireSampleTest, ObjectResolvesIdentityFirstAndPayloadOnFetch) {
   WireTarget target;
   target.kind = WidgetInputKind::kObject;
   target.object_topic = *topic;
-  target.object_type_name = "kImage";
+  target.object_type = sdk::BuiltinObjectType::kImage;
 
   WireSample sample = readWireSample(*reader_, objects, target, fromRaw(3 * kSecond / 2));
   ASSERT_EQ(sample.kind, PJ_WIDGET_VALUE_OBJECT);

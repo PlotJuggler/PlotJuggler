@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <functional>
+#include <optional>
 
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/expected.hpp"
@@ -31,5 +32,11 @@ using ObjectPayloadEncoder =
 /// An ObjectPayloadEncoder over canonicalObjectPayload, for the wires of a Custom Widget panel. `session`
 /// must outlive the encoder.
 [[nodiscard]] ObjectPayloadEncoder canonicalObjectEncoder(const SessionManager& session);
+
+/// The entry `uid` of `target`'s topic with `payload` replaced by what a widget receives (`encoder`, or
+/// the stored bytes when it is empty); nullopt when the entry was evicted, its lazy fetch failed or it
+/// does not encode. May refetch a lazy payload, so call it outside any store lock.
+[[nodiscard]] std::optional<ResolvedObjectEntry> resolveEncodedObject(
+    const ObjectStore& objects, const WireTarget& target, SequentialUID uid, const ObjectPayloadEncoder& encoder);
 
 }  // namespace PJ

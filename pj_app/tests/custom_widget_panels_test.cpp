@@ -695,7 +695,7 @@ TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockS
 
   ASSERT_TRUE(drop(dock_));
   EXPECT_EQ(dock_->objectWidget(), nullptr) << "no built-in view takes a log";
-  EXPECT_TRUE(toasts().contains(u"Log topics are shown by a log Custom Widget. Create one in this panel first."_s))
+  EXPECT_TRUE(toasts().contains(u"This topic is shown by a Custom Widget. Create one in this panel first."_s))
       << toasts().join(u" | "_s).toStdString();
 
   clickIcon("buttonVizCustomWidget");

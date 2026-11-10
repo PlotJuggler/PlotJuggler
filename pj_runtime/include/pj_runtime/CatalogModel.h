@@ -203,12 +203,6 @@ struct CatalogItem {
 [[nodiscard]] constexpr bool isPanelOnlyObjectType(sdk::BuiltinObjectType type) noexcept {
   return type == sdk::BuiltinObjectType::kCameraInfo;
 }
-// An object type no built-in dock shows but a Custom Widget does (a log): its catalog row starts a drag, a dock that
-// hosts a Custom Widget offers it to the widget, and an empty dock explains where it goes. Unlike
-// isPanelOnlyObjectType, a dock does not leave it out of a drop.
-[[nodiscard]] constexpr bool isCustomWidgetOnlyObjectType(sdk::BuiltinObjectType type) noexcept {
-  return type == sdk::BuiltinObjectType::kLog;
-}
 
 // One available-but-unsubscribed topic advertised by a streaming source. Carries
 // only what the catalog needs to show a paused placeholder: the topic name and

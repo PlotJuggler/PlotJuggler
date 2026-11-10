@@ -492,10 +492,18 @@ DataReader SessionManager::createReader() const {
 
 void SessionManager::setDatasetSourcePath(DatasetId dataset_id, QString path) {
   path = normalizedSourcePath(path);
+  bool changed = false;
   if (path.isEmpty()) {
-    dataset_source_paths_.erase(dataset_id);
-  } else {
-    dataset_source_paths_.insert_or_assign(dataset_id, std::move(path));
+    changed = dataset_source_paths_.erase(dataset_id) > 0;
+  } else if (const auto it = dataset_source_paths_.find(dataset_id); it == dataset_source_paths_.end()) {
+    dataset_source_paths_.emplace(dataset_id, std::move(path));
+    changed = true;
+  } else if (it->second != path) {
+    it->second = std::move(path);
+    changed = true;
+  }
+  if (changed) {
+    emit datasetSourcePathChanged(dataset_id);
   }
 }
 

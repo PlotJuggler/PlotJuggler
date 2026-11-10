@@ -277,7 +277,7 @@ TEST(CurveListPanelTest, HoverTooltipReportsTypeAndCounts) {
   EXPECT_TRUE(dataset_tip.contains(u"<span style=\"font-weight:600\">Topics:</span> 2"_s)) << dataset_tip.toStdString();
 }
 
-TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
+TEST(CurveListPanelTest, NoViewObjectTopicRowDragsToACustomWidgetWithTooltip) {
   AppSession app_session;
   const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
   ASSERT_NE(dataset, 0U);
@@ -320,8 +320,9 @@ TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
   ASSERT_NE(image_row, nullptr);
 
   EXPECT_TRUE(update_row->flags().testFlag(Qt::ItemIsSelectable));
-  EXPECT_FALSE(update_row->flags().testFlag(Qt::ItemIsDragEnabled));
-  EXPECT_FALSE(update_row->toolTip(0).isEmpty());
+  // No built-in view shows it, but a Custom Widget input takes any object type: it drags.
+  EXPECT_TRUE(update_row->flags().testFlag(Qt::ItemIsDragEnabled));
+  EXPECT_TRUE(update_row->toolTip(0).contains(u"Custom Widget"_s)) << update_row->toolTip(0).toStdString();
 
   EXPECT_TRUE(image_row->flags().testFlag(Qt::ItemIsDragEnabled));
   EXPECT_TRUE(image_row->toolTip(0).isEmpty());
@@ -381,7 +382,8 @@ TEST(CurveListPanelTest, CameraInfoTopicRowCanBeDraggedToAPanel) {
   EXPECT_EQ(CurveTreeView::decodeCatalogKeys(payload.get()), QStringList{key});
 }
 
-// No built-in view displays a log, but a log Custom Widget does: its row starts a drag and says where it goes.
+// No built-in view displays a log, but a Custom Widget can read any object type: the row starts a drag and says where
+// it goes.
 TEST(CurveListPanelTest, LogTopicRowCanBeDraggedToACustomWidget) {
   AppSession app_session;
   const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
@@ -404,7 +406,7 @@ TEST(CurveListPanelTest, LogTopicRowCanBeDraggedToACustomWidget) {
   ASSERT_NE(row, nullptr);
 
   EXPECT_TRUE(row->flags().testFlag(Qt::ItemIsDragEnabled));
-  EXPECT_EQ(row->toolTip(0), u"Log topic. Drop it on a log Custom Widget."_s);
+  EXPECT_EQ(row->toolTip(0), u"Drop it on a Custom Widget panel."_s);
 
   row->setSelected(true);
   const std::unique_ptr<QMimeData> payload(tree->createDragMimeData(Qt::LeftButton));

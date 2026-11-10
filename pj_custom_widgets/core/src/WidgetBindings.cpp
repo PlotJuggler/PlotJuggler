@@ -175,7 +175,6 @@ bool WidgetBindings::fillObject(WidgetWire& wire, ObjectTopicId topic) const {
   wire.target.kind = WidgetInputKind::kObject;
   wire.target.object_topic = topic;
   wire.target.object_type = objectTypeFromMetadata(descriptor.metadata_json);
-  wire.target.object_type_name = sdk::name(wire.target.object_type);
   wire.target.offset = session_->displayOffset(descriptor.dataset_id);
   wire.label = topic_name.toStdString();
   wire.resolved = true;
@@ -302,7 +301,7 @@ bool WidgetBindings::revalidateWire(WidgetWire& wire) const {
   }
   return previous_dataset != wire.dataset || previous.topic_id != wire.target.topic_id ||
          previous.column != wire.target.column || previous.object_topic != wire.target.object_topic ||
-         previous.object_type_name != wire.target.object_type_name;
+         previous.object_type != wire.target.object_type;
 }
 
 bool WidgetBindings::revalidate() {

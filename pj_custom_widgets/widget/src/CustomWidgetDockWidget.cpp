@@ -68,6 +68,14 @@ const WidgetTypeDescriptor* findType(const LoadedWidget& plugin, const QString& 
 /// Stands in for the target of a pending wire, whose NONE value carries no payload.
 const WireTarget kNoTarget{};
 
+/// Content revision of the object topic `target` reads, 0 when the wire is unresolved or not an object.
+std::uint64_t objectContent(const ObjectStore& objects, const std::optional<WireTarget>& target) {
+  if (!target || target->kind != WidgetInputKind::kObject) {
+    return 0;
+  }
+  return objects.contentIdentity(target->object_topic).content;
+}
+
 }  // namespace
 
 template <typename Call>
@@ -138,15 +146,15 @@ CustomWidgetDockWidget::CustomWidgetDockWidget(
     connect(playback_, &PlaybackEngine::playingChanged, this, [this]() { requestUpdate(); });
   }
   connect(session_, &SessionManager::samplesIngested, this, [this]() {
-    // An object topic registers in the ObjectStore with its first ingested entries, which the catalog
-    // does not report when the topic was already listed (advertised by the file's summary): a wire
-    // saved against it stays pending unless it is retried here.
-    if (bindings_.hasPendingWires() && bindings_.retryPending()) {
-      afterCatalogChange(true);
-      return;
-    }
     if (wiredObjectContentChanged()) {
       requestUpdate();
+    }
+  });
+  // An object wire names its dataset by source path, which an asynchronous file load registers only at
+  // commit and which no catalog change reports.
+  connect(session_, &SessionManager::datasetSourcePathChanged, this, [this]() {
+    if (bindings_.hasPendingWires()) {
+      afterCatalogChange(bindings_.retryPending());
     }
   });
 }
@@ -516,12 +524,10 @@ void CustomWidgetDockWidget::requestUpdate() {
   if (!handle_) {
     return;
   }
-  if (!update_scheduled_) {
-    updates_at_request_ = updates_delivered_;
-  }
+  update_wanted_ = true;
   // Deferred: playingChanged may come from the widget's own play() or pause(), with its code on the stack.
   deferOnce(update_scheduled_, [this]() {
-    if (updates_delivered_ == updates_at_request_) {
+    if (update_wanted_) {
       refresh();
     }
   });
@@ -531,12 +537,8 @@ bool CustomWidgetDockWidget::wiredObjectContentChanged() const {
   const std::vector<WidgetWire>& wires = bindings_.wires();
   const ObjectStore& objects = session_->objectStore();
   for (std::size_t i = 0; i < wires.size(); ++i) {
-    const std::optional<WireTarget> target = bindings_.currentTarget(wires[i]);
-    if (!target || target->kind != WidgetInputKind::kObject) {
-      continue;
-    }
-    const std::uint64_t content = objects.contentIdentity(target->object_topic).content;
-    if (i >= object_content_.size() || object_content_[i] != content) {
+    const std::uint64_t content = objectContent(objects, bindings_.currentTarget(wires[i]));
+    if ((i < object_content_.size() ? object_content_[i] : 0) != content) {
       return true;
     }
   }
@@ -708,7 +710,9 @@ void CustomWidgetDockWidget::pushValues(double time, bool force) {
   last_render_key_ = key;
 
   values_.clear();
+  object_content_.assign(wires.size(), 0);
   for (std::size_t i = 0; i < wires.size(); ++i) {
+    object_content_[i] = objectContent(objects, targets_[i]);
     if (targets_[i]) {
       fetchObjectPayload(objects, *targets_[i], object_encoder_, samples_[i]);
     }
@@ -716,13 +720,7 @@ void CustomWidgetDockWidget::pushValues(double time, bool force) {
         static_cast<std::uint32_t>(wires[i].input_index), wires[i].slot, targets_[i] ? *targets_[i] : kNoTarget,
         samples_[i], wires[i].label));
   }
-  ++updates_delivered_;
-  object_content_.assign(wires.size(), 0);
-  for (std::size_t i = 0; i < wires.size(); ++i) {
-    if (targets_[i] && targets_[i]->kind == WidgetInputKind::kObject) {
-      object_content_[i] = objects.contentIdentity(targets_[i]->object_topic).content;
-    }
-  }
+  update_wanted_ = false;
   callOrDisable([&]() { handle_->onUpdate(Span<const PJ_widget_value_t>(values_.data(), values_.size()), time); });
 }
 

@@ -34,4 +34,20 @@ ObjectPayloadEncoder canonicalObjectEncoder(const SessionManager& session) {
   };
 }
 
+std::optional<ResolvedObjectEntry> resolveEncodedObject(
+    const ObjectStore& objects, const WireTarget& target, SequentialUID uid, const ObjectPayloadEncoder& encoder) {
+  auto entry = objects.at(target.object_topic, uid);
+  if (!entry || entry->fetch_failed) {
+    return std::nullopt;
+  }
+  if (encoder) {
+    auto payload = encoder(target, *entry);
+    if (!payload) {
+      return std::nullopt;
+    }
+    entry->payload = std::move(*payload);
+  }
+  return entry;
+}
+
 }  // namespace PJ

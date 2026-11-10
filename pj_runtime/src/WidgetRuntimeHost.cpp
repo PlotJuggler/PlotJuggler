@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "pj_datastore/saturating_time.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_plugins/sdk/widget_plugin_base.hpp"
+#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/ServiceRegistration.h"
 #include "pj_runtime/WidgetValue.h"
 
@@ -213,7 +215,6 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
   // delivers few samples (a widget probing a range with max_samples 1) costs O(log n), not a copy of the
   // whole window. A chosen entry is named by its timestamp and its rank among the entries sharing it.
   std::size_t total = 0;
-  bool deliver_all = false;
   std::vector<std::pair<Timestamp, std::size_t>> chosen;
   {
     const EntryTimestampsView stamps = objects_.entryTimestamps(target.object_topic);
@@ -224,8 +225,7 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
       return 0U;
     }
     const std::size_t cap = std::max<std::size_t>(effectiveCap(query), 1);
-    deliver_all = total <= cap;
-    if (!deliver_all) {
+    if (total > cap) {
       chosen.reserve(cap);
       for (std::size_t j = 0; j < cap; ++j) {
         const std::size_t index = Decimator::pick(j, total, cap);
@@ -239,23 +239,21 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
   // Resolved one at a time, outside any store lock: a lazy entry may refetch. An entry evicted since it was
   // counted, or whose fetch failed or did not encode, has no payload to deliver and is skipped.
   const auto deliver = [&](SequentialUID uid) {
-    const auto entry = objects_.at(target.object_topic, uid);
-    if (!entry || entry->fetch_failed) {
+    const auto entry = resolveEncodedObject(objects_, target, uid, encoder_);
+    if (!entry) {
       return true;
     }
-    const Expected<sdk::PayloadView> payload = encoder_ ? encoder_(target, *entry) : entry->payload;
-    if (!payload) {
-      return true;
-    }
+    const sdk::PayloadView& payload = entry->payload;
     PJ_widget_value_t value = baseWidgetValue(
         query.input, query.slot, PJ_WIDGET_VALUE_OBJECT,
         rawToDisplaySecondsAtOrAfter(entry->timestamp, target.offset).value, wire.label);
-    value.bytes = PJ_bytes_view_t{payload->bytes.data(), payload->bytes.size()};
-    value.type_name = PJ_string_view_t{target.object_type_name.data(), target.object_type_name.size()};
+    value.bytes = PJ_bytes_view_t{payload.bytes.data(), payload.bytes.size()};
+    const std::string_view type_name = sdk::name(target.object_type);
+    value.type_name = PJ_string_view_t{type_name.data(), type_name.size()};
     return sink(value);
   };
 
-  if (deliver_all) {
+  if (chosen.empty()) {
     for (const auto& entry : objects_.rangeByTime(target.object_topic, lo, to)) {
       if (!deliver(entry.uid)) {
         break;
