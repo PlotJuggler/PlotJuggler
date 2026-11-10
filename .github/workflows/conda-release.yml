@@ -83,7 +83,7 @@ jobs:
         run: |
           pixi exec --spec "rattler-build>=0.66,<0.67" rattler-build build \
             --recipe recipes/luau --recipe recipes/libmcap --recipe recipes/cloudini \
-            --recipe recipes/kissfft --recipe recipes/libnanoarrow \
+            --recipe recipes/kissfft \
             -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 
       - name: Build plotjuggler4

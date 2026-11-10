@@ -152,7 +152,11 @@ if(EMSCRIPTEN)
     find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS
         Core Gui GuiPrivate Widgets Concurrent Network Xml Svg SvgWidgets PrintSupport ShaderTools)
 else()
-    set(PJ_QT_REQUIRED_VERSION ${PJ_QT_VERSION})
+    # versions.env pins the Qt kit of the release builds. A distribution that builds
+    # against its own Qt 6 (conda-forge and RoboStack pin qt6-main 6.11) can lower
+    # the floor: -DPJ_QT_MIN_VERSION=6.11.
+    set(PJ_QT_MIN_VERSION "${PJ_QT_VERSION}" CACHE STRING "Oldest Qt 6 release the desktop build accepts")
+    set(PJ_QT_REQUIRED_VERSION ${PJ_QT_MIN_VERSION})
     # OpenGLWidgets: no PJ4 code links it outside the display tests (pj_scene3D's
     # runners take the target from here), but Qt6UiTools (pj_dialog_host) depends
     # on it, so the kit, the app and its packages need it regardless.

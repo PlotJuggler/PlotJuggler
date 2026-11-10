@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-PJ_VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}" PJ_QT_VERSION="${PJ_QT_VERSION}" \
+PJ_VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}" \
   pixi exec --spec "rattler-build>=0.66,<0.67" \
   rattler-build build --recipe "${ROOT}/packaging/conda" -m "${ROOT}/recipes/variants.yaml" \
   -c conda-forge -c "${CHANNEL}" --output-dir "${OUTPUT}"
