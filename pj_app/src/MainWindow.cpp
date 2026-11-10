@@ -4217,9 +4217,9 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
   connect(docker, &PlotDocker::topicRefused, this, [this](const QString& reason) { showToast(reason); });
-  connect(
-      docker, &PlotDocker::dockAdded, this,
-      [this](DockWidget* dock) { dock->setCustomWidgetsAvailable(custom_widgets_available_); }, Qt::UniqueConnection);
+  connect(docker, &PlotDocker::dockAdded, this, [this](DockWidget* dock) {
+    dock->setCustomWidgetsAvailable(custom_widgets_available_);
+  });
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       dock->setCustomWidgetsAvailable(custom_widgets_available_);
