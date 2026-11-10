@@ -983,6 +983,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // construct, and populate. Family routing for v0:
         //   3D-ish (point clouds, transforms, grids, poses)                          → scene3d
         //   2D-ish (kImage/kDepthImage/kImageAnnotations/kSceneEntities/kVideoFrame) → scene2d
+        if (kind.isEmpty() && seed != nullptr && isCustomWidgetOnlyObjectType(seed->object_type)) {
+          // No dock family shows it: only a Custom Widget already in the dock takes it, and that drop
+          // never reaches this factory (DockWidget offers it to the mounted widget).
+          showToast(tr("Log topics are shown by a log Custom Widget. Create one in this panel first."));
+          return nullptr;
+        }
         QString resolved_kind = kind;
         if (resolved_kind.isEmpty() && seed != nullptr) {
           // Classify the dropped object into a scene kind — the single routing

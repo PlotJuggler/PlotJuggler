@@ -381,6 +381,37 @@ TEST(CurveListPanelTest, CameraInfoTopicRowCanBeDraggedToAPanel) {
   EXPECT_EQ(CurveTreeView::decodeCatalogKeys(payload.get()), QStringList{key});
 }
 
+// No built-in view displays a log, but a log Custom Widget does: its row starts a drag and says where it goes.
+TEST(CurveListPanelTest, LogTopicRowCanBeDraggedToACustomWidget) {
+  AppSession app_session;
+  const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
+  ASSERT_NE(dataset, 0U);
+  auto topic = app_session.sessionManager().objectStore().registerTopic(
+      ObjectTopicDescriptor{
+          .dataset_id = dataset,
+          .topic_name = "/rosout",
+          .metadata_json = R"({"builtin_object_type":"kLog"})",
+      });
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  app_session.catalogModel().rebuildFromDatastore();
+
+  CurveListPanel panel;
+  panel.setCatalog(&app_session.catalogModel());
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  const QString key = keyOfTopic(app_session.catalogModel(), u"/rosout"_s);
+  QTreeWidgetItem* row = findRowByCatalogKey(tree->invisibleRootItem(), key);
+  ASSERT_NE(row, nullptr);
+
+  EXPECT_TRUE(row->flags().testFlag(Qt::ItemIsDragEnabled));
+  EXPECT_EQ(row->toolTip(0), u"Log topic. Drop it on a log Custom Widget."_s);
+
+  row->setSelected(true);
+  const std::unique_ptr<QMimeData> payload(tree->createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(payload, nullptr);
+  EXPECT_EQ(CurveTreeView::decodeCatalogKeys(payload.get()), QStringList{key});
+}
+
 // A topic of a per-topic-pause-capable dataset that nothing references is dimmed; displaying it undims it; a dataset
 // that cannot pause topics never dims; a panel without a tracker dims nothing.
 TEST(CurveListPanelTest, UnsubscribedRowsFollowTheDemandTracker) {

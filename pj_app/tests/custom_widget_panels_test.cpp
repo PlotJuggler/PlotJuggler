@@ -44,6 +44,7 @@
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/Style.h"
 #include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/ToastNotification.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 #include "support/gui_test_env.h"
@@ -568,6 +569,52 @@ TEST_F(CustomWidgetShellFlowTest, ThePanelsWidgetGetsThePlaybackServiceWithTheSh
       g.playback.toDisplayTimeForSource(PJ::sdk::DataSourceHandle{static_cast<uint32_t>(dataset)}, 4'000'000'000);
   ASSERT_TRUE(by_source.has_value()) << by_source.error();
   EXPECT_DOUBLE_EQ(*by_source, 4.0);
+}
+
+TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockSaysWhereItGoes) {
+  PJ::AppSession& app = Peer::session(*window_);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
+  auto topic = app.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  app.catalogModel().rebuildFromDatastore();
+  QString key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      key = item.key;
+    }
+  }
+  ASSERT_FALSE(key.isEmpty());
+  const auto drop = [&key](PJ::DockWidget* target) {
+    return QMetaObject::invokeMethod(
+        target, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{key}));
+  };
+  const auto toasts = [this]() {
+    QStringList messages;
+    for (const auto* toast : window_->findChildren<PJ::ToastNotification*>()) {
+      messages << toast->message();
+    }
+    return messages;
+  };
+
+  ASSERT_TRUE(drop(dock_));
+  EXPECT_EQ(dock_->objectWidget(), nullptr) << "no built-in view takes a log";
+  EXPECT_TRUE(toasts().contains(u"Log topics are shown by a log Custom Widget. Create one in this panel first."_s))
+      << toasts().join(u" | "_s).toStdString();
+
+  clickIcon("buttonVizCustomWidget");
+  auto* list = picker_->findChild<QListWidget*>(u"listCustomWidgets"_s);
+  emit list->itemClicked(itemNamed(list, u"Viewer"_s));
+  ASSERT_NE(dock_->objectWidget(), nullptr);
+  auto* custom = qobject_cast<PJ::CustomWidgetDockWidget*>(dock_->objectWidget()->widget());
+  ASSERT_NE(custom, nullptr);
+  ASSERT_TRUE(custom->bindings().empty());
+
+  ASSERT_TRUE(drop(dock_));
+  ASSERT_EQ(custom->bindings().size(), 1U);
+  EXPECT_EQ(custom->bindings()[0].label, "/rosout");
+  EXPECT_EQ(dock_->objectWidget()->widget(), custom) << "the panel took the topic in place";
 }
 
 TEST_F(CustomWidgetShellFlowTest, AChoiceForAPanelFilledMeanwhileDoesNothing) {

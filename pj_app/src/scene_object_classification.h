@@ -41,7 +41,8 @@ namespace PJ {
 // list never offers a drag that could only end in the "cannot display"
 // fallback. Types outside every claim (kOccupancyGridUpdate, ...) are consumed
 // indirectly or have no viewer yet; kCameraInfo is also outside, but a plugin
-// panel reads it (isPanelOnlyObjectType).
+// panel reads it (isPanelOnlyObjectType), and so is kLog, which a Custom Widget
+// shows (isCustomWidgetOnlyObjectType).
 [[nodiscard]] bool isDroppableObjectType(sdk::BuiltinObjectType type);
 
 }  // namespace PJ
