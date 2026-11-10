@@ -789,6 +789,46 @@ TEST_F(CustomWidgetDockTest, UnresolvedWiresAreRetriedWhenTheCatalogGrows) {
   EXPECT_DOUBLE_EQ(g.last_values[0].number, 5.0);
 }
 
+TEST_F(CustomWidgetDockTest, APendingObjectWireResolvesWhenItsTopicRegistersAndEntriesAreIngested) {
+  const QString xml =
+      u"<CustomWidget plugin=\"test_widgets\" type=\"viewer\">"
+      u"<input name=\"frame\" slot=\"0\" kind=\"object\" dataset_source=\"robot.mcap\" topic=\"/cam\"/>"
+      u"</CustomWidget>"_s;
+  // The file summary already lists the topic, so the catalog reports nothing when its entries arrive:
+  // the catalog's own samplesIngested rebuild is cut here to model that, leaving the dock's retry as the
+  // only way for the wire to resolve.
+  app_->catalogModel().setAdvertisedTopics(dataset_, {AdvertisedTopic{u"/cam"_s, sdk::BuiltinObjectType::kImage}});
+  ASSERT_TRUE(
+      QObject::disconnect(
+          &app_->sessionManager(), &SessionManager::samplesIngested, &app_->catalogModel(),
+          &CatalogModel::rebuildIfChanged));
+  QDomDocument doc;
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->xmlLoadState(parseElement(doc, xml)));
+  ASSERT_EQ(dock->bindings().size(), 1U);
+  ASSERT_FALSE(dock->bindings()[0].resolved) << "the object topic does not exist yet";
+
+  // The topic registers in the ObjectStore with its first entries, with no catalog change in between: only
+  // the ingest notification follows.
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto topic = objects.registerTopic(
+      ObjectTopicDescriptor{
+          .dataset_id = dataset_, .topic_name = "/cam", .metadata_json = R"({"builtin_object_type":"kImage"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(objects.pushOwned(*topic, kSecond, {9, 8, 7}).has_value());
+  ASSERT_FALSE(dock->bindings()[0].resolved) << "nothing told the dock yet";
+
+  app_->sessionManager().notifyIngest({}, /*live=*/true);
+  QCoreApplication::processEvents();
+  EXPECT_TRUE(dock->bindings()[0].resolved);
+  EXPECT_TRUE(dock->pendingDemands().empty());
+
+  dock->onTrackerTime(1.5);
+  ASSERT_EQ(g.last_values.size(), 1U);
+  EXPECT_EQ(g.last_values[0].kind, PJ_WIDGET_VALUE_OBJECT);
+  EXPECT_EQ(g.last_values[0].bytes, (std::vector<uint8_t>{9, 8, 7}));
+}
+
 TEST_F(CustomWidgetDockTest, APendingWireReportsTheTopicItWaitsFor) {
   const QString xml =
       u"<CustomWidget plugin=\"test_widgets\" type=\"gauge\">"

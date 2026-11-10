@@ -15,6 +15,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPointer>
 #include <QPushButton>
 #include <QSettings>
@@ -452,6 +454,48 @@ TEST_F(CustomWidgetPagesTest, MissingWidgetShowsTheReasonAndItsStoredWiresReadOn
 
 using Peer = PJ::MainWindowLayoutImportTestPeer;
 
+/// Collects the Qt warnings emitted while it lives (one instance at a time).
+class WarningCapture {
+ public:
+  WarningCapture() {
+    instance_ = this;
+    previous_ = qInstallMessageHandler(&WarningCapture::handle);
+  }
+  ~WarningCapture() {
+    qInstallMessageHandler(previous_);
+    instance_ = nullptr;
+  }
+  WarningCapture(const WarningCapture&) = delete;
+  WarningCapture& operator=(const WarningCapture&) = delete;
+
+  [[nodiscard]] QStringList messagesContaining(const QString& needle) const {
+    QMutexLocker lock(&mutex_);
+    QStringList found;
+    for (const QString& message : messages_) {
+      if (message.contains(needle)) {
+        found << message;
+      }
+    }
+    return found;
+  }
+
+ private:
+  static void handle(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (instance_ != nullptr && (type == QtWarningMsg || type == QtCriticalMsg)) {
+      QMutexLocker lock(&instance_->mutex_);
+      instance_->messages_ << message;
+    }
+    if (instance_ != nullptr && instance_->previous_ != nullptr) {
+      instance_->previous_(type, context, message);
+    }
+  }
+
+  inline static WarningCapture* instance_ = nullptr;
+  QtMessageHandler previous_ = nullptr;
+  mutable QMutex mutex_;
+  QStringList messages_;
+};
+
 class CustomWidgetShellFlowTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -521,6 +565,57 @@ TEST(CustomWidgetShellAvailabilityTest, FifthIconFollowsTheInstalledWidgetCatalo
   auto* split_placeholder = split->findChild<PJ::VisualizationPlaceholderWidget*>();
   ASSERT_NE(split_placeholder, nullptr);
   EXPECT_TRUE(split_placeholder->customWidgetButton()->isEnabled()) << "a new dock starts with the current state";
+}
+
+// Docks born after the shell wired their tab (a new tab, a split) take the Custom Widget availability through
+// PlotDocker::dockAdded. A lambda cannot be a Qt::UniqueConnection: Qt refused that connection with a warning,
+// and those docks kept the default whatever the catalog held.
+TEST(CustomWidgetShellAvailabilityTest, DocksAddedAfterTheTabWasWiredFollowTheCatalogWithoutConnectionWarnings) {
+  WarningCapture warnings;
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  pj_cw_test::g = pj_cw_test::PluginStats{};
+  PJ::MainWindow window(extensions_dir.path());
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  PJ::DockWidget* original = tabbed->currentTab()->plotAt(0);
+  ASSERT_NE(original, nullptr);
+  PJ::PlotDocker* tab = tabbed->addTab(u"Second"_s);
+  ASSERT_NE(tab, nullptr);
+  PJ::DockWidget* first = tab->plotAt(0);
+  ASSERT_NE(first, nullptr);
+  first->setPlaceholderWidget();
+  PJ::DockWidget* split = first->splitHorizontal();
+  ASSERT_NE(split, nullptr);
+
+  const auto customButton = [](PJ::DockWidget* dock) {
+    auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+    return placeholder != nullptr ? placeholder->customWidgetButton() : nullptr;
+  };
+  ASSERT_NE(customButton(first), nullptr);
+  ASSERT_NE(customButton(split), nullptr);
+  EXPECT_FALSE(customButton(first)->isEnabled()) << "no widget installed";
+  EXPECT_FALSE(customButton(split)->isEnabled()) << "no widget installed";
+
+  PJ::ExtensionCatalogService& extensions = Peer::session(window).extensionCatalog();
+  ASSERT_TRUE(extensions.pluginCatalog().registerStaticWidget(goodVtable()));
+  emit extensions.catalogChanged();
+  EXPECT_TRUE(customButton(first)->isEnabled());
+  EXPECT_TRUE(customButton(split)->isEnabled());
+
+  // Docks added once the catalog already lists a widget start enabled, in the new tab and in the first one.
+  PJ::DockWidget* later = split->splitVertical();
+  ASSERT_NE(later, nullptr);
+  ASSERT_NE(customButton(later), nullptr);
+  EXPECT_TRUE(customButton(later)->isEnabled()) << "a split of the new tab";
+  PJ::DockWidget* original_split = original->splitHorizontal();
+  ASSERT_NE(original_split, nullptr);
+  original_split->setPlaceholderWidget();
+  ASSERT_NE(customButton(original_split), nullptr);
+  EXPECT_TRUE(customButton(original_split)->isEnabled()) << "a split of the first tab";
+
+  EXPECT_TRUE(warnings.messagesContaining(u"unique connections require a pointer to member function"_s).isEmpty())
+      << warnings.messagesContaining(u"unique connections"_s).join(u" | "_s).toStdString();
 }
 
 TEST_F(CustomWidgetShellFlowTest, FifthIconOpensThePickerAndAChoiceBuildsABoundPanel) {

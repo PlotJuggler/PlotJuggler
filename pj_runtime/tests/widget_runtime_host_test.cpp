@@ -310,6 +310,133 @@ TEST_F(WidgetRuntimeHostTest, ObjectHistoryDeliversPayloadAndTypeName) {
   EXPECT_DOUBLE_EQ(out.back().time, 1.0);
 }
 
+/// Registers an object topic holding one entry per element of `seconds` (non-decreasing), whose first payload
+/// byte is the entry's index, and wires it as input 0.
+class WidgetRuntimeHostObjectHistoryTest : public WidgetRuntimeHostTest {
+ protected:
+  void addObjectWire(const std::vector<int>& seconds) {
+    auto topic = objects_.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/log"});
+    ASSERT_TRUE(topic.has_value()) << topic.error();
+    for (std::size_t i = 0; i < seconds.size(); ++i) {
+      ASSERT_TRUE(objects_.pushOwned(*topic, seconds[i] * kSecond, {static_cast<uint8_t>(i)}).has_value());
+    }
+    WireTarget wire;
+    wire.kind = WidgetInputKind::kObject;
+    wire.object_topic = *topic;
+    wire.object_type_name = "kLog";
+    wires_.push_back(wire);
+  }
+
+  static std::vector<int> indices(const std::vector<Sample>& out) {
+    std::vector<int> result;
+    for (const Sample& sample : out) {
+      result.push_back(sample.bytes.front());
+    }
+    return result;
+  }
+};
+
+TEST_F(WidgetRuntimeHostObjectHistoryTest, MaxSamplesOneDeliversTheFirstEntryAndCountsTheRange) {
+  std::vector<int> seconds;
+  for (int i = 0; i < 50; ++i) {
+    seconds.push_back(i);
+  }
+  addObjectWire(seconds);
+
+  std::vector<Sample> out;
+  uint32_t total = 0;
+  ASSERT_TRUE(query(0, 0, 0.0, 49.0, 1, out, nullptr, &total));
+  EXPECT_EQ(total, 50U);
+  EXPECT_EQ(indices(out), std::vector<int>{0});
+
+  // A sub-range delivers the first entry of that range.
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 10.0, 19.0, 1, out, nullptr, &total));
+  EXPECT_EQ(total, 10U);
+  EXPECT_EQ(indices(out), std::vector<int>{10});
+
+  // A sink refusing after the first sample ends the delivery; the count stays that of the range.
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 0.0, 49.0, 0, out, nullptr, &total, 1));
+  EXPECT_EQ(total, 50U);
+  EXPECT_EQ(indices(out), std::vector<int>{0});
+}
+
+TEST_F(WidgetRuntimeHostObjectHistoryTest, DecimationOverSharedTimestampsPicksByRankWithinTheStamp) {
+  // 36 entries: index 0 at t=0; indices 1..30 five per stamp at t=1..6; indices 31..35 unique at t=7..11.
+  std::vector<int> seconds{0};
+  for (int stamp = 1; stamp <= 6; ++stamp) {
+    seconds.insert(seconds.end(), 5, stamp);
+  }
+  for (int stamp = 7; stamp <= 11; ++stamp) {
+    seconds.push_back(stamp);
+  }
+  ASSERT_EQ(seconds.size(), 36U);
+  addObjectWire(seconds);
+
+  // The j-th delivered entry is the one at index j * (total - 1) / (cap - 1) of the time-ordered range.
+  std::vector<Sample> out;
+  uint32_t total = 0;
+  ASSERT_TRUE(query(0, 0, 0.0, 11.0, 7, out, nullptr, &total));
+  EXPECT_EQ(total, 36U);
+  EXPECT_EQ(indices(out), (std::vector<int>{0, 5, 11, 17, 23, 29, 35}));  // 0, 35/6, 70/6, ... 210/6
+
+  // cap 20: picks 1 and 2 (indices 1 and 3) share the stamp t=1 with ranks 0 and 2.
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 0.0, 11.0, 20, out, nullptr, &total));
+  EXPECT_EQ(total, 36U);
+  std::vector<int> expected;
+  for (int j = 0; j < 20; ++j) {
+    expected.push_back(j * 35 / 19);
+  }
+  EXPECT_EQ(expected.size(), 20U);
+  EXPECT_EQ(indices(out), expected);
+  EXPECT_EQ(out[1].time, out[2].time) << "two picks on one timestamp";
+  EXPECT_NE(out[1].bytes, out[2].bytes) << "with different ranks";
+
+  // A range starting inside a shared stamp decimates over that range alone: t=2..4 holds indices 6..20.
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 2.0, 4.0, 4, out, nullptr, &total));
+  EXPECT_EQ(total, 15U);
+  EXPECT_EQ(indices(out), (std::vector<int>{6, 10, 15, 20}));  // 6 + {0, 14/3, 28/3, 14}
+}
+
+TEST_F(WidgetRuntimeHostObjectHistoryTest, RangeBoundsAreInclusiveAndAnEmptyRangeNeverCallsTheSink) {
+  addObjectWire({1, 2, 2, 3, 5, 5, 8});
+  std::vector<Sample> out;
+  uint32_t total = 0;
+
+  // Bounds equal to entry timestamps keep every entry stamped there.
+  ASSERT_TRUE(query(0, 0, 2.0, 5.0, 0, out, nullptr, &total));
+  EXPECT_EQ(total, 5U);
+  EXPECT_EQ(indices(out), (std::vector<int>{1, 2, 3, 4, 5}));
+
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 1.0, 8.0, 0, out, nullptr, &total));
+  EXPECT_EQ(total, 7U);
+  EXPECT_EQ(indices(out), (std::vector<int>{0, 1, 2, 3, 4, 5, 6}));
+
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 5.0, 5.0, 0, out, nullptr, &total));
+  EXPECT_EQ(total, 2U);
+  EXPECT_EQ(indices(out), (std::vector<int>{4, 5}));
+
+  // Decimated, the bounds stay inclusive and both ends are delivered.
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 2.0, 5.0, 2, out, nullptr, &total));
+  EXPECT_EQ(total, 5U);
+  EXPECT_EQ(indices(out), (std::vector<int>{1, 5}));
+
+  // Empty ranges: between stamps, before the first, after the last.
+  for (const auto& [from, to] : std::vector<std::pair<double, double>>{{6.0, 7.0}, {-5.0, 0.5}, {9.0, 20.0}}) {
+    out.clear();
+    total = 99;
+    ASSERT_TRUE(query(0, 0, from, to, 0, out, nullptr, &total));
+    EXPECT_EQ(total, 0U);
+    EXPECT_TRUE(out.empty());
+  }
+}
+
 TEST_F(WidgetRuntimeHostTest, AHistoryTimeConvertsBackToItsSampleFarFromTheOrigin) {
   // Near an epoch a double steps ~238 ns: the nearest one to a stamp may convert back before it.
   auto topic = objects_.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/epoch"});
