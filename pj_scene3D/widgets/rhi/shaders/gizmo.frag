@@ -17,6 +17,6 @@ void main() {
     const float ambient = 0.35;
     float lambert = max(dot(normalize(view_normal), light_direction), 0.0);
     vec3 lit = arrow_color.rgb * (ambient + ((1.0 - ambient) * lambert));
-    vec3 linear = clamp(pow(max(lit, vec3(0.0)), vec3(2.2)), vec3(0.0), vec3(1.0));
+    vec3 linear = clamp(srgbToLinear(lit), vec3(0.0), vec3(1.0));
     fragment_color = vec4(linearToSrgb(linear), arrow_color.a);
 }

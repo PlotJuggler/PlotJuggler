@@ -4,6 +4,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "../../shaders/cube/cube_lighting.glslinc"
 #include "../../shaders/cube/cube_edge.glslinc"
+#include "srgb.glslinc"
 
 layout(std140, binding = 0) uniform VoxelUniforms {
     mat4 view_projection;
@@ -41,6 +42,6 @@ void main() {
     vec3 normal = normalize(view_normal);
     float shading = cubeLambert(normal);
     vec3 outlined = base * (1.0 - kCubeEdgeDarken * cubeEdgeFactor(local_position));
-    vec3 color = render_mode.x != 0 ? pow(max(outlined, vec3(0.0)), vec3(2.2)) : outlined;
+    vec3 color = render_mode.x != 0 ? srgbToLinear(outlined) : outlined;
     fragment_color = vec4(color * shading, cell_size_opacity.w);
 }

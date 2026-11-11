@@ -309,14 +309,16 @@ pass's mask pipelines) and the registry's HDR variants before the HDR chain.
 scene pipeline (the registry), the families, the grid and overlays, the shared
 meshes, then the uniforms.
 
-**Linear light and grading.** Every colour input is linearized before it reaches
-the HDR target: colormaps and per-point colours in the vertex stage, vertex and
-base colours, theme colours (backdrop, grid), and base-colour and emissive
-textures, which upload as plain RGBA8 and `model.frag` decodes (Qt's OpenGL
-backend ignores `QRhiTexture::sRGB` for uncompressed formats). `present.frag` applies exposure, AO, the EDL factor,
-the tonemap (None, ACES, AgX, Khronos PBR Neutral; the AgX matrices are
-column-major), saturation and a manual sRGB encode. The knobs are the view's
-`CompositeParams`; their defaults live in `scene_look_defaults.h`, the source of
+**Linear light and grading.** Every colour input is linearized, with the exact
+sRGB decode (`srgbToLinear`, `srgb.glslinc`; `look::srgbToLinear` on the CPU)
+that inverts `present.frag`'s encode, before it reaches the HDR target:
+colormaps and per-point colours in the vertex stage, vertex and base colours,
+theme colours (backdrop, grid), and base-colour and emissive textures, which
+upload as plain RGBA8 and `model.frag` decodes (Qt's OpenGL backend ignores
+`QRhiTexture::sRGB` for uncompressed formats). `present.frag` applies exposure,
+AO, the EDL factor, the tonemap (None, ACES, AgX, Khronos PBR Neutral; the AgX
+matrices are column-major), saturation and a manual sRGB encode. The knobs are
+the view's `CompositeParams`; their defaults live in `scene_look_defaults.h`, the source of
 truth. The direct fallback writes display-referred colour without a grade.
 
 **Annotation marker and background bypass.** HDR alpha is a per-pixel

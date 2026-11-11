@@ -1,6 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 #version 440
+#extension GL_GOOGLE_include_directive : require
+#include "srgb.glslinc"
 
 layout(std140, binding = 8) uniform RenderMode {
     ivec4 render_mode;  // x: 1 when writing the linear-light HDR target
@@ -16,6 +18,6 @@ void main() {
     float lambert = max(dot(normalize(view_normal), light_direction), 0.0);
     float shading = ambient + ((1.0 - ambient) * lambert);
     vec3 lit = arrow_color.rgb * shading;
-    vec3 color = render_mode.x != 0 ? pow(max(lit, vec3(0.0)), vec3(2.2)) : lit;
+    vec3 color = render_mode.x != 0 ? srgbToLinear(lit) : lit;
     fragment_color = vec4(color, arrow_color.a);
 }

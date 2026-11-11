@@ -101,10 +101,10 @@ void main() {
     vec3 base_rgb;
     float base_alpha;
     if (model_params.w > 0.5) {
-        base_rgb = model_tint.rgb * pow(max(model_vertex_color.rgb, vec3(0.0)), vec3(2.2));
+        base_rgb = model_tint.rgb * srgbToLinear(model_vertex_color.rgb);
         base_alpha = model_tint.a * model_vertex_color.a;
     } else {
-        base_rgb = pow(max(model_tint.rgb, vec3(0.0)), vec3(2.2));
+        base_rgb = srgbToLinear(model_tint.rgb);
         base_alpha = model_tint.a;
     }
     if (model_params.x > 0.5) {
