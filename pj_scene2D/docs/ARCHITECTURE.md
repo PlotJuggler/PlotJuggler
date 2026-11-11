@@ -165,8 +165,7 @@ On each application tick:
    latest decoded frame. If a new frame is available, it uploads pixel
    data to GPU textures and draws.
 
-The Qt main thread drives both steps — there is no `TimelineCursor`
-subscription model in `pj_base`. The entry point into the widget is
+The Qt main thread drives both steps. The entry point into the widget is
 `PJ::IDataWidget::onTrackerTime(double)` (from `pj_runtime`), invoked
 by `pj_runtime::PlaybackEngine`; the widget forwards that time to its
 internal `MediaSource` via `setTimestamp()`. This matches how
@@ -176,10 +175,8 @@ PlotJuggler's existing plot widgets are driven. See §9.1 for details.
 
 ## 3. Scrub Architecture
 
-This section ports the patterns proven in the `video_player_lab`
-prototype (a standalone scrub-architecture testbed, since removed along
-with its ARCHITECTURE.md). The WHY behind these patterns — and why the
-alternatives fail — is inlined below; treat it as settled rationale, not
+The WHY behind these patterns — and why the alternatives fail — is inlined
+below; treat it as settled rationale, not
 open design space.
 
 ### 3.1 Latest-wins frame delivery
@@ -209,15 +206,9 @@ Properties:
 - **Pull timing**: the UI polls via `render()` at repaint rate. On
   each pass: `auto r = source->takeFrame(); if (r) uploadToGpu(*r);`.
 
-**Design history:** the prototype used a standalone `FrameSlot`
-(`store()`/`take()` behind one mutex). WP1.1 removed that helper from this
-tree; only the mailbox concept remains, implemented inline by the worker-backed
-sources.
-
-The video_player_lab prototype used frame indices as identifiers
-because it was file-only. pj_scene2D uses `int64_t` nanosecond
-timestamps instead — the universal coordinate that works for both file
-and streaming sources.
+Frames are identified by `int64_t` nanosecond timestamps, not frame
+indices: a timestamp is the one coordinate that works for both file and
+streaming sources.
 
 **Qt signals are NOT used for frame delivery.** Adding a signal escape
 hatch is explicitly forbidden. The structural problem (proven in the
@@ -236,7 +227,7 @@ The prototype design question for cancellable decoders was: when the user
 scrubs rapidly and an in-flight decode is cancelled, should a
 partially-decoded frame be published to the result mailbox?
 
-The rule, established empirically in the video_player_lab prototype:
+The rule, established empirically:
 
 - **Forward scrub** (`current_request_ts > previous_request_ts`):
   publish partials. The decoder is decoding toward the target from a
@@ -583,10 +574,10 @@ class MediaSource {
 };
 ```
 
-**Design rationale**: `PlaybackController` was a monolithic orchestrator
-that would have owned decoders, worker threads, frame mailboxes, compositor,
-and CancelToken management. This conflicted with the streaming decode
-path (`StreamingVideoSource`), which is already a self-contained
+**Design rationale**: a single orchestrator owning decoders, worker
+threads, frame mailboxes, compositor and CancelToken management was
+rejected. It conflicts with the streaming decode
+path (`StreamingVideoSource`), which is a self-contained
 subsystem (owns its worker thread, latest-wins request model,
 cancellation, thumbnail cache). `MediaSource` is a thin adapter that
 lets each decoder path manage its own complexity at the right granularity.
@@ -1043,8 +1034,7 @@ timestamp matching.
 
 ### 9.1 Main-thread-driven timestamps
 
-There is no `TimelineCursor` subscription or callback model in
-`pj_base`. Instead, widgets implement `PJ::IDataWidget` (from
+Widgets implement `PJ::IDataWidget` (from
 `pj_runtime/IDataWidget.h`) and are driven by `pj_runtime::PlaybackEngine`
 on the Qt main thread. The runtime calls `widget->onTrackerTime(time)`
 on each tick; the widget forwards that time into its internal
@@ -1079,24 +1069,12 @@ coalesces while a new frame reopens the gate. A new sample's async decode also
 repaints via the frame-ready callback (`repaintRequested → refreshView`),
 independent of this gate — so the gate can never strand a freshly-decoded frame.
 
-The contract property of the original `TimelineCursor` design — *widgets
-never own or drive the clock* — is preserved: widgets only **receive**
-time on `onTrackerTime`, never advance it.
+Widgets never own or drive the clock: they only **receive** time on
+`onTrackerTime`, never advance it.
 
 This matches how PlotJuggler's existing plot widgets are driven — the
 main thread iterates over widgets and tells each one to update. Media
 widgets are passive; they never drive the clock.
-
-### 9.2 Rate hints
-
-DataSource plugins publish optional hints at startup:
-
-- `preferred_fps`: natural frame rate of the source (e.g., 30.0 for
-  a 30 fps video).
-- `natural_range_ns`: total duration of the dataset.
-
-The application's clock aggregates hints across sources and picks a
-default playback pace. The user may override.
 
 ### 9.3 Live vs scrub mode
 
@@ -1234,45 +1212,6 @@ decode call.
 
 ---
 
-## 11. Port Map
-
-What to take from each reference prototype and what to leave behind.
-
-### From `video_player_lab/` (prototype since removed; table kept as the historical record)
-
-| Component | Action | Target in pj_scene2D | Notes |
-|-----------|--------|-------------------|-------|
-| Latest-wins mailbox | **PORT CONCEPT ONLY** | `AsyncFrameWorker` (`async_frame_worker.h`) | The original standalone FrameSlot was deleted as dead; the concept now lives in the shared `AsyncFrameWorker` engine both worker-backed sources compose |
-| Direction-aware cancel-store | **NOT PORTED** | — | The host's only video path (`StreamingVideoSource`) uses a latest-wins request model with no partial publication, so direction-aware cancel-store is not needed. Retained as design rationale in §3.2 for a future file-backed decoder |
-| EOF decoder flush | **PORTED** as `FfmpegDecoder::flush()` | `FfmpegDecoder` | 3 lines: send NULL packet, drain buffered frames |
-| `ENOMEM` recovery | **PORTED** | `FfmpegDecoder` | On `AVERROR(ENOMEM)`: `avcodec_flush_buffers` + retry once. Hit during scrub testing |
-| `FrameCache` (JPEG cache) | **PORTED** as `EntryThumbnailCache` | `pj_scene2d_core/entry_thumbnail_cache.h` | Background thread builds ~1 thumbnail per adaptive interval for streaming `VideoFrame` topics, HD-capped via `thumbnail_codec.h` (≤1280px, YUV420P, JPEG quality 80). Used by `StreamingVideoSource` for instant backward scrub |
-| `FrameConverter` | **DO NOT PORT** | — | Equivalent HW→SW transfer exists in pj_scene2D's `FfmpegDecoder` |
-| `Mp4DataSource` | **DO NOT PORT** | — | pj_scene2D has no MP4/file-demux path: its only video source is the streaming `StreamingVideoSource`, which decodes raw Annex-B / OBU entries from the ObjectStore without a container demuxer (see §6) |
-| `PlaybackClock` | **DO NOT PORT** | — | Replaced by main-thread-driven `setTimestamp()` model |
-| `VideoWidget` (QRhiWidget) | **DO NOT PORT** | — | pj_scene2D already has `MediaViewerWidget` with the same QRhi + shader approach plus additional features (pixel inspector) |
-| Keyframe pre-decode at open | **PORTED** as `EntryThumbnailCache` | `pj_scene2d_core/entry_thumbnail_cache.h` | Implemented for streaming `VideoFrame` topics: a background builder samples ~1 frame per interval from a single forward decode (materializing pixels only on the surfaced frames) into HD-capped JPEG thumbnails, used for instant backward scrub feedback |
-
-### From the standalone pj_scene2D experiment (parallel effort; working tree since removed)
-
-| Component | Action | Target in pj_scene2D | Notes |
-|-----------|--------|-------------------|-------|
-| QRhiWidget + YUV shaders | **CHERRY-PICK** | `MediaViewerWidget` | The shader code and QRhi setup are production-ready. Adapt to pj_scene2d_core's frame types |
-| FFmpeg video stack | **CHERRY-PICKED** as `FfmpegDecoder` (+ `StreamingVideoDecoder`/`StreamingVideoSource`) | `FfmpegDecoder` | HW-accel probing, codec open/close, sws_scale paths. Push-based delivery dropped in favour of the pull-based `takeFrame()` model |
-| ImageSource + BufferStrategy | **ADAPT** | `JpegCodec` / `PngCodec` / `ImagePipelineSource` | The per-topic buffer strategy is more complex than needed. Keep the turbojpeg/libpng codec stages and let `ImagePipelineSource` own ObjectStore lookup + raw canonical-image wrapping |
-| PayloadDescriptor bytecode VM | **EVALUATE** | — | Clever but complex. Evaluate whether the simpler approach (metadata_json + decoder dispatch) suffices before porting |
-| TimelineBridge | **DO NOT PORT** | — | Replaced by main-thread-driven `setTimestamp()` model |
-| Timestamp µs vs ns dichotomy | **FIX** | — | pj_scene2D uses ns everywhere. The parallel effort's video engine used µs internally. All internal timestamps must be int64_t nanoseconds |
-
-### From the legacy mcap_player sandbox (pre-rename SDK repo; since removed)
-
-| Component | Action | Notes |
-|-----------|--------|-------|
-| `LazyMediaSeries<T>` callback model | **VALIDATED** | The pattern (timestamps + resolve closures capturing shared_ptr) is sound and maps directly to ObjectStore's `pushLazy` with fetch callbacks. The mcap_player sandbox validated the approach. No code to port — ObjectStore implements the pattern natively |
-| `CompressedImageParser` (CDR → canonical Image → turbojpeg) | **REFERENCE** | Demonstrates the parser → decoder split. In the app, CDR envelope peeling is a `MessageParser` plugin concern; pj_scene2D core only receives canonical `sdk::Image` or demo-prepared bytes |
-
----
-
 ## Appendix: Key Invariants
 
 These invariants are load-bearing. Violating any of them reintroduces
@@ -1281,8 +1220,7 @@ bugs that were already proven unfixable by patching.
 1. **No Qt signals for frame delivery.** The `MediaSource::takeFrame()`
    pull model is the only path from decoder to display. Adding a signal
    escape hatch reintroduces stale-frame interleaving. (Rationale
-   inlined in §3.1; proven in the since-removed video_player_lab
-   prototype.)
+   in §3.1.)
 
 2. **One MediaSource per widget.** The widget polls exactly one source
    for frames. When multi-layer compositing is added, a

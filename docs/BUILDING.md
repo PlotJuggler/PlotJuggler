@@ -300,7 +300,7 @@ at test time, which is not a shippable layout.
 
 ## Third-party dependencies
 
-Vendored dependencies live in `3rdparty/<name>/` (the PJ3 convention) and are added from
+Vendored dependencies live in `3rdparty/<name>/` and are added from
 the top-level `CMakeLists.txt`, mostly with `add_subdirectory`. They are explicitly
 vendored: do not take them from Conan or system packages.
 
@@ -318,15 +318,12 @@ vendored: do not take them from Conan or system packages.
 **Qwt is external, not vendored**: `3rdparty/qwt/` holds only CMake glue. The default
 build fetches the official release tarball (SHA-256 pinned) and compiles it unmodified on
 every path, pixi included (`-DPJ_SYSTEM_QWT=ON` can link conda-forge's prebuilt `qwt` once
-it is built against the pinned `qt6-main`). Never patch Qwt sources: behavior PJ3 carried
-as Qwt patches lives in the app, namely axis tick-label formatting in `pj_plotting`'s
+it is built against the pinned `qt6-main`). Never patch Qwt sources: behavior that
+would need a Qwt patch lives in the app, namely axis tick-label formatting in `pj_plotting`'s
 `PlotScaleDraw` (twin in `pj_dialog_host`'s chart preview) and the "Lines and Dots" curve
 style in `pj_plotting`'s `PlotCurve` (Lines plus one batched, pixel-weeded `drawDots`
 pass; `PlotRhiCanvas` builds the same square dots as geometry). See
 `3rdparty/qwt/README.PJ4.md`.
-
-Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `date`) are vendored
-on the same pattern when a module needs them, decided case by case.
 
 Everything else (GLM, assimp, FFmpeg, the Lua runtime, ...) comes from Conan, including
 **backward-cpp** (`backward-cpp/1.6`): `pj_app` links `Backward::Backward` and installs a

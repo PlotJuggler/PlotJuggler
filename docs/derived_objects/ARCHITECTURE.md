@@ -766,7 +766,7 @@ A numeric output of a function with object inputs can be a plottable series (D10
   [{from_ns, to_ns}]` in the transform's config. A time-sliced node stopped inside a chunk, a node
   whose op failed (input arriving for it counts as consumed) and a pause longer than the window
   (`DataEngine::flushTo` hands the paused tail's floor to the primary) follow the same rule; the
-  `IncrementalEngine.h` comments own the details.
+  `incremental_engine.hpp` comments own the details.
 - **Batch** recomputes behind the reload brake, off the GUI thread, only for a dataset something
   displays. Every completed run is published, so markers keep updating while the stream outruns
   the rule.

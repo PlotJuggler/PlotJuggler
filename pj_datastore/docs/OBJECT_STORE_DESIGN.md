@@ -452,17 +452,8 @@ Core behavior is covered by:
 - `pj_datastore/tests/plugin_parser_object_write_test.cpp`
 
 The `uid_order` side index (encapsulated in `OrderedEntries`) that keeps the UID
-cursor correct under out-of-order ingest is pinned by, in `object_store_test.cpp`:
-`OutOfOrderPushRemainsReachableByUidCursor` (the guard),
-`NextUIDAfterWalkVisitsOutOfOrderEntryLast`,
-`NextUIDAfterWalkAfterMultipleOutOfOrderInserts`,
-`EvictionOfOutOfOrderEntryKeepsUidCursorConsistent`,
-`FirstUidNotFrontEntryAfterPartialEvict`,
-`EqualTimestampArrivalOrderPreservedByUidCursor`,
-`SrcUidOrderClearedAfterFlushAllowsSubsequentPushes`, and
-`UidWalkAfterAppendingFlushVisitsAllEntriesInOrder`; in `object_merge_test.cpp`:
-`UidWalkAfterMergeVisitsEveryEntryAscending`; and in `clear_dataset_test.cpp`:
-`ReattachPreservesUidCursorAfterOutOfOrder`.
+cursor correct under out-of-order ingest is pinned by the out-of-order UID-cursor tests in
+`object_store_test.cpp`, `object_merge_test.cpp` and `clear_dataset_test.cpp`.
 
 ### Drain lock discipline
 

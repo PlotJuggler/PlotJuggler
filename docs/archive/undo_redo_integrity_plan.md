@@ -5,7 +5,7 @@ Status: **delivered** — all five PRs merged (#373 identity, #377 time/viewport
 This document merges two prior solution attempts into one delivery plan aiming
 at completeness, correctness, and simplicity; it remains the reference for the
 shipped design. Post-merge follow-ups are ranked in the PR #382 description;
-the rank-1 item has its own draft: `was_pending_followup_plan.md`.
+the rank-1 item has its own draft: `../was_pending_followup_plan.md`.
 
 ## 1. Context & goals
 

@@ -34,11 +34,8 @@ though in shapes that differ from what this document first proposed:
 - **Time updates: `IDataWidget` in `pj_runtime`** (resolved). pj_scene2D
   widgets implement `PJ::IDataWidget` (from
   `pj_runtime/include/pj_runtime/IDataWidget.h`) and are driven by
-  `pj_runtime::PlaybackEngine`. The original proposal was a
-  `TimelineCursor` header in `pj_base` to which widgets would subscribe;
-  the as-built model instead has widgets implement an interface and the
-  runtime call them on each tick. The contract property still holds:
-  widgets only *receive* time, they never drive the clock. See §4.5 and
+  `pj_runtime::PlaybackEngine`, which calls them on each tick.
+  Widgets only *receive* time, they never drive the clock. See §4.5 and
   §6 for the current wording.
 
 - **Two-host parser ingest: protocol v4 + service-registry bindings**
@@ -431,9 +428,7 @@ Media channels share the global timeline:
   of the application's `AppSession`). pj_scene2D widgets implement
   `PJ::IDataWidget` (from `pj_runtime/IDataWidget.h`); the runtime calls
   `onTrackerTime(double time)` on each tick. Widgets never drive the
-  clock — they only receive time. (The original design called for a
-  `TimelineCursor` header in `pj_base`; the realised model puts the
-  contract in `pj_runtime` instead — see Prerequisites.)
+  clock — they only receive time.
 - **Rate hints**: DataSource plugins publish optional hints at startup
   (`preferred_fps`, `natural_range_ns`). The timeline cursor aggregates
   hints across sources and picks a default playback pace, which the user

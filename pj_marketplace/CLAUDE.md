@@ -19,11 +19,11 @@ default sessions, and offers downgrade-to-bundled. See
 - `include/pj_marketplace/` — public headers (`marketplace.hpp`, `registry_manager.hpp`,
   `registry_resolver.hpp`,
   `download_manager.hpp`, `extension_manager.hpp`, `installed_extension.hpp`,
-  `marketplace_window.hpp`, `extension_detail_dialog.hpp`, `platform_utils.hpp`,
+  `marketplace_window.hpp`, `platform_utils.hpp`,
   `qt_diagnostic_bridge.hpp`).
 - `src/core/` — registry/download/extension managers plus the pure registry candidate
   resolver; `src/ui/` — `MarketplaceWindow`
-  + `ExtensionDetailDialog` (`.ui`-driven); `tests/` — manager and store suites share
+  (`.ui`-driven); `tests/` — manager and store suites share
   the `pj_marketplace_tests` gtest runner and its offscreen-capable `QApplication` main.
 
 Consumed by the app through `pj_runtime`'s `ExtensionCatalogService`.

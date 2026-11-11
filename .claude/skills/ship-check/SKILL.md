@@ -15,7 +15,7 @@ Recorded failure modes at the finish line: shipping with a stalled recompile, mi
 
 ```bash
 ./build.sh 2>&1 | tee /tmp/build.log        # then grep Building …cpp.o for your files
-ctest --test-dir build --output-on-failure
+./test.sh                                    # headless; never bare ctest, it opens windows on the desktop
 ```
 
 ## Gate 2 — Red-test triage (decision procedure, not judgment)
@@ -24,8 +24,6 @@ ctest --test-dir build --output-on-failure
 2. **Pre-existing?** Reproduce on clean `origin/main` (primary checkout or fresh worktree). Red there too → pre-existing: **report it, don't fix it** unless asked, don't let it block.
 3. **Yours.** Red only with your diff → fix before any "done" claim.
 4. **Never** delete, weaken, `GTEST_SKIP`, or comment-out a failing test to get green. Surfacing a real failure is success; hiding it is the failure.
-
-GL-test caveat: real-GL tests must self-skip below driver-reported GL 4.5 (`glGetString(GL_VERSION)`, not the requested format) — a Windows-CI-only shader failure is usually this, not your change.
 
 ## Gate 3 — Hooks and hygiene
 
@@ -43,7 +41,7 @@ Behavior, public API, ABI structs, module ownership, or user-facing semantics ch
 
 Read the full diff once, checking exactly:
 
-- [ ] No never-link-list violation (root CLAUDE.md → Dependency rules) in any `CMakeLists.txt` / `#include` change
+- [ ] No module-dependency violation (root CLAUDE.md → Architecture and Placement rules) in any `CMakeLists.txt` / `#include` change
 - [ ] SPDX header on every new file
 - [ ] No `.ui` `objectName` renamed
 - [ ] No history comments ("previously", "changed from", "instead of", "NOT persisted")
@@ -79,10 +77,10 @@ Then **stop and ask**. Commit only on explicit confirmation in that turn.
 - **`gh run view --log-failed` usually prints nothing** (at run level and per job). Don't retry it — go straight to the job log:
   ```bash
   gh run view <run-id> --json jobs -q '.jobs[] | select(.conclusion=="failure") | "\(.databaseId) \(.name)"'
-  gh api repos/PlotJuggler/PJ4/actions/jobs/<job-id>/logs | tr -d '\r' | grep -n -E "error|FAILED|Error:" | head -40
+  gh api repos/PlotJuggler/PlotJuggler/actions/jobs/<job-id>/logs | tr -d '\r' | grep -n -E "error|FAILED|Error:" | head -40
   ```
 - **Windows CI is `continue-on-error`** even though Windows is a required target: read per-step status via `gh run view <id>`, never the run-level ✓.
-- Windows red at `conan install` with "Cannot load recipe / conanfile.py not found" after a cache HIT = **poisoned ghcr Conan cache**, not your code → bump the `CACHE_VERSION` salt in `windows-ci.yml` (tag + GHA key + restore-keys).
+- Windows red at `conan install` with "Cannot load recipe / conanfile.py not found" after a cache HIT = **poisoned Conan cache**, not your code → invalidate the key that the `Compute Conan cache key` step of `windows-ci.yml` produces.
 
 ## Rationalization table
 

@@ -9,7 +9,6 @@ This folder is for **cross-cutting documentation only** — material that doesn'
 
 Examples of what belongs here:
 
-- Porting strategy / migration notes that span multiple modules.
 - Glossary or terminology references used across the repo.
 - Architecture decision records (ADRs) for choices that affect multiple modules.
 - **Research notes** that informed multiple modules' designs — under `research/`.
@@ -39,7 +38,7 @@ Examples of what belongs here:
 | `WASM_PRESETS.md` | Guide | Browser presets: the layout contract, authoring a preset, `package_wasm.mjs --presets` and what it refuses, the sample tests, and the hosting limits and procedure. |
 | `WASM_HOSTING.md` | Guide | Serving the browser app from a robot over HTTPS with Caddy ([`wasm/Caddyfile`](./wasm/Caddyfile)), which also proxies the PlotJuggler Bridge at `/bridge`: setup, certificates, robot presets with `${deployment.ws_origin}/bridge`, troubleshooting and the spec that runs the file. |
 | `update_channels_design.md` | Design (delivered) | **How a release reaches an already-installed machine.** Why the apt repository and the Windows update repository are hosted on Cloudflare R2 rather than a metered package service, the publish orderings that keep index and payload consistent, accepted trade-offs (signing key in CI, no delta updates), and what is verified versus merely reviewed. |
-| `undo_redo_integrity_plan.md` | Plan (delivered) | Consolidated undo/redo state-integrity delivery plan: dataset identity, transactional undo, timeline-state snapshots, processor/scene persistence — five incremental PRs (#373 #377 #379 #380 #382, all merged) distilled from two prior solution branches. |
+| `archive/undo_redo_integrity_plan.md` | Retired | The delivered undo/redo state-integrity delivery plan: dataset identity, transactional undo, timeline-state snapshots, processor/scene persistence — five incremental PRs (#373 #377 #379 #380 #382, all merged) distilled from two prior solution branches. |
 | `was_pending_followup_plan.md` | Plan (draft) | Follow-up to the state-integrity epic: unified was-pending semantics for scene restore queues — serialize binding state instead of origin so exact-restore correctness is structural rather than shell-maintained. |
 | `research/dataset_format_comparison.md` | Reference | Cross-cutting comparison of MCAP, RLDS, LeRobot, Zarr. Informs pj_scene2D and any future dataset-format work. |
 | `research/rerun_notes.md` | Reference | Analysis of Rerun's 2D architecture; comparison input for pj_scene2D and (potentially) pj_scene3D. |

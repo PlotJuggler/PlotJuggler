@@ -66,7 +66,7 @@ The reasoning is that the typical PlotJuggler user doesn't want to leave the app
 The module ships **both as a standalone Qt app and as a static library embeddable in PJ4**, and CMake builds both targets unconditionally:
 
 - `pj_marketplace` — static library with the core (`DownloadManager`, `ExtensionManager`, `RegistryManager`, `PlatformUtils`, `QtDiagnosticBridge`). No UI dependency.
-- `pj_marketplace_ui` — static library with the Qt UI (`marketplace_window`, `extension_detail_dialog`).
+- `pj_marketplace_ui` — static library with the Qt UI (`marketplace_window`).
 - `pj_marketplace_app` — standalone executable that links both libraries above.
 
 The standalone executable continues to exist precisely because it lets us iterate on the marketplace without rebuilding the whole PJ4 shell. The embedded `pj_app` integration consumes the same `pj_marketplace` / `pj_marketplace_ui` libraries, so behaviour stays in sync between the two entry points.
@@ -136,8 +136,7 @@ pj_marketplace/
 │       ├── platform_utils.hpp            # OS detection, standard paths
 │       ├── qt_diagnostic_bridge.hpp      # Adapts a PJ::DiagnosticSink to a queued Qt diagnosticReported() signal
 │       ├── marketplace.hpp               # Aggregate include
-│       ├── marketplace_window.hpp        # Main dialog
-│       └── extension_detail_dialog.hpp   # Per-extension detail dialog
+│       └── marketplace_window.hpp        # Main dialog
 └── src/
     ├── core/
     │   ├── ExtensionManager.cpp
@@ -146,8 +145,7 @@ pj_marketplace/
     │   ├── PlatformUtils.cpp
     │   └── QtDiagnosticBridge.cpp
     └── ui/
-        ├── marketplace_window.{cpp,ui}
-        └── extension_detail_dialog.{cpp,ui}
+        └── marketplace_window.{cpp,ui}
 ```
 
 `src/models/` and `src/utils/` exist as reserved directories (with `.gitkeep` files) but are empty today — the model headers live in `include/pj_marketplace/` and there are no shared utilities yet.
@@ -748,7 +746,7 @@ Binary compatibility (ABI) is the biggest technical challenge:
 
 The actual CMakeLists.txt is the source of truth — see `pj_marketplace/CMakeLists.txt`. Notable points:
 
-- The marketplace splits into two static libs: `pj_marketplace` (core: ExtensionManager, RegistryManager, DownloadManager, PlatformUtils) and `pj_marketplace_ui` (MarketplaceWindow, ExtensionDetailDialog).
+- The marketplace splits into two static libs: `pj_marketplace` (core: ExtensionManager, RegistryManager, DownloadManager, PlatformUtils) and `pj_marketplace_ui` (MarketplaceWindow).
 - `pj_marketplace` depends on `pj_plugin_catalog` (from `pj_plugins/`) for embedded-DSO-manifest discovery; the standalone build inlines the same `plugin_catalog.cpp` source.
 - C++20, `-Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic`.
 - Tests are gated on `PJ_BUILD_TESTS`. `download_manager_test` and `registry_manager_test` always build; `extension_manager_test` builds only when the mock fixture plugin targets (`mock_data_source_plugin`, `mock_file_source_plugin`, `mock_data_source_v2_plugin`, `missing_id_data_source_plugin`) exist.
@@ -1177,7 +1175,7 @@ This more elaborate approach can be implemented after the POC if a richer UX is 
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Qt Widget Hierarchy (conceptual target; current code keeps cards in `MarketplaceWindow` and opens `ExtensionDetailDialog` for details):**
+**Qt Widget Hierarchy (conceptual target; the current code has a single `MarketplaceWindow` and no separate detail dialog):**
 
 ```
 MarketplaceWindow (QMainWindow or QDialog)

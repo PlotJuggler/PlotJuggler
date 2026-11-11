@@ -945,8 +945,7 @@ unit-testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   even when the TF overlay is hidden. The UI is the "Camera" section's **Follow
   frame** picker in `Scene3DConfigPanel`, with a **recenter** button
   (`recenterOnFollowFrame` → `followShift(target − current focal)`). Heading and
-  Pose (rotation-following) modes are future work; the `FollowMode` enum reserves
-  the slot.
+  Pose (rotation-following) modes are not implemented.
 - **Large-coordinate precision (camera-relative rendering).** Following a frame
   in a UTM/GPS-scale map parks the camera at ~1e5–1e7 m, where float32 keeps only
   ~0.1–0.6 m of resolution: subtracting a ~1e6 eye from a ~1e6 vertex in float
@@ -1098,8 +1097,8 @@ REQUIREMENTS §3b for the behavioural contract; the mechanics:
   since the dock only polls REGISTERED layers. The trail REBUILDS against the
   fixed frame, so the owner caches it to hand to a trail enabled later.
   Persistence nests the trail's `<trail>` element inside `<poses_in_frame>`
-  (presence == enabled; `isLeafPayloadWithOptionalChild` admits exactly that one
-  child), reusing `TrailLayer::xmlSaveState`/`xmlLoadState`.
+  (presence == enabled; the layer's `isLeafPayload` check admits exactly that one
+  nested tag), reusing `TrailLayer::xmlSaveState`/`xmlLoadState`.
 - **Entry points.** Right-click on a TF frame: the view's `frameAt` pick emits
   `frameContextMenuRequested`, and the dock's menu offers Create trail / Set as
   fixed frame / Follow this frame. The pick walks the TF tree only, so pose
@@ -1542,9 +1541,9 @@ this on the live path:
   (sensor epoch) and an optional `lifetime_ns`. Under streaming the ObjectStore
   entry is *host*-stamped (tracker clock), a different epoch. Expiry therefore
   compares against the ingest timestamp, not `entity.timestamp`; otherwise every
-  finite-lifetime entity expires the instant it is folded. The layer keeps a
-  parallel map `entity_expiry_anchor_ns_` (keyed like `entities_`) holding each
-  entity's ingest timestamp; `expiredAt()` tests `anchor + lifetime < tracker`
+  finite-lifetime entity expires the instant it is folded. `SceneEntitiesModelState` keeps a
+  parallel map holding each
+  entity's ingest timestamp; `sceneEntityExpiredAt()` tests `anchor + lifetime < tracker`
   (overflow-safe; `lifetime == 0` ⇒ never). The single erase choke-point
   `eraseEntity()` drops the entity and its anchor in lockstep. Deletions carry
   sensor-epoch timestamps, so `deletion.timestamp <= entity.timestamp` stays on
@@ -1552,7 +1551,7 @@ this on the live path:
 - **Decoded-batch snapshot cache.** Backward scrubs and jumps rebuild the entity
   map from scratch; re-parsing heavy embedded glTF every time would hitch the
   scrub. `snapshot_cache_` (keyed by `SequentialUID`, byte-budgeted at
-  `kSnapshotCacheMaxBytes`, oldest-UID eviction) holds decoded batches so a
+  `kSceneLimits.max_model_snapshot_cache_bytes`, oldest-UID eviction) holds decoded batches so a
   rebuild re-folds without re-parsing. Each entry records `store_ns` alongside the
   batch, so a cache-hit re-fold restores the same lifetime anchor a fresh parse
   would have produced.
