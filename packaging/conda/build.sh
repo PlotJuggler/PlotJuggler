@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # rattler-build's build script for recipe.yaml (runs inside the host env).
-# Same build type and debug-info level as the AppImage and .deb. A plain
-# configure/build/install: the app's install rules put plotjuggler4 and
-# pj-plugin-check side by side in bin/ (and the desktop entry and icons on
-# Linux); Qt, Python and every library come from the environment.
+# Same build type and debug-info level as the AppImage and .deb. Builds the
+# app closure only and installs the two binaries the app needs side
+# by side; Qt, Python and every library come from the environment.
 set -euo pipefail
 
 cmake -G Ninja -S . -B build-conda ${CMAKE_ARGS} \
@@ -18,5 +17,8 @@ cmake -G Ninja -S . -B build-conda ${CMAKE_ARGS} \
   -DPJ_VERSION="${PKG_VERSION}" \
   -DPJ_INSTALLATION=conda \
   -DPJ_QT_MIN_VERSION="${PJ_QT_MIN_VERSION}"
-cmake --build build-conda
-cmake --install build-conda
+cmake --build build-conda --target pj_app
+
+# No `install -D`: BSD install on macOS lacks it.
+mkdir -p "${PREFIX}/bin"
+install -m755 build-conda/pj_app/plotjuggler4 build-conda/pj_app/pj-plugin-check "${PREFIX}/bin/"

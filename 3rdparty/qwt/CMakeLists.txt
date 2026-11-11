@@ -8,9 +8,10 @@
 #    sources; PlotJuggler customizations live in pj_plotting (PlotScaleDraw,
 #    curve-style mapping in PlotWidgetBase).
 #
-#  - PJ_SYSTEM_QWT=ON (the pixi/conda path): link the environment's prebuilt
-#    shared Qwt (conda-forge `qwt`, built against the same qt6-main the env
-#    provides). The pixi `configure` task turns this on.
+#  - PJ_SYSTEM_QWT=ON (the pixi/conda path, Linux only): link the
+#    environment's prebuilt shared Qwt (conda-forge `qwt`, built against the
+#    same qt6-main the env provides). The pixi `configure` task turns this on;
+#    Windows always uses the FetchContent build (see the guard below).
 
 option(PJ_SYSTEM_QWT
     "Link the environment's prebuilt Qwt (conda/pixi) instead of downloading and building the pinned release" OFF)
@@ -32,6 +33,13 @@ set(PJ_QWT_QT_LIBS
 )
 
 if(PJ_SYSTEM_QWT)
+    if(WIN32)
+        # conda-forge ships qwt as a DLL on win-64, and MSVC emits the members
+        # of QwtSeriesData<QPointF> both as qwt.dll exports and as local
+        # instantiations in our QwtSeriesData subclasses -> LNK2005 at link.
+        # Windows must use the default FetchContent static build.
+        message(FATAL_ERROR "PJ_SYSTEM_QWT is not supported on Windows (shared-Qwt template-export collision); use the default FetchContent build")
+    endif()
     find_path(PJ_QWT_INCLUDE_DIR NAMES qwt_plot.h PATH_SUFFIXES qwt qwt6 REQUIRED)
     find_library(PJ_QWT_LIBRARY NAMES qwt REQUIRED)
     # find_path/find_library search independently; make sure the headers are the
@@ -51,14 +59,6 @@ if(PJ_SYSTEM_QWT)
     # SYSTEM: same third-party-header treatment as the FetchContent path below.
     target_include_directories(plotjuggler_qwt SYSTEM INTERFACE ${PJ_QWT_INCLUDE_DIR})
     target_link_libraries(plotjuggler_qwt INTERFACE ${PJ_QWT_LIBRARY} ${PJ_QWT_QT_LIBS})
-    if(WIN32)
-        # conda-forge's qwt is a DLL on Windows. Its consumers define QWT_DLL
-        # (as Qwt's own qwt.prf does) so QWT_EXPORT becomes dllimport: the
-        # QwtSeriesData<QPointF> members that qwt.dll exports through its
-        # exported subclasses are then imported, instead of also being
-        # instantiated in our QwtSeriesData subclasses (LNK2005).
-        target_compile_definitions(plotjuggler_qwt INTERFACE QWT_DLL)
-    endif()
     return()
 endif()
 
