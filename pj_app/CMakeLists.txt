@@ -140,18 +140,21 @@ if(TARGET pj_scene3d_widgets)
         src/ui/Scene3DConfigPanel.cpp
         src/ui/Scene3DConfigPanel.h)
 endif()
-# The MCP server and its stdio bridge (docs/ARCHITECTURE.md "MCP server"): desktop only, since a
-# page can neither listen on a socket nor be spawned. The agent tools are pj_runtime's pj_agent_tools.
+# The MCP server (docs/MCP_SERVER.md). The browser build cannot listen, so there it answers only
+# what its relay link brings in (McpBrowserLink); the stdio bridge needs a process, so it is desktop
+# only. The agent tools are pj_runtime's pj_agent_tools.
+target_sources(pj_app_shell PRIVATE
+    src/mcp/McpBrowserLink.cpp
+    src/mcp/McpBrowserLink.h
+    src/mcp/McpProtocol.cpp
+    src/mcp/McpProtocol.h
+    src/mcp/McpServer.cpp
+    src/mcp/McpServer.h
+    src/mcp/McpServerTools.cpp)
 if(NOT EMSCRIPTEN)
-    target_sources(pj_app_shell PRIVATE
-        src/mcp/McpBridge.cpp
-        src/mcp/McpProtocol.cpp
-        src/mcp/McpProtocol.h
-        src/mcp/McpServer.cpp
-        src/mcp/McpServer.h
-        src/mcp/McpServerTools.cpp)
-    target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
+    target_sources(pj_app_shell PRIVATE src/mcp/McpBridge.cpp)
 endif()
+target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
 
 if(EMSCRIPTEN)
     # Lazily read browser picks; the page side is browser_picked_file.js, linked into pj_app below.

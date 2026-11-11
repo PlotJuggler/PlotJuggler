@@ -15,7 +15,9 @@
 #include <QRhiWidget>
 #include <QSaveFile>
 #include <QScopedValueRollback>
+#ifndef PJ_TARGET_WASM
 #include <QTcpSocket>
+#endif
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -54,8 +56,10 @@ namespace {
 constexpr int kClientIdleMs = 120'000;
 /// How often a deferred result (an object evaluation) is polled, as the Assistant's GUI tick does.
 constexpr int kResumeIntervalMs = 50;
+#ifndef PJ_TARGET_WASM
 /// The socket property naming the token its request was accepted with, so a revoke can close it.
 constexpr char kTokenProperty[] = "pj_mcp_token";
+#endif
 /// loadedSummary's caps: topics listed, numeric field names per topic, and bytes (where the topics stop).
 constexpr int kSummaryTopics = 60;
 constexpr std::size_t kSummaryFields = 40;
@@ -109,6 +113,7 @@ McpServer::McpServer(MainWindow& window) : QObject(nullptr), window_(window) {
   });
   resume_tick_.setInterval(kResumeIntervalMs);
   connect(&resume_tick_, &QTimer::timeout, this, &McpServer::resumeDeferred);
+#ifndef PJ_TARGET_WASM
   connect(&server_, &QTcpServer::newConnection, this, [this] {
     while (QTcpSocket* socket = server_.nextPendingConnection()) {
       if (open_sockets_ >= mcp::kMaxOpenSockets) {
@@ -137,9 +142,11 @@ McpServer::McpServer(MainWindow& window) : QObject(nullptr), window_(window) {
     return;
   }
   qCInfo(mcp::lcMcp).noquote() << "listening on http://127.0.0.1:" + QString::number(server_.serverPort()) + "/mcp";
+#endif
 }
 
 McpServer::~McpServer() {
+#ifndef PJ_TARGET_WASM
   if (!discovery_path_.isEmpty()) {
     QFile::remove(discovery_path_);
   }
@@ -149,6 +156,7 @@ McpServer::~McpServer() {
   for (QTcpSocket* socket : server_.findChildren<QTcpSocket*>()) {
     delete socket;
   }
+#endif
   // A pending evaluation releases itself through the session's services: drop it first.
   resume_tick_.stop();
   deferred_.clear();
@@ -160,6 +168,7 @@ void McpServer::openPublicAccess() {
     return;
   }
   public_token_ = randomToken();
+#ifndef PJ_TARGET_WASM
   // A crashed instance leaves its file (and token) behind: the bridge would skip it, but nothing
   // else ever removes it.
   const QDir instances(mcp::instancesDir());
@@ -186,16 +195,19 @@ void McpServer::openPublicAccess() {
     qCWarning(mcp::lcMcp).noquote() << "cannot write the discovery file" << discovery_path_;
     discovery_path_.clear();
   }
+#endif
 }
 
 void McpServer::closePublicAccess() {
   if (!publicAccess()) {
     return;
   }
+#ifndef PJ_TARGET_WASM
   if (!discovery_path_.isEmpty()) {
     QFile::remove(discovery_path_);
     discovery_path_.clear();
   }
+#endif
   dropCallsOf(std::exchange(public_token_, {}));
   agent_sessions_.clear();  // after the results pointing into them
   idle_.stop();
@@ -225,13 +237,16 @@ void McpServer::dropCallsOf(const QByteArray& token) {
   if (deferred_.empty()) {
     resume_tick_.stop();
   }
+#ifndef PJ_TARGET_WASM
   for (QTcpSocket* socket : server_.findChildren<QTcpSocket*>()) {
     if (socket->property(kTokenProperty).toByteArray() == token) {
       socket->abort();
     }
   }
+#endif
 }
 
+#ifndef PJ_TARGET_WASM
 void McpServer::onReadyRead(QTcpSocket* socket) {
   auto it = pending_.find(socket);
   if (it == pending_.end()) {
@@ -265,7 +280,7 @@ void McpServer::handle(QTcpSocket* socket, const mcp::HttpRequest& request) {
   // one (if any) matched.
   int refused = 401;
   Caller caller;
-  caller.socket = guard;
+  caller.connection = socket;
   const auto accept = [&](const QByteArray& token) {
     const int access = mcp::checkAccess(request, token);
     if (access == 0) {
@@ -293,26 +308,45 @@ void McpServer::handle(QTcpSocket* socket, const mcp::HttpRequest& request) {
     respond(404);
     return;
   }
+  // The bridge names its client in a header; a direct 2026 client names itself in _meta.
+  dispatch(
+      std::move(caller), request.body, QString::fromUtf8(request.headers.value(mcp::kClientHeader)),
+      [respond](int status, const QByteArray& body) { respond(status, body); });
+}
+#endif
+
+void McpServer::handleRelayed(
+    const QByteArray& body, const QString& client, QObject* connection, std::function<void(QByteArray)> send) {
+  const auto respond = [send = std::move(send)](int, const QByteArray& response) { send(response); };
+  if (!publicAccess()) {
+    const mcp::RpcMessage message = mcp::parseRpcMessage(body.toStdString());
+    respond(200, QByteArray::fromStdString(mcp::errorResponse(message.id, -32001, "MCP access is closed").dump()));
+    return;
+  }
+  dispatch({.token = public_token_, .owner = {}, .connection = connection}, body, client, respond);
+}
+
+void McpServer::dispatch(
+    Caller caller, const QByteArray& body, const QString& header_client,
+    std::function<void(int status, QByteArray body)> respond) {
   const auto send = [respond](const json& response) {
     respond(200, QByteArray::fromStdString(response.dump(-1, ' ', false, json::error_handler_t::replace)));
   };
-  const mcp::RpcMessage message = mcp::parseRpcMessage(request.body.toStdString());
+  const mcp::RpcMessage message = mcp::parseRpcMessage(body.toStdString());
   try {
     if (message.error) {
       send(*message.error);
       return;
     }
     if (message.notification) {
-      respond(202);
+      respond(202, {});
       return;
     }
     const mcp::ToolSet tool_set = isPublic(caller) ? mcp::ToolSet::kFull : mcp::ToolSet::kAgentOnly;
     // Only a public request takes the client's name: a plugin token acts as its plugin, whatever
     // name the client claims.
     if (tool_set == mcp::ToolSet::kFull) {
-      // The bridge names its client in a header; a direct 2026 client names itself in _meta.
-      QString client =
-          QString::fromStdString(mcp::printableClientName(request.headers.value(mcp::kClientHeader).toStdString()));
+      QString client = QString::fromStdString(mcp::printableClientName(header_client.toStdString()));
       if (client.isEmpty()) {
         client = QString::fromStdString(mcp::printableClientName(mcp::clientName(message.params)));
       }
@@ -564,7 +598,7 @@ void McpServer::resumeDeferred() {
     }
     Deferred item = std::move(*due);
     deferred_.erase(due);
-    if (item.caller.socket == nullptr || !authorized(item.caller)) {
+    if (item.caller.connection == nullptr || !authorized(item.caller)) {
       continue;  // nobody would read the result
     }
     if (QApplication::activeModalWidget() != nullptr && !mcp::isReadOnlyTool(item.tool)) {
@@ -672,6 +706,7 @@ quint32 McpServer::resolveDataset(const json& selector) const {
   return 0;
 }
 
+#ifndef PJ_TARGET_WASM
 McpEndpointHost::McpEndpointHost(std::function<McpServer*()> server, PJ_service_registry_t services, QString owner)
     : server_on_demand_(std::move(server)), services_(services), owner_(std::move(owner)) {}
 
@@ -731,5 +766,6 @@ void McpEndpointHost::release() {
   url_.clear();
   token_.clear();
 }
+#endif
 
 }  // namespace PJ

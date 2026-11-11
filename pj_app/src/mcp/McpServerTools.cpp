@@ -38,6 +38,11 @@
 #include "pj_runtime/Time.h"
 #include "pj_runtime/agent_tools/derived_recipes.hpp"
 #include "pj_scripting/filter_catalogue.h"
+#ifdef PJ_TARGET_WASM
+#include "mcp/McpBrowserLink.h"
+#include "pj_runtime/BrowserFetch.h"
+#include "pj_runtime/PresetCatalog.h"
+#endif
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
 using namespace Qt::StringLiterals;
@@ -240,13 +245,17 @@ std::string npyHeader(const json& names, std::size_t rows) {
 const std::unordered_map<std::string, McpServer::AppTool>& McpServer::appTools() {
   static const std::unordered_map<std::string, AppTool> tools = {
       {"get_status", &McpServer::getStatus},
+#ifndef PJ_TARGET_WASM  // no feature catalog in the browser
       {"about", &McpServer::about},
+#endif
       {"open_file", &McpServer::openFile},
       {"reload_file", &McpServer::reloadFile},
       {"unload_file", &McpServer::unloadFile},
       {"start_stream", &McpServer::startStream},
       {"stop_stream", &McpServer::stopStream},
+#ifndef PJ_TARGET_WASM  // the file would land in the page's memory, out of the agent's reach
       {"export_series", &McpServer::exportSeries},
+#endif
       {"add_script_series", &McpServer::addScriptSeries},
       {"add_filter", &McpServer::addFilter},
       {"remove_script_series", &McpServer::removeScriptSeries},
@@ -323,16 +332,15 @@ void McpServer::getStatus(const json&, const Caller& caller, Reply reply) {
 }
 
 void McpServer::about(const json&, const Caller&, Reply reply) {
+#ifdef PJ_TARGET_WASM
+  reply(fail("no feature catalog"));
+#else
   FeatureCatalogHost* features = window_.featureCatalog();
   reply(features != nullptr ? ok(json::parse(features->document(), nullptr, false)) : fail("no feature catalog"));
+#endif
 }
 
 void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
-  const QFileInfo info(qs(args, "path"));
-  if (!info.isAbsolute() || !info.isFile()) {
-    reply(fail("path must be an absolute path to an existing file"));
-    return;
-  }
   LoadHints hints;
   hints.still_allowed = stillAuthorized(caller);  // the load may wait in the queue, then for the user
   const bool ask_user = args.value("ask_user", false);
@@ -342,8 +350,48 @@ void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
   } else if (const auto config = args.find("config"); config != args.end() && config->is_object()) {
     hints.preset_config_json = QString::fromStdString(config->dump());
   }
-  const LoadRequestId ticket =
-      window_.fileLoader().loadFileTicketed(LoadInput::fromNativePath(info.absoluteFilePath()), nullptr, hints);
+#ifdef PJ_TARGET_WASM
+  // The page cannot read the agent's disk: the relay serves the file the agent named and passes its
+  // url (and the file's name) instead of the path. The download streams into a staged MEMFS file.
+  const QUrl url(qs(args, "url"));
+  if (!McpBrowserLink::acceptableRelay(url)) {
+    reply(fail("in the browser, open_file needs the PlotJuggler relay (pj_mcp_relay.py) to serve the file"));
+    return;
+  }
+  const QString name = args.contains("name") ? qs(args, "name") : url.fileName();
+  BrowserFileStore::StageResult staged = agent_files_.reserve(name);
+  if (!staged.input.has_value()) {
+    reply(fail("cannot stage " + name.toStdString() + ": " + staged.error.toStdString()));
+    return;
+  }
+  const QString staged_path = staged.input->backing_path;
+  browserFetchToFile(
+      url, staged_path, kMaxPresetDataBytes, std::chrono::seconds(60),
+      [self = QPointer<McpServer>(this), caller, hints = std::move(hints), reply,
+       input = std::move(*staged.input)](BrowserFetchResult file) mutable {
+        // Dropping `input` (every early return) releases its lease, which removes the partial file.
+        if (self == nullptr || !self->authorized(caller)) {
+          return;
+        }
+        if (!file.error.isEmpty()) {
+          reply(fail("cannot download the file from the relay: " + file.error.toStdString()));
+          return;
+        }
+        input.content_sha256 = std::move(file.sha256);
+        self->startLoad(std::move(input), std::move(hints), std::move(reply));
+      });
+#else
+  const QFileInfo info(qs(args, "path"));
+  if (!info.isAbsolute() || !info.isFile()) {
+    reply(fail("path must be an absolute path to an existing file"));
+    return;
+  }
+  startLoad(LoadInput::fromNativePath(info.absoluteFilePath()), std::move(hints), std::move(reply));
+#endif
+}
+
+void McpServer::startLoad(LoadInput input, LoadHints hints, Reply reply) {
+  const LoadRequestId ticket = window_.fileLoader().loadFileTicketed(std::move(input), nullptr, hints);
   if (ticket == 0) {
     reply(fail("load rejected (no plugin for this file type?)"));
     return;

@@ -547,14 +547,15 @@ imports it from the embedded stdlib zip.
 
 ## MCP server
 
-AI agents read and drive a running PlotJuggler over the Model Context Protocol, desktop only (`src/mcp/` is left out
-of the browser build). External agents come in through the stdio bridge `--mcp-bridge` with the public token (on
-by default); toolbox plugins lease a private, agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The design
+AI agents read and drive a running PlotJuggler over the Model Context Protocol. External agents come in through
+the stdio bridge `--mcp-bridge` with the public token (on by default); toolbox plugins lease a private,
+agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The browser build, which cannot listen, links out to an
+agent's relay instead (`McpBrowserLink`, `?mcp=`), and has neither bridge nor plugin endpoint. The design
 (tool sets, tokens and owners, lifetimes and revocation, discovery, the user-first rules, security, tests) is in
 [`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md).
 
-What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp`, `McpServer` (with
-`McpEndpointHost`), `McpServerTools.cpp` (the app tools over `MainWindow`'s public "agent control" block). The
+What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp` (desktop), `McpServer` (with
+`McpEndpointHost`, desktop), `McpBrowserLink`, `McpServerTools.cpp` (the app tools over `MainWindow`'s public "agent control" block). The
 agent tools come from `pj_runtime`'s `pj_agent_tools`. The shell's part of the teardown order:
 `~ToolboxPanelSession` resets `mcp_endpoint` after `handle` and before every service, and `~MainWindow` destroys
 the server right after `teardownAllToolboxes`.
