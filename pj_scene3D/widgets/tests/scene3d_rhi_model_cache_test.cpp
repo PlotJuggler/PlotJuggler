@@ -369,6 +369,9 @@ TEST_F(Scene3dRhiModelCacheTest, VertexColorAndTextureShareTheSrgbDecode) {
   FakeModelLayer layer{kLink};
   layer.put("cube", cube(1.0F, textured), {0.5, 0.0, 0.5});
   ModelView scene;
+  // A fixed exposure, not the default look: it sets how far the dark cube sits
+  // from black and how far apart the two decodes land.
+  scene.view().compositeParams().exposure = 1.3F;
   SKIP_UNLESS(scene.show({&layer}));
   const auto center = [&](MeshData mesh) -> std::optional<QRgb> {
     layer.put("cube", std::move(mesh), {0.5, 0.0, 0.5});
