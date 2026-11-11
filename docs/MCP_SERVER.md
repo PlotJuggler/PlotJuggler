@@ -184,7 +184,8 @@ The browser build's server does not listen; the page links to a relay instead. T
 listens on `127.0.0.1` (first free port of 7381-7390). Its `launch` tool opens the hosted app with
 `?mcp=http://127.0.0.1:<port>/?key=<secret>`; `main.cpp` hands that to `MainWindow::connectMcpRelay`, which opens public access and
 starts an `McpBrowserLink` (only a plain http, loopback relay with a port: `McpBrowserLink::acceptableRelay`). The
-desktop does the same with `--mcp-relay <url>`.
+desktop does the same with `--mcp-relay <url>`, the key copied from the relay's cache
+(`~/.cache/plotjuggler-agent/relay-key`).
 
 - **Protocol** (relay base `R`, JSON bodies, every request with `X-PJ-Link: <the url's key>`):
   - `POST R/link/hello {"title", "protocol": 1, "browser"}` → `{"id"}`: the page is one relay instance
@@ -197,9 +198,11 @@ desktop does the same with `--mcp-relay <url>`.
     browser's `open_file` streams the url into a `BrowserFileStore` file (at most `kMaxPresetDataBytes`) and loads it
     like a picked file, the desktop's uses the path.
 - **Who gets in.** Each relayed message is answered as the public client the relay names (its MCP client's name,
-  so `agent-<client>`). The relay mints a random secret per run and hands it out only in the URL `launch` opens, and
-  answers `/link/*` only with it, so no other page or local process can join as PlotJuggler and take the agent's
-  calls. A browser sends the custom `X-PJ-Link` header only after a CORS preflight, which the relay answers only for
+  so `agent-<client>`). The relay answers `/link/*` only with its secret, random and kept in the user's cache (mode
+  0600, so a tab survives a relay restart: the new run answers 404 and the page says hello again), which `launch` hands
+  out in the URL it opens; pages and processes without it cannot join as PlotJuggler and take the agent's calls. The
+  secret is as private as that URL: browser history, the browser's command line, the app server's request log (it is
+  a query item), and it is only good against the loopback relay. A browser sends the custom `X-PJ-Link` header only after a CORS preflight, which the relay answers only for
   its allowed origins (the hosted app, plus `PJ_RELAY_ORIGINS`, e.g. a local `serve_wasm.mjs`), with
   `Access-Control-Allow-Private-Network` for Chrome's local network access. The page in turn trusts whatever relay
   its `?mcp=` names, so it accepts loopback relays only: a link to `?mcp=` is a request to be driven by that relay,
