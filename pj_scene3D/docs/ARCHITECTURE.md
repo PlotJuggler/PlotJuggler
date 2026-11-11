@@ -312,7 +312,8 @@ meshes, then the uniforms.
 **Linear light and grading.** Every colour input is linearized before it reaches
 the HDR target: colormaps and per-point colours in the vertex stage, vertex and
 base colours, theme colours (backdrop, grid), and base-colour and emissive
-textures sampled as sRGB. `present.frag` applies exposure, AO, the EDL factor,
+textures, which upload as plain RGBA8 and `model.frag` decodes (Qt's OpenGL
+backend ignores `QRhiTexture::sRGB`). `present.frag` applies exposure, AO, the EDL factor,
 the tonemap (None, ACES, AgX, Khronos PBR Neutral; the AgX matrices are
 column-major), saturation and a manual sRGB encode. The knobs are the view's
 `CompositeParams`; their defaults live in `scene_look_defaults.h`, the source of
@@ -595,7 +596,7 @@ per submesh and one instance per submesh draw. Its caches:
   A kept mesh whose material bindings were dropped gets them rebuilt.
 - Decoded textures live in one pass-level cache keyed by `TextureSource::key` (a
   content hash for embedded images, the resolved path for files) and colour space
-  (sRGB for base colour and emissive), reference-counted by the meshes that bind
+  (sRGB for base colour and emissive, decoded in the shader), reference-counted by the meshes that bind
   them: shared across the view's meshes and layers, freed with the last user. The
   per-mesh and per-layer pixel budgets still charge every mesh that uses one.
 - Wireframe edge lists are built on a mesh's first wireframe draw; the CPU copy

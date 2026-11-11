@@ -109,7 +109,7 @@ void main() {
     }
     if (model_params.x > 0.5) {
         vec4 sampled_base = texture(base_color_map, model_uv);
-        base_rgb *= sampled_base.rgb;
+        base_rgb *= srgbToLinear(sampled_base.rgb);
         base_alpha *= sampled_base.a;
     }
     if (model_params.y > 0.5 && model_params.y < 1.5 && base_alpha < model_params.z) {
@@ -157,7 +157,7 @@ void main() {
 
     vec3 emissive = model_emissive_factor.rgb;
     if (model_texture_flags.w > 0.5) {
-        emissive *= texture(emissive_map, model_uv).rgb;
+        emissive *= srgbToLinear(texture(emissive_map, model_uv).rgb);
     }
     color += emissive;
     vec3 output_color = max(color, vec3(0.0));
