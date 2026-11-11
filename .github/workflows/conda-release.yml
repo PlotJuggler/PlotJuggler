@@ -82,7 +82,7 @@ jobs:
       - name: Build PJ4's dependency packages
         run: |
           pixi exec --spec "rattler-build>=0.66,<0.67" rattler-build build \
-            --recipe recipes/luau --recipe recipes/libmcap --recipe recipes/cloudini \
+            --recipe recipes/luau --recipe recipes/libmcap \
             --recipe recipes/kissfft \
             -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 
