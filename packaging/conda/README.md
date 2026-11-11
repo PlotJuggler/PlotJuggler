@@ -22,8 +22,13 @@ pixi exec --spec "rattler-build>=0.66,<0.67" rattler-build build \
 packaging/conda/build_conda.sh --channel ./local-channel   # -> conda-output/
 ```
 
+That builds all four variants (below). `--variant python=3.14 --variant ffmpeg=9.0`
+builds one, and `CCACHE_DIR=<dir>` in the environment compiles through ccache,
+so the variants and later builds reuse each other's objects.
+
 Release tags publish both through `.github/workflows/conda-release.yml`, for
-linux-64 and osx-arm64 (macOS 13+).
+linux-64 and osx-arm64 (macOS 13+). Pull requests that touch the recipes build
+one variant there.
 
 Publishing requires the repository Actions secret `PREFIX_API_KEY`, with write
 access to the `plotjuggler` channel. Tag builds check this before compiling.
