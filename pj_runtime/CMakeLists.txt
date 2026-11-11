@@ -180,30 +180,28 @@ endif()
 
 # The agent tool layer (MIT, see CLAUDE.md): the tool registry and executors pj_app's MCP server
 # runs over a toolbox's host views. Its own Qt-free library, so a consumer (pj_app's unit tests)
-# links it without pj_runtime's closure. Desktop only, like the MCP server.
-if(NOT EMSCRIPTEN)
-    add_library(pj_agent_tools STATIC
-        src/agent_tools/derived_recipes.cpp
-        src/agent_tools/derived_tools.cpp
-        src/agent_tools/read_series.cpp
-        src/agent_tools/tool_registry.cpp
-        src/agent_tools/view_tools.cpp
-        src/agent_tools/tools_internal.hpp
-        include/pj_runtime/agent_tools/derived_recipes.hpp
-        include/pj_runtime/agent_tools/object_ops_catalog.hpp
-        include/pj_runtime/agent_tools/series_stats.hpp
-        include/pj_runtime/agent_tools/tool_context.hpp
-        include/pj_runtime/agent_tools/tool_registry.hpp
-    )
-    target_include_directories(pj_agent_tools PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    )
-    target_compile_options(pj_agent_tools PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(pj_agent_tools PUBLIC
-        plotjuggler_sdk::base
-        nlohmann_json::nlohmann_json
-    )
-endif()
+# links it without pj_runtime's closure.
+add_library(pj_agent_tools STATIC
+    src/agent_tools/derived_recipes.cpp
+    src/agent_tools/derived_tools.cpp
+    src/agent_tools/read_series.cpp
+    src/agent_tools/tool_registry.cpp
+    src/agent_tools/view_tools.cpp
+    src/agent_tools/tools_internal.hpp
+    include/pj_runtime/agent_tools/derived_recipes.hpp
+    include/pj_runtime/agent_tools/object_ops_catalog.hpp
+    include/pj_runtime/agent_tools/series_stats.hpp
+    include/pj_runtime/agent_tools/tool_context.hpp
+    include/pj_runtime/agent_tools/tool_registry.hpp
+)
+target_include_directories(pj_agent_tools PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_compile_options(pj_agent_tools PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(pj_agent_tools PUBLIC
+    plotjuggler_sdk::base
+    nlohmann_json::nlohmann_json
+)
 
 if(PJ_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)

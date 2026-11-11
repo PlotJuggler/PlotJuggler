@@ -455,6 +455,7 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] FeatureCatalogHost* featureCatalog() const {
     return feature_catalog_.get();
   }
+#endif
 
   // Preferences key (bool, default on): open MCP public access so AI agents can control this
   // window. Read at startup by main.cpp, which ignores it for an unattended run; the Preferences
@@ -470,7 +471,11 @@ class MainWindow : public QMainWindow {
   // server keeps listening, refusing everything but toolbox plugins' private endpoints.
   void closeMcpPublicAccess();
   [[nodiscard]] bool mcpPublicAccess() const;
-#endif
+  // Opens public access and links it to the agent relay at `relay` (McpBrowserLink): how the
+  // browser build, which cannot listen, reaches an agent (the page's ?mcp= parameter; --mcp-relay
+  // on the desktop). False, after a diagnostic, when `relay` is not a loopback http URL or the
+  // server cannot start. A second call replaces the link.
+  bool connectMcpRelay(const QUrl& relay);
 
  public slots:
   // Apply-only: clamp, update chrome_metrics_, broadcast chromeMetricsChanged.
@@ -1539,11 +1544,10 @@ class MainWindow : public QMainWindow {
   std::shared_ptr<ToolboxPanelSession> buildToolboxPanelSession(
       const RuntimeToolboxPlugin& toolbox, const QString& plugin_id, const QString& source,
       const std::function<void(const QString&, const QString&)>& report_error);
-#ifndef PJ_TARGET_WASM
-  // The MCP server, started on a free 127.0.0.1 port when none runs; nullptr when it cannot
-  // listen (reported to the diagnostics once per run of failures, not per call).
+  // The MCP server, started on a free 127.0.0.1 port when none runs (in the browser, where it
+  // does not listen, just started); nullptr when it cannot listen (reported to the diagnostics once
+  // per run of failures, not per call).
   McpServer* ensureMcpServer();
-#endif
 
   // The registry of live toolboxes, one presenter per plugin id whatever its
   // presentation. registerToolbox requires the id to be absent; teardownToolbox
@@ -1642,6 +1646,7 @@ class MainWindow : public QMainWindow {
   // Backs "pj.feature_catalog.v1" for every toolbox session. Declared before
   // session_ and the toolbox registry, so it outlives every plugin bound to it.
   std::unique_ptr<FeatureCatalogHost> feature_catalog_;
+#endif
   // The MCP server, from the first need (public access or a plugin's endpoint) until ~MainWindow
   // destroys it, after the toolboxes (whose endpoints revoke their tokens) and before the services
   // its agent sessions point into.
@@ -1650,7 +1655,9 @@ class MainWindow : public QMainWindow {
   bool mcp_listen_failure_reported_ = false;
   // Status-bar indicator naming the active MCP client; created on first use.
   QLabel* mcp_client_label_ = nullptr;
-#endif
+  // The relay link connectMcpRelay made (a child of mcp_server_, so it goes with it; its destructor
+  // touches nothing of the server); null for none. While set the browser skips its welcome dialog.
+  QPointer<QObject> mcp_relay_link_;
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
   // App-wide QSettings instance injected into each Scene3DDockWidget

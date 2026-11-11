@@ -21,6 +21,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
+#include <QUrlQuery>
 #include <Qt>
 #ifndef PJ_TARGET_WASM
 #include <backward.hpp>
@@ -467,6 +468,12 @@ int main(int argc, char* argv[]) {
       u"Let AI agents control this window for this run (MCP server on a free 127.0.0.1 port; see --mcp-bridge), "
       "whatever the Preferences setting."_s);
   parser.addOption(mcp_option);
+  const QCommandLineOption mcp_relay_option(
+      u"mcp-relay"_s,
+      u"Link this window to an AI agent through the relay at <url>, its secret in the url's key (pj_mcp_relay.py, "
+      "as the browser build's ?mcp=<url> does)."_s,
+      u"url"_s);
+  parser.addOption(mcp_relay_option);
   // Registered only so --help lists it; handled at the top of main().
   parser.addOption(QCommandLineOption(
       u"mcp-bridge"_s, u"Speak MCP over stdio, forwarding to a running PlotJuggler with MCP on (for agents)."_s));
@@ -624,6 +631,9 @@ int main(int argc, char* argv[]) {
   if (parser.isSet(mcp_option) || (attended && QSettings().value(PJ::MainWindow::kMcpServerKey, true).toBool())) {
     window.openMcpPublicAccess();
   }
+  if (parser.isSet(mcp_relay_option)) {
+    window.connectMcpRelay(QUrl(parser.value(mcp_relay_option)));
+  }
 
   // Before any layout restore: a previous run that died with Custom Widget plugins live is
   // reported, and an attended run asks whether to disable them.
@@ -652,6 +662,11 @@ int main(int argc, char* argv[]) {
   // The page names its preset index (beside it) and an optional ?preset= deep link.
   const QUrl page_url(QString::fromStdString(emscripten::val::global("location")["href"].as<std::string>()));
   window.setDeploymentPageUrl(page_url);
+  // ?mcp=<relay>: the plotjuggler-agent plugin's relay opened this page for an AI agent (its launch
+  // tool); connectMcpRelay accepts only a loopback http relay.
+  if (const QString relay = QUrlQuery(page_url).queryItemValue(u"mcp"_s, QUrl::FullyDecoded); !relay.isEmpty()) {
+    window.connectMcpRelay(QUrl(relay));
+  }
   QTimer::singleShot(0, &window, [&window, page_url]() { window.startBrowserPresets(page_url); });
 #endif
 

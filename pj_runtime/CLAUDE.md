@@ -60,7 +60,7 @@ Data processors and derived data:
 - `DerivedObjects.h`: layout persistence and the one restore of all derived recipes across the engines (derived_objects §13).
 - `CustomTopicsPolicy.h`: why the Custom Topics editor may not delete a row.
 
-Agent tools (`agent_tools/`, own target `pj_agent_tools`, desktop only, Qt-free; [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Agent tools"):
+Agent tools (`agent_tools/`, own target `pj_agent_tools`, Qt-free; [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Agent tools"):
 - **`agent_tools/` is MIT-licensed code (several authors) inside this MPL module**: its files keep their `SPDX-License-Identifier: MIT` and copyright lines; do not relicense them.
 - `tool_registry.hpp`, `tool_context.hpp`: the tool catalog and no-throw dispatch the MCP server serves; the `ToolContext` of host views is built per call on the GUI thread, and a `ToolResult` with `resume` set is resumed on later ticks until terminal.
 - `derived_recipes.hpp`, `series_stats.hpp`, `object_ops_catalog.hpp`: series/object path resolution and the generated Luau chunks (also used by `pj_app`'s MCP tools), series statistics and decimation, the object operations `describe_topic` advertises (mirrors `pj_scripting`'s object binder by hand).

@@ -7,9 +7,9 @@ PlotJuggler lets AI agents read and drive a running instance over the
   and the user can turn it off.
 - **Toolbox plugins** (the Assistant) lease a private endpoint through the SDK service `pj.mcp_endpoint.v1`. The
   plugin then points its own agent CLI at that endpoint. There is no opt-in and no discovery file.
-
-Desktop only: the browser build can neither listen on a socket nor spawn a process, so `pj_app/src/mcp/` is left out
-of it and the endpoint service is not registered there.
+- **Agents of a browser page** (the WebAssembly build) reach it through a relay the page connects out to (see
+  [Browser relay](#browser-relay)): a page can neither listen on a socket nor be spawned. The browser build has
+  no stdio bridge and no plugin endpoint.
 
 This document is the design as built. Code-level detail lives in the header doc-comments it names.
 
@@ -24,6 +24,10 @@ external agent ──stdio──> plotjuggler4 --mcp-bridge ──HTTP 127.0.0.1
 Assistant plugin ──spawns──> claude / codex CLI ──HTTP 127.0.0.1:<port>, Bearer <plugin token>───────┘
       │
       └── pj.mcp_endpoint.v1 acquire() ──> {url, bearer_token}   (McpEndpointHost, one per toolbox session)
+
+browser page:
+external agent ──stdio──> pj_mcp_relay.py (127.0.0.1:<port>) <──long-poll HTTP── McpBrowserLink ──> McpServer
+                          (plotjuggler-agent plugin)            (the page connects out)            (handleRelayed)
 ```
 
 ## Components
@@ -32,10 +36,12 @@ Assistant plugin ──spawns──> claude / codex CLI ──HTTP 127.0.0.1:<po
 |---|---|---|
 | `McpProtocol` | `pj_app/src/mcp/` (QtCore only) | Vocabulary both ends share: JSON-RPC envelope checks (`parseRpcMessage`), lifecycle replies, the tool lists (`ToolSet`), the HTTP/1.1 subset, the discovery folder, `ownerFor`, `checkAccess` |
 | `McpBridge.cpp` | `pj_app/src/mcp/` | `plotjuggler4 --mcp-bridge`, handled in `main()` before any `QApplication`: stdio ↔ HTTP, instance discovery, `list_instances` / `select_instance` |
-| `McpServer` | `pj_app/src/mcp/` | The loopback endpoint on the GUI thread, the token table, deferred results, revocation. The HTTP is hand-written because QtHttpServer is GPL-3-only |
+| `McpServer` | `pj_app/src/mcp/` | The loopback endpoint on the GUI thread, the token table, deferred results, revocation. The HTTP is hand-written because QtHttpServer is GPL-3-only. Its transport-free half (`dispatch`) also answers what a relay link brings in (`handleRelayed`); in the browser only that half is built |
+| `McpBrowserLink` | `pj_app/src/mcp/` | The page side of the browser relay: long-polls the relay and feeds each message to `handleRelayed`. Plain `QNetworkAccessManager`, so the desktop runs it too (`--mcp-relay`, tests) |
+| `pj_mcp_relay.py` | `plotjuggler-agent/relay/` | The agent side of the browser relay: MCP over stdio, the page protocol over loopback HTTP, standard-library Python |
 | `McpServerTools.cpp` | `pj_app/src/mcp/` | The app tools, each a thin call into an existing service or the public "agent control" block of `MainWindow.h` |
 | `McpEndpointHost` | `pj_app/src/mcp/McpServer.h` | The host side of `pj.mcp_endpoint.v1`, one per toolbox session |
-| `pj_agent_tools` | `pj_runtime/{include,src}/agent_tools/` (static lib, MIT, not built for the browser) | The agent tools (`ToolRegistry`) over a `ToolContext` of SDK host views; no Qt Widgets, no app types |
+| `pj_agent_tools` | `pj_runtime/{include,src}/agent_tools/` (static lib, MIT) | The agent tools (`ToolRegistry`) over a `ToolContext` of SDK host views; no Qt Widgets, no app types |
 | `pj.mcp_endpoint.v1` | `plotjuggler_sdk` `pj_base/include/pj_base/plugin_data_api.h`, C++ view in `sdk/plugin_data_api.hpp` | The C-ABI service a toolbox plugin acquires an endpoint from (since SDK 0.40.0) |
 | The Assistant | `pj-official-plugins/toolbox_assistant_agent` | The first plugin consumer: chat panel, Claude and Codex backends, catalog digest |
 
@@ -171,6 +177,48 @@ with an injective transform id (bytes other than `[A-Za-z0-9]` escaped).
   reply tells the agent PlotJuggler quit or turned MCP off, and to call `list_instances`. `tools/list` is the live
   instance's list when exactly one instance answers (or one is selected), and the bridge binary's own list otherwise.
 
+## Browser relay
+
+The browser build's server does not listen; the page links to a relay instead. The plotjuggler-agent plugin starts
+`relay/pj_mcp_relay.py` when no desktop PlotJuggler is installed: the agent speaks MCP to it over stdio, and it
+listens on `127.0.0.1` (first free port of 7381-7390). Its `launch` tool opens the hosted app with
+`?mcp=http://127.0.0.1:<port>/?key=<secret>`; `main.cpp` hands that to `MainWindow::connectMcpRelay`, which opens public access and
+starts an `McpBrowserLink` (only a plain http, loopback relay with a port: `McpBrowserLink::acceptableRelay`). The
+desktop does the same with `--mcp-relay <url>`, the key copied from the relay's cache
+(`~/.cache/plotjuggler-agent/relay-key`).
+
+- **Protocol** (relay base `R`, JSON bodies, every request with `X-PJ-Link: <the url's key>`):
+  - `POST R/link/hello {"title", "protocol": 1, "browser"}` → `{"id"}`: the page is one relay instance
+    (`list_instances`, `select_instance`; ids are strings, unlike the bridge's pids). `browser` says whether its tool
+    list is the browser build's, which the relay keeps for its next sessions.
+  - `GET R/link/next?id=` → `{"seq", "client", "message"}` or, after 20 s, 204; 404 when the relay forgot the id
+    (it restarted), and the page says hello again.
+  - `POST R/link/reply?id= {"seq", "response"}`, whenever the server answers (held replies included).
+  - `GET R/file/<token>/<name>`: a file `open_file` named. The relay keeps `path` and adds `url` and `name`; the
+    browser's `open_file` streams the url into a `BrowserFileStore` file (at most `kMaxPresetDataBytes`) and loads it
+    like a picked file, the desktop's uses the path.
+- **Who gets in.** Each relayed message is answered as the public client the relay names (its MCP client's name,
+  so `agent-<client>`). The relay answers `/link/*` only with its secret, random and kept in the user's cache (mode
+  0600, so a tab survives a relay restart: the new run answers 404 and the page says hello again), which `launch` hands
+  out in the URL it opens; pages and processes without it cannot join as PlotJuggler and take the agent's calls. The
+  secret is as private as that URL: browser history, the browser's command line, the app server's request log (it is
+  a query item), and it is only good against the loopback relay. A browser sends the custom `X-PJ-Link` header only after a CORS preflight, which the relay answers only for
+  its allowed origins (the hosted app, plus `PJ_RELAY_ORIGINS`, e.g. a local `serve_wasm.mjs`), with
+  `Access-Control-Allow-Private-Network` for Chrome's local network access. The page in turn trusts whatever relay
+  its `?mcp=` names, so it accepts loopback relays only: a link to `?mcp=` is a request to be driven by that relay,
+  as `--mcp-relay` is on the desktop.
+- **Tools.** The browser has no `about` (no feature catalog) and no `export_series` (the file would stay in the
+  page); `toolList` and the instructions leave them out there. MCP clients read `tools/list` once at startup, before
+  any page connects, and do not reliably refresh on `list_changed`, so the relay serves its bundled
+  `browser-tools.json` (regenerated from a build, see its README) until a page has connected, then that page's list,
+  cached for the next sessions.
+- **Lifetime.** The link is a child of the server, deleted with it (in `~QObject`, after the server's members); its
+  in-flight replies are deleted without emitting `finished`, so no callback reaches the server then, and replies the
+  server still holds check the link through a `QPointer`. A relay that is down is retried, backing off to 10 s, while
+  the page lives; the relay forgets a page that has not polled for 120 s. In the browser a
+  `QNetworkReply` never frees its body (docs/TECHNICAL_NOTES.md): relay messages are small, so a session leaks
+  kilobytes.
+
 ## The plugin endpoint (`pj.mcp_endpoint.v1`)
 
 The SDK contract, with the authoritative wording in `plugin_data_api.h`:
@@ -251,6 +299,8 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
     discovery file, release and teardown revocation, disconnects, distinct tokens per plugin, and the same endpoint
     on a repeated acquire. Also a session torn down from inside another's resume, and a revoked token's follow-up.
   - Revocation of public access before or under an agent's queued dialog: nothing is applied.
+  - `ARelayedCall…`, `ALinkForgotten…`, `OnlyALoopbackHttpRelay…`: the browser link against a fake relay.
+- `plotjuggler-agent/tests/test_relay.py`: the relay against a fake page (routing, `open_file` serving, origins).
 - `pj_runtime/tests/agent_tools_*` (runner `pj_agent_tools_tests`) for the agent tools, against the `PJ::testing`
   fakes.
 - SDK: `pj_base/tests/mcp_endpoint_host_test.cpp` plus the ABI sentinels.

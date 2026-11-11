@@ -5,7 +5,9 @@
 #include <QHash>
 #include <QObject>
 #include <QPointer>
+#ifndef PJ_TARGET_WASM
 #include <QTcpServer>
+#endif
 #include <QTimer>
 #include <functional>
 #include <memory>
@@ -15,6 +17,9 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef PJ_TARGET_WASM
+#include "BrowserFileStore.h"
+#endif
 #include "mcp/McpProtocol.h"
 #include "pj_base/plugin_data_api.h"
 #include "pj_runtime/agent_tools/tool_context.hpp"
@@ -25,12 +30,16 @@ class QWidget;
 namespace PJ {
 
 class MainWindow;
+struct LoadHints;
+struct LoadInput;
 struct ToolboxPanelSession;
 
 /// The in-app MCP server: loopback HTTP/1.1 (JSON responses, `Connection: close`) answering both
 /// the 2026-07-28 stateless protocol and the 2025 initialize one, behind bearer tokens. Lives on
 /// the GUI thread, owned by MainWindow, which destroys it before its own services. A tool may hold
 /// its reply (an import, a dialog the user answers) while the event loop keeps serving others.
+/// The browser build cannot listen: there it only answers what a relay link brings in
+/// (handleRelayed, McpBrowserLink), always as a public client.
 ///
 /// Two kinds of token. The public one (openPublicAccess) is in the discovery file for any local
 /// agent: the full tool set, each request acting as `mcp::ownerFor(<client name>)` (the bridge's
@@ -43,27 +52,29 @@ class McpServer : public QObject {
   /// Sends a tools/call result (an MCP CallToolResult). Safe after the client left; call it once.
   using Reply = std::function<void(nlohmann::json result)>;
 
-  /// Listens on a free 127.0.0.1 port; every request is refused until a token is added. The
-  /// tokens are never logged.
+  /// Listens on a free 127.0.0.1 port (not in the browser); every request is refused until a token
+  /// is added. The tokens are never logged.
   explicit McpServer(MainWindow& window);
   /// Drops pending deferred results, then the agents' service assemblies they point into (their
   /// tabs and derived series stay, like a closed toolbox's), and removes the discovery file.
   /// Plugin tokens die with it; their sessions' services are not touched.
   ~McpServer() override;
 
+#ifndef PJ_TARGET_WASM
   [[nodiscard]] bool listening() const {
     return server_.isListening();
   }
   [[nodiscard]] quint16 port() const {
     return server_.serverPort();
   }
+#endif
   [[nodiscard]] bool publicAccess() const {
     return !public_token_.isEmpty();
   }
 
   /// Opens public access with a new random token and writes the owner-only discovery file
   /// `<instancesDir>/<pid>.json` the bridge reads, after deleting the files of instances whose
-  /// process is gone. A no-op while open.
+  /// process is gone (desktop only: the browser has no bridge to discover it). A no-op while open.
   void openPublicAccess();
   /// Revokes the public token (as revoke does a plugin token; app work its calls left for later,
   /// such as a dialog to open or the user's answer to one, then applies nothing), drops the agents'
@@ -80,6 +91,13 @@ class McpServer : public QObject {
   /// token.
   void revoke(const QByteArray& token);
 
+  /// One JSON-RPC message an agent sent through a relay link (McpBrowserLink), answered as the
+  /// public client `client` (its MCP client name). `send` gets the response document, or an empty
+  /// array for a notification, exactly once, possibly later; a held reply is dropped once
+  /// `connection` is destroyed. Refused (an error response) while public access is closed.
+  void handleRelayed(
+      const QByteArray& body, const QString& client, QObject* connection, std::function<void(QByteArray)> send);
+
  signals:
   /// The public client that made the latest request (its printable name), or "" once none has
   /// made one for a while or public access closed. Drives the status-bar indicator.
@@ -94,8 +112,9 @@ class McpServer : public QObject {
     /// The public client's owner (`mcp::ownerFor` its name); "" for a plugin token, which never
     /// reaches what reads it (the app tools and agentContext).
     QString owner;
-    /// The client's connection; gone once it disconnected, and its deferred result with it.
-    QPointer<QTcpSocket> socket;
+    /// The client's connection (its socket, or the relay link that brought the request); gone
+    /// once it disconnected, and its deferred result with it.
+    QPointer<QObject> connection;
   };
   /// An app tool: answers through `reply`, now or later, exactly once. Work it leaves for later
   /// (a timer, a queued load, the user's answer to a dialog) asks stillAuthorized(caller) first.
@@ -110,7 +129,11 @@ class McpServer : public QObject {
     quint64 round = 0;
   };
 
+#ifndef PJ_TARGET_WASM
   void onReadyRead(QTcpSocket* socket);
+  /// Answers one complete request: the transport checks (token, method, path), then dispatch.
+  void handle(QTcpSocket* socket, const mcp::HttpRequest& request);
+#endif
   /// Whether `caller` holds the public token: the full tool set, run as `caller.owner`.
   [[nodiscard]] bool isPublic(const Caller& caller) const {
     return !public_token_.isEmpty() && caller.token == public_token_;
@@ -123,8 +146,13 @@ class McpServer : public QObject {
   [[nodiscard]] std::function<bool()> stillAuthorized(const Caller& caller);
   /// Drops `token`'s queued results (they point into its services) and closes its open connections.
   void dropCallsOf(const QByteArray& token);
-  /// Answers one complete request. Everything that reads the body runs inside one exception boundary.
-  void handle(QTcpSocket* socket, const mcp::HttpRequest& request);
+  /// Answers one JSON-RPC message from `caller`, whose transport accepted it. `header_client` is the
+  /// client name its transport carried ("" for none). `respond(status, body)` runs once: 200 with
+  /// the response, or 202 with no body for a notification. Everything that reads the body runs
+  /// inside one exception boundary.
+  void dispatch(
+      Caller caller, const QByteArray& body, const QString& header_client,
+      std::function<void(int status, QByteArray body)> respond);
   /// Notes the client for the indicator.
   void noteClient(const QString& client);
   /// Runs tool `name` for `caller`; an app tool `caller` may not call is unknown. While the user has
@@ -163,6 +191,8 @@ class McpServer : public QObject {
   /// any open modal dialog drawn over a dimmed window. Asynchronous; `done` never runs after this
   /// server is gone.
   void grabScreenshot(int max_width, std::function<void(const QByteArray& png)> done);
+  /// Queues `input` for loading and holds `reply` until it settles (open_file's second half).
+  void startLoad(LoadInput input, LoadHints hints, Reply reply);
   /// Holds `reply` until load `ticket` settles; `on_loaded` words the success.
   void awaitLoad(quint64 ticket, Reply reply, std::function<nlohmann::json(quint32 dataset)> on_loaded);
 
@@ -181,7 +211,9 @@ class McpServer : public QObject {
   void screenshot(const nlohmann::json& args, const Caller& caller, Reply reply);
 
   MainWindow& window_;
+#ifndef PJ_TARGET_WASM
   QTcpServer server_;
+#endif
   /// What a plugin token's tools run against: its session's services, as its plugin.
   struct PluginToken {
     PJ_service_registry_t services;
@@ -190,10 +222,12 @@ class McpServer : public QObject {
   QHash<QByteArray, PluginToken> plugin_tokens_;
   /// "" while public access is closed.
   QByteArray public_token_;
+#ifndef PJ_TARGET_WASM
   QString discovery_path_;
   /// Bytes of each socket whose request is still incomplete; an entry also means "may time out".
   QHash<QTcpSocket*, QByteArray> pending_;
   int open_sockets_ = 0;
+#endif
   /// Clears the indicator when no client has called for a while.
   QTimer idle_;
   QString active_client_;
@@ -208,8 +242,13 @@ class McpServer : public QObject {
   /// the nested call queued as due, again and again; so it returns at once.
   bool draining_ = false;
   QTimer resume_tick_;
+#ifdef PJ_TARGET_WASM
+  /// Where open_file stages the files the relay serves (each removed with its dataset's lease).
+  BrowserFileStore agent_files_{QStringLiteral("/pj_agent_files")};
+#endif
 };
 
+#ifndef PJ_TARGET_WASM
 /// The "pj.mcp_endpoint.v1" host of one toolbox session: the plugin's private token on the
 /// window's MCP server (a plugin token, see McpServer). Destroying it releases the token, so the
 /// session destroys it after the plugin instance (which may release from its destructor) and
@@ -242,5 +281,6 @@ class McpEndpointHost {
   std::string url_;
   QByteArray token_;
 };
+#endif
 
 }  // namespace PJ
