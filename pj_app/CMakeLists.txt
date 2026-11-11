@@ -371,6 +371,16 @@ if(EMSCRIPTEN)
     target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
     set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
+    # EXPERIMENT (local measurement only): replace two Qt 6.12 backing-store flush functions at link time.
+    option(PJ_WASM_QT_FLUSH_OVERRIDE "Experiment: link-time replacement of Qt 6.12 paintAndFlush/toTexture" OFF)
+    if(PJ_WASM_QT_FLUSH_OVERRIDE)
+        find_package(Qt6 REQUIRED COMPONENTS GuiPrivate WidgetsPrivate)
+        target_sources(pj_app PRIVATE src/wasm/qt612_rhi_flush_override.cpp)
+        # Verbatim Qt code: keep the project's -Werror set off it.
+        set_source_files_properties(src/wasm/qt612_rhi_flush_override.cpp PROPERTIES COMPILE_OPTIONS "-w")
+        target_link_libraries(pj_app PRIVATE Qt6::GuiPrivate Qt6::WidgetsPrivate)
+        target_link_options(pj_app PRIVATE "LINKER:--allow-multiple-definition")
+    endif()
     if(PJ_WASM_WITH_PYTHON)
         # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
         # the main thread waits on it never starts.
