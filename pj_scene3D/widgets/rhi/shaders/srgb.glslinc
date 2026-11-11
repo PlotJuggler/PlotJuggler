@@ -1,10 +1,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 // The sRGB encode of the shaders that write display-referred output
-// (present.frag, gizmo.frag, model.frag's direct target).
+// (present.frag, gizmo.frag, model.frag's direct target), and the decode of
+// model.frag's colour textures (uploaded as plain RGBA8 on every backend).
 
 vec3 linearToSrgb(vec3 color) {
     vec3 low = color * 12.92;
     vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
     return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
+}
+
+vec3 srgbToLinear(vec3 color) {
+    vec3 low = color / 12.92;
+    vec3 high = pow((max(color, vec3(0.0)) + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, lessThanEqual(color, vec3(0.04045)));
 }
