@@ -342,7 +342,8 @@ Windows builds use the same Conan + CMake flow through three root entry points,
 with Windows and share `scripts\windows\PjWindowsCommon.ps1`. They mirror `build.sh` / `run.sh` / `test.sh` (same options, same
 `PJ_*` variables, same `build\` tree) and reproduce the Windows CI job: VS 2022
 MSVC 14.4x, Conan with every profile setting pinned (`compiler.version=194`),
-Ninja Multi-Config, RelWithDebInfo with `/Z7` embedded debug info. A local
+Ninja Multi-Config, RelWithDebInfo with `/Z7` embedded debug info (CI and the
+release build compile that configuration without debug info). A local
 `build\` therefore accepts the exact commands from
 [`windows-ci.yml`](../.github/workflows/windows-ci.yml) (`cmake -S . -B build
 -G "Ninja Multi-Config" ...`, `cmake --build build --config RelWithDebInfo`,

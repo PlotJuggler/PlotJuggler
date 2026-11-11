@@ -29,7 +29,7 @@ usage() {
     "  --help               Show this help message" \
     "" \
     "Examples:" \
-    "  ./build.sh                    full dev tree: tests + demos, split DWARF" \
+    "  ./build.sh                    full dev tree: tests + demos, line-table debug info" \
     "  ./build.sh --minimal          what the packaging build compiles, on the host" \
     "  ./build.sh --no-tests --debug-info full" \
     "" \
