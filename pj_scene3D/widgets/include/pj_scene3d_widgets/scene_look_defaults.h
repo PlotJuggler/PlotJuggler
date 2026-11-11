@@ -14,7 +14,7 @@
 // defaults. Keeping them here (instead of duplicated literals) means a default
 // changes in one place.
 //
-// These are the User's 2026-06-13 look-dev picks. Pure C++ (glm + <cmath>), no
+// These are the User's look-dev picks. Pure C++ (glm + <cmath>), no
 // Qt, so it is includable from every layer that needs a default.
 namespace pj::scene3d::look {
 
@@ -62,10 +62,10 @@ inline constexpr float kGridMapFill = 0.4f;
 
 // ---- Composite / post (CompositeParams) ----
 inline constexpr int kTonemapMode = 1;  // 0 None, 1 ACES, 2 AgX, 3 Neutral
-inline constexpr float kExposure = 1.3f;
-inline constexpr float kSaturation = 1.3f;  // post-tonemap saturation boost
-inline constexpr float kAoStrength = 1.0f;  // SSAO blend into the composite
-inline constexpr float kEdlFloor = 0.3f;    // EDL darkens toward floor*color
+inline constexpr float kExposure = 1.0f;
+inline constexpr float kSaturation = 1.15f;  // post-tonemap saturation boost
+inline constexpr float kAoStrength = 1.0f;   // SSAO blend into the composite
+inline constexpr float kEdlFloor = 0.3f;     // EDL darkens toward floor*color
 
 // ---- Screen-space passes (SSAO / EDL) ----
 inline constexpr float kSsaoRadiusM = 0.4f;  // SSAO sample radius (metres)
