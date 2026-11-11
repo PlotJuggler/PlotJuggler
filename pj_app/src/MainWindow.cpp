@@ -6753,6 +6753,11 @@ void MainWindow::startBrowserPresets(const QUrl& page_url) {
         connect(this, &MainWindow::layoutUrlLoadFinished, presets_dialog_, &WelcomePresetsDialog::layoutLoadFinished);
         connect(this, &MainWindow::layoutUrlLoadProgress, presets_dialog_, &WelcomePresetsDialog::layoutLoadProgress);
         ui_->actionPresets->setVisible(true);
+        // A page an agent opened (?mcp=) is the agent's to set up: an application-modal welcome
+        // would hold every mutating tool until the user closed it. File → Presets still opens it.
+        if (mcp_relay_link_ != nullptr && deep_link.isEmpty() && deep_link_error.isEmpty()) {
+          return;
+        }
         presets_dialog_->show();
         if (!deep_link_error.isEmpty()) {
           presets_dialog_->showError(deep_link_error);
@@ -10695,7 +10700,7 @@ bool MainWindow::connectMcpRelay(const QUrl& relay) {
     emitDiagnostic(
         DiagnosticLevel::kError, "MCP", "relay-refused",
         tr("Not connecting to the AI agent relay %1: it must be an http address on this computer (127.0.0.1).")
-            .arg(relay.toDisplayString()));
+            .arg(relay.toDisplayString(QUrl::RemoveQuery)));
     return false;
   }
   McpServer* server = ensureMcpServer();

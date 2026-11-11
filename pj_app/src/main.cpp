@@ -470,8 +470,8 @@ int main(int argc, char* argv[]) {
   parser.addOption(mcp_option);
   const QCommandLineOption mcp_relay_option(
       u"mcp-relay"_s,
-      u"Link this window to an AI agent through the relay at <url> (pj_mcp_relay.py, as the browser build's "
-      "?mcp=<url> does), instead of being found by --mcp-bridge."_s,
+      u"Link this window to an AI agent through the relay at <url>, its secret in the url's key (pj_mcp_relay.py, "
+      "as the browser build's ?mcp=<url> does)."_s,
       u"url"_s);
   parser.addOption(mcp_relay_option);
   // Registered only so --help lists it; handled at the top of main().

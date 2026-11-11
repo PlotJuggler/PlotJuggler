@@ -26,16 +26,6 @@ constexpr int kPollTimeoutMs = 30'000;
 constexpr int kRequestTimeoutMs = 10'000;
 constexpr int kMaxBackoffMs = 10'000;
 
-QNetworkRequest jsonRequest(const QUrl& url, int timeout_ms) {
-  QNetworkRequest request(url);
-  request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
-  // A header no website can send without passing the relay's CORS preflight (its Origin allowlist),
-  // so a page from elsewhere can neither pose as this one nor take its messages.
-  request.setRawHeader("X-PJ-Link", "1");
-  request.setTransferTimeout(timeout_ms);
-  return request;
-}
-
 int statusOf(const QNetworkReply& reply) {
   return reply.attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 }
@@ -43,7 +33,11 @@ int statusOf(const QNetworkReply& reply) {
 }  // namespace
 
 McpBrowserLink::McpBrowserLink(McpServer& server, QUrl relay, QString title, QObject* parent)
-    : QObject(parent), server_(server), relay_(std::move(relay)), title_(std::move(title)) {
+    : QObject(parent),
+      server_(server),
+      relay_(std::move(relay)),
+      key_(QUrlQuery(relay_).queryItemValue(u"key"_s, QUrl::FullyDecoded).toUtf8()),
+      title_(std::move(title)) {
   hello();
 }
 
@@ -56,10 +50,17 @@ bool McpBrowserLink::acceptableRelay(const QUrl& url) {
 QUrl McpBrowserLink::endpoint(const QString& path) const {
   QUrl url = relay_;
   url.setPath(path);
-  if (!id_.isEmpty()) {
-    url.setQuery(QUrlQuery({{u"id"_s, id_}}));
-  }
+  url.setQuery(id_.isEmpty() ? QUrlQuery() : QUrlQuery({{u"id"_s, id_}}));
   return url;
+}
+
+QNetworkRequest McpBrowserLink::request(const QUrl& url, int timeout_ms) const {
+  QNetworkRequest request(url);
+  request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
+  // The relay's secret, in a header no website can send without passing the relay's CORS preflight.
+  request.setRawHeader("X-PJ-Link", key_);
+  request.setTransferTimeout(timeout_ms);
+  return request;
 }
 
 void McpBrowserLink::retryLater(void (McpBrowserLink::*next)()) {
@@ -69,8 +70,15 @@ void McpBrowserLink::retryLater(void (McpBrowserLink::*next)()) {
 
 void McpBrowserLink::hello() {
   id_.clear();
-  const QByteArray body = QByteArray::fromStdString(json({{"title", title_.toStdString()}, {"protocol", 1}}).dump());
-  QNetworkReply* reply = network_.post(jsonRequest(endpoint(u"/link/hello"_s), kRequestTimeoutMs), body);
+#ifdef PJ_TARGET_WASM
+  constexpr bool kBrowser = true;
+#else
+  constexpr bool kBrowser = false;
+#endif
+  // The relay keeps a browser page's tool list for its next sessions (it differs from the desktop's).
+  const QByteArray body =
+      QByteArray::fromStdString(json({{"title", title_.toStdString()}, {"protocol", 1}, {"browser", kBrowser}}).dump());
+  QNetworkReply* reply = network_.post(request(endpoint(u"/link/hello"_s), kRequestTimeoutMs), body);
   connect(reply, &QNetworkReply::finished, this, [this, reply] {
     reply->deleteLater();
     const json answer = json::parse(reply->readAll().toStdString(), nullptr, false);
@@ -80,13 +88,14 @@ void McpBrowserLink::hello() {
     }
     id_ = QString::fromStdString(answer["id"].get<std::string>());
     backoff_ms_ = 0;
-    qCInfo(mcp::lcMcp).noquote() << "linked to the agent relay at" << relay_.toString();
+    qCInfo(mcp::lcMcp).noquote() << "linked to the agent relay at"
+                                 << relay_.toString(QUrl::RemoveQuery);  // not its secret
     poll();
   });
 }
 
 void McpBrowserLink::poll() {
-  QNetworkReply* reply = network_.get(jsonRequest(endpoint(u"/link/next"_s), kPollTimeoutMs));
+  QNetworkReply* reply = network_.get(request(endpoint(u"/link/next"_s), kPollTimeoutMs));
   connect(reply, &QNetworkReply::finished, this, [this, reply] {
     reply->deleteLater();
     const int status = statusOf(*reply);
@@ -124,7 +133,7 @@ void McpBrowserLink::reply(qint64 seq, const QByteArray& response) {
     body["response"] = json::parse(response.toStdString(), nullptr, false);
   }
   QNetworkReply* sent = network_.post(
-      jsonRequest(endpoint(u"/link/reply"_s), kRequestTimeoutMs),
+      request(endpoint(u"/link/reply"_s), kRequestTimeoutMs),
       QByteArray::fromStdString(body.dump(-1, ' ', false, json::error_handler_t::replace)));
   // Nothing to retry: a lost answer times out on the agent's side, which tells it to poll get_status.
   connect(sent, &QNetworkReply::finished, sent, &QObject::deleteLater);

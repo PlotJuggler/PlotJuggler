@@ -1034,8 +1034,9 @@ class FakeRelay {
     EXPECT_TRUE(server_.listen(QHostAddress::LocalHost));
   }
 
+  /// The relay's address with its secret, as its launch hands it to the page.
   [[nodiscard]] QUrl url() const {
-    return QUrl(u"http://127.0.0.1:%1"_s.arg(server_.serverPort()));
+    return QUrl(u"http://127.0.0.1:%1/?key=s3cret"_s.arg(server_.serverPort()));
   }
 
   /// Pumps until the page sends a request to `path`, and takes it.
@@ -1073,15 +1074,20 @@ TEST_F(McpServerTest, ARelayedCallIsAnsweredAsThePublicClientTheRelayNames) {
   ASSERT_TRUE(window_->connectMcpRelay(relay.url()));
   const FakeRelay::Request hello = relay.next("/link/hello");
   EXPECT_EQ(json::parse(hello.http.body.toStdString(), nullptr, false).value("protocol", 0), 1);
+  // The secret travels in the header on every request, never in a path.
+  EXPECT_EQ(hello.http.path, "/link/hello");
+  EXPECT_EQ(hello.http.headers.value("x-pj-link"), "s3cret");
   FakeRelay::answer(hello, 200, {{"id", "tab-1"}});
 
   const FakeRelay::Request poll = relay.next("/link/next");
   EXPECT_EQ(poll.http.path, "/link/next?id=tab-1");
+  EXPECT_EQ(poll.http.headers.value("x-pj-link"), "s3cret");
   FakeRelay::answer(
       poll, 200, {{"seq", 7}, {"client", "claude-code"}, {"message", toolsCall("get_status", json::object())}});
 
   const FakeRelay::Request reply = relay.next("/link/reply");
   EXPECT_EQ(reply.http.path, "/link/reply?id=tab-1");
+  EXPECT_EQ(reply.http.headers.value("x-pj-link"), "s3cret");
   const json body = json::parse(reply.http.body.toStdString(), nullptr, false);
   EXPECT_EQ(body.value("seq", 0), 7);
   const json content = body["response"]["result"].value("content", json::array());

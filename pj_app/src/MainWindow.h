@@ -1655,7 +1655,8 @@ class MainWindow : public QMainWindow {
   bool mcp_listen_failure_reported_ = false;
   // Status-bar indicator naming the active MCP client; created on first use.
   QLabel* mcp_client_label_ = nullptr;
-  // The relay link connectMcpRelay made (a child of mcp_server_, so it dies first); null for none.
+  // The relay link connectMcpRelay made (a child of mcp_server_, so it goes with it; its destructor
+  // touches nothing of the server); null for none. While set the browser skips its welcome dialog.
   QPointer<QObject> mcp_relay_link_;
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;

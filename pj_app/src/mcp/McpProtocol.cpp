@@ -85,6 +85,12 @@ bool isReadOnlyTool(const std::string& name) {
 
 namespace {
 
+#ifdef PJ_TARGET_WASM
+#define PJ_MCP_ABOUT_SOURCES ""
+#else
+#define PJ_MCP_ABOUT_SOURCES "; about says what each one is"
+#endif
+
 /// The tools/list entries of the app's own tools (McpServerTools.cpp).
 json appToolEntries() {
   const auto tool = [](const char* name, const char* desc, json input) {
@@ -133,7 +139,7 @@ json appToolEntries() {
           schema({{"dataset", dataset}}, {"dataset"})),
       tool(
           "start_stream",
-          "Start a live streaming source (get_status lists stream_sources; about says what each one is). By "
+          "Start a live streaming source (get_status lists stream_sources" PJ_MCP_ABOUT_SOURCES "). By "
           "default it uses the settings the user last confirmed in that source's dialog; config passes your own "
           "(get_status shows a live stream's config, as a template); ask_user=true opens the source's dialog so "
           "the user sets it up, and the call returns when they finish or cancel. Topics appear as the source "
@@ -210,6 +216,8 @@ json appToolEntries() {
 }
 
 }  // namespace
+
+#undef PJ_MCP_ABOUT_SOURCES
 
 json toolList(ToolSet set) {
   json tools = set == ToolSet::kFull ? appToolEntries() : json::array();

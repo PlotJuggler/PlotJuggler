@@ -182,13 +182,14 @@ with an injective transform id (bytes other than `[A-Za-z0-9]` escaped).
 The browser build's server does not listen; the page links to a relay instead. The plotjuggler-agent plugin starts
 `relay/pj_mcp_relay.py` when no desktop PlotJuggler is installed: the agent speaks MCP to it over stdio, and it
 listens on `127.0.0.1` (first free port of 7381-7390). Its `launch` tool opens the hosted app with
-`?mcp=http://127.0.0.1:<port>`; `main.cpp` hands that to `MainWindow::connectMcpRelay`, which opens public access and
+`?mcp=http://127.0.0.1:<port>/?key=<secret>`; `main.cpp` hands that to `MainWindow::connectMcpRelay`, which opens public access and
 starts an `McpBrowserLink` (only a plain http, loopback relay with a port: `McpBrowserLink::acceptableRelay`). The
 desktop does the same with `--mcp-relay <url>`.
 
-- **Protocol** (relay base `R`, JSON bodies, every request with `X-PJ-Link: 1`):
-  - `POST R/link/hello {"title", "protocol": 1}` → `{"id"}`: the page is one relay instance (`list_instances`,
-    `select_instance`; ids are strings, unlike the bridge's pids).
+- **Protocol** (relay base `R`, JSON bodies, every request with `X-PJ-Link: <the url's key>`):
+  - `POST R/link/hello {"title", "protocol": 1, "browser"}` → `{"id"}`: the page is one relay instance
+    (`list_instances`, `select_instance`; ids are strings, unlike the bridge's pids). `browser` says whether its tool
+    list is the browser build's, which the relay keeps for its next sessions.
   - `GET R/link/next?id=` → `{"seq", "client", "message"}` or, after 20 s, 204; 404 when the relay forgot the id
     (it restarted), and the page says hello again.
   - `POST R/link/reply?id= {"seq", "response"}`, whenever the server answers (held replies included).
@@ -196,17 +197,22 @@ desktop does the same with `--mcp-relay <url>`.
     browser's `open_file` streams the url into a `BrowserFileStore` file (at most `kMaxPresetDataBytes`) and loads it
     like a picked file, the desktop's uses the path.
 - **Who gets in.** Each relayed message is answered as the public client the relay names (its MCP client's name,
-  so `agent-<client>`). A browser sends `X-PJ-Link` only after a CORS preflight, which the relay answers only for its
-  allowlisted origins (the hosted app, local `http://localhost` / `127.0.0.1` servers, `PJ_RELAY_ORIGINS`), with
-  `Access-Control-Allow-Private-Network` for Chrome's local network access; so no other website can pose as the page
-  or take its messages. The trust boundary is unchanged: any process of the same user can reach the relay.
+  so `agent-<client>`). The relay mints a random secret per run and hands it out only in the URL `launch` opens, and
+  answers `/link/*` only with it, so no other page or local process can join as PlotJuggler and take the agent's
+  calls. A browser sends the custom `X-PJ-Link` header only after a CORS preflight, which the relay answers only for
+  its allowed origins (the hosted app, plus `PJ_RELAY_ORIGINS`, e.g. a local `serve_wasm.mjs`), with
+  `Access-Control-Allow-Private-Network` for Chrome's local network access. The page in turn trusts whatever relay
+  its `?mcp=` names, so it accepts loopback relays only: a link to `?mcp=` is a request to be driven by that relay,
+  as `--mcp-relay` is on the desktop.
 - **Tools.** The browser has no `about` (no feature catalog) and no `export_series` (the file would stay in the
   page); `toolList` and the instructions leave them out there. MCP clients read `tools/list` once at startup, before
   any page connects, and do not reliably refresh on `list_changed`, so the relay serves its bundled
   `browser-tools.json` (regenerated from a build, see its README) until a page has connected, then that page's list,
   cached for the next sessions.
-- **Lifetime.** The link is a child of the server, so it dies first. A relay that is down is retried, backing off to
-  10 s, while the page lives; the relay forgets a page that has not polled for 45 s. In the browser a
+- **Lifetime.** The link is a child of the server, deleted with it (in `~QObject`, after the server's members); its
+  in-flight replies are deleted without emitting `finished`, so no callback reaches the server then, and replies the
+  server still holds check the link through a `QPointer`. A relay that is down is retried, backing off to 10 s, while
+  the page lives; the relay forgets a page that has not polled for 120 s. In the browser a
   `QNetworkReply` never frees its body (docs/TECHNICAL_NOTES.md): relay messages are small, so a session leaks
   kilobytes.
 
