@@ -159,14 +159,14 @@ TEST(CubeMeshTest, FanTilesExactlyTheThreeCameraFacingFaces) {
 }
 
 // kCubeEdgeMeanScale is what keeps a LOD sprite as bright as the cube it replaces, and it
-// is DERIVED from the edge band's width, its darkening strength and the sRGB gamma. Edit
+// is DERIVED from the edge band's width, its darkening strength and the sRGB decode. Edit
 // any of those and the constant is silently wrong. scene3d_rhi_point_test measures the
 // consequence end to end, but only where a GPU is available — so this pure-math check is
 // the one that runs everywhere.
 TEST(CubeEdgeMeanScaleTest, MatchesTheIntegralOfItsOwnConstants) {
   EXPECT_NEAR(pj::scene3d::cubeEdgeMeanScale(), pj::scene3d::kCubeEdgeMeanScale, 5e-4)
       << "kCubeEdgeMeanScale no longer matches an integration of kCubeEdgeWidth / "
-         "kCubeEdgeDarken / kCubeSrgbGamma — one of them was retuned without the other";
+         "kCubeEdgeDarken through the sRGB decode — one of them was retuned without the other";
 }
 
 // The flat shade a sub-2-px sphere gets must stay the disc mean of the shared Lambert,

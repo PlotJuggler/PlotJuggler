@@ -67,7 +67,7 @@ TEST(ShaderConstantsTest, SharedSourceDeclaresTheMirroredConstants) {
       << "cube_edge.glslinc no longer declares the width the C++ mirror assumes";
   EXPECT_NE(edge.find("kCubeEdgeDarken = 0.6"), std::string::npos)
       << "cube_edge.glslinc no longer declares the darkening the C++ mirror assumes";
-  EXPECT_NE(readCubeGlsl("cube_sprite.glslinc").find("kCubeEdgeMeanScale = 0.887"), std::string::npos)
+  EXPECT_NE(readCubeGlsl("cube_sprite.glslinc").find("kCubeEdgeMeanScale = 0.886"), std::string::npos)
       << "the sprite shader's kCubeEdgeMeanScale drifted from the C++ constant";
   EXPECT_NE(readCubeGlsl("cube_point_color.glslinc").find("kSphereDiscShading = 0.702"), std::string::npos)
       << "the shader's kSphereDiscShading drifted from the C++ constant";

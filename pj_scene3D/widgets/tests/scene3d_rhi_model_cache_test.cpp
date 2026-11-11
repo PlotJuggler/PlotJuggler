@@ -343,6 +343,50 @@ TEST_F(Scene3dRhiModelCacheTest, ColorTexturesDecodeSrgbOnEveryBackend) {
   }
 }
 
+// One sRGB curve for every colour source: a dark vertex colour renders exactly like
+// the same value sampled from a texture (exact sRGB decode). A 2.2-power vertex decode
+// lands 2 levels per channel darker here, after the light and the tonemap (sum 6).
+TEST_F(Scene3dRhiModelCacheTest, VertexColorAndTextureShareTheSrgbDecode) {
+  constexpr int kLevel = 26;  // dark, where the 2.2 power and the sRGB curve part most
+  QImage dark(2, 2, QImage::Format_RGBA8888);
+  dark.fill(QColor(kLevel, kLevel, kLevel));
+  QByteArray png;
+  QBuffer buffer(&png);
+  buffer.open(QIODevice::WriteOnly);
+  dark.save(&buffer, "PNG");
+  auto textured = std::make_shared<pj::scene3d::Material>();
+  textured->base_color_factor = glm::vec4(1.0F);
+  textured->base_color.bytes.assign(png.cbegin(), png.cend());
+  textured->base_color.key = "srgb-26";
+  const auto vertex_colored = [](float level) {
+    MeshData mesh = cube(1.0F, solid({1.0F, 1.0F, 1.0F, 1.0F}));
+    for (pj::scene3d::Vertex& vertex : mesh.vertices) {
+      vertex.color = glm::vec4(level, level, level, 1.0F);
+    }
+    return mesh;
+  };
+
+  FakeModelLayer layer{kLink};
+  layer.put("cube", cube(1.0F, textured), {0.5, 0.0, 0.5});
+  ModelView scene;
+  SKIP_UNLESS(scene.show({&layer}));
+  const auto center = [&](MeshData mesh) -> std::optional<QRgb> {
+    layer.put("cube", std::move(mesh), {0.5, 0.0, 0.5});
+    const QImage image = grab(scene.view());
+    return image.isNull() ? std::nullopt : std::optional(image.pixel(image.width() / 2, image.height() / 2));
+  };
+  const auto from_texture = center(cube(1.0F, textured));
+  const auto from_vertex = center(vertex_colored(static_cast<float>(kLevel) / 255.0F));
+  const auto black = center(vertex_colored(0.0F));
+  if (!from_texture || !from_vertex || !black) {
+    PJ_SKIP_WITHOUT_GPU("no presented frame on this backend");
+  }
+  EXPECT_LE(pj::scene3d::test::channelDeltaSum(*from_texture, *from_vertex), 3)
+      << "texture " << qGray(*from_texture) << " vs vertex colour " << qGray(*from_vertex);
+  EXPECT_GT(pj::scene3d::test::channelDeltaSum(*from_texture, *black), 15)
+      << "the cube is indistinguishable from black (" << qGray(*from_texture) << ")";
+}
+
 // Edge lists are built on the first wireframe draw, once per mesh; toggling back
 // and forth reproduces both looks exactly.
 TEST_F(Scene3dRhiModelCacheTest, WireframeEdgesBuildOnFirstUse) {
