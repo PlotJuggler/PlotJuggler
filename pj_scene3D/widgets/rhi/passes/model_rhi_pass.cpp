@@ -975,7 +975,7 @@ bool ModelRhiPass::buildMesh(
     }
     // Plain RGBA8 for every slot: model.frag decodes the colour slots itself,
     // because Qt's OpenGL backend (desktop GL, WebGL) ignores QRhiTexture::sRGB
-    // and would hand the shader raw sRGB bytes as linear values.
+    // for uncompressed formats and would hand the shader raw sRGB bytes as linear values.
     QRhiTexture* texture = rhi->newTexture(QRhiTexture::RGBA8, image->second.size(), 1);
     if (texture == nullptr || !texture->create()) {
       delete texture;
