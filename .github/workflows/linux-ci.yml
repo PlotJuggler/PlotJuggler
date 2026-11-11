@@ -168,16 +168,12 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}-dwarf-split-v1
-          # The final two are safe migration paths: both identify regular
-          # builds explicitly by ref and cannot match ccache-linux-tsan-*.
+          key: ccache-linux-g1-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            ccache-linux-build-${{ github.ref_name }}-
-            ccache-linux-build-${{ github.head_ref }}-
-            ccache-linux-build-${{ github.base_ref }}-
-            ccache-linux-build-main-
-            ccache-linux-${{ github.ref_name }}-
-            ccache-linux-main-
+            ccache-linux-g1-${{ github.ref_name }}-
+            ccache-linux-g1-${{ github.head_ref }}-
+            ccache-linux-g1-${{ github.base_ref }}-
+            ccache-linux-g1-main-
 
       - name: Set ccache limits
         # 2G, not 500M: the full compiled object set (esp. after the Qt
@@ -221,7 +217,9 @@ jobs:
         # resolve the graph twice. Tests compile here too: with warm compiler
         # caches they cost ~1 min, and this job is the only CI environment
         # that can run the GUI/GL widget suites (xvfb + Mesa llvmpipe).
-        run: PJ_DEBUG_INFO=split PJ_COMPRESS_DEBUG=ON ./build.sh --skip-conan-install
+        # build.sh's default debug level applies: line tables (-g1), what a
+        # crash backtrace needs and nothing a debugger would add.
+        run: ./build.sh --skip-conan-install
 
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only the package binaries consumers
@@ -269,7 +267,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}-dwarf-split-v1
+          key: ccache-linux-g1-${{ github.ref_name }}-${{ github.sha }}
 
       - name: ccache stats
         if: success()
