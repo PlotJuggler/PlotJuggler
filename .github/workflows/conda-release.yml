@@ -6,7 +6,12 @@
 #
 #   - push of a version tag -> build + upload
 #   - workflow_dispatch      -> build only, or publish a saved tag run's artifacts
-#   - pull_request           -> build only, when the recipes change
+#   - pull_request           -> build only, one variant, when the recipes change
+#
+# The four variants (Python x ffmpeg) compile the same tree, so they share a
+# ccache: within a run, and across runs through actions/cache. These are
+# GitHub-hosted runners, so the caches count against the repository's 10 GB
+# quota, which cache-cleanup.yml prunes to the newest per ref.
 #
 # Upload needs the repo secret PREFIX_API_KEY: a prefix.dev token with write
 # access to the "plotjuggler" channel. `--skip-existing` makes a re-run upload
@@ -86,8 +91,32 @@ jobs:
             --recipe recipes/kissfft \
             -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 
+      # A pull request restores its own newest cache, else the newest one a
+      # run on main saved (a workflow_dispatch: nothing here runs on push).
+      - name: Restore ccache
+        id: ccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/conda-ccache
+          key: ccache-conda-${{ matrix.subdir }}-${{ github.sha }}
+          restore-keys: |
+            ccache-conda-${{ matrix.subdir }}-
+
       - name: Build plotjuggler4
-        run: packaging/conda/build_conda.sh --channel ./local-channel --output-dir conda-output
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/conda-ccache
+          # A pull request builds one of the four variants.yaml combinations;
+          # tags and manual runs build them all.
+          VARIANT: ${{ github.event_name == 'pull_request' && '--variant python=3.14 --variant ffmpeg=9.0' || '' }}
+        run: packaging/conda/build_conda.sh --channel ./local-channel --output-dir conda-output ${VARIANT}
+
+      - name: Save ccache
+        # always(): a failed build's objects are still valid.
+        if: always() && steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/conda-ccache
+          key: ccache-conda-${{ matrix.subdir }}-${{ github.sha }}
 
       - uses: actions/upload-artifact@v4
         with:
