@@ -16,7 +16,7 @@ Without ROS: `pixi global install -c conda-forge -c https://prefix.dev/plotjuggl
 ```bash
 # PJ4's own dependency packages (recipes/), once:
 pixi exec --spec "rattler-build>=0.66,<0.67" rattler-build build \
-  --recipe recipes/luau --recipe recipes/libmcap --recipe recipes/cloudini \
+  --recipe recipes/luau --recipe recipes/libmcap \
   --recipe recipes/kissfft \
   -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 packaging/conda/build_conda.sh --channel ./local-channel   # -> conda-output/

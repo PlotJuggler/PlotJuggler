@@ -314,7 +314,12 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   # The coalescing test encodes valid fixtures with the Cloudini encoder, which
   # pj_scene3d_core links PRIVATE — re-resolve the imported target here so the
   # test can link it directly (same as pointcloud_codecs_test in core/).
-  find_package(cloudini REQUIRED)
+  find_package(cloudini CONFIG QUIET)
+  if(NOT TARGET cloudini::cloudini)
+    # cloudini's upstream package (see pj_scene3D/core/CMakeLists.txt)
+    find_package(cloudini_lib CONFIG REQUIRED)
+    add_library(cloudini::cloudini ALIAS cloudini::cloudini_lib)
+  endif()
 
   # PointCloudLayer sample-identity caches: reset on dataset replace (stale
   # decoded/failed/pushed ids under a stable topic id), stamp-0 is data not a

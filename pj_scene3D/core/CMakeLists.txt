@@ -56,7 +56,13 @@ endif()
 # an implementation detail of pj_scene3d_core, mirroring how pj_scene2d_core links
 # libjpeg-turbo / libpng PRIVATE for image decode.
 find_package(draco REQUIRED)
-find_package(cloudini REQUIRED)
+# Conan's cloudini package provides cloudini::cloudini; cloudini's upstream CMake
+# package (conda-forge's) is cloudini_lib with cloudini::cloudini_lib.
+find_package(cloudini CONFIG QUIET)
+if(NOT TARGET cloudini::cloudini)
+  find_package(cloudini_lib CONFIG REQUIRED)
+  add_library(cloudini::cloudini ALIAS cloudini::cloudini_lib)
+endif()
 
 add_library(pj_scene3d_core STATIC
   src/camera/camera.cpp

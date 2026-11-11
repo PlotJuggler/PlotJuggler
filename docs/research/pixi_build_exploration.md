@@ -19,7 +19,7 @@ A full PJ4 build driven by `pixi run build` works, with:
   in `pixi.toml` must track it), which also replaces the manual ~1GB
   `scripts/install_qt6.sh` step. One command bootstraps the entire toolchain
   (compiler included).
-- the 5 gaps (**luau, mcap C++, cloudini, nanoarrow C, kissfft**) packaged as
+- the 4 gaps (**luau, mcap C++, nanoarrow C, kissfft**) packaged as
   local `rattler-build` recipes under `recipes/`, built into `local-channel/`. In a
   real migration these would be published once to the existing prefix.dev
   channel (same pipeline as `plotjuggler_sdk`).
@@ -49,9 +49,9 @@ A full PJ4 build driven by `pixi run build` works, with:
 | OpenGL headers (system) | `libgl-devel`, `libopengl-devel`, `libegl-devel` | replaces the system mesa dev packages |
 | (system libva/libdrm for VAAPI) | pulled in transitively by conda ffmpeg | no more `apt-get install libva-dev libdrm-dev` |
 
-## The local recipes (`recipes/`): 5 gaps + the LGPL-lean ffmpeg
+## The local recipes (`recipes/`): 4 gaps + the LGPL-lean ffmpeg
 
-The first five don't exist on conda-forge; each recipe replicates the exact
+The first four don't exist on conda-forge; each recipe replicates the exact
 imported targets the Conan packages provided (verified against the
 Conan-generated configs in the main checkout's `build/`). `ffmpeg` is
 different — it *does* exist upstream, but the local rebuild is a licensing/
@@ -61,7 +61,6 @@ surface-control decision (see the row note and "Semantic deltas" below):
 |---|---|---|
 | `luau` 0.700 | upstream has no CMake install → build static libs, hand-install, hand-written `LuauConfig.cmake` | `Luau::VM`(→Common,m), `Luau::Compiler`(→Ast), `Luau::Ast`(→Common), `Luau::CodeGen`(→VM) |
 | `libmcap` 2.1.1 | header-only copy + hand-written `mcap-config.cmake` (conda-forge `mcap` is the *Python* wrapper) | `mcap::mcap` INTERFACE carrying lz4+zstd |
-| `cloudini` 1.4.1 | standalone static build (vendored-deps path, tools/benchmarks/tests off) + hand-written config | `cloudini::cloudini` carrying lz4, zstd, m, pthread |
 | `libnanoarrow` 0.7.0 | upstream CMake with `-DNANOARROW_IPC=ON`; upstream installs its own config; ships `libflatccrt.a` alongside (pj_datastore links it by name) | `nanoarrow::nanoarrow_static`, `nanoarrow::nanoarrow_ipc_static` |
 | `kissfft` 131.1.0 | static build with `datatype=float` (mirrors the Conan options) + hand-written config | `kissfft::kissfft` (FFT for `pj_scripting`'s marker `bandPower`) |
 | `ffmpeg` 9.0.1 (linux-64 + win-64) | decode-only LGPL-only rebuild of conanfile.txt's trimmed option block (`--disable-autodetect`, VAAPI+libdrm, dav1d); distinctive `pj_lgpl_lean_*` build string; embedded package test compiles against it and asserts `avcodec_license()` says LGPL and the configure line has no `--enable-gpl`/`--enable-nonfree` | standard `libav{codec,format,util}.pc` + `libswscale.pc` for `PjScene2DFfmpeg.cmake`'s pkg-config fallback (no CMake config shim needed) |
@@ -318,7 +317,7 @@ What Conan still does better here:
 
 Suggested next steps if we pursue this:
 
-1. Publish `luau` / `libmcap` / `cloudini` / `libnanoarrow` / `kissfft` to the
+1. Publish `luau` / `libmcap` / `libnanoarrow` / `kissfft` to the
    PlotJuggler prefix.dev channel (recipes are ready; same release pipeline as
    the SDK).
 2. Decide the split: pixi as the *developer/CI* environment (fast bootstrap,
