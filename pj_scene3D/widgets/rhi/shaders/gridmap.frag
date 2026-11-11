@@ -3,6 +3,7 @@
 #version 440
 #extension GL_GOOGLE_include_directive : require
 #include "colormap.glslinc"
+#include "srgb.glslinc"
 
 layout(std140, binding = 0) uniform GridMapUniforms {
     mat4 view_projection;
@@ -34,7 +35,7 @@ void main() {
     // In-shader polynomials, not a LUT.
     vec3 base = sampleColormap(int(gm.color_params.z), colormap_t);
     if (rm.render_mode.x != 0) {
-        base = pow(max(base, vec3(0.0)), vec3(2.2));
+        base = srgbToLinear(base);
     }
     float shade = 1.0;
     if (gm.light_params.w > 0.5) {

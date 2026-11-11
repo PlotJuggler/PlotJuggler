@@ -1146,7 +1146,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   // The HDR target is linear-light — the present pass re-encodes to sRGB — so
   // linearize the display-referred token on write.
   const QColor scene_bg = sceneThemeColors().backdrop;
-  const auto linear_channel = [](float channel) { return std::pow(channel, 2.2F); };
+  const auto linear_channel = [](float channel) { return static_cast<float>(look::srgbToLinear(channel)); };
   const QColor hdr_scene_clear = QColor::fromRgbF(
       linear_channel(static_cast<float>(scene_bg.redF())), linear_channel(static_cast<float>(scene_bg.greenF())),
       linear_channel(static_cast<float>(scene_bg.blueF())), 1.0F);

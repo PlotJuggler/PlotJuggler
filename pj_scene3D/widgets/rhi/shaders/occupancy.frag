@@ -1,6 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 #version 440
+#extension GL_GOOGLE_include_directive : require
+#include "srgb.glslinc"
 
 layout(std140, binding = 0) uniform OccupancyUniforms {
     mat4 view_projection;
@@ -31,7 +33,7 @@ void main() {
         color = vec3(grayscale);
     }
     if (render_mode.x != 0) {
-        color = pow(max(color, vec3(0.0)), vec3(2.2));
+        color = srgbToLinear(color);
     }
     fragment_color = vec4(color, display_params.x);
 }

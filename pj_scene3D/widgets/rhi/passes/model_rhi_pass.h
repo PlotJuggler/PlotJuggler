@@ -238,8 +238,8 @@ class ModelRhiPass {
   // Texture slots are in Material order: base colour, metallic-roughness, normal,
   // occlusion, emissive.
 
-  /// Whether `slot` samples as sRGB: only colour data (base colour, emissive); the
-  /// data maps must read their channels verbatim.
+  /// Whether `slot` holds sRGB-encoded colour (base colour, emissive), which
+  /// model.frag decodes; the data maps must read their channels verbatim.
   [[nodiscard]] static bool textureIsSrgb(std::size_t slot);
   /// The texture-cache key of `texture` bound at `slot`: its content key plus its
   /// colour space, so one image serving a colour slot and a data slot is two
