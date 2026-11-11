@@ -326,54 +326,35 @@ endif()
 # ---------------------------------------------------------------------------
 
 add_subdirectory(3rdparty/qwt)
-# PJ_SYSTEM_NANOCDR / PJ_SYSTEM_ADS: use an installed nanocdr / Qt-Advanced-Docking
-# (e.g. conda-forge's) instead of the vendored copies, as PJ_SYSTEM_QWT does for Qwt.
-option(PJ_SYSTEM_NANOCDR "Use an installed nanocdr (find_package) instead of 3rdparty/nanocdr" OFF)
-option(PJ_SYSTEM_ADS "Use an installed Qt-Advanced-Docking (find_package) instead of 3rdparty/Qt-Advanced-Docking" OFF)
-if(PJ_SYSTEM_NANOCDR)
-  find_package(nanocdr CONFIG REQUIRED)
-  set(_pj_nanocdr_target nanocdr::nanocdr)
-  add_library(nanocdr ALIAS nanocdr::nanocdr)
-else()
-  add_subdirectory(3rdparty/nanocdr)
-  set(_pj_nanocdr_target nanocdr)
-endif()
+add_subdirectory(3rdparty/nanocdr)
 # nanocdr's constexpr getCurrentEndianness() reads an inactive union member. GCC
 # accepts it; Clang, which the sanitizer lanes use, reports -Winvalid-constexpr as
 # an error by default. The function is never evaluated in a constant context, so
 # its Clang consumers silence the diagnostic instead of patching 3rdparty/.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  target_compile_options(${_pj_nanocdr_target} INTERFACE -Wno-invalid-constexpr)
+  target_compile_options(nanocdr INTERFACE -Wno-invalid-constexpr)
 endif()
-unset(_pj_nanocdr_target)
 
-if(PJ_SYSTEM_ADS)
-  find_package(qtadvanceddocking-qt6 CONFIG REQUIRED)
-  add_library(qt_advanced_docking ALIAS ads::qtadvanceddocking-qt6)
-else()
-  # Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
-  # tracking upstream master + the Wayland fix + WASM Unix guards on
-  # feature/wasm-unix-guards). Pin the
-  # version to skip the upstream root CMake's git_describe call (which fails in
-  # a submodule checkout), build static, and skip examples/demos.
-  set(ADS_VERSION "4.5.0" CACHE STRING "" FORCE)
-  set(BUILD_STATIC ON CACHE BOOL "" FORCE)
-  set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  # EXCLUDE_FROM_ALL: linked statically into the app, so its own install rules
-  # (headers, static library, CMake package) stay out of `cmake --install`.
-  add_subdirectory(3rdparty/Qt-Advanced-Docking EXCLUDE_FROM_ALL)
-  add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
-  # Qt 6.12 deprecates Q_ENUMS, which the fork's ads_globals.h still uses; as a
-  # system include its warnings stay out of our -Werror targets.
-  get_target_property(_pj_ads_includes qtadvanceddocking-qt6 INTERFACE_INCLUDE_DIRECTORIES)
-  set_target_properties(qtadvanceddocking-qt6 PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pj_ads_includes}")
-  unset(_pj_ads_includes)
-  # Target options follow the directory-inherited sanitizer flags on the command
-  # line, so -fno-sanitize=all wins for this library only. See PJ_SANITIZE_QT_ADS.
-  if(PJ_SANITIZERS_ACTIVE AND NOT PJ_SANITIZE_QT_ADS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(qtadvanceddocking-qt6 PRIVATE -fno-sanitize=all)
-    message(STATUS "Sanitizers: Qt-Advanced-Docking excluded (PJ_SANITIZE_QT_ADS=OFF)")
-  endif()
+# Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
+# tracking upstream master + the Wayland fix + WASM Unix guards on
+# feature/wasm-unix-guards). Pin the
+# version to skip the upstream root CMake's git_describe call (which fails in
+# a submodule checkout), build static, and skip examples/demos.
+set(ADS_VERSION "4.5.0" CACHE STRING "" FORCE)
+set(BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/Qt-Advanced-Docking)
+add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
+# Qt 6.12 deprecates Q_ENUMS, which the fork's ads_globals.h still uses; as a
+# system include its warnings stay out of our -Werror targets.
+get_target_property(_pj_ads_includes qtadvanceddocking-qt6 INTERFACE_INCLUDE_DIRECTORIES)
+set_target_properties(qtadvanceddocking-qt6 PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pj_ads_includes}")
+unset(_pj_ads_includes)
+# Target options follow the directory-inherited sanitizer flags on the command
+# line, so -fno-sanitize=all wins for this library only. See PJ_SANITIZE_QT_ADS.
+if(PJ_SANITIZERS_ACTIVE AND NOT PJ_SANITIZE_QT_ADS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(qtadvanceddocking-qt6 PRIVATE -fno-sanitize=all)
+  message(STATUS "Sanitizers: Qt-Advanced-Docking excluded (PJ_SANITIZE_QT_ADS=OFF)")
 endif()
 
 # ---------------------------------------------------------------------------

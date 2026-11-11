@@ -82,9 +82,6 @@ requirements:
     # env; python's run_exports only pin the ABI, not the package itself.
     - python
     - ${{ pin_compatible('ffmpeg', lower_bound='x.x', upper_bound='x') }}
-    # conda-forge's cloudini (shared libcloudini_lib) has no run_exports yet
-    # (conda-forge/cloudini-feedstock#1); PJ4's own recipes/cloudini is static.
-    - ${{ pin_compatible('cloudini', upper_bound='x.x') }}
     # PJ4 ships MPL-2.0 and must not pull GPL builds into the environment.
     - ffmpeg * lgpl_*
     - libarchive * lgpl_*
