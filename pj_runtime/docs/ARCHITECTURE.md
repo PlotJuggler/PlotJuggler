@@ -630,7 +630,7 @@ faster than the brake rate. The 3D fixed-frame preference is not here
 
 ## Recording
 
-Design: [docs/session_recorder_design.md](../../docs/session_recorder_design.md).
+Design: [docs/RECORDING_AND_CACHING.md §3.3](../../docs/RECORDING_AND_CACHING.md).
 
 - **`Recorder`** (one per source): `tapFor()` hands the source's host a stateless tap that
   co-owns the recorder; the binding→channel table is guarded by one mutex `mu_`; one writer

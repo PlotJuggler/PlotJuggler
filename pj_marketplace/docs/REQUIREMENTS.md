@@ -101,12 +101,10 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 These concerns are intentionally **not** part of `pj_marketplace` and belong
 elsewhere in the host application:
 
-- **Enable/disable installed plugins.** Toggling a plugin on or off without
-  uninstalling it is a host-application concern (e.g. a per-user config knob
-  in `pj_app` that filters which discovered DSOs the loader instantiates),
-  not a marketplace concern. The marketplace's job ends at "installed on
-  disk"; whether the host chooses to load that DSO at startup is decided by
-  the host's plugin loader and config.
+- **Deciding what the loader instantiates.** The marketplace owns the persisted
+  disabled list (`ExtensionManager::setEnabled` / `disabledExtensionIds`, with the
+  toggle in the Details footer); honouring it at load time is the host's plugin
+  loader (`pj_runtime`). A change takes effect at the next launch.
 - **Runtime hot-reload of plugin instances.** Out of scope per the
   [application non-goals](../../CLAUDE.md#non-goals-explicitly-deferred).
 
@@ -506,7 +504,7 @@ Fields read from the embedded plugin manifest:
 | `min_plotjuggler_version` | Embedded plugin manifest key `"min_plotjuggler_version"`. Deprecated: read and displayed, never gates (see `min_sdk_required`) |
 | `install_date` | Last-modified timestamp of the extension root directory |
 | `path` | The scanned subdirectory itself |
-| `enabled` | Always `true` by default (no persistence yet) |
+| `enabled` | True unless the id is in the persisted disabled list (`ExtensionManager::disabledExtensionIds`) |
 
 A directory holding several plugin DSOs is installed and gated as one extension, so
 they must agree on `id` and `version`. The plugin version and each non-empty

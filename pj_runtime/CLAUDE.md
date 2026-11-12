@@ -91,4 +91,4 @@ Shared fixtures, the freeze bench and the recording pipeline test: [docs/ARCHITE
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): link surface and per-subsystem wiring and contracts.
 - [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): Qt pitfalls the code works around.
 - [docs/derived_objects/README.md](../docs/derived_objects/README.md): the derived-data engines (start there, then ARCHITECTURE.md; §21 has recipes for common changes).
-- [docs/RECORDING_AND_CACHING.md](../docs/RECORDING_AND_CACHING.md) and [docs/session_recorder_design.md](../docs/session_recorder_design.md): recording and the source cache.
+- [docs/RECORDING_AND_CACHING.md](../docs/RECORDING_AND_CACHING.md): recording and the source cache.

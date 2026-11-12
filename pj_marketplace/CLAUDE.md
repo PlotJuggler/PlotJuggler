@@ -3,9 +3,10 @@
 ## Purpose
 
 Extension marketplace for PlotJuggler 4 — registry fetching, package download,
-and installed-extension lifecycle management, plus the marketplace UI. Three
-library targets (`pj_marketplace` core, `pj_marketplace_ui`, `pj_plugin_catalog`)
-and a standalone `pj_marketplace_app` harness.
+and installed-extension lifecycle management, plus the marketplace UI. Two
+library targets (`pj_marketplace` core, `pj_marketplace_ui`), the Qt-free
+`pj-plugin-check` admission helper, and a standalone `pj_marketplace_app` harness.
+Embedded-manifest discovery comes from the SDK (`plotjuggler_sdk::plugin_host`).
 
 **Core (bundled) extensions**: plugins shipped with the app are seeded into the
 extensions dir by the host (`pj_runtime`'s `ExtensionCatalogService` — the
@@ -20,7 +21,9 @@ default sessions, and offers downgrade-to-bundled. See
   `registry_resolver.hpp`,
   `download_manager.hpp`, `extension_manager.hpp`, `installed_extension.hpp`,
   `marketplace_window.hpp`, `platform_utils.hpp`,
-  `qt_diagnostic_bridge.hpp`).
+  `qt_diagnostic_bridge.hpp`, and the store layer). Every header by role, so a helper
+  that already exists (SHA-256, the file walk, version ordering, archive budgets) is
+  found before it is rewritten: `docs/ARCHITECTURE.md` §3.1.
 - `src/core/` — registry/download/extension managers plus the pure registry candidate
   resolver; `src/ui/` — `MarketplaceWindow`
   (`.ui`-driven); `tests/` — manager and store suites share

@@ -15,7 +15,7 @@ header. The `plotjuggler_sdk` Conan package is a separate repo with its own lice
 
 ## Architecture
 
-Module boundaries and dependency rules are below; each module's `CLAUDE.md` and `docs/` describe its implementation. Cross-module designs: derived series and objects in [docs/derived_objects/](./docs/derived_objects/ARCHITECTURE.md), recording and source cache in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md), AI agents over MCP (server, bridge, plugin endpoint) in [MCP_SERVER.md](./docs/MCP_SERVER.md). [docs/archive/](./docs/archive) holds retired plans (history only).
+Module boundaries and dependency rules are below; each module's `CLAUDE.md` and `docs/` describe its implementation. Cross-module designs: derived series and objects in [docs/derived_objects/](./docs/derived_objects/ARCHITECTURE.md), recording and source cache in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md), AI agents over MCP (server, bridge, plugin endpoint) in [MCP_SERVER.md](./docs/MCP_SERVER.md). [docs/archive/](./docs/archive) holds retired plans (history only).
 
 ```
 PJ4/
@@ -154,7 +154,7 @@ C++20, CMake + Conan, Qt pinned by `PJ_QT_VERSION` in [`versions.env`](./version
 
 Shipped feature set: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua and Python via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes, session recording of streaming sources to MCAP.
 
-**Session recording is a runtime capability**, not a build flag: `RecordingService::isSupported()` decides and every Record affordance follows it (only the MCAP sink is desktop-only). One Record press = one `pj_<UTC timestamp>/` folder in the Preferences recording folder, holding ONE MCAP file per source (named after it, written straight into its final name), all sharing a `capture_id`; a file without a summary section was not stopped cleanly and still opens (`mcap recover` rebuilds its index); the write-queue budget is per source. See [docs/session_recorder_design.md](./docs/session_recorder_design.md).
+**Session recording is a runtime capability**, not a build flag: `RecordingService::isSupported()` decides and every Record affordance follows it (only the MCAP sink is desktop-only). One Record press = one `pj_<UTC timestamp>/` folder in the Preferences recording folder, holding ONE MCAP file per source (named after it, written straight into its final name), all sharing a `capture_id`; a file without a summary section was not stopped cleanly and still opens (`mcap recover` rebuilds its index); the write-queue budget is per source. See [docs/RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md).
 
 Scene3D (wired into `pj_app` via `Scene3DDockWidget`), the plots and the Scene2D viewer render through QRhi (OpenGL, D3D11, Metal, WebGL2; `PJ_GRAPHICS_API` overrides at run time). Browser (WebAssembly) rules, details in [docs/WASM_DEPLOYMENT.md](./docs/WASM_DEPLOYMENT.md):
 

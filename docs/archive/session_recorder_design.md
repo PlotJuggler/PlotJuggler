@@ -1,7 +1,7 @@
 # Session Recorder — host-side raw capture of ingested messages
 
-**Status:** M1 is shipped (`pj_runtime`: `RecordTap`, `Recorder`, `McapRecordingWriter`, `RecordingService`; the Record button and Preferences in `pj_app`; nothing in pj-official-plugins — replay is the stock `data_load_mcap`, D9). Decisions approved 2026-08-31, per-source capture layout (D5/D6) approved the same day; promote-at-stop (M2) dropped 2026-09-01 (D7).
-**Durable spec:** [`RECORDING_AND_CACHING.md`](./RECORDING_AND_CACHING.md) — intent, architecture, trade-offs and rejected alternatives for recording *and* caching; this document is the working design and decision history behind it.
+**Status:** retired. Every milestone below is delivered: M1 here (#616), the source cache (M3) in `pj_runtime`, and `parser_arrow` plus the Mosaico transport split (M4) in pj-official-plugins. The statuses in §7 are those of the day they were written. Kept as the decision history (D1–D9); the current design is [`RECORDING_AND_CACHING.md`](../RECORDING_AND_CACHING.md) and the code. Original status: M1 is shipped (`pj_runtime`: `RecordTap`, `Recorder`, `McapRecordingWriter`, `RecordingService`; the Record button and Preferences in `pj_app`; nothing in pj-official-plugins — replay is the stock `data_load_mcap`, D9). Decisions approved 2026-08-31, per-source capture layout (D5/D6) approved the same day; promote-at-stop (M2) dropped 2026-09-01 (D7).
+**Durable spec:** [`RECORDING_AND_CACHING.md`](../RECORDING_AND_CACHING.md) — intent, architecture, trade-offs and rejected alternatives for recording *and* caching; this document is the working design and decision history behind it.
 **Scope:** `pj_runtime` (recorder service + ingest tap), `pj_app` (Record UI, Preferences); `data_load_mcap` is untouched (D9); later milestones touch the SDK.
 
 ## 1. Problem

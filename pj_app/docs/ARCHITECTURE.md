@@ -1,5 +1,15 @@
 # pj_app Architecture
 
+How the executable shell is put together. `../CLAUDE.md` holds the rules and
+pitfalls; this document is the subsystem reference. The wiring itself is best
+read from `src/MainWindow.cpp` and `src/main.cpp`; the headers own per-class
+contracts (threading, ownership, call order), so this document describes only
+what spans several classes.
+
+Derived data (on-demand nodes, series, marker rules, filters and transforms) is
+designed in [`../../docs/derived_objects/ARCHITECTURE.md`](../../docs/derived_objects/ARCHITECTURE.md);
+the sections below cover only the shell's half of it.
+
 ## Playback and panel access
 
 The bottom `TimelineWidget` seeks directly on a slider-track click and keeps the
@@ -12,16 +22,6 @@ is hidden and **Close Settings** when it is visible. The host-supplied visibilit
 query runs when the menu opens. `settingsPanelToggleRequested` passes through
 `PlotDocker` to `MainWindow`, which binds the settings page to that dock and toggles
 the right panel through its existing visibility button.
-
-How the executable shell is put together. `../CLAUDE.md` holds the rules and
-pitfalls; this document is the subsystem reference. The wiring itself is best
-read from `src/MainWindow.cpp` and `src/main.cpp`; the headers own per-class
-contracts (threading, ownership, call order), so this document describes only
-what spans several classes.
-
-Derived data (on-demand nodes, series, marker rules, filters and transforms) is
-designed in [`../../docs/derived_objects/ARCHITECTURE.md`](../../docs/derived_objects/ARCHITECTURE.md);
-the sections below cover only the shell's half of it.
 
 ## Window frame
 
@@ -246,8 +246,8 @@ position IS its page index.
   log, never into the toast: a toast listing one line per file stops being
   readable at three sources.
 
-The recording format and the write-queue budget are in
-`../../docs/session_recorder_design.md`.
+The recording design and the write-queue budget are in
+`../../docs/RECORDING_AND_CACHING.md`; the on-disk contract is `pj_runtime`'s `RecordingFormat.h`.
 
 ## Layout files and derived recipes
 
