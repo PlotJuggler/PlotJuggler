@@ -53,7 +53,8 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
   `evaluate`, `create_derived_series`, `create_derived_object`, `create_markers`, `remove_markers`, `list_created`,
   `remove_derived_series`, `playback`, `plot_tab`, `scene_view`, `report_status`.
 - **App tools** (`McpServerTools.cpp`, public token only): `get_status`, `about`, `open_file`, `unload_file`,
-  `reload_file`, `start_stream`, `stop_stream`, `export_series`, `add_script_series`, `add_filter`, `screenshot`.
+  `reload_file`, `start_stream`, `stop_stream`, `export_series`, `add_script_series`, `remove_script_series`,
+  `add_filter`, `screenshot`.
 - **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`.
 
 `ToolSet::kFull` serves both lists. `ToolSet::kAgentOnly` is used for plugin tokens: `tools/list` and the
@@ -216,7 +217,7 @@ desktop does the same with `--mcp-relay <url>`, the key copied from the relay's 
   in-flight replies are deleted without emitting `finished`, so no callback reaches the server then, and replies the
   server still holds check the link through a `QPointer`. A relay that is down is retried, backing off to 10 s, while
   the page lives; the relay forgets a page that has not polled for 120 s. In the browser a
-  `QNetworkReply` never frees its body (docs/TECHNICAL_NOTES.md): relay messages are small, so a session leaks
+  `QNetworkReply` never frees its body (`pj_runtime/docs/TECHNICAL_NOTES.md`): relay messages are small, so a session leaks
   kilobytes.
 
 ## The plugin endpoint (`pj.mcp_endpoint.v1`)

@@ -14,7 +14,7 @@ archived in [`docs/archive/QRHI_MIGRATION.md`](../../docs/archive/QRHI_MIGRATION
 |---|---|---|---|
 | Linux (AppImage, .deb, conda) | OpenGL, 3.3 core at least | Vulkan opt-in (`PJ_GRAPHICS_API=vulkan`) | llvmpipe; lavapipe for Vulkan |
 | Windows (installer) | D3D11 | WARP, chosen by Qt | WARP |
-| macOS arm64 (conda, later a dmg) | Metal | OpenGL 4.1 core | the runner's paravirtual Metal device; Apple's software GL |
+| macOS arm64 (conda, the dmg) | Metal | OpenGL 4.1 core | the runner's paravirtual Metal device; Apple's software GL |
 | WebAssembly | WebGL2 | — | Chromium's SwiftShader; Firefox on llvmpipe (Playwright) |
 
 **Startup.** `pj_app` resolves the API right after constructing `QApplication`,

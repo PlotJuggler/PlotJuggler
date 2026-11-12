@@ -40,10 +40,9 @@ lock-holder mode for the interprocess store lease test; `pj-plugin-check` is
 copied beside that executable for default helper lookup. The helper names the Widget family `"widget"`,
 and `PluginCheckRunner` starts it with Qt's library directory first on `LD_LIBRARY_PATH` (Linux) / `PATH`
 (Windows), because it `dlopen`s every candidate and a Widget plugin links Qt: outside the AppImage nothing
-else lets the loader find `libQt6Widgets`, and a failed load there reads as a rejected plugin. In a configured test
-tree, select all registered module tests with
-`ctest -R '^(pj_marketplace_tests\.|plugin_check_runner_test$|extension_manager_test$)'`
-inside the builder image. `extension_manager_check_plugin_management` remains
+else lets the loader find `libQt6Widgets`, and a failed load there reads as a rejected plugin. Run the module's registered tests with
+`./test.sh -R '^(pj_marketplace_tests\.|plugin_check_runner_test$|extension_manager_test$)'`.
+`extension_manager_check_plugin_management` remains
 a standalone, network-dependent harness excluded from CTest.
 
 ## Read deeper

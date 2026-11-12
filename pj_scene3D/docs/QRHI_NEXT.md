@@ -145,15 +145,8 @@ Deferred with a trigger, not failing any row:
 ## P6: the pinned Qt
 
 The pinned Qt (`PJ_QT_VERSION` in `versions.env`; `docs/QT_NOTES.md`) is an LTS. QRhi has no cross-minor
-compatibility guarantee, so the upgrade is one change across every channel:
+compatibility guarantee, so an upgrade is one change across every channel (`versions.env`, the `qt6-main` pin in `pixi.toml`, `PJ_EMSCRIPTEN_VERSION`, and every `.qsb` pack re-baked with the new `qsb`). Left from the last one:
 
-- [x] `PJ_QT_VERSION` in `versions.env`, the `qt6-main` pin in `pixi.toml` (Windows,
-  macOS and WASM CI read `versions.env`), and `PJ_EMSCRIPTEN_VERSION`.
-- [x] Every `.qsb` pack re-baked with the pinned Qt's `qsb`, which reproduces the committed
-  bytes. The WASM configure hash-checks them; re-bake
-  with `pj_scene3D/widgets/rhi/shaders/bake.sh`, `pj_plotting/widget/shaders/bake.sh`,
-  the Scene2D packs (`pj_scene2D/docs/TECHNICAL_NOTES.md`, "Shader Toolchain") and
-  the capability probe whenever a shader changes.
 - [ ] Re-test the two grab workarounds before removing either: the never-shown
   `grabFramebuffer()` that works once, and the OpenGL stale uniforms in grab-only
   frames (`grabPresentedFrame()` presents a real frame first). Keep each until a
@@ -170,7 +163,7 @@ compatibility guarantee, so the upgrade is one change across every channel:
 
 Not scheduled; each item names what would bring it back.
 
-- **Raw `delete` in the passes** (about 110 left): convert a pass to owning
+- **Raw `delete` in the passes** (about 120 left): convert a pass to owning
   pointers when it is next edited.
 - **Test-only surface in production classes:** the layer and pass `*ForTest`
   accessors, the plot canvas probe and fault-injection code, and the remaining
@@ -218,8 +211,8 @@ Not scheduled; each item names what would bring it back.
   Firefox (`wasm-ci.yml`; Firefox's `editors.spec.js` is non-blocking until its
   main-thread heartbeat budget holds on CI runners). Safari waits for a WebKit
   lane.
-- **macOS distribution.** No macOS package ships from this repo; the `macos-ci`
-  lane is the only macOS gate, and a real Mac's OpenGL fallback is unverified.
+- **macOS.** The dmg is built by `macos-release.yml`; the `macos-ci` lane is the
+  only macOS test gate, and a real Mac's OpenGL fallback is unverified.
 - **ADS on Wayland.** Floating docks hide on every backend (TECHNICAL_NOTES §5);
   the fix belongs in the ADS fork, and filing it upstream is the maintainer's
   call.

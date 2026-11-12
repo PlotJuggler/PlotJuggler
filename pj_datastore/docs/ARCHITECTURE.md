@@ -343,7 +343,7 @@ The tests in `tests/` are built into these runners (the authoritative live set i
 
 - `pj_datastore_tests`: one gtest runner for the whole module, registered with `gtest_discover_tests`, so ctest
   names are `<runner>.<Suite>.<Case>` and each case runs in its own process. Filter one suite with
-  `ctest --test-dir build -R '^pj_datastore_tests\.ObjectStoreTest\.'`.
+  `./test.sh -R '^pj_datastore_tests\.ObjectStoreTest\.'`.
 - `chunk_test`: a separate executable, because it holds death tests.
 - `engine_concurrency_test`, `engine_thread_safety_test`: separate executables with a 90-second timeout; they are the
   ThreadSanitizer entry points used by `build.sh` and CI.
@@ -359,4 +359,4 @@ and round-trip.
 built (commented out in `CMakeLists.txt`) and have not been rewritten against the v4 Arrow-stream path
 (`read_series_arrow`); `arrow_stream_round_trip_test` covers that path.
 
-Build and run from the PJ4 repo root: `./build.sh`, then `ctest --test-dir build -R '^pj_datastore_tests\.'` (the separate executables run by their own names, e.g. `-R chunk_test`).
+Build and run from the PJ4 repo root: `./build.sh`, then `./test.sh -R '^pj_datastore_tests\.'` (the separate executables run by their own names, e.g. `-R chunk_test`).
