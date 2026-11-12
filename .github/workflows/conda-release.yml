@@ -88,7 +88,6 @@ jobs:
         run: |
           pixi exec --spec "rattler-build>=0.66,<0.67" rattler-build build \
             --recipe recipes/luau --recipe recipes/libmcap \
-            --recipe recipes/kissfft \
             -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 
       # A pull request restores its own newest cache, else the newest one a
