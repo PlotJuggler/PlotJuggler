@@ -371,6 +371,19 @@ if(EMSCRIPTEN)
     target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
     set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
+    # Link-time patch of two Qt 6.12.0 backing-store flush functions: without it, playback at HiDPI uploads
+    # nearly the whole window as a texture every frame. See the file's header; remove it once Qt has the fix.
+    option(PJ_WASM_QT_FLUSH_OVERRIDE "Link-time patch of Qt 6.12 paintAndFlush/toTexture (HiDPI playback)" ON)
+    if(PJ_WASM_QT_FLUSH_OVERRIDE)
+        find_package(Qt6 REQUIRED COMPONENTS GuiPrivate WidgetsPrivate)
+        target_sources(pj_app PRIVATE src/wasm/qt612_rhi_flush_override.cpp)
+        # Verbatim Qt code: keep the project's -Werror set off it.
+        set_source_files_properties(src/wasm/qt612_rhi_flush_override.cpp PROPERTIES COMPILE_OPTIONS "-w")
+        target_link_libraries(pj_app PRIVATE Qt6::GuiPrivate Qt6::WidgetsPrivate)
+        # ponytail: applies to the whole pj_app link, so it also silences any other duplicate symbol;
+        # it goes away with this file.
+        target_link_options(pj_app PRIVATE "LINKER:--allow-multiple-definition")
+    endif()
     if(PJ_WASM_WITH_PYTHON)
         # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
         # the main thread waits on it never starts.
