@@ -723,99 +723,20 @@ explicit at construction time.
 
 ---
 
-## 6. MediaIndexRegistry — *designed, not yet implemented*
+## 6. Keyframe indexing
 
-> **Status (as of 2026-05-19): the `MediaIndexRegistry` described in this
-> section is a design artefact. No `media_index_registry.h` exists in
-> `pj_scene2D/core/include/pj_scene2d_core/`, and no public C ABI slot
-> for `publish_keyframe_index` exists in `pj_base`. The realised keyframe
-> indexing today lives inside the streaming decoder:**
-> - **Streaming sources** — `StreamingVideoDecoder` (§4.4) maintains its
->   own inline keyframe vector via incremental NAL inspection. This is the
->   host's only video decode path; there is no file-backed decoder.
->
-> The registry is the design for a future **file-backed ObjectStore**
-> path (raw bytes pushed via `pushLazy`, but the decoder needs random
-> access by keyframe rather than by file offset). That path does not
-> exist yet; until it does, this section is preserved as the
-> design-of-record so the work can be picked up without re-deriving the
-> contract.
+Keyframe tracking lives in pj_scene2D, not in ObjectStore (§R4.2, §R4.4).
+`StreamingVideoDecoder` (§4.4) keeps its own keyframe timestamp vector and
+builds it incrementally: on each new entry the codec-dispatched
+`isVideoKeyframe(codec_id, …)` (H.264 IDR / HEVC IRAP / AV1 seq-header OBU)
+inspects at most the first ~20 bytes, whatever the frame size. This is the
+host's only video decode path.
 
-Keyframe tracking lives in pj_scene2D, not in ObjectStore (§R4.2,
-§R4.4). The `MediaIndexRegistry` is the proposed sidechannel that
-would hold per-topic keyframe timestamp lists.
-
-```cpp
-class MediaIndexRegistry {
- public:
-  void registerIndex(ObjectTopicId topic,
-                     std::vector<int64_t> keyframe_timestamps);
-
-  void appendKeyframe(ObjectTopicId topic, int64_t timestamp);
-
-  std::optional<int64_t> keyframeBefore(ObjectTopicId topic,
-                                         int64_t timestamp) const;
-
-  void removeIndex(ObjectTopicId topic);
-};
-```
-
-**Keying**: entries are keyed by `ObjectTopicId`, not topic name
-strings — consistent with the rest of the system.
-
-**Lifecycle**: entries are cleared when the corresponding topic is
-removed from ObjectStore (`removeTopic`, `clear`). The application
-is responsible for calling `removeIndex()` as part of topic teardown.
-Widgets observing a removed topic will find no keyframe index and
-fall back to sequential decode (no seeking).
-
-### Two population modes
-
-**File-backed sources**: the DataSource plugin pre-computes the
-keyframe list at open time — by scanning NAL start codes (H.264/H.265),
-reading the MP4 `stss` (sync sample) atom, or equivalent. It publishes
-the sorted timestamp array via the C ABI slot
-`object_write_host.publish_keyframe_index(topic, timestamps, count)`.
-The host receives the array and calls `registerIndex()` on the
-application-owned `MediaIndexRegistry`. The DataSource plugin never
-links `pj_scene2d_core` — communication is through the C ABI write host
-only. This is a one-time cost at file open, amortized over all
-subsequent seeks.
-
-**Streaming sources**: the decoder builds the index incrementally.
-On each new entry it inspects the first few bytes to detect keyframes.
-`StreamingVideoDecoder` (§4.4) manages its own inline keyframe
-timestamp vector rather than using `MediaIndexRegistry` — this is
-simpler for the single-consumer case and avoids cross-component
-coupling. The per-entry cost is negligible: the codec-dispatched
-`isVideoKeyframe(codec_id, …)` (H.264 IDR / HEVC IRAP / AV1 seq-header
-OBU) touches at most the first ~20 bytes of each entry regardless of
-frame size.
-
-### Usage by the future file-backed decoder
-
-When the future file-backed decoder needs to seek to timestamp `T` (using the
-`ObjectTopicId` it was constructed with):
-
-1. `registry.keyframeBefore(topic_id, T)` → returns `kf_ts`.
-2. `ObjectStore::indexAt(topic_id, kf_ts)` → gets the keyframe's index
-   `i` in the entry sequence.
-3. `ObjectStore::at(topic, i)` → gets the keyframe bytes. Decode it
-   after calling `avcodec_flush_buffers` to reset decoder state.
-4. Iterate `ObjectStore::at(topic, i+1)`, `at(topic, i+2)`, ...
-   decoding each subsequent frame (using `decodeSkip` for intermediates)
-   until reaching the entry at timestamp `T`.
-
-Because live and scrub modes are mutually exclusive (§R4.3), the buffer
-is frozen during this seek — no entry can be evicted between steps 2
-and 4.
-
-### Thread safety
-
-`MediaIndexRegistry` is protected by its own `shared_mutex`.
-`registerIndex` and `appendKeyframe` take exclusive locks;
-`keyframeBefore` takes a shared lock. The registry is independent of
-`ObjectStore`'s locking.
+**Considered and not built:** a shared per-topic keyframe registry, filled by a
+DataSource plugin through a new C ABI slot at file-open time. It only pays off
+for a file-backed ObjectStore path with several decoders on one topic, which
+does not exist; for the single-consumer case the in-decoder vector is simpler
+and needs no lock.
 
 ---
 
@@ -1121,7 +1042,6 @@ pushing.
 | `EntryThumbnailCache::mutex_` | `mutex` | Thumbnail tile map + byte budget | Builder thread: tile publish. Reader (video worker via `StreamingVideoSource`): `lookup()` |
 | `MediaViewerWidget::frame_mutex_` (widgets layer) | `mutex` | `media_source_` pointer, pending frame / pixel-layer staging, `inspector_frame_` | GUI thread at all four sites today (`setMediaSource`, `releaseResources`, `render`'s poll, inspector read); the lock keeps source swap and frame staging atomic |
 | `StreamingVideoDecoder` keyframe vector (no lock) | none | In-decoder keyframe timestamps | Accessed only by the streaming decoder's owning worker thread during incremental NAL inspection. A plain `std::vector<Timestamp>` — single-consumer, so no lock exists. Not exposed in the public API. |
-| `MediaIndexRegistry::mutex_` *(planned)* | `shared_mutex` | Keyframe index — see §6 deferred-design banner | N/A today: the registry does not yet exist. |
 
 ### 10.3 Lock ordering
 
@@ -1139,8 +1059,7 @@ acquired and released independently — never held simultaneously:
 4. Worker decodes (no ObjectStore or source mutex held). For streaming
    video, keyframe discoveries append to the decoder's **internal**
    keyframe vector (plain `std::vector`, no lock — only the owning worker
-   thread touches it). When the planned `MediaIndexRegistry` lands (§6),
-   this is the path that will switch to the shared registry instead.
+   thread touches it).
 5. Worker acquires its `AsyncFrameWorker`'s `result_mutex_` → stores the complete
    frame → releases.
 
@@ -1169,10 +1088,7 @@ heavy for the UI thread — and uses the same `AsyncFrameWorker` locking as
 - **StreamingVideoDecoder keyframe vector (no lock)**: reads
   (binary search) are O(log k) where k is the number of keyframes.
   Writes are O(1) amortised. The vector is touched only by the decoder's
-  own worker thread, so no lock is needed and contention is zero. The future
-  `MediaIndexRegistry` (§6) is planned to use a `shared_mutex` with the
-  same complexity characteristics; it will only become contended if
-  multiple decoders observe the same topic concurrently.
+  own worker thread, so no lock is needed and contention is zero.
 
 ### 10.5 Error propagation across threads
 
@@ -1242,10 +1158,9 @@ bugs that were already proven unfixable by patching.
    decode forward) cannot race with eviction. (Requirement: §R4.3)
 
 6. **Keyframe tracking is pj_scene2D's concern, not ObjectStore's.**
-   ObjectStore is codec-agnostic (§OS3.6). Today the index lives inside
-   the decoder (`StreamingVideoDecoder`'s inline keyframe vector); a
-   `MediaIndexRegistry` is designed for a future file-backed ObjectStore
-   path (§6). (Decision: §R4.2, §R4.4)
+   ObjectStore is codec-agnostic (§OS3.6). The index lives inside the
+   decoder (`StreamingVideoDecoder`'s inline keyframe vector, §6).
+   (Decision: §R4.2, §R4.4)
 
 7. **Parsers are codec-agnostic envelope peelers.** They never inspect
    NAL types, keyframe flags, or GOP structure. All codec knowledge

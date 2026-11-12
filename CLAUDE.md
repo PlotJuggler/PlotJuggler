@@ -181,7 +181,7 @@ Scene3D (wired into `pj_app` via `Scene3DDockWidget`), the plots and the Scene2D
 
 ### Execution autonomy
 
-Once we've agreed on an approach, run the plan to completion — work through implementation, build, and tests **without pausing for "should I proceed?" check-ins**. The User reviews the final result, not each step; don't ask for mid-task confirmation on reversible work. "Run to completion" stops **at the commit boundary, not through it**: commits (see Commit policy), pushes/PRs, and anything outward-facing or destructive still require a stop-and-surface.
+Once we've agreed on an approach, run the plan to completion — work through implementation, build, and tests **without pausing for "should I proceed?" check-ins**. The User reviews the final result, not each step; don't ask for mid-task confirmation on reversible work. "Run to completion" stops **at the commit boundary, not through it**: the actions listed under Commit policy need my go-ahead, and nothing else does.
 
 ### Verifying visual / performance changes
 
@@ -192,7 +192,14 @@ Don't just assert a change works ("I don't see any difference" is a recurring ro
 
 ### Commit policy
 
-- **Never commit autonomously.** Surface the diff, then ask for approval. Commit only after explicit user confirmation in that turn.
+- **Get my explicit go-ahead before each of these actions**, by surfacing the diff (or the exact command) and asking:
+  - `git commit`, and `git push` including any force-push;
+  - creating, merging, closing or commenting on a PR or an issue;
+  - tags and releases, Conan and plugin-registry uploads, production deploys (`app.plotjuggler.io`);
+  - `./scripts/worktree-rm.sh` and deleting a branch.
+- **A go-ahead names the action and comes after I have seen the diff.** One given for an earlier task does not carry over to the next.
+- **Exception, documentation only:** a change that touches nothing but `docs/`, module `docs/` and `CLAUDE.md` files is committed and pushed straight to `main`, with no PR, once `pre-commit` passes on it.
+- **No go-ahead needed:** `git fetch`, new worktrees and branches, builds, `./test.sh`, read-only `git` and `gh` commands, re-running or dispatching CI for an existing branch, deleting build and scratch directories.
 
 ### Git gotchas (these cost time repeatedly)
 

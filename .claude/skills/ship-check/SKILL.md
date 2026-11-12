@@ -9,7 +9,7 @@ description: Use when a PJ4 change is believed complete and it's time to prepare
 
 Recorded failure modes at the finish line: shipping with a stalled recompile, misreading a pre-existing red as a regression (or vice versa), hook-dirty commits after rebases, stale docs, and committing without approval. Run the gates **in order**; each exists because skipping it has cost real time.
 
-**Gate 0 — approval is not yours to grant.** Never commit, push, or open a PR autonomously. The end state of this skill is a surfaced diff and a question, not a commit.
+**Gate 0 — approval is not yours to grant.** Get the user's explicit go-ahead before each commit, push or PR (root `CLAUDE.md` → Commit policy lists the exact actions; a documentation-only change is its stated exception). The end state of this skill is a surfaced diff and a question, not a commit.
 
 ## Gate 1 — Build proof + full tests
 
