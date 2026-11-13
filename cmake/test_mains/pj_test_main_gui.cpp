@@ -12,6 +12,7 @@
 #include <QSurfaceFormat>
 #include <QWidget>
 #include <QWindow>
+#include <clocale>
 
 namespace {
 
@@ -64,6 +65,7 @@ int main(int argc, char** argv) {
   QSurfaceFormat::setDefaultFormat(core_format);
 #endif
   QApplication app(argc, argv);
+  std::setlocale(LC_NUMERIC, "C");  // as pj_app's main(): Luau cannot read "0.5" under a decimal-comma locale
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJugglerTest"));
   QCoreApplication::setApplicationName(QFileInfo(QString::fromLocal8Bit(argv[0])).baseName());
   QSettings().clear();

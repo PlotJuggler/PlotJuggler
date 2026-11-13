@@ -3,9 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <clocale>
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   QCoreApplication app(argc, argv);
+  std::setlocale(LC_NUMERIC, "C");  // as pj_app's main(): Luau cannot read "0.5" under a decimal-comma locale
   return RUN_ALL_TESTS();
 }
