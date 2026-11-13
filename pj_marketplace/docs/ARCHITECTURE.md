@@ -127,6 +127,17 @@ metadata. All platform artifacts for one release belong in one immutable record.
 Parsing therefore never destructively discards a candidate before eligibility is
 known, and the resolver can be tested without network, filesystem, QObject, or UI.
 
+The published registry depends on these admission rules. It keeps a release for a
+platform only while its `min_sdk_required` is strictly lower than that of every
+newer release shipping that platform, and trims an older record's `platforms` to
+the ones it still serves (enforced by `scripts/validate_registry.py` in
+`pj-plugin-registry`, produced by `scripts/submit_to_registry.py` in
+`pj-official-plugins`). That pruning is lossless only because admission is
+monotonic in the SDK floor: a host that admits a floor admits every lower one,
+with no upper bound and no ABI check on registry records, and the platform filter
+runs before the compatibility filter. Change any of these here and the pruning
+rule must change first, or released hosts lose releases they could still load.
+
 #### ExtensionManager — Constructor Design
 
 All dependencies are injected via constructor. The extensions directory defaults to
