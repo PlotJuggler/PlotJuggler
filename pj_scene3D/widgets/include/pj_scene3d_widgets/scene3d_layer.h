@@ -40,6 +40,7 @@ class OccupancyGridLayer;
 class VoxelGridLayer;
 class SceneEntitiesLayer;
 class GridMapLayer;
+class MeshMapLayer;
 class TrailLayer;
 
 // What one layer draws, family by family, each through the family's typed
@@ -59,6 +60,7 @@ struct SceneContributions {
   SceneEntitiesLayer* markers = nullptr;
   ModelRenderable* models = nullptr;
   GridMapLayer* grid_map = nullptr;
+  MeshMapLayer* mesh_map = nullptr;
 };
 
 // Fold a transform's 16 bit patterns (float or double) into an in-process key

@@ -15,6 +15,7 @@
 namespace pj::scene3d {
 
 class GridMapRhiPass;
+class MeshMapRhiPass;
 class GridRhiPass;
 class MarkerRhiPass;
 class ModelRhiPass;
@@ -105,6 +106,9 @@ class SceneViewTestAccess {
   }
   [[nodiscard]] static GridMapRhiPass& gridMapPass(const SceneViewWidget& view) {
     return *view.gridmap_pass_;
+  }
+  [[nodiscard]] static MeshMapRhiPass& meshMapPass(const SceneViewWidget& view) {
+    return *view.meshmap_pass_;
   }
   [[nodiscard]] static MarkerRhiPass& markerPass(const SceneViewWidget& view) {
     return *view.marker_pass_;

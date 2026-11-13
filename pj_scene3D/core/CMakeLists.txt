@@ -16,6 +16,8 @@ if(EMSCRIPTEN)
     src/camera/camera_math.cpp
     src/depth_backproject.cpp
     src/grid_map_view.cpp
+  src/mesh_map_view.cpp
+    src/mesh_map_view.cpp
     src/occupancy_grid_reconstructor.cpp
     src/pointcloud_convert.cpp
     src/poses_in_frame_render.cpp
@@ -80,6 +82,7 @@ add_library(pj_scene3d_core STATIC
   src/trail_sampling.cpp
   src/version.cpp
   src/grid_map_view.cpp
+  src/mesh_map_view.cpp
   src/voxel_grid_view.cpp
   src/voxel_grid_value.cpp
 )
@@ -120,6 +123,7 @@ if(PJ_BUILD_TESTS)
     ../tests/object_placement_test.cpp
     ../tests/robot_model_bridges_test.cpp
     ../tests/grid_map_view_test.cpp
+    ../tests/mesh_map_view_test.cpp
     ../tests/voxel_grid_view_test.cpp
     ../tests/voxel_grid_value_test.cpp
     ../tests/voxel_grid_budget_test.cpp

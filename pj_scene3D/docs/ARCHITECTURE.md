@@ -1357,6 +1357,61 @@ mode does. It renders in every build, the browser included.
 - **Not built:** shadows, a wireframe overlay, a nearest-neighbour cuboid mode,
   RGBA-from-fields colour.
 
+## Mesh-map layer (`MeshMapLayer`)
+
+Renders an `sdk::MeshMap` (SDK ≥ 0.41.0), a triangle mesh whose vertices and
+faces carry named channels (navigation meshes such as EasyNavigation NavMap,
+cost meshes), and keeps it current with the `sdk::MeshMapUpdate` patches of a
+paired `<topic>_updates` topic. It renders in every build, the browser included.
+
+- **CPU state.** The Qt-free `core/mesh_map_view.{h,cpp}` decodes a validated map
+  once into a `MeshMapState` (positions, indices, every scalar channel widened to
+  float, the vertex colour packed RGBA8, links), owning its arrays: no anchor into
+  the plugin DSO survives the decode, so no binding keepalive is held.
+  `applyMeshMapUpdate()` writes an update's channels into that state; an update
+  whose `geometry_id` is set and differs is refused whole, a channel the map lacks
+  is created with NaN elsewhere, records past the element count are skipped and
+  counted.
+- **Updates over time.** At the tracker time the layer takes the latest map at or
+  before it and applies the updates stamped in (map stamp - 1, time], in time
+  order (`ObjectStore::rangeByTime`). Moving forward applies only the new window.
+  Moving back before what was applied, a new map, or a late update stamped at or
+  before the applied window (`ObjectStore::oldestArrivalAfter` against the newest
+  applied arrival UID) rebuilds from the map. `renderKey()` folds the map's entry
+  and the highest update arrival UID at the time, as `OccupancyGridLayer` does,
+  and `timeRange()` unions the two topics.
+- **Placement** is at the tracker time in the entry clock, like the occupancy
+  grid: the drawn mesh is a map plus later updates, with no single stamp. The
+  model is `TF(fixed <- frame_id) * origin`.
+- **Geometry and colour.** `MeshMapRhiPass` draws de-indexed triangles (three
+  vertices per face) from two static vertex buffers: positions, uploaded only when
+  the upload's `geometry_revision` changes, and one 4-byte colour attribute per
+  vertex, uploaded when the colouring or the channel values change: a channel
+  value (a face channel repeats its value on the three corners and draws flat, a
+  vertex channel interpolates) or an RGBA8 vertex colour. A mode that does not
+  read the other attribute binds a buffer of at least 4 bytes per vertex there.
+  Colour is `LUT(clamp((v - lo) / (hi - lo)))` through the shared colormap GLSL;
+  "no data" travels as the `FLT_MAX` sentinel (NaN need not survive attribute
+  interpolation) and draws mid grey; a degenerate range paints the LUT midpoint.
+- **Shading** is a flat normal from `cross(dFdx(p), dFdy(p))` in the fragment
+  shader (WebGL2 has the derivatives; it has no `gl_PrimitiveID`), faced towards
+  the eye, with the grid map's Lambert key + fill weights. Not the model PBR path;
+  no shadow cast or receive.
+- **Links** (`MeshFaceLink`) draw as a line list between face centroids, coloured
+  by `kind`, through a third pipeline (Lines topology, same shaders, unlit).
+- **Config.** Colour source (a channel, "Vertex color", "Solid"; empty request =
+  the first face channel other than `surface`, else the first vertex channel, else
+  the vertex colour, else solid), colormap, auto / manual range, lighting,
+  opacity, links, persisted as `color_by, colormap, auto_range, range_lo,
+  range_hi, lighting, opacity, links`. The persisted source is a REQUEST: a
+  missing channel falls back with a warning and is honoured again when it
+  reappears.
+- **Limits.** A map past `kMaxRenderableMeshMapFaces` is refused with a status
+  warning. The per-view triangle budget of `kSceneLimits` does not cover this
+  family yet.
+- **Not built:** smooth (per-vertex) normals, shadows, picking a face, a
+  wireframe overlay, per-surface visibility.
+
 ## Repaint coalescing & autoplay
 
 - **Per-tick repaint coalescing.** During playback the scene must not free-run at

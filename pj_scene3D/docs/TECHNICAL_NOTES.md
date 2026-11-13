@@ -751,6 +751,10 @@ shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages.
   29.6 ms on OpenGL; the 9.9M-sphere tab-switch lattice: 400 vs 310 ms, 311 ms
   as a point list; QRHI_NEXT.md).
 - ADS hides floating docks on Wayland, on every backend (§5).
+- Mesh maps (`MeshMapRhiPass`) are capped per layer by `kMaxRenderableMeshMapFaces`
+  but not counted in `kSceneLimits`' per-view budgets, and have no QRhi render or
+  golden test yet: the layer logic is covered by `mesh_map_layer_test` and the CPU
+  path by `mesh_map_view_test`.
 - D3D11 (WARP) rasterizes 1 px lines differently from Mesa; three wide dashed plot
   lines end one dash later than Qwt's raster. The goldens and the dash test carry
   per-backend allowances for exactly these cases (§7).
