@@ -17,6 +17,7 @@
 #include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId, PJ::SequentialUID
 #include "pj_runtime/SessionManager.h"    // PJ::DatasetId
 #include "pj_scene3d_core/mesh_map_view.h"
+#include "pj_scene3d_widgets/channel_coloring.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_widgets/Colormap.h"
 
@@ -78,13 +79,13 @@ class MeshMapLayer : public Scene3DLayer {
     return source_frame_;
   }
   [[nodiscard]] PJ::Colormap colormap() const {
-    return colormap_;
+    return coloring_.colormap();
   }
   [[nodiscard]] bool autoRange() const {
-    return auto_range_;
+    return coloring_.autoRange();
   }
   [[nodiscard]] std::pair<double, double> manualRange() const {
-    return {manual_lo_, manual_hi_};
+    return coloring_.manualRange();
   }
   [[nodiscard]] bool lighting() const {
     return lighting_;
@@ -162,7 +163,6 @@ class MeshMapLayer : public Scene3DLayer {
   void resetStreamingState();
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
   void setBounds(std::optional<AABB> bounds);
-  void buildRangeRows(QFormLayout* form, QWidget* parent);
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
@@ -206,11 +206,7 @@ class MeshMapLayer : public Scene3DLayer {
   std::string resolved_color_;              // a channel key or a kMeshMapSource* token
   std::vector<std::string> color_sources_;  // selector items: channels then the tokens
 
-  PJ::Colormap colormap_ = PJ::Colormap::kTurbo;
-  bool auto_range_ = true;
-  double manual_lo_ = 0.0;
-  double manual_hi_ = 1.0;
-  FiniteRange last_auto_range_;
+  ChannelColoring coloring_;  // colormap, auto / manual range, the last auto range
   bool lighting_ = true;
   double opacity_ = 1.0;
   bool show_links_ = true;

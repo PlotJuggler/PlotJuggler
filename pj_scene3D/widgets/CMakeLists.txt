@@ -97,6 +97,7 @@ add_library(pj_scene3d_widgets STATIC
   src/layers/trail_layer.cpp
   src/layers/grid_map_layer.cpp
   src/layers/mesh_map_layer.cpp
+  src/channel_coloring.cpp
   src/marker_geometry.cpp
   src/mesh_loader.cpp
   src/mesh_load_queue.cpp
@@ -130,6 +131,7 @@ add_library(pj_scene3d_widgets STATIC
   include/pj_scene3d_widgets/layers/trail_layer.h
   include/pj_scene3d_widgets/layers/grid_map_layer.h
   include/pj_scene3d_widgets/layers/mesh_map_layer.h
+  include/pj_scene3d_widgets/channel_coloring.h
   include/pj_scene3d_widgets/marker_geometry.h
   include/pj_scene3d_widgets/gizmos/arrow_mesh.h
   include/pj_scene3d_widgets/FixedFrameMemory.h

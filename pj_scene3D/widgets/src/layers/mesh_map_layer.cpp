@@ -34,18 +34,6 @@ namespace pj::scene3d {
 namespace {
 Q_LOGGING_CATEGORY(lcMeshMap, "pj.scene3d.mesh_map")
 
-// The manual colormap range the pass can store: finite, float-representable,
-// ordered. The setter normalizes to this; xmlLoadState rejects what violates it.
-constexpr double kManualRangeLimit = std::numeric_limits<float>::max();
-
-bool isValidManualRange(double lo, double hi) {
-  return std::isfinite(lo) && std::isfinite(hi) && std::abs(lo) <= kManualRangeLimit &&
-         std::abs(hi) <= kManualRangeLimit && lo <= hi;
-}
-
-QString token(std::string_view text) {
-  return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
-}
 }  // namespace
 
 MeshMapLayer::MeshMapLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
@@ -110,10 +98,7 @@ uint64_t MeshMapLayer::renderKey(PJ::Timepoint time) const {
 QDomElement MeshMapLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(u"mesh_map"_s);
   el.setAttribute(u"color_by"_s, QString::fromStdString(color_request_));
-  el.setAttribute(u"colormap"_s, static_cast<int>(colormap_));
-  el.setAttribute(u"auto_range"_s, auto_range_ ? 1 : 0);
-  el.setAttribute(u"range_lo"_s, manual_lo_);
-  el.setAttribute(u"range_hi"_s, manual_hi_);
+  coloring_.saveXml(el);
   el.setAttribute(u"lighting"_s, lighting_ ? 1 : 0);
   el.setAttribute(u"opacity"_s, opacity_);
   el.setAttribute(u"links"_s, show_links_ ? 1 : 0);
@@ -124,18 +109,11 @@ bool MeshMapLayer::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "mesh_map"_L1 || !detail::isLeafPayload(element)) {
     return false;
   }
-  int colormap = 0;
-  bool auto_range = true;
-  double range_lo = 0.0;
-  double range_hi = 1.0;
+  const auto coloring = ChannelColoring::parseXml(element);
   bool lighting = true;
   double opacity = 1.0;
   bool links = true;
-  if (!detail::parseBoundedInt(element, "colormap", 0, 0, PJ::kColormapCount - 1, colormap) ||
-      !detail::parseZeroOne(element, "auto_range", true, auto_range) ||
-      !detail::parseFiniteDouble(element, "range_lo", 0.0, -kManualRangeLimit, kManualRangeLimit, range_lo) ||
-      !detail::parseFiniteDouble(element, "range_hi", 1.0, -kManualRangeLimit, kManualRangeLimit, range_hi) ||
-      !isValidManualRange(range_lo, range_hi) || !detail::parseZeroOne(element, "lighting", true, lighting) ||
+  if (!coloring.has_value() || !detail::parseZeroOne(element, "lighting", true, lighting) ||
       !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, opacity) ||
       !detail::parseZeroOne(element, "links", true, links)) {
     return false;
@@ -143,9 +121,9 @@ bool MeshMapLayer::xmlLoadState(const QDomElement& element) {
   // The request is restored verbatim: a missing channel falls back at render
   // time and the request is honoured again once a map carrying it arrives.
   setColorBy(element.attribute(u"color_by"_s));
-  setColormap(static_cast<PJ::Colormap>(colormap));
-  setAutoRange(auto_range);
-  setManualRange(range_lo, range_hi);
+  setColormap(coloring->colormap);
+  setAutoRange(coloring->auto_range);
+  setManualRange(coloring->range_lo, coloring->range_hi);
   setLighting(lighting);
   setOpacity(opacity);
   setShowLinks(links);
@@ -205,7 +183,7 @@ void MeshMapLayer::resetStreamingState() {
   update_warning_.clear();
   base_warning_.clear();
   color_warning_.clear();
-  last_auto_range_ = {};
+  coloring_.resetAutoRange();
   setDataWarning(QString());
 }
 
@@ -507,7 +485,7 @@ void MeshMapLayer::stage(bool geometry_changed) {
   }
   fillMeshMapColors(*state_, resolved_color_, upload);
   if (upload.color_mode == MeshMapColorMode::kChannel) {
-    last_auto_range_ = upload.color_range;
+    coloring_.noteAutoRange(upload.color_range);
   }
   colors_dirty_ = false;
   staged_mesh_ = std::move(upload);
@@ -584,37 +562,25 @@ void MeshMapLayer::setColorBy(const QString& source) {
 }
 
 void MeshMapLayer::setColormap(PJ::Colormap colormap) {
-  if (colormap_ == colormap) {
+  if (!coloring_.setColormap(colormap)) {
     return;
   }
-  colormap_ = colormap;
   emit configurationChanged();
   emit repaintRequested();
 }
 
 void MeshMapLayer::setAutoRange(bool on) {
-  if (auto_range_ == on) {
+  if (!coloring_.setAutoRange(on)) {
     return;
   }
-  auto_range_ = on;
   emit configurationChanged();
   emit repaintRequested();
 }
 
 void MeshMapLayer::setManualRange(double lo, double hi) {
-  if (!std::isfinite(lo) || !std::isfinite(hi)) {
+  if (!coloring_.setManualRange(lo, hi)) {
     return;
   }
-  lo = std::clamp(lo, -kManualRangeLimit, kManualRangeLimit);
-  hi = std::clamp(hi, -kManualRangeLimit, kManualRangeLimit);
-  if (lo > hi) {
-    std::swap(lo, hi);
-  }
-  if (manual_lo_ == lo && manual_hi_ == hi) {
-    return;
-  }
-  manual_lo_ = lo;
-  manual_hi_ = hi;
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -699,18 +665,11 @@ QWidget* MeshMapLayer::createConfigWidget(QWidget* parent) {
     }
   });
 
-  auto* colormap_combo = new PJ::ComboBox(container);
-  colormap_combo->setObjectName(u"mesh_map_colormap"_s);
-  for (int idx = 0; idx < PJ::kColormapCount; ++idx) {
-    colormap_combo->addItem(tr(PJ::colormapName(static_cast<PJ::Colormap>(idx))), idx);
-  }
-  colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
-  form->addRow(tr("Colors:"), colormap_combo);
-  QObject::connect(colormap_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
-    setColormap(idx >= 0 && idx < PJ::kColormapCount ? static_cast<PJ::Colormap>(idx) : PJ::Colormap::kTurbo);
-  });
-
-  buildRangeRows(form, container);
+  coloring_.addConfigRows(
+      form, container, this, u"mesh_map"_s,
+      {.colormap = [this](PJ::Colormap colormap) { setColormap(colormap); },
+       .auto_range = [this](bool on) { setAutoRange(on); },
+       .manual_range = [this](double lo, double hi) { setManualRange(lo, hi); }});
 
   auto* lighting_toggle = new PJ::ToggleSwitch(container);
   lighting_toggle->setChecked(lighting_, /*animate=*/false);
@@ -732,55 +691,6 @@ QWidget* MeshMapLayer::createConfigWidget(QWidget* parent) {
   QObject::connect(opacity_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) { setOpacity(v); });
 
   return container;
-}
-
-void MeshMapLayer::buildRangeRows(QFormLayout* form, QWidget* parent) {
-  auto* auto_toggle = new PJ::ToggleSwitch(parent);
-  auto_toggle->setChecked(auto_range_, /*animate=*/false);
-  form->addRow(tr("Auto range:"), auto_toggle);
-
-  const auto add_scrubber = [this, form, parent](const QString& label, const QString& object_name, double value) {
-    auto* spin = new PJ::DoubleScrubber(parent);
-    spin->setObjectName(object_name);
-    spin->setRange(-1.0e9, 1.0e9);
-    spin->setDecimals(3);
-    spin->setValue(value);
-    spin->setEnabled(!auto_range_);
-    form->addRow(label, spin);
-    return spin;
-  };
-  auto* range_lo_spin = add_scrubber(tr("Range min:"), u"mesh_map_range_min"_s, manual_lo_);
-  auto* range_hi_spin = add_scrubber(tr("Range max:"), u"mesh_map_range_max"_s, manual_hi_);
-
-  QObject::connect(auto_toggle, &PJ::ToggleSwitch::toggled, this, [this, range_lo_spin, range_hi_spin](bool on) {
-    // Switching to manual starts from the range the user was just looking at.
-    if (!on && last_auto_range_.valid) {
-      const QSignalBlocker block_lo(range_lo_spin);
-      const QSignalBlocker block_hi(range_hi_spin);
-      range_lo_spin->setValue(last_auto_range_.lo);
-      range_hi_spin->setValue(last_auto_range_.hi);
-      setManualRange(last_auto_range_.lo, last_auto_range_.hi);
-    }
-    setAutoRange(on);
-    range_lo_spin->setEnabled(!on);
-    range_hi_spin->setEnabled(!on);
-  });
-  QObject::connect(
-      range_lo_spin, &PJ::DoubleScrubber::valueChanged, this, [this, range_lo_spin, range_hi_spin](double v) {
-        if (v > range_hi_spin->value()) {
-          const QSignalBlocker block(range_hi_spin);
-          range_hi_spin->setValue(v);
-        }
-        setManualRange(range_lo_spin->value(), range_hi_spin->value());
-      });
-  QObject::connect(
-      range_hi_spin, &PJ::DoubleScrubber::valueChanged, this, [this, range_lo_spin, range_hi_spin](double v) {
-        if (v < range_lo_spin->value()) {
-          const QSignalBlocker block(range_lo_spin);
-          range_lo_spin->setValue(v);
-        }
-        setManualRange(range_lo_spin->value(), range_hi_spin->value());
-      });
 }
 
 }  // namespace pj::scene3d

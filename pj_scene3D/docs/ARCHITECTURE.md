@@ -1349,7 +1349,9 @@ mode does. It renders in every build, the browser included.
   `kMaxRenderableGridMapCells`) surfaces a row warning. Dataset replace and detach
   reset the memo, bounds and warnings.
 - **Config.** Elevation field (with "None"), colour field, colormap, auto / manual
-  range (manual seeded from the last auto range), lighting toggle, opacity,
+  range (manual seeded from the last auto range; the colormap and range state,
+  their attributes and rows are `ChannelColoring`, shared with the mesh-map
+  layer), lighting toggle, opacity,
   persisted as `elevation_field, color_field, colormap, auto_range, range_lo,
   range_hi, lighting, opacity`. The persisted names are REQUESTS: a missing field
   falls back (with a warning) but the request is kept, so it is honoured again when
@@ -1419,8 +1421,8 @@ the browser included.
   no shadow cast or receive.
 - **Links** (`MeshFaceLink`) draw as a line list between face centroids through a
   third pipeline (Lines topology, same shaders, unlit).
-- **Config.** Colour source, colormap, auto / manual range, lighting, opacity,
-  links, persisted as `color_by, colormap, auto_range, range_lo, range_hi,
+- **Config.** Colour source, colormap, auto / manual range (`ChannelColoring`, as
+  the grid map), lighting, opacity, links, persisted as `color_by, colormap, auto_range, range_lo, range_hi,
   lighting, opacity, links`. The persisted source is a REQUEST: a missing channel
   falls back with a warning and is honoured again when it reappears.
 - **Limits.** A map past `kMaxRenderableMeshMapFaces` is refused with a status
