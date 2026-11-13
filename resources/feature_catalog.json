@@ -164,9 +164,9 @@
     {
       "id": "mcp_server",
       "name": "AI agent control (MCP server)",
-      "summary": "Let AI agents such as Claude Code or Codex control PlotJuggler over the Model Context Protocol: open files, read and export series, create derived series and markers, and draw in their own tabs, never the user's. On by default and can be turned off in Preferences; it serves this computer only, behind a secret token. Agents connect through plotjuggler4 --mcp-bridge (stdio). The status bar names an agent while it is active.",
+      "summary": "Let AI agents such as Claude Code or Codex control PlotJuggler over the Model Context Protocol: open files, read and export series, create derived series and markers, and draw in their own tabs, never the user's. On by default and can be turned off in Preferences; it serves this computer only, behind a secret token. Agents connect through plotjuggler4 --mcp-bridge (stdio). Long requests (imports, streams, exports) run in the background. The status bar names the active agent and counts running jobs; click it to list them and stop any.",
       "entry_point": "File → Preferences... → Appearance → Let AI agents control PlotJuggler (MCP server):; for one run: plotjuggler4 --mcp",
-      "evidence": "pj_app/src/PreferencesDialog.ui#Let AI agents control PlotJuggler (MCP server):; pj_app/src/main.cpp#mcp_option; pj_app/src/mcp/McpBridge.cpp#int runBridge",
+      "evidence": "pj_app/src/PreferencesDialog.ui#Let AI agents control PlotJuggler (MCP server):; pj_app/src/main.cpp#mcp_option; pj_app/src/mcp/McpBridge.cpp#int runBridge; pj_app/src/ui/McpJobsDialog.cpp#AI agent activity",
       "verified": "McpBridgeTest (stdio bridge against an offscreen instance) and McpServerTest; in-app check pending"
     },
     {

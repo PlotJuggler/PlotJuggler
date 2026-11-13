@@ -1530,6 +1530,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         .initial_parser_config = initial_parser_config,
         .browser_file_store = browser_file_store_,
         .title_prefix = hints.dialog_title_prefix,
+        .on_dialog = hints.on_dialog,
     });
     const auto dlg = co_await std::move(dialog_awaiter);
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
@@ -2504,6 +2505,7 @@ void FileLoader::publishIngestProgress(DatasetId dataset_id, IngestToken token, 
   }
 #endif
   emit ingestProgress(static_cast<int>(current), static_cast<int>(total));
+  emit loadProgress(current_load_ticket_, current, total);
 }
 
 void FileLoader::removeCreatedDataset(DatasetId dataset_id, bool evict_objects, bool remove_from_catalog) {

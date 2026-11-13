@@ -119,6 +119,50 @@ TEST(McpOwners, EveryClientGetsAnAgentNamespace) {
   EXPECT_EQ(PJ::mcp::printableClientName("a\r\nX-Evil: 1"), "aX-Evil: 1");
 }
 
+TEST(McpJobs, WaitSecondsIsClampedAndOnlyLongToolsTakeIt) {
+  using PJ::mcp::waitSeconds;
+  EXPECT_EQ(waitSeconds(json::object()), PJ::mcp::kDefaultWaitS);
+  EXPECT_EQ(waitSeconds({{"wait_s", 0}}), 0.0);
+  EXPECT_EQ(waitSeconds({{"wait_s", 2.5}}), 2.5);
+  EXPECT_EQ(waitSeconds({{"wait_s", -3}}), 0.0);
+  EXPECT_EQ(waitSeconds({{"wait_s", 1e9}}), PJ::mcp::kMaxWaitS);
+  EXPECT_EQ(waitSeconds({{"wait_s", "soon"}}), PJ::mcp::kDefaultWaitS);
+  // The tool list and the server agree on which calls can become jobs.
+  for (const json& tool : PJ::mcp::toolList(PJ::mcp::ToolSet::kFull)) {
+    const std::string name = tool.value("name", "");
+    EXPECT_EQ(tool["inputSchema"]["properties"].contains("wait_s"), PJ::mcp::isJobCapableTool(name)) << name;
+  }
+}
+
+TEST(McpJobs, StoppingAJobIsNotReadOnlyButRunsUnderTheUsersDialog) {
+  EXPECT_FALSE(PJ::mcp::isReadOnlyTool("job_kill"));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("job_kill", json::object()));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("jobs_list", json::object()));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("screenshot", json::object()));
+  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("screenshot", {{"tab", "mine"}}));
+  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("open_file", json::object()));
+}
+
+TEST(McpTasks, TheExtensionIsOfferedOnDiscoverAndDeclaredPerRequest) {
+  using PJ::mcp::ToolSet;
+  const json discovered = *PJ::mcp::lifecycleResult("server/discover", json::object(), ToolSet::kFull);
+  EXPECT_EQ(discovered["capabilities"]["extensions"], json({{PJ::mcp::kTasksExtension, json::object()}}));
+  EXPECT_TRUE(discovered["capabilities"].contains("tools"));
+  // Nothing remembers an initialize, so a client of that era cannot declare the extension per request.
+  const json initialized = *PJ::mcp::lifecycleResult("initialize", json::object(), ToolSet::kFull);
+  EXPECT_FALSE(initialized["capabilities"].contains("extensions"));
+
+  const auto meta = [](const json& capabilities) {
+    return json{{"_meta", {{"io.modelcontextprotocol/clientCapabilities", capabilities}}}};
+  };
+  EXPECT_TRUE(PJ::mcp::declaresTasks(meta({{"extensions", {{PJ::mcp::kTasksExtension, json::object()}}}})));
+  EXPECT_FALSE(PJ::mcp::declaresTasks(meta({{"extensions", {{"io.modelcontextprotocol/ui", json::object()}}}})));
+  EXPECT_FALSE(PJ::mcp::declaresTasks(meta(json::object())));
+  EXPECT_FALSE(PJ::mcp::declaresTasks(meta("yes")));
+  EXPECT_FALSE(PJ::mcp::declaresTasks({{"_meta", 3}}));
+  EXPECT_FALSE(PJ::mcp::declaresTasks(json::object()));
+}
+
 TEST(McpLifecycle, BothEras) {
   const auto init =
       PJ::mcp::lifecycleResult("initialize", {{"protocolVersion", "2025-11-25"}}, PJ::mcp::ToolSet::kFull);

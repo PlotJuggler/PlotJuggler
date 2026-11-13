@@ -378,7 +378,8 @@ int MessageBox::question(
 
 void MessageBox::questionAsync(
     QWidget* parent, const QString& title, const QString& text, std::vector<ButtonSpec> buttons,
-    std::function<void(int choice, bool dont_show_again)> on_done, bool show_dont_show_again) {
+    std::function<void(int choice, bool dont_show_again)> on_done, bool show_dont_show_again,
+    const std::function<void(QDialog& dialog)>& on_shown) {
   auto* dlg = new MessageBox(parent);
   dlg->setAttribute(Qt::WA_DeleteOnClose);
   dlg->setTitle(title);
@@ -392,6 +393,9 @@ void MessageBox::questionAsync(
       on_done(dlg->clickedIndex(), dlg->dontShowAgainChecked());
     }
   });
+  if (on_shown) {
+    on_shown(*dlg);
+  }
 #ifdef PJ_TARGET_WASM
   dlg->open();
 #else

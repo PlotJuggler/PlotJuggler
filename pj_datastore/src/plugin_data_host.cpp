@@ -618,7 +618,8 @@ Status readSeriesArrowWindow(
   return okStatus();
 }
 
-Status scanSeriesValues(const DataEngine& engine, PJ_field_handle_t field, const SampleBlockCallback& on_block) {
+Status scanSeriesValues(
+    const DataEngine& engine, PJ_field_handle_t field, const SampleBlockCallback& on_block, Timestamp first) {
   engine.awaitCompleteSeries(field.topic.id);
   auto lock = engine.lockEngine();
   auto column = lookupFieldColumn(engine, field);
@@ -630,7 +631,7 @@ Status scanSeriesValues(const DataEngine& engine, PJ_field_handle_t field, const
   }
   std::vector<double> values;
   (void)forEachFieldRun(
-      column->storage->sealedChunks(), field.id, column->storage->retentionFloor(),
+      column->storage->sealedChunks(), field.id, std::max(first, column->storage->retentionFloor()),
       std::numeric_limits<Timestamp>::max(),
       [&](const TopicChunk& chunk, std::size_t col, std::size_t begin, std::size_t end) {
         const Span<const Timestamp> ts(chunk.timestamps.data() + begin, end - begin);

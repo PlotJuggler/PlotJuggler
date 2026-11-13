@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 
+#include "DialogWatch.h"
 #include "pj_plugins/dialog_protocol.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_widgets/ChromeMetrics.h"
@@ -74,6 +75,7 @@ struct DataSourceRequest {
   std::optional<ChromeMetrics> section_band_metrics{};
   // Put before the plugin dialog's own title (who asked for it); empty leaves it alone.
   QString title_prefix{};
+  DialogWatch on_dialog{};
 };
 
 // Caller decides what to persist and whether to re-loadConfig before start().
@@ -81,17 +83,12 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req);
 
 using DataSourceCompletion = std::function<void(DataSourceResult)>;
 
-// Cancels the pending dialog of one showDataSourceDialogAsync call:
-// synchronously closes it, delivers exactly one on_rejected to the plugin, and
-// runs the completion with kRejected before returning. Callers invoke it to
-// tear the dialog down while the plugin context is still alive (shutdown). Safe
-// to invoke after the dialog completed (no-op) and to default-construct/skip
-// when empty (the no-dialog / contract-error paths return an empty functor).
-using DialogCancelFn = std::function<void()>;
-
 // Browser-safe presentation path. Returns immediately and completes after the
 // dialog is accepted, rejected, destroyed with its parent, or cancelled via the
-// returned functor.
+// returned functor: that one synchronously closes the dialog, delivers exactly
+// one on_rejected to the plugin, and runs the completion with kRejected before
+// returning. Callers invoke it to tear the dialog down while the plugin context
+// is still alive (shutdown). It is empty on the no-dialog / contract-error paths.
 [[nodiscard]] DialogCancelFn showDataSourceDialogAsync(const DataSourceRequest& req, DataSourceCompletion completion);
 
 }  // namespace dialog_presenter

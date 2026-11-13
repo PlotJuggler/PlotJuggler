@@ -47,6 +47,13 @@ inline constexpr char kNoServicesError[] = "PlotJuggler could not build the serv
 /// An MCP CallToolResult holding one text block.
 [[nodiscard]] nlohmann::json textResult(const std::string& text, bool is_error = false);
 
+/// `value` as compact JSON text. Never throws: bytes that are not UTF-8 (a name from a file) become
+/// the replacement character.
+[[nodiscard]] std::string dumpJson(const nlohmann::json& value);
+
+/// A successful CallToolResult whose text is `payload` as JSON (dumpJson).
+[[nodiscard]] nlohmann::json jsonResult(const nlohmann::json& payload);
+
 /// Which tools a client may call: kFull (the public token, the bridge) or kAgentOnly (a plugin
 /// token: the agent tools, without the app's own).
 enum class ToolSet { kFull, kAgentOnly };
@@ -62,6 +69,41 @@ enum class ToolSet { kFull, kAgentOnly };
 /// dialog open. `screenshot` is not one (its `tab` focuses a tab); the server lets it through
 /// without `tab`.
 [[nodiscard]] bool isReadOnlyTool(const std::string& name);
+
+/// Whether a call of `name` with `args` may run while the user has a modal dialog open: the
+/// read-only tools, `screenshot` when it focuses no tab, and `job_kill`, which changes state but
+/// only stops the agent's own work.
+[[nodiscard]] bool runsUnderUsersDialog(const std::string& name, const nlohmann::json& args);
+
+/// How long a job-capable call holds its reply before it becomes a background job (its `wait_s`
+/// argument, clamped), and how long job_wait waits (`timeout_s`). Kept under the bridge's per-call
+/// timeout and the shorter ones of common clients.
+inline constexpr double kDefaultWaitS = 20.0;
+inline constexpr double kMaxWaitS = 120.0;
+inline constexpr double kMaxJobWaitS = 60.0;
+
+/// The MCP Tasks extension of protocol 2026-07-28, which this server offers: for a client that
+/// declares it on a request, a call that outlasts its wait_s answers with a task handle
+/// (`resultType: "task"`) instead of the job-id text, and `tasks/get`, `tasks/update` and
+/// `tasks/cancel` reach that job. The job tools keep working beside it.
+inline constexpr char kTasksExtension[] = "io.modelcontextprotocol/tasks";
+/// The JSON-RPC error a client gets for a tasks/* method when it did not declare kTasksExtension.
+inline constexpr int kMissingClientCapability = -32021;
+
+/// Whether `method` is one of the extension's own (`tasks/get`, `tasks/update`, `tasks/cancel`).
+[[nodiscard]] bool isTasksMethod(const std::string& method);
+
+/// Whether a request's `params` declare kTasksExtension in their per-request client capabilities
+/// (`_meta["io.modelcontextprotocol/clientCapabilities"].extensions`).
+[[nodiscard]] bool declaresTasks(const nlohmann::json& params);
+
+/// Whether `name` takes `wait_s`: it can outlive one request (an object evaluation, a file load) and
+/// then becomes a background job that job_wait, job_kill and jobs_list reach.
+[[nodiscard]] bool isJobCapableTool(const std::string& name);
+
+/// The seconds a call asks to wait in its argument `key`, in [0, `max`]; kDefaultWaitS when absent
+/// or not a finite number.
+[[nodiscard]] double waitSeconds(const nlohmann::json& args, const char* key = "wait_s", double max = kMaxWaitS);
 
 /// The result of a lifecycle request (`initialize`, `server/discover`, `ping`), or nullopt for any
 /// other method. `initialize` echoes a protocol version this server knows (2025 era), else offers
@@ -103,8 +145,10 @@ struct RpcMessage {
 /// `params` when present. Never throws.
 [[nodiscard]] RpcMessage parseRpcMessage(const std::string& text);
 
-/// A JSON-RPC error response; `id` is null when the request's own id is unusable.
-[[nodiscard]] nlohmann::json errorResponse(const nlohmann::json& id, int code, const std::string& message);
+/// A JSON-RPC error response, with the error's `data` when given; `id` is null when the request's
+/// own id is unusable.
+[[nodiscard]] nlohmann::json errorResponse(
+    const nlohmann::json& id, int code, const std::string& message, const nlohmann::json& data = nullptr);
 
 /// One parsed HTTP/1.1 request.
 struct HttpRequest {

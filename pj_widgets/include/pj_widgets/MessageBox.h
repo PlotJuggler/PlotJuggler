@@ -96,9 +96,13 @@ class MessageBox : public QDialog {
   // non-blocking and `on_done` runs once the user answers. Callers must not
   // rely on either ordering, and anything `on_done` captures must outlive the
   // dialog (it is parented to `parent`, so capture `parent` itself safely).
+  // `on_shown`, when given, receives the dialog just before it is shown (on
+  // desktop, before the modal loop starts): a caller that may have to withdraw
+  // the question keeps a QPointer to it and reject()s, which `on_done` reports as -1.
   static void questionAsync(
       QWidget* parent, const QString& title, const QString& text, std::vector<ButtonSpec> buttons,
-      std::function<void(int choice, bool dont_show_again)> on_done, bool show_dont_show_again = false);
+      std::function<void(int choice, bool dont_show_again)> on_done, bool show_dont_show_again = false,
+      const std::function<void(QDialog& dialog)>& on_shown = {});
 
  protected:
   void keyPressEvent(QKeyEvent* event) override;

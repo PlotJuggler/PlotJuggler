@@ -73,10 +73,12 @@ struct ToolContext {
   std::function<PJ::Expected<PJ::sdk::MaterializedSeriesView>(
       PJ::sdk::FieldHandle field, std::int64_t first, std::int64_t last)>
       read_window;
-  // Hands `on_block` the whole numeric series of `field`, in time order, as blocks (ValueBlockSink), so a windowed read
-  // gets its whole-series flat facts without a full read (FlatRunAccumulator::addBlock). Optional, like read_window;
-  // a windowed read_series uses the two only together.
-  std::function<PJ::Status(PJ::sdk::FieldHandle field, const ValueBlockSink& on_block)> scan_values;
+  // Hands `on_block` the numeric series of `field` from the sample stamped `first` (raw ns) on, in time order, as
+  // blocks (ValueBlockSink: a null is a NaN), building no Arrow array. From the int64 minimum it is the whole series:
+  // a windowed read_series gets its whole-series flat facts that way (FlatRunAccumulator::addBlock), and uses it only
+  // together with read_window. wait_for polls it from its cursor. Optional: unset, both read through `host`, where a
+  // null reads as 0.
+  std::function<PJ::Status(PJ::sdk::FieldHandle field, std::int64_t first, const ValueBlockSink& on_block)> scan_values;
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
 };
 

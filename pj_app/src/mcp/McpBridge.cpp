@@ -13,9 +13,14 @@
 #include <QTcpSocket>
 #include <QThread>
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mcp/McpProtocol.h"
@@ -32,6 +37,8 @@ namespace {
 constexpr int kConnectTimeoutMs = 2000;
 constexpr int kProbeTimeoutMs = 5000;
 constexpr int kCallTimeoutMs = 300'000;
+/// How often a call in flight looks for its cancellation on stdin.
+constexpr int kCancelPollMs = 100;
 
 struct Instance {
   qint64 pid = 0;
@@ -71,7 +78,11 @@ struct Exchange {
   QByteArray status = {};  ///< the status line of a kBadReply
 };
 
-Exchange post(const Instance& instance, const json& message, const std::string& client, int timeout_ms) {
+/// One HTTP exchange with `instance`. `give_up`, when set, is asked every kCancelPollMs until the reply
+/// came: once it says true the connection is dropped (kClosed), which the instance takes as a hang-up.
+Exchange post(
+    const Instance& instance, const json& message, const std::string& client, int timeout_ms,
+    const std::function<bool()>& give_up = {}) {
   QTcpSocket socket;
   socket.connectToHost(QHostAddress::LocalHost, instance.port);
   if (!socket.waitForConnected(kConnectTimeoutMs)) {
@@ -92,10 +103,10 @@ Exchange post(const Instance& instance, const json& message, const std::string& 
     if (left <= 0) {
       return {.kind = Exchange::kTimeout};
     }
-    if (socket.waitForReadyRead(static_cast<int>(left))) {
+    if (socket.waitForReadyRead(static_cast<int>(std::min<qint64>(left, kCancelPollMs)))) {
       response += socket.readAll();
-    } else if (socket.error() == QAbstractSocket::SocketTimeoutError) {
-      return {.kind = Exchange::kTimeout};
+    } else if (socket.error() == QAbstractSocket::SocketTimeoutError && give_up && give_up()) {
+      return {.kind = Exchange::kClosed};
     }
   }
   response += socket.readAll();
@@ -113,9 +124,93 @@ Exchange post(const Instance& instance, const json& message, const std::string& 
   return {.kind = Exchange::kOk, .reply = std::move(reply)};
 }
 
-json request(const std::string& method, json params = json::object()) {
-  return {{"jsonrpc", "2.0"}, {"id", 0}, {"method", method}, {"params", std::move(params)}};
+json request(const std::string& method, json params = json::object(), json id = 0) {
+  return {{"jsonrpc", "2.0"}, {"id", std::move(id)}, {"method", method}, {"params", std::move(params)}};
 }
+
+/// The client's messages, one per stdin line, read on their own thread so that a cancellation can
+/// arrive while the call it names is in flight.
+class StdinLines {
+ public:
+  struct Line {
+    std::string text;
+    /// Longer than kMaxBodyBytes: the rest of the line was read and dropped.
+    bool too_long = false;
+  };
+
+  StdinLines() : reader_([this] { read(); }) {}
+  /// Joins the reader, which ends at end of input: destroy this only after next() returned nullopt.
+  ~StdinLines() {
+    reader_.join();
+  }
+  StdinLines(const StdinLines&) = delete;
+  StdinLines& operator=(const StdinLines&) = delete;
+
+  /// The next line, waiting for it; nullopt once the input ended and every line was taken.
+  std::optional<Line> next() {
+    std::unique_lock lock(mutex_);
+    arrived_.wait(lock, [this] { return !lines_.empty() || ended_; });
+    if (lines_.empty()) {
+      return std::nullopt;
+    }
+    Line line = std::move(lines_.front());
+    lines_.pop_front();
+    return line;
+  }
+
+  /// Removes the first waiting line from position `seen` on that is a `notifications/cancelled` for
+  /// request `id`, and says whether there was one. `seen` moves past the lines looked at, so a
+  /// caller polling for one request parses each line once.
+  bool takeCancelOf(const json& id, std::size_t& seen) {
+    const std::lock_guard lock(mutex_);
+    for (; seen < lines_.size(); ++seen) {
+      const Line& line = lines_[seen];
+      if (line.too_long) {
+        continue;
+      }
+      const RpcMessage message = parseRpcMessage(line.text);
+      if (message.notification && message.method == "notifications/cancelled" &&
+          message.params.value("requestId", json()) == id) {
+        lines_.erase(lines_.begin() + static_cast<std::ptrdiff_t>(seen));
+        return true;
+      }
+    }
+    return false;
+  }
+
+ private:
+  void read() {
+    for (;;) {
+      Line line;
+      int c = 0;
+      while ((c = std::cin.get()) != EOF && c != '\n') {
+        if (static_cast<qsizetype>(line.text.size()) < kMaxBodyBytes) {
+          line.text.push_back(static_cast<char>(c));
+        } else {
+          line.too_long = true;
+        }
+      }
+      const bool more = c != EOF;
+      {
+        const std::lock_guard lock(mutex_);
+        if (more || !line.text.empty()) {
+          lines_.push_back(std::move(line));
+        }
+        ended_ = !more;
+      }
+      arrived_.notify_one();
+      if (!more) {
+        return;
+      }
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable arrived_;
+  std::deque<Line> lines_;
+  bool ended_ = false;
+  std::thread reader_;
+};
 
 /// The start of a launch log, for an error the agent can act on: the cause comes first, the crash
 /// handler's backtrace after it.
@@ -176,7 +271,25 @@ class Bridge {
     return {{"tools", tools}};
   }
 
-  json callTool(const json& params) {
+  /// The current instance's whole answer (result or error) to `method`, as the reply to request
+  /// `id`: for the methods the bridge only passes on (the MCP Tasks extension's).
+  json passOn(const std::string& method, const json& params, const json& id) {
+    const std::optional<Instance> target = currentInstance();
+    if (!target) {
+      // Its tasks went with the instance: not an error worth retrying.
+      return errorResponse(id, -32602, "Failed to retrieve task: no PlotJuggler instance is selected");
+    }
+    Exchange answer = post(*target, request(method, params), client_, kProbeTimeoutMs);
+    if (answer.kind != Exchange::kOk) {
+      return errorResponse(id, -32603, "PlotJuggler did not answer");
+    }
+    answer.reply["id"] = id;
+    return answer.reply;
+  }
+
+  /// The result of tools/call `params`, or nullopt when the client cancelled the call (`cancelled`
+  /// says so, asked while the instance works on it): a cancelled request gets no response.
+  std::optional<json> callTool(const json& params, const std::function<bool()>& cancelled) {
     const std::string name = params.value("name", "");
     const json args = params.value("arguments", json::object());
     if (name == "list_instances") {
@@ -195,7 +308,7 @@ class Bridge {
     if (name == "launch") {
       return launch();
     }
-    return forward(params);
+    return forward(params, cancelled);
   }
 
  private:
@@ -301,7 +414,7 @@ class Bridge {
         true);
   }
 
-  json forward(const json& params) {
+  std::optional<json> forward(const json& params, const std::function<bool()>& cancelled) {
     std::optional<Instance> target = currentInstance();
     if (!target && selected_ != 0) {
       selected_ = 0;
@@ -322,7 +435,25 @@ class Bridge {
           true);
     }
     selected_ = target->pid;  // stay on it even if another one starts later
-    const Exchange answer = post(*target, request("tools/call", params), client_, kCallTimeoutMs);
+    if (cancelled()) {
+      return std::nullopt;  // cancelled while it waited behind the previous call
+    }
+    // The instance matches a cancellation by this id, so it is unique across the bridges it serves.
+    const json id = std::to_string(QCoreApplication::applicationPid()) + "-" + std::to_string(++forwarded_);
+    bool was_cancelled = false;
+    const Exchange answer = post(*target, request("tools/call", params, id), client_, kCallTimeoutMs, [&] {
+      if (cancelled()) {
+        was_cancelled = true;
+        const json notice = {
+            {"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", id}}}};
+        static_cast<void>(post(*target, notice, client_, kProbeTimeoutMs));
+      }
+      // Not waited for: the instance may be unable to stop it (a dialog the user is answering).
+      return was_cancelled;
+    });
+    if (was_cancelled) {
+      return std::nullopt;  // a cancelled request gets no response
+    }
     switch (answer.kind) {
       case Exchange::kOk:
         if (answer.reply.contains("error")) {
@@ -341,7 +472,7 @@ class Bridge {
       case Exchange::kTimeout:
         return textResult(
             "PlotJuggler did not answer within " + std::to_string(kCallTimeoutMs / 1000) +
-                " s (a long import, or the user is answering a dialog). It keeps working: poll get_status.",
+                " s (the user is answering a dialog?). It keeps working: poll get_status and jobs_list.",
             true);
       case Exchange::kClosed:
         return textResult("connection closed (PlotJuggler quit or MCP was turned off); call list_instances", true);
@@ -353,6 +484,8 @@ class Bridge {
 
   std::string client_;
   qint64 selected_ = 0;
+  /// Numbers the calls forwarded to an instance.
+  quint64 forwarded_ = 0;
 };
 
 }  // namespace
@@ -363,31 +496,17 @@ int runBridge(int argc, char* argv[], const QString& version) {
   QCoreApplication::setOrganizationName(u"PlotJuggler"_s);  // the same discovery folder as the app
   QCoreApplication::setApplicationName(u"PlotJuggler4"_s);
   Bridge bridge;
-  std::string line;
-  bool too_long = false;
-  // One message per line, at most kMaxBodyBytes: the rest of a longer line is read and dropped.
-  const auto read_line = [&line, &too_long] {
-    line.clear();
-    too_long = false;
-    int c = 0;
-    while ((c = std::cin.get()) != EOF && c != '\n') {
-      if (static_cast<qsizetype>(line.size()) < kMaxBodyBytes) {
-        line.push_back(static_cast<char>(c));
-      } else {
-        too_long = true;
-      }
-    }
-    return c != EOF || !line.empty();
-  };
-  while (read_line()) {
-    const RpcMessage message =
-        too_long ? RpcMessage{.error = errorResponse(nullptr, -32600, "message over 1 MiB")} : parseRpcMessage(line);
+  StdinLines lines;
+  while (const std::optional<StdinLines::Line> line = lines.next()) {
+    const RpcMessage message = line->too_long
+                                   ? RpcMessage{.error = errorResponse(nullptr, -32600, "message over 1 MiB")}
+                                   : parseRpcMessage(line->text);
     json reply;
     try {
       if (message.error) {
         reply = *message.error;
       } else if (message.notification) {
-        continue;
+        continue;  // a cancellation of a call that is not in flight included
       } else {
         bridge.noteClient(message.params);
         const json& params = message.params;
@@ -405,9 +524,16 @@ int runBridge(int argc, char* argv[], const QString& version) {
         } else if (message.method == "tools/list") {
           reply["result"] = bridge.listTools();
         } else if (message.method == "tools/call" && params.value("name", json()).is_string()) {
-          reply["result"] = bridge.callTool(params);
+          std::size_t seen = 0;
+          std::optional<json> called = bridge.callTool(params, [&] { return lines.takeCancelOf(message.id, seen); });
+          if (!called) {
+            continue;
+          }
+          reply["result"] = std::move(*called);
         } else if (message.method == "tools/call") {
           reply = errorResponse(message.id, -32602, "tools/call needs a string name");
+        } else if (isTasksMethod(message.method)) {
+          reply = bridge.passOn(message.method, params, message.id);
         } else {
           reply = errorResponse(message.id, -32601, "method not found: " + message.method);
         }
@@ -415,7 +541,7 @@ int runBridge(int argc, char* argv[], const QString& version) {
     } catch (const std::exception& e) {
       reply = errorResponse(message.id, -32603, std::string("internal error: ") + e.what());
     }
-    std::cout << reply.dump(-1, ' ', false, json::error_handler_t::replace) << '\n' << std::flush;
+    std::cout << dumpJson(reply) << '\n' << std::flush;
   }
   return 0;
 }

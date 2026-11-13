@@ -28,6 +28,7 @@ using detail::removeDerivedSeries;
 using detail::removeMarkers;
 using detail::reportStatus;
 using detail::sceneViewTool;
+using detail::waitForTool;
 
 // --- registry --------------------------------------------------------------
 
@@ -87,6 +88,20 @@ ToolRegistry::ToolRegistry() {
           {"t_end_s", {{"type", "number"}, {"description", "display-axis window end (optional)"}}}}},
         {"required", json::array({"paths"})}},
        &readSeriesTool});
+
+  add(
+      {"wait_for",
+       "Wait for a live series to cross a threshold: returns the first sample that ARRIVES AFTER this call "
+       "and satisfies 'comparison' against 'threshold' (its value and display time), or fails after "
+       "'timeout_s'. For watching a stream; samples already loaded do not count (read_series finds those).",
+       {{"type", "object"},
+        {"properties",
+         {{"series", {{"type", "string"}, {"description", "one topic/field path"}}},
+          {"comparison", {{"type", "string"}, {"enum", json::array({">", "<", ">=", "<="})}}},
+          {"threshold", {{"type", "number"}}},
+          {"timeout_s", {{"type", "number"}, {"description", "default 60, at most 3600"}}}}},
+        {"required", json::array({"series", "comparison", "threshold"})}},
+       &waitForTool});
 
   add(
       {"evaluate",

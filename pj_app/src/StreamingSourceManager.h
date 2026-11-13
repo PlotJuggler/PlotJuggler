@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "DialogWatch.h"
 #include "LayoutXml.h"
 #include "pj_base/types.hpp"
 #include "pj_runtime/RecordingService.h"
@@ -119,6 +120,11 @@ class StreamingSourceManager : public QObject {
   // longer has make every later resume merge nothing, for every stream.
   void removeSecondaryDataset(DatasetId dataset_id);
 
+  // Asks the session streaming into `dataset_id` to stop, without waiting: streamStopped follows
+  // from the event loop once its worker has wound down. For a caller that must not block (nor
+  // erase the dataset next). Returns false when the dataset is not streaming.
+  bool requestStopDataset(DatasetId dataset_id, const QString& reason);
+
   // Stop-and-join every live session, preserving streamStopped emissions per
   // dataset. Used by remove-all paths before erasing the whole datastore.
   void stopAllAndWait(const QString& reason);
@@ -153,10 +159,11 @@ class StreamingSourceManager : public QObject {
   // given, is asked once the dialog is accepted: false abandons the start as a cancel does,
   // applying none of the user's choices. Emits streamStarted() on success, setupError()/
   // streamError() on a failure; nothing when the user cancels. A start that does not launch,
-  // a cancelled dialog included, leaves no dataset behind.
+  // a cancelled dialog included, leaves no dataset behind. `on_dialog`, when given, is told when
+  // the dialog opens and when it is gone.
   void startSession(
       const QString& plugin_id, const QString& dialog_title_prefix = {},
-      const std::function<bool()>& still_allowed = {});
+      const std::function<bool()>& still_allowed = {}, const dialog_presenter::DialogWatch& on_dialog = {});
 
  public slots:
   // Wired from LeftPanel::streamingStartRequested. Starts a session for the
@@ -242,7 +249,8 @@ class StreamingSourceManager : public QObject {
   // discards its dataset.
   [[nodiscard]] bool configureAndLaunch(
       const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session,
-      const QString& dialog_title_prefix, const std::function<bool()>& still_allowed, QString& error);
+      const QString& dialog_title_prefix, const std::function<bool()>& still_allowed,
+      const dialog_presenter::DialogWatch& on_dialog, QString& error);
 
   // The construction both starts share, up to and including bind(): handle,
   // time domain and dataset ("[stream] <label>", mirrored on the secondary
