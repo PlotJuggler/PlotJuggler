@@ -31,7 +31,7 @@ static_assert(kUniformBytes == 224U);
 
 // The shader's colour modes (meshmap.frag `flags.x`).
 constexpr float kModeChannel = 0.0F;
-constexpr float kModeVertexColor = 1.0F;
+constexpr float kModeVertexColor = 1.0F;  // RGBA8 colours: vertex colour or a categorical palette
 constexpr float kModeSolid = 2.0F;
 constexpr float kModeLine = 3.0F;
 
@@ -176,12 +176,13 @@ void MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
         rhi, updates, gpu.attributes, gpu.attributes_capacity, value_scratch_.data(),
         value_scratch_.size() * sizeof(float));
     gpu.attributes_are_colors = false;
-  } else if (mesh.color_mode == MeshMapColorMode::kVertexColor) {
+  } else if (mesh.color_mode == MeshMapColorMode::kRgba) {
     ok = uploadBuffer(
         rhi, updates, gpu.attributes, gpu.attributes_capacity, mesh.colors.data(),
         mesh.colors.size() * sizeof(std::uint32_t));
     gpu.attributes_are_colors = true;
   }
+  gpu.attributes_in_use = mesh.color_mode != MeshMapColorMode::kSolid;
   if (!ok) {
     layer->noteRenderFailure(tr("Could not allocate the mesh-map colour buffer"));
     releaseLayerGpu(gpu);
@@ -227,7 +228,7 @@ void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
     float mode = kModeSolid;
     if (mesh.color_mode == MeshMapColorMode::kChannel) {
       mode = kModeChannel;
-    } else if (mesh.color_mode == MeshMapColorMode::kVertexColor) {
+    } else if (mesh.color_mode == MeshMapColorMode::kRgba) {
       mode = kModeVertexColor;
     }
 
@@ -290,8 +291,10 @@ bool MeshMapRhiPass::submit(
     command_buffer->setVertexInput(0, static_cast<int>(inputs.size()), inputs.data());
   } else {
     command_buffer->setShaderResources(gpu.surface_bindings);
-    // The unused slot reads another buffer with at least 4 bytes per vertex.
-    QRhiBuffer* attributes = gpu.attributes != nullptr ? gpu.attributes : gpu.positions;
+    // Solid mode reads neither attribute: bind the positions (12 bytes per vertex,
+    // so always long enough) rather than a colour buffer left from an earlier,
+    // possibly smaller mesh.
+    QRhiBuffer* attributes = gpu.attributes_in_use ? gpu.attributes : gpu.positions;
     const std::array<QRhiCommandBuffer::VertexInput, 3> inputs{{
         {gpu.positions, 0},
         {attributes, 0},

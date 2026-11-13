@@ -25,14 +25,11 @@ class QWidget;
 
 namespace pj::scene3d {
 
-// Persisted `color_by` tokens beside a channel name: angle brackets keep them
-// distinct from any real channel. An empty request means "auto-pick".
-inline constexpr std::string_view kMeshMapColorVertex = "<vertex color>";
-inline constexpr std::string_view kMeshMapColorSolid = "<solid>";
-
-// Scene3DLayer for an sdk::MeshMap topic, paired by name with an optional
-// `<topic>_updates` sibling carrying sdk::MeshMapUpdate samples (the same
-// convention OccupancyGridLayer follows). At the tracker time the latest map at
+// Scene3DLayer for an sdk::MeshMap topic and the sdk::MeshMapUpdate topics that
+// patch it. Update topics pair by geometry: every MeshMapUpdate topic in the
+// dataset is read, and an update applies when its geometry_id matches the map's
+// (both set). The `<topic>_updates` sibling (the convention OccupancyGridLayer
+// follows) also applies updates with no geometry_id. At the tracker time the latest map at
 // or before it is decoded once into a MeshMapState, the updates since that map
 // are applied in time order, and the result is de-indexed for the view. Moving
 // forward applies only the new updates; moving back, or an update arriving with
@@ -105,7 +102,8 @@ class MeshMapLayer : public Scene3DLayer {
   QWidget* createConfigWidget(QWidget* parent) override;
 
   // Display params. setColorBy re-colours on the next render; the rest are
-  // uniform-only. Empty = auto; kMeshMapColorVertex / kMeshMapColorSolid.
+  // uniform-only. A channel key ("face:<name>" / "vertex:<name>"),
+  // kMeshMapSourceVertexColor, kMeshMapSourceSolid, or empty = auto.
   void setColorBy(const QString& source);
   void setColormap(PJ::Colormap colormap);
   void setAutoRange(bool on);
@@ -130,8 +128,8 @@ class MeshMapLayer : public Scene3DLayer {
   [[nodiscard]] int appliedUpdateCountForTest() const {
     return applied_update_count_;
   }
-  [[nodiscard]] bool hasUpdatesTopicForTest() const {
-    return updates_topic_.has_value();
+  [[nodiscard]] size_t updateTopicCountForTest() const {
+    return update_topics_.size();
   }
 #endif
 
@@ -148,9 +146,15 @@ class MeshMapLayer : public Scene3DLayer {
   void renderAt(int64_t time_ns);
   // (Re)decodes the map at `entry` into state_; false (warning set) when refused.
   bool loadBase(const PJ::ResolvedObjectEntry& entry);
-  // Applies the updates with stamps in (from, to], in time order. Returns the
-  // number applied; sets a soft warning for skipped ones.
+  // Applies the updates of every update topic with stamps in (from, to], in
+  // time order. Returns the number applied; sets a soft warning for skipped ones.
   int applyUpdates(int64_t from, int64_t to);
+  // Re-lists the dataset's MeshMapUpdate topics when its topic count changed.
+  void refreshUpdateTopics();
+  // The highest update arrival UID at or before `time_ns`, folded over the topics.
+  [[nodiscard]] std::uint64_t updateKey(int64_t time_ns) const;
+  // True when an update arrived, stamped at or before what was already applied.
+  [[nodiscard]] bool lateUpdateArrived() const;
   // Picks the effective colour source from the request and the state's channels.
   void resolveColorSource();
   void stage(bool geometry_changed);
@@ -164,15 +168,24 @@ class MeshMapLayer : public Scene3DLayer {
   QString display_name_;
   Scene3DLayerContext ctx_;
   QMetaObject::Connection reload_connection_;
-  std::optional<PJ::ObjectTopicId> updates_topic_;
+  // A MeshMapUpdate topic of the dataset. `by_name` is the `<topic>_updates`
+  // sibling, which also applies updates carrying no geometry_id; `matched` is set
+  // once one of its updates applied (its time range then joins the layer's).
+  struct UpdateTopic {
+    PJ::ObjectTopicId id;
+    bool by_name = false;
+    bool matched = false;
+    std::uint64_t applied_max_uid = 0;  // newest arrival at or before applied_until_ when applied
+  };
+  std::vector<UpdateTopic> update_topics_;
+  size_t known_topic_count_ = 0;
 
   // The decoded map and what has been applied to it. state_ owns its arrays (no
   // anchor into a plugin DSO), so no binding keepalive is needed.
   std::optional<MeshMapState> state_;
   PJ::SequentialUID base_uid_{};
   int64_t base_timestamp_ = 0;
-  int64_t applied_until_ = 0;          // updates with stamps <= this are in state_
-  std::uint64_t applied_max_uid_ = 0;  // newest update UID at or before applied_until_ when applied
+  int64_t applied_until_ = 0;  // updates with stamps <= this are in state_
   std::uint64_t staged_update_key_ = 0;
   PJ::SequentialUID staged_base_uid_{};
   bool colors_dirty_ = true;
@@ -190,7 +203,7 @@ class MeshMapLayer : public Scene3DLayer {
   int applied_update_count_ = 0;
 
   std::string color_request_;
-  std::string resolved_color_;              // a channel name, a kMeshMapColor* token, or empty (nothing to show)
+  std::string resolved_color_;              // a channel key or a kMeshMapSource* token
   std::vector<std::string> color_sources_;  // selector items: channels then the tokens
 
   PJ::Colormap colormap_ = PJ::Colormap::kTurbo;

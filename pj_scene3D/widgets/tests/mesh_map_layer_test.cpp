@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Behavioural coverage for MeshMapLayer on the canonical-codec route: attach and
-// the `<topic>_updates` pairing, the auto colour pick, staging only on a change,
-// updates applied incrementally going forward and from the map going back, a late
-// update with an older stamp, an update for another geometry, a missing
-// requested channel, the vertex-colour and solid modes, XML round-trip, and the
-// size refusal.
+// update-topic pairing (the `<topic>_updates` sibling, and any MeshMapUpdate
+// topic carrying the map's geometry_id), the auto colour pick, staging only on a
+// change, updates applied incrementally going forward and from the map going
+// back, a late update with an older stamp, an update for another geometry, colour
+// sources and a missing request, XML round-trip.
 
 #include "pj_scene3d_widgets/layers/mesh_map_layer.h"
 
@@ -16,6 +16,8 @@
 #include <QString>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,87 +34,64 @@ using namespace Qt::StringLiterals;
 namespace {
 
 using namespace pj::scene3d::test;
-using pj::scene3d::kMeshMapColorSolid;
-using pj::scene3d::kMeshMapColorVertex;
+using pj::scene3d::kMeshMapSourceSolid;
+using pj::scene3d::kMeshMapSourceVertexColor;
 using pj::scene3d::MeshMapColorMode;
+using PJ::sdk::MeshChannel;
 using PJ::sdk::MeshMap;
 using PJ::sdk::MeshMapUpdate;
-using PJ::sdk::PointField;
 using Datatype = PJ::sdk::PointField::Datatype;
+using Target = PJ::sdk::MeshChannel::Target;
 
 template <typename T>
-void append(std::vector<uint8_t>& out, T value) {
-  const auto offset = out.size();
-  out.resize(offset + sizeof(T));
-  std::memcpy(out.data() + offset, &value, sizeof(T));
+PJ::Span<const uint8_t> keep(std::vector<std::vector<uint8_t>>& storage, const std::vector<T>& values) {
+  storage.emplace_back(values.size() * sizeof(T));
+  if (!values.empty()) {
+    std::memcpy(storage.back().data(), values.data(), storage.back().size());
+  }
+  return {storage.back().data(), storage.back().size()};
 }
 
-// A unit square of two faces. Vertex record: x, y, z float32 + red, green, blue,
-// alpha uint8. Face record: vertex_indices + cost float32. The bytes live in the
-// returned vector, which the caller keeps alive until serialization.
-MeshMap makeMesh(std::vector<uint8_t>& bytes, PJ::Timestamp ts, const std::string& geometry_id = "1") {
-  bytes.clear();
-  const float xyz[4][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
-  for (int v = 0; v < 4; ++v) {
-    for (const float c : xyz[v]) {
-      append(bytes, c);
-    }
-    append(bytes, static_cast<uint8_t>(50 * v));
-    append(bytes, uint8_t{0});
-    append(bytes, uint8_t{0});
-    append(bytes, uint8_t{255});
-  }
-  const uint32_t faces[2][3] = {{0, 1, 2}, {0, 2, 3}};
-  const float cost[2] = {1.0F, 3.0F};
-  for (int f = 0; f < 2; ++f) {
-    for (const uint32_t i : faces[f]) {
-      append(bytes, i);
-    }
-    append(bytes, cost[f]);
-  }
+MeshChannel channel(std::string name, Target target, Datatype datatype, PJ::Span<const uint8_t> data) {
+  MeshChannel out;
+  out.name = std::move(name);
+  out.target = target;
+  out.datatype = datatype;
+  out.data = data;
+  return out;
+}
+
+// A unit square of two faces, a float `cost` face channel and an RGB vertex colour.
+std::vector<uint8_t> serializedMap(PJ::Timestamp ts, const std::string& geometry_id) {
+  std::vector<std::vector<uint8_t>> storage;
+  storage.reserve(8);
   MeshMap mesh;
   mesh.timestamp_ns = ts;
   mesh.frame_id = "map";
   mesh.geometry_id = geometry_id;
   mesh.vertex_count = 4;
-  mesh.vertex_stride = 16;
-  mesh.vertex_fields = {
-      {.name = "x", .offset = 0, .datatype = Datatype::kFloat32, .count = 1},
-      {.name = "y", .offset = 4, .datatype = Datatype::kFloat32, .count = 1},
-      {.name = "z", .offset = 8, .datatype = Datatype::kFloat32, .count = 1},
-      {.name = "red", .offset = 12, .datatype = Datatype::kUint8, .count = 1},
-      {.name = "green", .offset = 13, .datatype = Datatype::kUint8, .count = 1},
-      {.name = "blue", .offset = 14, .datatype = Datatype::kUint8, .count = 1},
-      {.name = "alpha", .offset = 15, .datatype = Datatype::kUint8, .count = 1},
-  };
+  mesh.positions = keep(storage, std::vector<float>{0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0});
   mesh.face_count = 2;
-  mesh.face_stride = 16;
-  mesh.face_data_offset = 64;
-  mesh.face_fields = {
-      {.name = "vertex_indices", .offset = 0, .datatype = Datatype::kUint32, .count = 3},
-      {.name = "cost", .offset = 12, .datatype = Datatype::kFloat32, .count = 1},
+  mesh.indices = keep(storage, std::vector<uint32_t>{0, 1, 2, 0, 2, 3});
+  mesh.channels = {
+      channel("cost", Target::kFace, Datatype::kFloat32, keep(storage, std::vector<float>{1.0F, 3.0F})),
+      channel("red", Target::kVertex, Datatype::kUint8, keep(storage, std::vector<uint8_t>{0, 50, 100, 150})),
+      channel("green", Target::kVertex, Datatype::kUint8, keep(storage, std::vector<uint8_t>{0, 0, 0, 0})),
+      channel("blue", Target::kVertex, Datatype::kUint8, keep(storage, std::vector<uint8_t>{0, 0, 0, 0})),
   };
-  mesh.data = PJ::Span<const uint8_t>(bytes.data(), bytes.size());
-  return mesh;
+  return PJ::serializeMeshMap(mesh);
 }
 
-std::vector<uint8_t> serializedUpdate(
-    PJ::Timestamp ts, uint32_t face, float cost, const std::string& geometry_id = "1") {
-  std::vector<uint8_t> bytes;
-  append(bytes, face);
-  append(bytes, cost);
+std::vector<uint8_t> serializedUpdate(PJ::Timestamp ts, uint32_t face, float cost, const std::string& geometry_id) {
+  std::vector<std::vector<uint8_t>> storage;
+  storage.reserve(2);
+  PJ::sdk::MeshChannelPatch patch;
+  patch.channel = channel("cost", Target::kFace, Datatype::kFloat32, keep(storage, std::vector<float>{cost}));
+  patch.indices = keep(storage, std::vector<uint32_t>{face});
   MeshMapUpdate update;
   update.timestamp_ns = ts;
-  update.frame_id = "map";
   update.geometry_id = geometry_id;
-  update.target = MeshMapUpdate::Target::kFaces;
-  update.count = 1;
-  update.stride = 8;
-  update.fields = {
-      {.name = "index", .offset = 0, .datatype = Datatype::kUint32, .count = 1},
-      {.name = "cost", .offset = 4, .datatype = Datatype::kFloat32, .count = 1},
-  };
-  update.data = PJ::Span<const uint8_t>(bytes.data(), bytes.size());
+  update.patches.push_back(patch);
   return PJ::serializeMeshMapUpdate(update);
 }
 
@@ -127,15 +106,24 @@ struct Rig {
     ctx.session = &session;
   }
   void pushMap(PJ::Timestamp ts, const std::string& geometry_id = "1") {
-    std::vector<uint8_t> bytes;
-    const MeshMap mesh = makeMesh(bytes, ts, geometry_id);
-    ASSERT_TRUE(session.objectStore().pushOwned(topic_id, ts, PJ::serializeMeshMap(mesh)).has_value());
+    ASSERT_TRUE(session.objectStore().pushOwned(topic_id, ts, serializedMap(ts, geometry_id)).has_value());
   }
-  void pushUpdate(PJ::Timestamp ts, uint32_t face, float cost, const std::string& geometry_id = "1") {
-    ASSERT_TRUE(
-        session.objectStore().pushOwned(updates_id, ts, serializedUpdate(ts, face, cost, geometry_id)).has_value());
+  void pushUpdate(
+      PJ::Timestamp ts, uint32_t face, float cost, const std::string& geometry_id = "1",
+      std::optional<PJ::ObjectTopicId> topic = std::nullopt) {
+    ASSERT_TRUE(session.objectStore()
+                    .pushOwned(topic.value_or(updates_id), ts, serializedUpdate(ts, face, cost, geometry_id))
+                    .has_value());
   }
-  // The staged cost of `face` (values are three per face).
+  // A MeshMapUpdate topic under an unrelated name, as a producer advertises it.
+  PJ::ObjectTopicId registerUpdateTopic(const std::string& name) {
+    const auto topic = session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = 1, .topic_name = name, .metadata_json = R"({"builtin_object_type":"kMeshMapUpdate"})"});
+    EXPECT_TRUE(topic.has_value());
+    return topic.has_value() ? topic.value() : PJ::ObjectTopicId{};
+  }
+  // The staged value of `face` (values are three per face).
   [[nodiscard]] float stagedCost(uint32_t face) const {
     const auto* mesh = layer.stagedMeshForTest();
     return mesh != nullptr && mesh->values.size() > 3 * face ? mesh->values[3 * face] : std::nanf("");
@@ -146,9 +134,9 @@ TEST(MeshMapLayer, AttachesPairsUpdatesAndAutoPicksTheChannel) {
   Rig rig;
   rig.pushMap(100);
   ASSERT_TRUE(rig.layer.attach(rig.ctx)) << "a parser-less canonical PJ.MeshMap topic must attach";
-  EXPECT_TRUE(rig.layer.hasUpdatesTopicForTest());
+  EXPECT_EQ(rig.layer.updateTopicCountForTest(), 1u);
   EXPECT_EQ(rig.layer.sourceFrame(), u"map"_s);
-  EXPECT_EQ(rig.layer.resolvedColorByForTest(), u"cost"_s);
+  EXPECT_EQ(rig.layer.resolvedColorByForTest(), u"face:cost"_s);
 
   rig.layer.renderAtForTest(100);
   const auto* mesh = rig.layer.stagedMeshForTest();
@@ -202,7 +190,22 @@ TEST(MeshMapLayer, ALateUpdateWithAnOlderStampRebuilds) {
   EXPECT_FLOAT_EQ(rig.stagedCost(1), 9.0F);
 }
 
-TEST(MeshMapLayer, UpdatesForAnotherGeometryAreSkippedWithAWarning) {
+TEST(MeshMapLayer, PairsAnyUpdateTopicByGeometryId) {
+  Rig rig;
+  const PJ::ObjectTopicId costs = rig.registerUpdateTopic("/mesh/vertex_costs");
+  rig.pushMap(100, "42");
+  rig.pushUpdate(200, 0, 7.0F, "42", costs);  // matches: applies
+  rig.pushUpdate(250, 1, 8.0F, "", costs);    // no id on a non-sibling topic: ignored
+  rig.pushUpdate(260, 1, 6.0F, "41", costs);  // another geometry: ignored
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  EXPECT_EQ(rig.layer.updateTopicCountForTest(), 2u);
+  rig.layer.renderAtForTest(300);
+  EXPECT_FLOAT_EQ(rig.stagedCost(0), 7.0F);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 3.0F);
+  EXPECT_TRUE(rig.layer.statusWarning().isEmpty()) << "a shared topic's other geometries are not this map's fault";
+}
+
+TEST(MeshMapLayer, SiblingUpdatesForAnotherGeometryAreSkippedWithAWarning) {
   Rig rig;
   rig.pushMap(100, "1");
   rig.pushUpdate(200, 0, 7.0F, "2");
@@ -217,24 +220,32 @@ TEST(MeshMapLayer, ColorSourcesAndAMissingRequest) {
   rig.pushMap(100);
   ASSERT_TRUE(rig.layer.attach(rig.ctx));
 
-  rig.layer.setColorBy(QString::fromUtf8(kMeshMapColorVertex.data(), kMeshMapColorVertex.size()));
+  rig.layer.setColorBy(QString::fromUtf8(kMeshMapSourceVertexColor.data(), kMeshMapSourceVertexColor.size()));
   rig.layer.renderAtForTest(100);
   ASSERT_NE(rig.layer.stagedMeshForTest(), nullptr);
-  EXPECT_EQ(rig.layer.stagedMeshForTest()->color_mode, MeshMapColorMode::kVertexColor);
+  EXPECT_EQ(rig.layer.stagedMeshForTest()->color_mode, MeshMapColorMode::kRgba);
 
-  rig.layer.setColorBy(QString::fromUtf8(kMeshMapColorSolid.data(), kMeshMapColorSolid.size()));
+  rig.layer.setColorBy(QString::fromUtf8(kMeshMapSourceSolid.data(), kMeshMapSourceSolid.size()));
   rig.layer.renderAtForTest(100);
   EXPECT_EQ(rig.layer.stagedMeshForTest()->color_mode, MeshMapColorMode::kSolid);
 
-  rig.layer.setColorBy(u"elevation"_s);  // not in this map: falls back, warns, keeps the request
+  rig.layer.setColorBy(u"vertex:red"_s);  // a vertex channel through the colormap
   rig.layer.renderAtForTest(100);
-  EXPECT_EQ(rig.layer.resolvedColorByForTest(), u"cost"_s);
+  EXPECT_EQ(rig.layer.stagedMeshForTest()->color_mode, MeshMapColorMode::kChannel);
+
+  rig.layer.setColorBy(u"face:elevation"_s);  // not in this map: falls back, warns, keeps the request
+  rig.layer.renderAtForTest(100);
+  EXPECT_EQ(rig.layer.resolvedColorByForTest(), u"face:cost"_s);
   EXPECT_FALSE(rig.layer.statusWarning().isEmpty());
+
+  rig.layer.setColorBy(u"face:cost"_s);  // a valid request clears the warning
+  rig.layer.renderAtForTest(100);
+  EXPECT_TRUE(rig.layer.statusWarning().isEmpty());
 }
 
 TEST(MeshMapLayer, XmlRoundTrip) {
   Rig rig;
-  rig.layer.setColorBy(u"cost"_s);
+  rig.layer.setColorBy(u"face:cost"_s);
   rig.layer.setColormap(PJ::Colormap::kViridis);
   rig.layer.setAutoRange(false);
   rig.layer.setManualRange(-1.0, 2.5);

@@ -18,7 +18,8 @@ class MeshMapLayer;
 /// The MeshMap family of the QRhi view: per layer, the de-indexed triangles of a
 /// channel mesh (positions + one colour attribute: a channel value through the
 /// in-shader colormap, or an RGBA8 vertex colour) and, optionally, its link
-/// segments as a line list. Flat normals come from screen-space derivatives in
+/// segments as a line list. A categorical channel arrives as RGBA8 colours,
+/// coloured on the CPU from its category colours or a palette. Flat normals come from screen-space derivatives in
 /// the fragment shader, which WebGL2 supports. Owns its per-layer buffers and
 /// uniforms (the view's registry its pipelines); the view owns ordering and the
 /// command buffer. Per frame: admit() (once), prepare() (once), then submit()
@@ -90,6 +91,7 @@ class MeshMapRhiPass {
     quint32 surface_vertices = 0;
     quint32 link_vertices = 0;
     bool attributes_are_colors = false;
+    bool attributes_in_use = false;  ///< `attributes` holds this mesh's colours (not solid mode)
   };
 
   bool ensureLayerGpu(QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu);
