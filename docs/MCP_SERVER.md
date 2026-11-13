@@ -313,3 +313,5 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
 - Plugin tokens get the agent tools only, so the Assistant cannot open files or start streams. The planned follow-up
   adds `open_file`, `start_stream` and `stop_stream` to the plugin profile, with `ask_user` on by default.
 - A plugin token is not bound to the process the plugin spawned (see the trust boundary above).
+- No call can be cancelled on request (`notifications/cancelled` is ignored) and the bridge runs one call at a time.
+  The plan to turn long calls into jobs an agent can list, wait on and kill is [mcp_jobs_plan.md](./mcp_jobs_plan.md).
