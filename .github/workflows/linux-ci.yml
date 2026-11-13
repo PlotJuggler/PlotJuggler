@@ -149,8 +149,10 @@ jobs:
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
             libxcb-xkb1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
             libva-dev libdrm-dev \
-            xvfb ccache zstd \
+            xvfb ccache zstd locales \
             mesa-vulkan-drivers libvulkan-dev
+          # A decimal-comma locale: the tests that need one skip themselves without it.
+          sudo locale-gen de_DE.UTF-8
 
       - name: Configure ccache
         # Compiler-output cache for our own C++ — complementary to the Conan

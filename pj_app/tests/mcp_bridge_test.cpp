@@ -17,6 +17,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QThread>
+#include <clocale>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
@@ -37,6 +38,10 @@ class McpBridgeTest : public ::testing::Test {
     env_.insert("QT_QPA_PLATFORM", "offscreen");
     env_.insert("PJ_DISABLE_TELEMETRY", "1");
     env_.remove("WAYLAND_DISPLAY");  // nothing may reach the session's display
+    if (!numeric_locale_.isEmpty()) {
+      env_.remove("LC_ALL");  // it would win over LC_NUMERIC
+      env_.insert("LC_NUMERIC", numeric_locale_);
+    }
     {
       QSettings settings(home_.filePath(".config/PlotJuggler/PlotJuggler4.conf"), QSettings::IniFormat);
       settings.setValue("Preferences::check_updates_on_startup", false);
@@ -113,6 +118,7 @@ class McpBridgeTest : public ::testing::Test {
 
   QTemporaryDir home_;
   QProcessEnvironment env_;
+  QString numeric_locale_;  ///< LC_NUMERIC of the app and the bridge; empty inherits the test's own.
   QString data_file_;
   QProcess app_;
   QProcess bridge_;
@@ -211,6 +217,41 @@ TEST_F(McpBridgeTest, DirectHttpCannotPickAnOwnerOrSkipTheToken) {
   ASSERT_TRUE(reply.startsWith("HTTP/1.1 200")) << reply.toStdString();
   EXPECT_TRUE(reply.contains("agent-toolbox-assistant-agent")) << reply.toStdString();
   EXPECT_FALSE(reply.contains("\\\"agent\\\":\\\"toolbox_assistant_agent")) << reply.toStdString();
+}
+
+/// An installed locale that writes 1.5 as "1,5", or empty when the machine has none.
+QString decimalCommaLocale() {
+  const std::string saved = std::setlocale(LC_NUMERIC, nullptr);
+  QString found;
+  for (const char* name : {"sv_SE.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "en_DK.UTF-8"}) {
+    if (std::setlocale(LC_NUMERIC, name) != nullptr && *std::localeconv()->decimal_point == ',') {
+      found = QString::fromLatin1(name);
+      break;
+    }
+  }
+  std::setlocale(LC_NUMERIC, saved.c_str());
+  return found;
+}
+
+class McpBridgeDecimalCommaTest : public McpBridgeTest {
+ protected:
+  void SetUp() override {
+    numeric_locale_ = decimalCommaLocale();
+    if (numeric_locale_.isEmpty()) {
+      GTEST_SKIP() << "no decimal-comma locale installed";
+    }
+    McpBridgeTest::SetUp();
+  }
+};
+
+// Luau reads number literals with the C library's strtod, so under the user's decimal-comma LC_NUMERIC neither the
+// bundled filters nor a script would compile.
+TEST_F(McpBridgeDecimalCommaTest, FiltersAndScriptsCompile) {
+  ASSERT_TRUE(call("open_file", {{"path", data_file_.toStdString()}}).value("loaded", false));
+  call("add_filter", {{"input", "mock/file_data/value"}, {"filter", "absolute"}});
+  const json evaluated = call("evaluate", {{"inputs", {"mock/file_data/value"}}, {"expression", "value * 0 + 1.5"}});
+  ASSERT_TRUE(evaluated.is_object());
+  EXPECT_DOUBLE_EQ(evaluated.value("stats", json::object()).value("max", 0.0), 1.5) << evaluated.dump();
 }
 
 }  // namespace
