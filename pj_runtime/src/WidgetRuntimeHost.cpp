@@ -37,6 +37,43 @@ Timestamp toRawSaturating(double seconds, DisplayOffset offset) {
   return saturatingAdd(*display_ns, offset.value.count());
 }
 
+/// The first stored instant whose delivered time (rawToDisplaySecondsAtOrAfter) is `seconds` or later. A
+/// widget queries back with the times it was handed, so a range is cut where those times change, not at the
+/// instant nearest the bound: near 1.7e9 s a double steps ~238 ns, and near 0 many doubles share a nanosecond.
+Timestamp firstDeliveredAtOrAfter(double seconds, DisplayOffset offset) {
+  constexpr Timestamp kMax = std::numeric_limits<Timestamp>::max();
+  constexpr Timestamp kMin = std::numeric_limits<Timestamp>::min();
+  const Timestamp nearest = toRawSaturating(seconds, offset);
+  if (!(std::abs(seconds) < 9e9)) {
+    return nearest;  // past every representable instant: the range is everything or nothing
+  }
+  // A delivered time is within a few double steps of the nearest one: bisect over that window.
+  const double step = std::nextafter(std::abs(seconds), std::numeric_limits<double>::infinity()) - std::abs(seconds);
+  const auto window = static_cast<Timestamp>(std::ceil(8.0 * step * 1e9)) + 8;
+  if (nearest >= kMax - (2 * window) || nearest <= kMin + (2 * window)) {
+    return nearest;
+  }
+  const auto delivered = [offset](Timestamp raw) { return rawToDisplaySecondsAtOrAfter(raw, offset).value; };
+  Timestamp before = nearest - window;  // delivered before `seconds`
+  Timestamp at = nearest + window;      // delivered at `seconds` or later
+  if (delivered(before) >= seconds || delivered(at) < seconds) {
+    return nearest;
+  }
+  while (at - before > 1) {
+    const Timestamp mid = before + ((at - before) / 2);
+    (delivered(mid) >= seconds ? at : before) = mid;
+  }
+  return at;
+}
+
+/// The stored instants whose delivered times lie in [from, to], inclusive; empty when min > max.
+Range<Timestamp> deliveredRange(const WidgetHistoryQuery& query, DisplayOffset offset) {
+  const double after_to = std::nextafter(query.to, std::numeric_limits<double>::infinity());
+  const Timestamp last = std::isinf(after_to) ? std::numeric_limits<Timestamp>::max()
+                                              : saturatingSub(firstDeliveredAtOrAfter(after_to, offset), 1);
+  return Range<Timestamp>{.min = firstDeliveredAtOrAfter(query.from, offset), .max = last};
+}
+
 /// Samples one call may deliver: `max_samples`, 0 meaning the default.
 uint32_t effectiveCap(const WidgetHistoryQuery& query) {
   return query.max_samples == 0 ? WidgetRuntimeHost::kDefaultMaxSamples : query.max_samples;
@@ -129,7 +166,10 @@ Expected<uint32_t> WidgetRuntimeHost::historyNumber(
   if (!series) {
     return unexpected(series.error());
   }
-  const Range<Timestamp> range{toRawSaturating(query.from, target.offset), toRawSaturating(query.to, target.offset)};
+  const Range<Timestamp> range = deliveredRange(query, target.offset);
+  if (range.min > range.max) {
+    return 0U;
+  }
   const auto bounds = series->bounds(range);
   if (!bounds || bounds->sample_count == 0) {
     return 0U;
@@ -157,8 +197,11 @@ Expected<uint32_t> WidgetRuntimeHost::historyNumber(
 Expected<uint32_t> WidgetRuntimeHost::historyText(
     const WidgetHistoryQuery& query, const ResolvedWire& wire, const WidgetValueSink& sink) const {
   const WireTarget& target = wire.target;
-  const QueryRange range{
-      target.topic_id, toRawSaturating(query.from, target.offset), toRawSaturating(query.to, target.offset)};
+  const Range<Timestamp> delivered = deliveredRange(query, target.offset);
+  if (delivered.min > delivered.max) {
+    return 0U;
+  }
+  const QueryRange range{.topic_id = target.topic_id, .t_min = delivered.min, .t_max = delivered.max};
 
   // A row is a sample only when its cell in this column is a non-null string; the chunks before a
   // mid-stream column addition may not have the column at all.
@@ -206,10 +249,13 @@ Expected<uint32_t> WidgetRuntimeHost::historyText(
 Expected<uint32_t> WidgetRuntimeHost::historyObject(
     const WidgetHistoryQuery& query, const ResolvedWire& wire, const WidgetValueSink& sink) const {
   const WireTarget& target = wire.target;
-  const Timestamp from = toRawSaturating(query.from, target.offset);
-  const Timestamp to = toRawSaturating(query.to, target.offset);
+  const Range<Timestamp> delivered = deliveredRange(query, target.offset);
+  if (delivered.min > delivered.max) {
+    return 0U;
+  }
+  const Timestamp to = delivered.max;
   // rangeByTime is (lo, hi]; the history range is inclusive on both ends.
-  const Timestamp lo = saturatingSub(from, 1);
+  const Timestamp lo = saturatingSub(delivered.min, 1);
 
   // Count and choose the delivered entries by binary search over the sorted timestamps, so a call that
   // delivers few samples (a widget probing a range with max_samples 1) costs O(log n), not a copy of the

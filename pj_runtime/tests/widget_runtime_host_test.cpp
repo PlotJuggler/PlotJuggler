@@ -462,6 +462,76 @@ TEST_F(WidgetRuntimeHostTest, AHistoryTimeConvertsBackToItsSampleFarFromTheOrigi
   }
 }
 
+/// A widget queries back with the times the host handed it (a log list reading the tail after the last
+/// entry it holds): each delivered time is a bound that keeps its own sample, at epoch display times, where a
+/// double steps ~238 ns, and near the origin, where many doubles share a nanosecond.
+class WidgetRuntimeHostQueryBackTest : public WidgetRuntimeHostTest, public ::testing::WithParamInterface<int64_t> {};
+
+TEST_P(WidgetRuntimeHostQueryBackTest, ADeliveredTimeBoundsTheRangeAtItsOwnSample) {
+  auto topic = objects_.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/rosout"});
+  ASSERT_TRUE(topic.has_value());
+  const int64_t first = GetParam();
+  constexpr int kEntries = 64;
+  for (int k = 0; k < kEntries; ++k) {
+    // Spacings of 1..63 ns put neighbours inside one double step at epoch times.
+    const int64_t stamp = first + int64_t{k} * (k + 1) / 2;
+    ASSERT_TRUE(objects_.pushOwned(*topic, stamp, {static_cast<uint8_t>(k)}).has_value());
+  }
+  WireTarget wire;
+  wire.kind = WidgetInputKind::kObject;
+  wire.object_topic = *topic;
+  wires_.push_back(wire);
+
+  std::vector<Sample> all;
+  ASSERT_TRUE(query(0, 0, -1e300, 1e300, 0, all));
+  ASSERT_EQ(all.size(), static_cast<std::size_t>(kEntries));
+
+  for (int k = 0; k < kEntries; ++k) {
+    // Every entry delivered at that time, and only those.
+    uint32_t same_time = 0;
+    uint32_t from_here = 0;
+    for (const Sample& sample : all) {
+      same_time += sample.time == all[k].time ? 1U : 0U;
+      from_here += sample.time >= all[k].time ? 1U : 0U;
+    }
+    std::vector<Sample> out;
+    uint32_t total = 0;
+    ASSERT_TRUE(query(0, 0, all[k].time, all[k].time, 0, out, nullptr, &total));
+    EXPECT_EQ(total, same_time) << "entry " << k;
+    for (const Sample& sample : out) {
+      EXPECT_EQ(sample.time, all[k].time) << "entry " << k;
+    }
+    out.clear();
+    ASSERT_TRUE(query(0, 0, all[k].time, 1e300, 0, out, nullptr, &total));
+    EXPECT_EQ(total, from_here) << "entry " << k;
+    out.clear();
+    ASSERT_TRUE(query(0, 0, -1e300, all[k].time, 0, out, nullptr, &total));
+    EXPECT_EQ(total, static_cast<uint32_t>(kEntries) - from_here + same_time) << "entry " << k;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DisplayTimes, WidgetRuntimeHostQueryBackTest, ::testing::Values(int64_t{1'731'234'567'000'000'005}, int64_t{3}),
+    [](const ::testing::TestParamInfo<int64_t>& param_info) {
+      return param_info.param > kSecond ? std::string("Epoch") : std::string("Origin");
+    });
+
+TEST_F(WidgetRuntimeHostTest, ANumberTimeBoundsTheRangeAtItsOwnSampleAtEpochTimes) {
+  addNumberWire(1'731'234'567'000'000'005);
+  wires_.back().offset = DisplayOffset{};  // epoch display times
+  std::vector<Sample> all;
+  ASSERT_TRUE(query(0, 0, -1e300, 1e300, 0, all));
+  ASSERT_EQ(all.size(), 10U);
+  for (std::size_t k = 0; k < all.size(); ++k) {
+    std::vector<Sample> out;
+    uint32_t total = 0;
+    ASSERT_TRUE(query(0, 0, all[k].time, 1e300, 0, out, nullptr, &total));
+    EXPECT_EQ(total, all.size() - k) << "sample " << k;
+    ASSERT_FALSE(out.empty());
+    EXPECT_EQ(out.front().number, all[k].number) << "sample " << k;
+  }
+}
+
 TEST_F(WidgetRuntimeHostTest, InputsChangedAndMessagesReachTheCallbacks) {
   const PJ_widget_host_t host = host_->raw();
   host.vtable->notify_inputs_changed(host.ctx);
