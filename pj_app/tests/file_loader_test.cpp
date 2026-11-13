@@ -3310,6 +3310,23 @@ class DialogShutdownTest : public ::testing::Test {
     return nullptr;
   }
 
+  // Pumps until a plugin-config dialog of `parent` is visible (the prologue is
+  // then suspended on it); nullptr when none opens in time.
+  [[nodiscard]] static QDialog* waitForVisibleDialog(QWidget* parent) {
+    QEventLoop loop;
+    QTimer poll;
+    poll.setInterval(5);
+    QObject::connect(&poll, &QTimer::timeout, &loop, [&]() {
+      if (visibleDialog(parent) != nullptr) {
+        loop.quit();
+      }
+    });
+    QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+    poll.start();
+    loop.exec();
+    return visibleDialog(parent);
+  }
+
   QTemporaryDir extensions_dir_;
   QTemporaryDir data_dir_;
   QTemporaryDir probe_dir_;
@@ -3524,6 +3541,49 @@ TEST_F(DialogShutdownTest, ConfigDialogRejectReportsCancelledTicketExactlyOnce) 
   EXPECT_EQ(recorder.events[0].dataset_id, 0u);
   EXPECT_EQ(loaded_count, 0) << "the reject path stays silent on the legacy signals";
   EXPECT_EQ(failed_count, 0) << "the reject path stays silent on the legacy signals";
+}
+
+// A cancel belongs to the load it was raised for. One raised while the load
+// waits at its config dialog, which the user then rejects, ends with that load:
+// the next load must run instead of being cancelled at its prologue check.
+TEST_F(DialogShutdownTest, CancelThenRejectAtDialogDoesNotCancelTheNextLoad) {
+  QWidget parent;
+
+  const auto touch = [this](const QString& name) {
+    const QString path = data_dir_.filePath(name);
+    QFile file(path);
+    EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+    return path;
+  };
+  const QString first_path = touch(u"cancelled.dlgprobe"_s);
+  const QString next_path = touch(u"next.dlgprobe"_s);
+
+  LoadFinishedRecorder recorder(*loader_);
+
+  const quint64 first = loader_->loadFileTicketed(PJ::LoadInput::fromNativePath(first_path), &parent, PJ::LoadHints{});
+  ASSERT_NE(first, 0u);
+  QDialog* dialog = waitForVisibleDialog(&parent);
+  ASSERT_NE(dialog, nullptr) << "the plugin config dialog never opened";
+
+  EXPECT_TRUE(loader_->cancelLoad(first, /*keep_partial=*/false));
+  dialog->reject();
+  pumpUntilIdle(*loader_);
+  ASSERT_EQ(recorder.events.size(), 1u);
+  EXPECT_EQ(recorder.events[0].outcome, PJ::LoadOutcome::kCancelled);
+
+  // No dialog for the next load: the stale-cancel check runs for every load.
+  PJ::LoadHints hints;
+  hints.expected_plugin_id = u"Dialog Probe Source"_s;
+  hints.dialog_policy = PJ::DialogPolicy::kNever;
+  hints.require_expected_plugin = true;
+  const quint64 next = loader_->loadFileTicketed(PJ::LoadInput::fromNativePath(next_path), &parent, hints);
+  ASSERT_NE(next, 0u);
+  pumpUntilIdle(*loader_);
+
+  ASSERT_EQ(recorder.events.size(), 2u);
+  EXPECT_EQ(recorder.events[1].ticket, next);
+  EXPECT_EQ(recorder.events[1].outcome, PJ::LoadOutcome::kLoaded)
+      << "the cancel raised for the previous load leaked into this one";
 }
 
 // Review finding 4: an automated (layout-driven) replay of a source whose
