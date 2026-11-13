@@ -2284,6 +2284,10 @@ void FileLoader::startNext() {
   // next frame; finishPrologue always schedules this method rather than calling
   // it recursively from inside that frame.
   begin_load_task_.reset();
+  // A cancel belongs to the load it was raised for. Exits that never read the
+  // flag (a rejected config dialog, a failure after it) leave it latched, and
+  // the next load's prologue check would take it as its own.
+  cancel_mode_.store(0);
   if (queue_.empty()) {
     load_generation_ = 0;  // idle: no load to bind a stop-dialog to
     current_load_ticket_ = 0;

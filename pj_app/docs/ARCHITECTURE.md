@@ -131,7 +131,9 @@ Honouring the flag is the **producer's** job:
 
 - `FileLoader` latches it into `cancel_mode_` (1 = keep, 2 = discard) for a
   whole-load stop, or into a slot owned by that fan-out entry's own loop iteration
-  for a row stop, so a row can only ever stop the entry the user aimed at.
+  for a row stop, so a row can only ever stop the entry the user aimed at. The
+  whole-load latch never outlives its load: `startNext` clears it before the
+  next request, whichever way the previous one ended.
 - Keep commits this load's partial data (on a reload, the partial refill replaces
   the prior data).
 - Discard means *as if this load had never run*, so what it leaves behind is
