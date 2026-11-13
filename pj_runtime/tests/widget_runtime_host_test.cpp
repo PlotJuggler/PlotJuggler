@@ -571,7 +571,7 @@ class TextLogParser : public MessageParserPluginBase {
       log.timestamp_ns = ts;
       log.level = sdk::Log::Level::kWarning;
       log.message = text;
-      log.name = "node";
+      log.source = "node";
       log.category = "motion";
       return sdk::ObjectRecord{ts, sdk::BuiltinObject{log}};
     };
