@@ -146,14 +146,7 @@ void GridMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
 
     const glm::mat4 model_f =
         relativeModel(admitted.fixed_from_source.matrix() * poseTransform(grid.origin).matrix(), frame.render_origin);
-    // An auto range with no finite sample collapses to lo == hi: the shader then
-    // paints the LUT midpoint instead of dividing by zero.
-    float color_lo = static_cast<float>(layer->manualRange().first);
-    float color_hi = static_cast<float>(layer->manualRange().second);
-    if (layer->autoRange()) {
-      color_lo = grid.color_range.valid ? grid.color_range.lo : 0.0F;
-      color_hi = grid.color_range.valid ? grid.color_range.hi : 0.0F;
-    }
+    const auto [color_lo, color_hi] = layer->effectiveRange(grid.color_range);
     const auto opacity = static_cast<float>(layer->opacity());
 
     GridMapUniforms uniforms;

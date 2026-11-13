@@ -132,6 +132,10 @@ QString undisplayableObjectTooltip(sdk::BuiltinObjectType type) {
       return QObject::tr(
           "Incremental map update, applied automatically to its occupancy grid. "
           "It cannot be displayed on its own.");
+    case sdk::BuiltinObjectType::kMeshMapUpdate:
+      return QObject::tr(
+          "Incremental mesh map update, applied automatically to its mesh map. "
+          "It cannot be displayed on its own.");
     default:
       return QObject::tr("No view can display this topic type.");
   }

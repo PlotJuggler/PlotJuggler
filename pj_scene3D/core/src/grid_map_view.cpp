@@ -15,20 +15,6 @@ namespace pj::scene3d {
 
 namespace {
 
-void accumulate(FiniteRange& range, float value) {
-  if (!std::isfinite(value)) {
-    return;
-  }
-  if (!range.valid) {
-    range.lo = value;
-    range.hi = value;
-    range.valid = true;
-  } else {
-    range.lo = std::min(range.lo, value);
-    range.hi = std::max(range.hi, value);
-  }
-}
-
 // One element widened to float: a memcpy load on a little-endian host (every PJ
 // target), the byte-assembling readScalarAt otherwise.
 template <typename T>

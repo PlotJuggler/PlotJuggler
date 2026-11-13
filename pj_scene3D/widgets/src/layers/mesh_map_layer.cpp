@@ -19,6 +19,7 @@
 #include "pj_base/builtin/mesh_map_codec.hpp"         // validateMeshMap
 #include "pj_base/builtin/mesh_map_update_codec.hpp"  // validateMeshMapUpdate
 #include "pj_base/time.hpp"                           // PJ::toRaw
+#include "pj_scene3d_core/pose_math.h"                // finitePose
 #include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"  // builtinObjectTypeFor
 #include "pj_scene3d_widgets/resolve_object.h"
@@ -58,7 +59,7 @@ PJ::Range<PJ::Timepoint> MeshMapLayer::timeRange() const {
     // Like OccupancyGridLayer: live updates routinely extend past the last full
     // map, so union their range in, or the scrub clamp would pin the tracker at
     // the last map while updates keep arriving. A geometry-paired topic joins
-    // once one of its updates applied to this map.
+    // once one of its updates applied, and stays joined across later maps.
     if (!topic.by_name && !topic.matched) {
       continue;
     }
@@ -84,8 +85,8 @@ uint64_t MeshMapLayer::renderKey(PJ::Timepoint time) const {
   const PJ::ObjectStore* store = ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr;
   uint64_t key = 0x51ed2701f3a5c9b7ULL ^ PJ::latestEntryRenderKey(store, topic_id_, time);
   if (store != nullptr && !update_topics_.empty()) {
-    // The highest ARRIVAL UIDs at or before the time, as OccupancyGridLayer: a
-    // late update with an older stamp must still break the repaint coalescing gate.
+    // The set of updates at or before the time (updateKey()): a late update with
+    // an older stamp must still break the repaint coalescing gate.
     const std::uint64_t update_uid = updateKey(PJ::toRaw(time));
     key ^= update_uid + 0x9e3779b97f4a7c15ULL + (key << 6U) + (key >> 2U);
   }
@@ -121,9 +122,9 @@ bool MeshMapLayer::xmlLoadState(const QDomElement& element) {
   // The request is restored verbatim: a missing channel falls back at render
   // time and the request is honoured again once a map carrying it arrives.
   setColorBy(element.attribute(u"color_by"_s));
-  setColormap(coloring->colormap);
-  setAutoRange(coloring->auto_range);
-  setManualRange(coloring->range_lo, coloring->range_hi);
+  setColormap(coloring->colormap());
+  setAutoRange(coloring->autoRange());
+  setManualRange(coloring->manualRange().first, coloring->manualRange().second);
   setLighting(lighting);
   setOpacity(opacity);
   setShowLinks(links);
@@ -160,7 +161,7 @@ void MeshMapLayer::detach() {
   clearStaged();
   resetStreamingState();
   update_topics_.clear();
-  known_topic_count_ = 0;
+  known_topics_.clear();
   ctx_ = {};
 }
 
@@ -169,12 +170,14 @@ void MeshMapLayer::resetStreamingState() {
   base_uid_ = {};
   base_timestamp_ = 0;
   applied_until_ = 0;
+  // The pairings go only with the topic's history: a new dataset, a new attach.
   for (UpdateTopic& topic : update_topics_) {
     topic.applied_max_uid = 0;
     topic.matched = false;
   }
   staged_update_key_ = 0;
   staged_base_uid_ = {};
+  base_refused_ = false;
   colors_dirty_ = true;
   bounds_.reset();
   source_frame_.clear();
@@ -205,13 +208,11 @@ bool MeshMapLayer::bootstrap() {
   if (!first.has_value() || first->payload.bytes.empty()) {
     return false;
   }
-  if (!loadBase(*first)) {
-    return false;
-  }
-  return true;
+  return loadBase(*first);
 }
 
 bool MeshMapLayer::loadBase(const PJ::ResolvedObjectEntry& entry) {
+  ++base_decode_count_;
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kMeshMap, entry.timestamp, entry.payload);
   if (!obj.has_value()) {
@@ -226,6 +227,10 @@ bool MeshMapLayer::loadBase(const PJ::ResolvedObjectEntry& entry) {
   // Wire layouts are untrusted until validated, whichever route decoded them.
   if (const auto valid = PJ::validateMeshMap(*mesh); !valid) {
     base_warning_ = tr("Invalid mesh map: %1").arg(QString::fromStdString(valid.error()));
+    return false;
+  }
+  if (!finitePose(mesh->origin)) {
+    base_warning_ = tr("Mesh map has a non-finite origin pose");
     return false;
   }
   if (mesh->face_count > kMaxRenderableMeshMapFaces) {
@@ -252,14 +257,14 @@ void MeshMapLayer::refreshUpdateTopics() {
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
   const auto& descriptor = store.descriptor(topic_id_);
-  const auto topics = store.listTopics(descriptor.dataset_id);
-  if (topics.size() == known_topic_count_) {
+  auto topics = store.listTopics(descriptor.dataset_id);
+  if (topics == known_topics_) {
     return;  // the common case: nothing new in the dataset
   }
-  known_topic_count_ = topics.size();
+  known_topics_ = std::move(topics);
   const auto by_name = store.findTopic(descriptor.dataset_id, descriptor.topic_name + "_updates");
   std::vector<UpdateTopic> next;
-  for (const PJ::ObjectTopicId candidate : topics) {
+  for (const PJ::ObjectTopicId candidate : known_topics_) {
     const bool sibling = by_name.has_value() && candidate == *by_name;
     if (!sibling && builtinObjectTypeFor(store.descriptor(candidate)) != PJ::sdk::BuiltinObjectType::kMeshMapUpdate) {
       continue;
@@ -271,7 +276,10 @@ void MeshMapLayer::refreshUpdateTopics() {
     topic.by_name = sibling;
     next.push_back(topic);
   }
-  if (next.size() != update_topics_.size()) {
+  const bool same_topics = std::equal(
+      next.begin(), next.end(), update_topics_.begin(), update_topics_.end(),
+      [](const UpdateTopic& a, const UpdateTopic& b) { return a.id == b.id; });
+  if (!same_topics) {
     state_.reset();  // a new update topic may hold updates inside the applied window: rebuild
   }
   update_topics_ = std::move(next);
@@ -282,19 +290,55 @@ std::uint64_t MeshMapLayer::updateKey(int64_t time_ns) const {
     return 0;
   }
   const PJ::ObjectStore& store = ctx_.session->objectStore();
+  // The highest arrival UID alone does not identify the set of updates at or
+  // before the time when arrival and stamp order differ (update@300, then
+  // update@200: the same maximum at 250 and at 350); the latest-by-stamp entry
+  // tells those prefixes apart.
   std::uint64_t key = 0;
   for (const UpdateTopic& topic : update_topics_) {
+    const auto latest = store.latestEntryIdAt(topic.id, time_ns);
     key = (key * 0x100000001b3ULL) ^ store.maxUidAtOrBefore(topic.id, time_ns).value;
+    key = (key * 0x100000001b3ULL) ^ (latest.has_value() ? latest->uid.value : 0);
   }
   return key;
 }
 
-bool MeshMapLayer::lateUpdateArrived() const {
-  const PJ::ObjectStore& store = ctx_.session->objectStore();
-  return std::any_of(update_topics_.begin(), update_topics_.end(), [&](const UpdateTopic& topic) {
+bool MeshMapLayer::lateUpdateArrived() {
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  for (UpdateTopic& topic : update_topics_) {
     const auto oldest = store.oldestArrivalAfter(topic.id, PJ::SequentialUID{topic.applied_max_uid});
-    return oldest.has_value() && *oldest <= applied_until_;
-  });
+    if (!oldest.has_value() || *oldest > applied_until_) {
+      continue;
+    }
+    if (topic.by_name || topic.matched) {
+      return true;
+    }
+    // A topic not paired yet: rebuild only for a late update naming this map's
+    // geometry, so another mesh's late updates leave this layer alone. Its first
+    // matching update is routinely late on a live source.
+    if (state_->geometry_id.empty()) {
+      continue;  // only the sibling applies to a map with no geometry id
+    }
+    const PJ::SequentialUID cursor = store.maxUidAtOrBefore(topic.id, applied_until_);
+    const auto binding = ctx_.session->parserBindingForObjectTopic(topic.id);
+    for (const auto& ref : store.rangeByTime(topic.id, std::numeric_limits<PJ::Timestamp>::min(), applied_until_)) {
+      if (ref.uid.value <= topic.applied_max_uid) {
+        continue;
+      }
+      auto entry = store.at(topic.id, ref.uid);
+      if (!entry.has_value() || entry->payload.bytes.empty()) {
+        continue;
+      }
+      auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kMeshMapUpdate, entry->timestamp, entry->payload);
+      const auto* update = obj.has_value() ? obj->object.get<PJ::sdk::MeshMapUpdate>() : nullptr;
+      if (update != nullptr && update->geometry_id == state_->geometry_id) {
+        return true;
+      }
+    }
+    // None was ours: they are not examined again.
+    topic.applied_max_uid = std::max(topic.applied_max_uid, cursor.value);
+  }
+  return false;
 }
 
 int MeshMapLayer::applyUpdates(int64_t from, int64_t to) {
@@ -318,13 +362,19 @@ int MeshMapLayer::applyUpdates(int64_t from, int64_t to) {
   });
 
   int applied = 0;
-  uint32_t skipped_records = 0;
+  uint32_t skipped_indices = 0;
   uint32_t skipped_patches = 0;
   int refused = 0;
+  int lost = 0;
   QString decode_error;
   for (const Pending& item : pending) {
     UpdateTopic& topic = update_topics_[item.topic];
     auto entry = store.at(topic.id, item.ref.uid);
+    if (entry.has_value() && entry->fetch_failed) {
+      // Permanent: the applied cursor moves past it, so playback never re-reads it.
+      lost += topic.by_name || topic.matched ? 1 : 0;
+      continue;
+    }
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       continue;  // evicted between the snapshot and the resolve, or a lost re-read
     }
@@ -349,11 +399,14 @@ int MeshMapLayer::applyUpdates(int64_t from, int64_t to) {
       continue;
     }
     topic.matched = true;
-    skipped_records += result.skipped_records;
+    skipped_indices += result.skipped_indices;
     skipped_patches += result.skipped_patches;
     ++applied;
   }
   QStringList warnings;
+  if (lost > 0) {
+    warnings << tr("%n mesh map update(s) lost: source re-read failed", nullptr, lost);
+  }
   if (refused > 0) {
     warnings
         << (decode_error.isEmpty() ? tr("%n mesh map update(s) for another geometry were skipped", nullptr, refused)
@@ -364,10 +417,10 @@ int MeshMapLayer::applyUpdates(int64_t from, int64_t to) {
         "%n update patch(es) did not fit the map and were skipped", nullptr,
         static_cast<int>(std::min<uint32_t>(skipped_patches, std::numeric_limits<int>::max())));
   }
-  if (skipped_records > 0) {
+  if (skipped_indices > 0) {
     warnings << tr(
-        "%n update record(s) named elements the map does not have", nullptr,
-        static_cast<int>(std::min<uint32_t>(skipped_records, std::numeric_limits<int>::max())));
+        "%n sparse update index(es) named elements the map does not have", nullptr,
+        static_cast<int>(std::min<uint32_t>(skipped_indices, std::numeric_limits<int>::max())));
   }
   if (!warnings.isEmpty()) {
     update_warning_ = warnings.join(u"; "_s);
@@ -406,21 +459,25 @@ void MeshMapLayer::renderAt(int64_t time_ns) {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   const auto base_id = store.latestEntryIdAt(topic_id_, time_ns);
   const std::uint64_t update_key = updateKey(time_ns);
-  // Metadata-first gate: same map, same latest updates, nothing re-coloured.
-  if (base_id.has_value() && base_id->uid == staged_base_uid_ && update_key == staged_update_key_ && !colors_dirty_ &&
-      staged_mesh_.has_value()) {
+  // Metadata-first gate: same map, same updates, and either nothing to re-colour
+  // or a map already refused (its warning stays up; decoding it again would only
+  // refuse it again).
+  if (base_id.has_value() && base_id->uid == staged_base_uid_ && update_key == staged_update_key_ &&
+      (base_refused_ || (!colors_dirty_ && staged_mesh_.has_value()))) {
     return;
   }
   auto base = base_id.has_value() ? store.latestAt(topic_id_, time_ns) : std::nullopt;
   if (!base.has_value() || base->payload.bytes.empty()) {
     clearStaged();
     staged_base_uid_ = {};
+    base_refused_ = false;
     setBounds(std::nullopt);
     setDataWarning(QString());
     return;
   }
 
-  bool geometry_changed = false;
+  // The staged positions stay valid while the map entry is the same one.
+  const bool geometry_changed = !staged_mesh_.has_value() || base->sequential_uid != staged_base_uid_;
   const bool rewind = time_ns < applied_until_;
   // A late update stamped at or before what was already applied invalidates the
   // incremental state as surely as a rewind does.
@@ -432,39 +489,52 @@ void MeshMapLayer::renderAt(int64_t time_ns) {
       base_uid_ = base->sequential_uid;
       staged_base_uid_ = base->sequential_uid;
       staged_update_key_ = update_key;
+      base_refused_ = true;
       clearStaged();
       setBounds(std::nullopt);
       setDataWarning(base_warning_);
       return;
     }
+    base_refused_ = false;
     base_uid_ = base->sequential_uid;
     base_timestamp_ = base->timestamp;
     // Updates stamped with the map itself apply too: rangeByTime's lower bound is exclusive.
     applied_until_ = base_timestamp_ - 1;
+    // `matched` survives: a topic paired with this map's geometry still is, and
+    // forgetting it would drop its later updates from timeRange() until one
+    // applied, which the scrub clamp then never lets happen.
     for (UpdateTopic& topic : update_topics_) {
       topic.applied_max_uid = 0;
-      topic.matched = false;
     }
-    geometry_changed = true;
     colors_dirty_ = true;
     ++rebuild_count_;
     setBounds(meshMapBounds(*state_));
   }
 
-  if (time_ns > applied_until_ && applyUpdates(applied_until_, time_ns) > 0) {
-    colors_dirty_ = true;
-    resolveColorSource();  // an update may add a channel
-  }
   if (time_ns > applied_until_) {
+    // Cursors before the updates are read (as OccupancyGridLayer): an entry that
+    // lands meanwhile keeps a UID above its cursor and is examined next tick,
+    // never counted as applied without having been.
+    std::vector<std::uint64_t> cursors;
+    cursors.reserve(update_topics_.size());
+    for (const UpdateTopic& topic : update_topics_) {
+      cursors.push_back(store.maxUidAtOrBefore(topic.id, time_ns).value);
+    }
+    if (applyUpdates(applied_until_, time_ns) > 0) {
+      colors_dirty_ = true;
+      resolveColorSource();  // an update may add a channel
+    }
     applied_until_ = time_ns;
-    for (UpdateTopic& topic : update_topics_) {
-      topic.applied_max_uid = store.maxUidAtOrBefore(topic.id, time_ns).value;
+    for (size_t i = 0; i < update_topics_.size(); ++i) {
+      update_topics_[i].applied_max_uid = cursors[i];
     }
   }
 
   staged_base_uid_ = base_uid_;
   staged_update_key_ = update_key;
-  stage(geometry_changed);
+  if (geometry_changed || colors_dirty_) {
+    stage(geometry_changed);
+  }
   QStringList warnings;
   for (const QString& warning : {base_warning_, color_warning_, update_warning_}) {
     if (!warning.isEmpty()) {
@@ -479,7 +549,7 @@ void MeshMapLayer::stage(bool geometry_changed) {
     return;
   }
   MeshMapUpload upload = staged_mesh_.has_value() ? std::move(*staged_mesh_) : MeshMapUpload{};
-  if (geometry_changed || !staged_mesh_.has_value() || upload.positions.empty()) {
+  if (geometry_changed || upload.positions.empty()) {
     fillMeshMapGeometry(*state_, upload);
     upload.geometry_revision = ++geometry_revision_;
   }
@@ -542,10 +612,7 @@ void MeshMapLayer::prepareForRender() {
 }
 
 std::optional<AABB> MeshMapLayer::worldBounds() const {
-  if (!bounds_.has_value() || !bounds_->valid) {
-    return std::nullopt;
-  }
-  return bounds_;
+  return bounds_;  // setBounds() keeps only valid boxes
 }
 
 void MeshMapLayer::setColorBy(const QString& source) {
@@ -562,25 +629,24 @@ void MeshMapLayer::setColorBy(const QString& source) {
 }
 
 void MeshMapLayer::setColormap(PJ::Colormap colormap) {
-  if (!coloring_.setColormap(colormap)) {
-    return;
+  if (coloring_.setColormap(colormap)) {
+    coloringChanged();
   }
-  emit configurationChanged();
-  emit repaintRequested();
 }
 
 void MeshMapLayer::setAutoRange(bool on) {
-  if (!coloring_.setAutoRange(on)) {
-    return;
+  if (coloring_.setAutoRange(on)) {
+    coloringChanged();
   }
-  emit configurationChanged();
-  emit repaintRequested();
 }
 
 void MeshMapLayer::setManualRange(double lo, double hi) {
-  if (!coloring_.setManualRange(lo, hi)) {
-    return;
+  if (coloring_.setManualRange(lo, hi)) {
+    coloringChanged();
   }
+}
+
+void MeshMapLayer::coloringChanged() {
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -665,11 +731,7 @@ QWidget* MeshMapLayer::createConfigWidget(QWidget* parent) {
     }
   });
 
-  coloring_.addConfigRows(
-      form, container, this, u"mesh_map"_s,
-      {.colormap = [this](PJ::Colormap colormap) { setColormap(colormap); },
-       .auto_range = [this](bool on) { setAutoRange(on); },
-       .manual_range = [this](double lo, double hi) { setManualRange(lo, hi); }});
+  coloring_.addConfigRows(form, container, this, u"mesh_map"_s, [this] { coloringChanged(); });
 
   auto* lighting_toggle = new PJ::ToggleSwitch(container);
   lighting_toggle->setChecked(lighting_, /*animate=*/false);

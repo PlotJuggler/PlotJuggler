@@ -87,6 +87,10 @@ class MeshMapLayer : public Scene3DLayer {
   [[nodiscard]] std::pair<double, double> manualRange() const {
     return coloring_.manualRange();
   }
+  // The range the colormap maps for `data` (ChannelColoring::effectiveRange).
+  [[nodiscard]] std::pair<float, float> effectiveRange(const FiniteRange& data) const {
+    return coloring_.effectiveRange(data);
+  }
   [[nodiscard]] bool lighting() const {
     return lighting_;
   }
@@ -126,6 +130,9 @@ class MeshMapLayer : public Scene3DLayer {
   [[nodiscard]] int rebuildCountForTest() const {
     return rebuild_count_;
   }
+  [[nodiscard]] int baseDecodeCountForTest() const {
+    return base_decode_count_;
+  }
   [[nodiscard]] int appliedUpdateCountForTest() const {
     return applied_update_count_;
   }
@@ -143,22 +150,29 @@ class MeshMapLayer : public Scene3DLayer {
   // Decode the first map at attach to learn the source frame + channel list.
   bool bootstrap();
   // Bring the state to `time_ns` and stage the upload. Cheap no-op when the map
-  // and the latest update at that time are the ones already staged.
+  // and the updates at that time are the ones already staged, or that map was
+  // refused. Re-stages only when the geometry or the colours changed.
   void renderAt(int64_t time_ns);
   // (Re)decodes the map at `entry` into state_; false (warning set) when refused.
   bool loadBase(const PJ::ResolvedObjectEntry& entry);
   // Applies the updates of every update topic with stamps in (from, to], in
   // time order. Returns the number applied; sets a soft warning for skipped ones.
   int applyUpdates(int64_t from, int64_t to);
-  // Re-lists the dataset's MeshMapUpdate topics when its topic count changed.
+  // Re-lists the dataset's MeshMapUpdate topics when its topic list changed.
   void refreshUpdateTopics();
-  // The highest update arrival UID at or before `time_ns`, folded over the topics.
+  // Identifies the set of updates at or before `time_ns`: per topic, the highest
+  // arrival UID and the latest-by-stamp entry's UID, folded.
   [[nodiscard]] std::uint64_t updateKey(int64_t time_ns) const;
-  // True when an update arrived, stamped at or before what was already applied.
-  [[nodiscard]] bool lateUpdateArrived() const;
+  // True when an update for this map arrived stamped at or before what was
+  // already applied: any late one on a paired topic (the sibling or `matched`),
+  // one naming this geometry on another topic (decoded to tell; the topic's
+  // cursor then moves past those that do not).
+  [[nodiscard]] bool lateUpdateArrived();
   // Picks the effective colour source from the request and the state's channels.
   void resolveColorSource();
   void stage(bool geometry_changed);
+  // A colormap or range edit: persist and repaint (uniforms only, no re-stage).
+  void coloringChanged();
   void clearStaged();
   void resetStreamingState();
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
@@ -170,7 +184,8 @@ class MeshMapLayer : public Scene3DLayer {
   QMetaObject::Connection reload_connection_;
   // A MeshMapUpdate topic of the dataset. `by_name` is the `<topic>_updates`
   // sibling, which also applies updates carrying no geometry_id; `matched` is set
-  // once one of its updates applied (its time range then joins the layer's).
+  // once one of its updates applied (its time range then joins the layer's) and
+  // is cleared only with the streaming state (attach, dataset replacement).
   struct UpdateTopic {
     PJ::ObjectTopicId id;
     bool by_name = false;
@@ -178,7 +193,7 @@ class MeshMapLayer : public Scene3DLayer {
     std::uint64_t applied_max_uid = 0;  // newest arrival at or before applied_until_ when applied
   };
   std::vector<UpdateTopic> update_topics_;
-  size_t known_topic_count_ = 0;
+  std::vector<PJ::ObjectTopicId> known_topics_;  // the dataset's topics when update_topics_ was listed
 
   // The decoded map and what has been applied to it. state_ owns its arrays (no
   // anchor into a plugin DSO), so no binding keepalive is needed.
@@ -188,6 +203,7 @@ class MeshMapLayer : public Scene3DLayer {
   int64_t applied_until_ = 0;  // updates with stamps <= this are in state_
   std::uint64_t staged_update_key_ = 0;
   PJ::SequentialUID staged_base_uid_{};
+  bool base_refused_ = false;  // the map at staged_base_uid_ was refused (base_warning_ says why)
   bool colors_dirty_ = true;
   std::uint64_t geometry_revision_ = 0;
   std::optional<AABB> bounds_;
@@ -200,6 +216,7 @@ class MeshMapLayer : public Scene3DLayer {
   bool tracker_dirty_ = false;
   bool visible_ = true;
   int rebuild_count_ = 0;
+  int base_decode_count_ = 0;  // loadBase() calls
   int applied_update_count_ = 0;
 
   std::string color_request_;

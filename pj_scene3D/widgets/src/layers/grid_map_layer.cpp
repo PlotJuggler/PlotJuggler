@@ -113,9 +113,9 @@ bool GridMapLayer::xmlLoadState(const QDomElement& element) {
   // the request is honoured again once a sample carrying it arrives.
   setElevationField(element.attribute(u"elevation_field"_s));
   setColorField(element.attribute(u"color_field"_s));
-  setColormap(coloring->colormap);
-  setAutoRange(coloring->auto_range);
-  setManualRange(coloring->range_lo, coloring->range_hi);
+  setColormap(coloring->colormap());
+  setAutoRange(coloring->autoRange());
+  setManualRange(coloring->manualRange().first, coloring->manualRange().second);
   setLighting(lighting);
   setOpacity(opacity);
   pushDisplayParamsToPass();
@@ -448,27 +448,24 @@ void GridMapLayer::setColorField(const QString& field_name) {
 }
 
 void GridMapLayer::setColormap(PJ::Colormap colormap) {
-  if (!coloring_.setColormap(colormap)) {
-    return;
+  if (coloring_.setColormap(colormap)) {
+    coloringChanged();
   }
-  pushDisplayParamsToPass();
-  emit configurationChanged();
-  emit repaintRequested();
 }
 
 void GridMapLayer::setAutoRange(bool on) {
-  if (!coloring_.setAutoRange(on)) {
-    return;
+  if (coloring_.setAutoRange(on)) {
+    coloringChanged();
   }
-  pushDisplayParamsToPass();
-  emit configurationChanged();
-  emit repaintRequested();
 }
 
 void GridMapLayer::setManualRange(double lo, double hi) {
-  if (!coloring_.setManualRange(lo, hi)) {
-    return;
+  if (coloring_.setManualRange(lo, hi)) {
+    coloringChanged();
   }
+}
+
+void GridMapLayer::coloringChanged() {
   pushDisplayParamsToPass();
   emit configurationChanged();
   emit repaintRequested();
@@ -549,11 +546,7 @@ QWidget* GridMapLayer::createConfigWidget(QWidget* parent) {
       tr("Color by:"), u"grid_map_color_field"_s, &resolved_color_, &GridMapLayer::setColorField,
       /*with_none=*/false);
 
-  coloring_.addConfigRows(
-      form, container, this, u"grid_map"_s,
-      {.colormap = [this](PJ::Colormap colormap) { setColormap(colormap); },
-       .auto_range = [this](bool on) { setAutoRange(on); },
-       .manual_range = [this](double lo, double hi) { setManualRange(lo, hi); }});
+  coloring_.addConfigRows(form, container, this, u"grid_map"_s, [this] { coloringChanged(); });
 
   auto* lighting_toggle = new PJ::ToggleSwitch(container);
   lighting_toggle->setChecked(lighting_, /*animate=*/false);

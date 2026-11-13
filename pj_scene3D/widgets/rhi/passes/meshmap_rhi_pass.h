@@ -30,13 +30,15 @@ class MeshMapRhiPass {
     MeshMapLayer* layer = nullptr;
     bool lines = false;  ///< the link segments, not the surface
     quint32 vertex_count = 0;
-    DrawClass draw_class = DrawClass::kOpaque;  ///< translucent below full layer opacity
+    /// Translucent below full layer opacity; the surface also when a colour's alpha is below 255.
+    DrawClass draw_class = DrawClass::kOpaque;
   };
 
   /// Registers the pipelines; false leaves the pass unusable.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
-    return opaque_pipeline_ != nullptr && translucent_pipeline_ != nullptr && line_pipeline_ != nullptr;
+    return opaque_pipeline_ != nullptr && translucent_pipeline_ != nullptr && line_pipeline_ != nullptr &&
+           translucent_line_pipeline_ != nullptr;
   }
   /// Adopts the view's mesh-map layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<MeshMapLayer*>& layers);
@@ -90,27 +92,28 @@ class MeshMapRhiPass {
     std::uint64_t uploaded_revision = ~std::uint64_t{0};
     quint32 surface_vertices = 0;
     quint32 link_vertices = 0;
-    bool attributes_are_colors = false;
     bool attributes_in_use = false;  ///< `attributes` holds this mesh's colours (not solid mode)
   };
 
   bool ensureLayerGpu(QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu);
-  void upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu);
+  /// Uploads what changed since the last frame; false (render failure noted, the
+  /// layer's buffers released, no upload recorded) when a buffer cannot be allocated.
+  bool upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu);
   QRhiShaderResourceBindings* createLayerBindings(QRhi* rhi, QRhiBuffer* uniforms) const;
   static void releaseLayerGpu(LayerGpu& gpu);
 
   QRhiBuffer* render_mode_uniforms_ = nullptr;  // view-owned
   QRhiBuffer* layout_uniform_buffer_ = nullptr;
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
-  const ScenePipeline* opaque_pipeline_ = nullptr;       // writes depth
-  const ScenePipeline* translucent_pipeline_ = nullptr;  // depth test only
-  const ScenePipeline* line_pipeline_ = nullptr;         // link segments
+  const ScenePipeline* opaque_pipeline_ = nullptr;            // writes depth
+  const ScenePipeline* translucent_pipeline_ = nullptr;       // depth test only
+  const ScenePipeline* line_pipeline_ = nullptr;              // link segments
+  const ScenePipeline* translucent_line_pipeline_ = nullptr;  // link segments, depth test only
 
   std::vector<MeshMapLayer*> layers_;
   std::unordered_map<MeshMapLayer*, LayerGpu> layer_gpu_;
   std::vector<PlacedLayer<MeshMapLayer>> admitted_;
   std::vector<Draw> draws_;
-  std::vector<float> value_scratch_;  // channel values with "no data" as the shader's sentinel
 
   int last_layer_count_ = 0;
   int last_vertex_count_ = 0;

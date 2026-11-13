@@ -16,6 +16,8 @@
 #include <QString>
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,6 +29,7 @@
 #include "pj_base/builtin/mesh_map_codec.hpp"
 #include "pj_base/builtin/mesh_map_update.hpp"
 #include "pj_base/builtin/mesh_map_update_codec.hpp"
+#include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 using namespace Qt::StringLiterals;
@@ -61,8 +64,10 @@ MeshChannel channel(std::string name, Target target, Datatype datatype, PJ::Span
   return out;
 }
 
-// A unit square of two faces, a float `cost` face channel and an RGB vertex colour.
-std::vector<uint8_t> serializedMap(PJ::Timestamp ts, const std::string& geometry_id) {
+// A unit square of two faces, a float `cost` face channel and an RGB vertex
+// colour; `tweak` edits the map before it is serialized.
+std::vector<uint8_t> serializedMap(
+    PJ::Timestamp ts, const std::string& geometry_id, const std::function<void(MeshMap&)>& tweak = {}) {
   std::vector<std::vector<uint8_t>> storage;
   storage.reserve(8);
   MeshMap mesh;
@@ -79,6 +84,9 @@ std::vector<uint8_t> serializedMap(PJ::Timestamp ts, const std::string& geometry
       channel("green", Target::kVertex, Datatype::kUint8, keep(storage, std::vector<uint8_t>{0, 0, 0, 0})),
       channel("blue", Target::kVertex, Datatype::kUint8, keep(storage, std::vector<uint8_t>{0, 0, 0, 0})),
   };
+  if (tweak) {
+    tweak(mesh);
+  }
   return PJ::serializeMeshMap(mesh);
 }
 
@@ -105,8 +113,9 @@ struct Rig {
   Rig() {
     ctx.session = &session;
   }
-  void pushMap(PJ::Timestamp ts, const std::string& geometry_id = "1") {
-    ASSERT_TRUE(session.objectStore().pushOwned(topic_id, ts, serializedMap(ts, geometry_id)).has_value());
+  void pushMap(
+      PJ::Timestamp ts, const std::string& geometry_id = "1", const std::function<void(MeshMap&)>& tweak = {}) {
+    ASSERT_TRUE(session.objectStore().pushOwned(topic_id, ts, serializedMap(ts, geometry_id, tweak)).has_value());
   }
   void pushUpdate(
       PJ::Timestamp ts, uint32_t face, float cost, const std::string& geometry_id = "1",
@@ -188,6 +197,120 @@ TEST(MeshMapLayer, ALateUpdateWithAnOlderStampRebuilds) {
   rig.layer.renderAtForTest(400);
   EXPECT_FLOAT_EQ(rig.stagedCost(0), 5.0F);
   EXPECT_FLOAT_EQ(rig.stagedCost(1), 9.0F);
+
+  // The newest arrival (update@200) is the highest UID at 250 and at 350 alike:
+  // only the set of updates at or before each time tells them apart.
+  rig.layer.renderAtForTest(250);
+  EXPECT_FLOAT_EQ(rig.stagedCost(0), 5.0F);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 3.0F) << "update@300 still shown at 250";
+  rig.layer.renderAtForTest(350);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 9.0F) << "update@300 never applied at 350";
+  rig.layer.renderAtForTest(250);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 3.0F) << "scrubbing back kept update@300";
+}
+
+// Two maps of one geometry and a geometry-paired update after each: the pairing
+// outlives the rebuild from the second map, so the scrub range still reaches the
+// last update.
+TEST(MeshMapLayer, APairedTopicKeepsItsTimeRangeAcrossMaps) {
+  Rig rig;
+  const PJ::ObjectTopicId costs = rig.registerUpdateTopic("/mesh/costs");
+  rig.pushMap(100);
+  rig.pushMap(200);
+  rig.pushUpdate(150, 0, 7.0F, "1", costs);
+  rig.pushUpdate(250, 1, 8.0F, "1", costs);
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(150);
+  EXPECT_FLOAT_EQ(rig.stagedCost(0), 7.0F);
+  rig.layer.renderAtForTest(200);
+  EXPECT_EQ(PJ::toRaw(rig.layer.timeRange().max), 250) << "the tracker would be clamped at the last map";
+  rig.layer.renderAtForTest(250);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 8.0F);
+}
+
+// A dataset that drops one update topic and gains another keeps its topic count:
+// the new one must still be paired.
+TEST(MeshMapLayer, AReplacedUpdateTopicIsPaired) {
+  Rig rig;
+  const PJ::ObjectTopicId old_costs = rig.registerUpdateTopic("/mesh/old_costs");
+  rig.pushMap(100);
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(100);
+  rig.session.objectStore().removeTopic(old_costs);
+  const PJ::ObjectTopicId new_costs = rig.registerUpdateTopic("/mesh/new_costs");
+  ASSERT_NE(new_costs, old_costs);
+  rig.pushUpdate(200, 0, 7.0F, "1", new_costs);
+  rig.layer.renderAtForTest(250);
+  EXPECT_FLOAT_EQ(rig.stagedCost(0), 7.0F);
+}
+
+// Rewinding on the same map rebuilds the channels but not the geometry.
+TEST(MeshMapLayer, ARewindOnTheSameMapKeepsTheGeometry) {
+  Rig rig;
+  rig.pushMap(100);
+  rig.pushUpdate(200, 0, 7.0F);
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(250);
+  ASSERT_NE(rig.layer.stagedMeshForTest(), nullptr);
+  const auto geometry = rig.layer.stagedMeshForTest()->geometry_revision;
+  const int rebuilds = rig.layer.rebuildCountForTest();
+  rig.layer.renderAtForTest(150);
+  EXPECT_EQ(rig.layer.rebuildCountForTest(), rebuilds + 1);
+  EXPECT_FLOAT_EQ(rig.stagedCost(0), 1.0F);
+  EXPECT_EQ(rig.layer.stagedMeshForTest()->geometry_revision, geometry) << "the positions were re-uploaded";
+}
+
+// Updates for another mesh, on a topic this map never paired with, neither
+// rebuild nor re-stage it, whether they arrive in order or late; a late update
+// that does name this geometry still applies.
+TEST(MeshMapLayer, AnotherMeshsUpdatesLeaveThisLayerAlone) {
+  Rig rig;
+  const PJ::ObjectTopicId other = rig.registerUpdateTopic("/other_mesh/costs");
+  rig.pushMap(100);
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(300);
+  const int rebuilds = rig.layer.rebuildCountForTest();
+  const auto revision = rig.layer.stagedRevision();
+
+  rig.pushUpdate(400, 0, 7.0F, "2", other);  // in order
+  rig.layer.renderAtForTest(500);
+  EXPECT_EQ(rig.layer.stagedRevision(), revision) << "re-staged for another mesh's update";
+  rig.pushUpdate(200, 0, 7.0F, "2", other);  // late
+  rig.layer.renderAtForTest(500);
+  EXPECT_EQ(rig.layer.rebuildCountForTest(), rebuilds) << "rebuilt for another mesh's late update";
+  EXPECT_EQ(rig.layer.stagedRevision(), revision);
+  EXPECT_FLOAT_EQ(rig.stagedCost(0), 1.0F);
+
+  rig.pushUpdate(250, 1, 6.0F, "1", other);  // late, and this map's
+  rig.layer.renderAtForTest(500);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 6.0F);
+}
+
+// A refused map is decoded once per (map, updates) state, not on every tick, and
+// keeps its warning.
+TEST(MeshMapLayer, ARefusedMapIsNotDecodedAgain) {
+  Rig rig;
+  rig.pushMap(100, "1", [](MeshMap& mesh) { mesh.face_count = 3; });  // fewer indices than faces: invalid
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(100);
+  EXPECT_EQ(rig.layer.stagedMeshForTest(), nullptr);
+  EXPECT_FALSE(rig.layer.statusWarning().isEmpty());
+  const int decodes = rig.layer.baseDecodeCountForTest();
+  rig.layer.renderAtForTest(100);
+  rig.layer.renderAtForTest(150);
+  EXPECT_EQ(rig.layer.baseDecodeCountForTest(), decodes);
+  EXPECT_FALSE(rig.layer.statusWarning().isEmpty());
+}
+
+// An origin pose that cannot place the mesh refuses it, as a bad grid origin does.
+TEST(MeshMapLayer, ANonFiniteOriginIsRefused) {
+  Rig rig;
+  rig.pushMap(100, "1", [](MeshMap& mesh) { mesh.origin.position.x = std::numeric_limits<double>::quiet_NaN(); });
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(100);
+  EXPECT_EQ(rig.layer.stagedMeshForTest(), nullptr);
+  EXPECT_FALSE(rig.layer.worldBounds().has_value());
+  EXPECT_FALSE(rig.layer.statusWarning().isEmpty());
 }
 
 TEST(MeshMapLayer, PairsAnyUpdateTopicByGeometryId) {

@@ -16,7 +16,6 @@ if(EMSCRIPTEN)
     src/camera/camera_math.cpp
     src/depth_backproject.cpp
     src/grid_map_view.cpp
-  src/mesh_map_view.cpp
     src/mesh_map_view.cpp
     src/occupancy_grid_reconstructor.cpp
     src/pointcloud_convert.cpp

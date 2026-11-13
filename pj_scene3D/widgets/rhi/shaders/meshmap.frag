@@ -30,8 +30,10 @@ void main() {
     vec3 base;
     if (mode == 0) {
         // A sentinel, not NaN, marks "no data": NaN need not survive attribute
-        // interpolation on every driver.
-        if (abs(channel_value) >= 3.0e38) {
+        // interpolation on every driver. kMeshMapNoDataValue (1e30) leaves
+        // headroom, so perspective-correct interpolation stays finite; data is
+        // clamped to 1e28.
+        if (abs(channel_value) > 1.0e29) {
             base = vec3(0.5);
         } else {
             float span = mm.color_params.y - mm.color_params.x;
@@ -51,7 +53,11 @@ void main() {
         // Flat normal from the screen-space derivatives of the position, faced
         // towards the eye: a navigation surface has no inside, and this holds
         // whatever winding the producer used.
-        vec3 normal = normalize(cross(dFdx(scene_position), dFdy(scene_position)));
+        // A degenerate or sub-pixel triangle has no derivative normal: face the
+        // viewer instead of normalizing zero into NaN.
+        vec3 face = cross(dFdx(scene_position), dFdy(scene_position));
+        float face_length = length(face);
+        vec3 normal = face_length > 1.0e-12 ? face / face_length : mm.view_z.xyz;
         if (dot(normal, mm.eye.xyz - scene_position) < 0.0) {
             normal = -normal;
         }

@@ -91,6 +91,7 @@ the view's context). The straight-alpha blend is `PJ::straightAlphaBlend()`
 | markers | `MarkerRhiPass` | SceneEntities primitives |
 | models | `ModelRhiPass` | every `ModelRenderable`: robot visuals and collisions, SceneEntities models |
 | grid maps | `GridMapRhiPass` | grid-map heightfields |
+| mesh maps | `MeshMapRhiPass` | channel-coloured triangle meshes and their link segments |
 
 Two passes are not layer families: `GridRhiPass` draws the prelude (ground grid,
 TF parent-connection lines) before every layer, and `OverlayRhiPass` draws the
@@ -126,7 +127,7 @@ layer's markers before its models.
 **Families are built on demand.** The base (the uniforms, the shared meshes, the
 grid and the pose pass, which the grid and the TF triads need without any layer)
 is built in `initialize()`. Every other family (points, trails, occupancy,
-voxels, markers, models, grid maps) is built only once a layer of its kind is in
+voxels, markers, models, grid maps, mesh maps) is built only once a layer of its kind is in
 the view (`hasLayers()`): in `initialize()` when it already is, else at the start
 of the first `render()` that has one (`createSceneResources()`, before any pass).
 A family never built has nothing to admit, prepare or draw. Registering a
@@ -195,7 +196,9 @@ order. There is no depth sort: this is not order-independent transparency.
 
 Classification: point clouds are opaque except their faded out-of-range half;
 poses and trails are opaque; occupancy, voxels and grid maps are translucent
-below full layer opacity; marker and model ranges are translucent when they skip
+below full layer opacity; a mesh map's surface and links are translucent below
+full layer opacity, and its surface also when a colour it draws has alpha below
+255; marker and model ranges are translucent when they skip
 depth writes (a translucent cube's edge overlay stays with its fill). A
 translucent layer placed before an opaque one in the dock therefore still blends
 over it. `SceneViewTestAccess::lastSubmittedLayerIds()` reports logical order.
@@ -247,7 +250,7 @@ then turns shadows off (below).
 
 `resolve()` decides one exception centrally: the depth replay never draws with a
 pipeline whose description writes no depth (translucent markers and models,
-occupancy, translucent grid maps, faded points) and returns nullptr, which every
+occupancy, translucent grid and mesh maps, faded points) and returns nullptr, which every
 family's `submit` treats as "skip". The present pass finds the background by
 coverage, so those draws leave none: the pixels they tint over the background
 stay ungraded, and SSAO and EDL never see them. Where the chain resolves its
@@ -415,7 +418,7 @@ depth-only pipeline built against that target and records its prepared casters.
 - **Casters:** model draws only: visual robot links, hidden or not, and
   SceneEntities model primitives; never collisions, which would double-darken
   the silhouette. SceneEntities markers (every primitive kind), points, poses,
-  occupancy, voxels and grid maps do not cast.
+  occupancy, voxels, grid maps and mesh maps do not cast.
 - **Light frustum** (`core/shadow_camera.h`): the model casters' bounds, grown
   by `extendAabbToGroundShadow` to where the shadow lands on the ground (the
   floor never casts, so it is otherwise absent from the bounds), then
@@ -682,6 +685,14 @@ vertices from `gl_VertexIndex`, colormapped in-shader (`colormap.glslinc`), with
 a geometric two-sided test (the normal faces the eye) instead of
 `gl_FrontFacing`, whose winding a backend's clip-space correction can flip.
 
+**Mesh maps (`MeshMapRhiPass`).** The layer stages a de-indexed mesh
+(`prepareForRender()` / `stagedMesh()`); the pass keeps per layer static vertex
+buffers (positions, one 4-byte attribute, link positions and colours) and four
+pipelines: opaque and translucent triangles, opaque and translucent lines. A
+frame allocates every buffer it writes before it records any upload, so a
+failed allocation releases buffers no recorded upload references; the row
+warning clears only after an upload succeeded. See "Mesh-map layer".
+
 **Trails (`TrailRhiPass`).** The screen-space ribbon (`trail.vert`, see "Trail
 layer"): one Static vertex buffer per trail owner, re-uploaded on a rebuild or a
 render-origin change, and a two-block uniform buffer (past and future colour).
@@ -714,7 +725,7 @@ No draw may reference a resource whose `create()` failed. Every `create()` in
 | Base | the view's four uniform buffers, `RhiSharedGeometry`, and each built scene family's `initialize()` (the grid and pose pass at once, the others on their first layer): layout SRBs, samplers, the voxel LUT, occupancy quad and marker unit meshes; a required pipeline when a direct frame creates it (`PipelineFailure::kRequired`) | Failure state (below), the frame that needed it withheld |
 | Optional stage | the HDR chain (targets, samplers, present SRB and pipeline) and the pipelines' HDR/depth-replay variants (`PipelineFailure::kHdrVariant`, the frame that lost one withheld); SSAO; the EDL mask target and the model pass's mask pipelines; the shadow target, bindings, caster and receiver pipelines, material rebinds; `OverlayRhiPass` (corner gizmo, HUD, hover label; without the gizmo's target there is no corner gizmo) | The stage drops and the view renders without it; one warning (logged when the reason changes, shown in the dock label; shadow errors on the caster rows) |
 | Silent optional | the point-list pipelines (registered optional, beside their quads) | The same pixels another way: quads, from the bind that failed on |
-| Per layer / per frame | per-layer uniforms, SRBs, textures, instance and stream buffers of every family; overlay image textures | That layer's (or image's) draw is skipped this frame; occupancy, voxel, grid-map and model rows note a warning |
+| Per layer / per frame | per-layer uniforms, SRBs, textures, instance and stream buffers of every family; overlay image textures | That layer's (or image's) draw is skipped this frame; occupancy, voxel, grid-map, mesh-map and model rows note a warning |
 
 **The failure state.** When `createSceneResources()` fails (in `initialize()`,
 or in `render()` for a family whose first layer came later), or the registry
@@ -1369,8 +1380,14 @@ the browser included.
 
 - **CPU state.** The Qt-free `core/mesh_map_view.{h,cpp}` decodes a validated map
   once into a `MeshMapState`: positions, indices, and every single-component
-  channel widened to float, keyed by target and name, with the channel's integer
-  "no data" value folded into NaN. It owns its arrays: no anchor into the plugin
+  channel keyed by target and name, its values exact as `double` (every
+  supported datatype fits, so category ids above 2^24 stay distinct) with its
+  source datatype, and the channel's "no data" value folded into NaN, compared
+  before any narrowing (a float32 element against the sentinel narrowed to
+  float). float64 positions narrow to float relative to the first finite vertex;
+  that double-precision offset moves into the state's origin
+  (`origin * translate(offset)`), so UTM-scale coordinates keep their
+  centimetres and the bounds (computed in double) their true position. It owns its arrays: no anchor into the plugin
   DSO survives the decode, so no binding keepalive is held. Multi-component
   channels (normals, uvs) are not kept yet. `applyMeshMapUpdate()` writes an
   update's patches into the state: dense patches replace a channel (and must
@@ -1378,7 +1395,7 @@ the browser included.
   the map lacks is created with NaN elsewhere, and an update whose `geometry_id`
   is set and differs is refused whole.
 - **Update topics.** Every `MeshMapUpdate` topic of the dataset is read (found by
-  its `builtin_object_type` metadata, re-listed when the dataset's topic count
+  its `builtin_object_type` metadata, re-listed when the dataset's topic list
   changes). An update applies when its `geometry_id` equals the map's, both set;
   the `<topic>_updates` sibling, OccupancyGridLayer's convention, also applies
   updates without one, and only its decode failures warn (another topic's
@@ -1388,22 +1405,36 @@ the browser included.
   across topics in time order (`ObjectStore::rangeByTime`). Moving forward
   applies only the new window. Moving back before what was applied, a new map, a
   new update topic, or a late update stamped at or before the applied window
-  (`ObjectStore::oldestArrivalAfter` against each topic's newest applied arrival
-  UID) rebuilds from the map. `renderKey()` folds the map's entry and every
-  topic's highest arrival UID at the time, as `OccupancyGridLayer` does;
-  `timeRange()` unions the sibling's range and any topic that has applied.
+  (`ObjectStore::oldestArrivalAfter` against each topic's applied-arrival
+  cursor, taken before the window is read) rebuilds from the map. A late update
+  counts on the sibling and on a topic already paired; on another topic only
+  one naming this map's geometry does (its late entries are decoded to tell),
+  so another mesh's updates neither rebuild nor re-stage this layer. A rebuild
+  on the same map entry re-colours but keeps the uploaded positions. The update
+  fingerprint (`renderKey()` and the layer's own gate) folds, per topic, the
+  highest arrival UID and the latest-by-stamp entry at the time: the maximum
+  alone does not tell apart the update sets at two times when arrival and stamp
+  order differ. `timeRange()` unions the sibling's range and every topic that
+  has applied an update; that pairing outlives rebuilds and new maps and is
+  forgotten only with the streaming state (attach, dataset replacement), or the
+  scrub clamp would pin the tracker at the last map. A refused map (invalid,
+  non-finite `origin`, over the face limit) keeps its warning and is not
+  decoded again until the map or the updates at the time change. An update
+  whose source re-read failed is reported as lost.
 - **Placement** is at the tracker time in the entry clock, like the occupancy
   grid: the drawn mesh is a map plus later updates, with no single stamp. The
   model is `TF(fixed <- frame_id) * origin`.
 - **Colour sources** are channel keys (`face:<name>`, `vertex:<name>`), the
-  vertex colour (`red`/`green`/`blue`[/`alpha`] vertex channels, read at colouring
-  time so updates show) and solid. The default is the first continuous face
+  vertex colour (`red`/`green`/`blue`[/`alpha`] single-component `uint8` vertex
+  channels, read at colouring time so updates show; with another datatype they
+  are ordinary data channels) and solid. The default is the first continuous face
   channel, else the first continuous vertex channel, else the vertex colour,
   else the first categorical channel, else solid: the channel's `ChannelKind`,
   not its name, decides. A continuous channel goes through the shared colormap;
   a categorical or bitmask channel is coloured on the CPU from its categories'
   colours, else a ten-colour qualitative palette (`categoricalColor`), as are
-  link segments by kind.
+  link segments by kind. Coloured by any channel, a face with no data at any
+  corner draws whole as no data.
 - **Geometry and colour on the GPU.** `MeshMapRhiPass` draws de-indexed
   triangles (three vertices per face) from two static vertex buffers: positions,
   uploaded only when the upload's `geometry_revision` changes, and one 4-byte
@@ -1411,16 +1442,26 @@ the browser included.
   channel value (a face channel repeats its value on the three corners and draws
   flat, a vertex channel interpolates) or an RGBA8 colour. Solid mode binds the
   position buffer in both attribute slots, never a colour buffer left from an
-  earlier mesh. "No data" travels as the `FLT_MAX` sentinel (NaN need not survive
-  attribute interpolation) and draws mid grey; a face with no data at any corner
-  is no data at all three, so it never interpolates towards the sentinel. A
-  degenerate range paints the LUT midpoint.
+  earlier mesh. "No data" travels as `kMeshMapNoDataValue` (1e30; NaN need not
+  survive attribute interpolation) and draws mid grey; the shader tests
+  `abs(v) > 1e29` and data values are clamped to `kMeshMapValueLimit` (1e28),
+  so perspective-correct interpolation of the sentinel stays finite and no data
+  value reaches it. A face with no data at any corner is no data at all three,
+  so it never interpolates towards the sentinel. A degenerate range paints the
+  LUT midpoint. (The grid map has no sentinel: its vertex shader drops a
+  triangle touching a NaN cell through a flat validity flag.)
+- **Translucency.** The surface draws in the translucent phase without depth
+  writes below full layer opacity, and also when a colour it draws has alpha
+  below 255 (`MeshMapUpload::translucent`: a vertex `alpha` channel, a category
+  colour); the links draw translucent below full layer opacity, through their
+  own depth-test-only line pipeline.
 - **Shading** is a flat normal from `cross(dFdx(p), dFdy(p))` in the fragment
   shader (WebGL2 has the derivatives; it has no `gl_PrimitiveID`), faced towards
-  the eye, with the grid map's Lambert key + fill weights. Not the model PBR path;
+  the eye; a degenerate or sub-pixel triangle, whose cross product is ~0, takes
+  the view direction instead of a NaN normal, with the grid map's Lambert key + fill weights. Not the model PBR path;
   no shadow cast or receive.
-- **Links** (`MeshFaceLink`) draw as a line list between face centroids through a
-  third pipeline (Lines topology, same shaders, unlit).
+- **Links** (`MeshFaceLink`) draw as a line list between face centroids through
+  the line pipelines (Lines topology, same shaders, unlit).
 - **Config.** Colour source, colormap, auto / manual range (`ChannelColoring`, as
   the grid map), lighting, opacity, links, persisted as `color_by, colormap, auto_range, range_lo, range_hi,
   lighting, opacity, links`. The persisted source is a REQUEST: a missing channel

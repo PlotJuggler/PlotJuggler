@@ -4,10 +4,11 @@
 
 #include <QString>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <utility>
 
-#include "pj_scene3d_core/grid_map_view.h"  // FiniteRange
+#include "pj_scene3d_core/finite_range.h"
 #include "pj_widgets/Colormap.h"
 
 class QDomElement;
@@ -20,13 +21,13 @@ namespace pj::scene3d {
 // The colormap side of a layer that colours by a data channel (GridMapLayer,
 // MeshMapLayer): the colormap, auto or manual range, the last auto range, their
 // layout attributes and their config rows. The layer keeps its public setters
-// (they emit its signals) and delegates the state here; the channel selector
-// stays with the layer, whose channel model differs.
+// (they emit its signals when a setter here reports a change); the channel
+// selector stays with the layer, whose channel model differs.
 class ChannelColoring {
  public:
   // The largest magnitude a manual range end may have: it is stored as a float
   // uniform.
-  static constexpr double kManualRangeLimit = 3.4028234663852886e38;
+  static constexpr double kManualRangeLimit = std::numeric_limits<float>::max();
 
   [[nodiscard]] PJ::Colormap colormap() const {
     return colormap_;
@@ -36,9 +37,6 @@ class ChannelColoring {
   }
   [[nodiscard]] std::pair<double, double> manualRange() const {
     return {manual_lo_, manual_hi_};
-  }
-  [[nodiscard]] const FiniteRange& lastAutoRange() const {
-    return last_auto_range_;
   }
 
   // Each returns true when the state changed. setManualRange ignores a
@@ -61,31 +59,21 @@ class ChannelColoring {
 
   // Layout attributes `colormap`, `auto_range`, `range_lo`, `range_hi`.
   void saveXml(QDomElement& element) const;
-  struct Persisted {
-    PJ::Colormap colormap = PJ::Colormap::kTurbo;
-    bool auto_range = true;
-    double range_lo = 0.0;
-    double range_hi = 1.0;
-  };
-  // Parses those attributes (defaults when absent) without applying them;
-  // nullopt when one is malformed or out of range, so a layer can reject the
-  // whole element before changing anything.
-  [[nodiscard]] static std::optional<Persisted> parseXml(const QDomElement& element);
+  // Parses those attributes (defaults when absent) into a separate coloring,
+  // without applying them; nullopt when one is malformed or out of range, so a
+  // layer can reject the whole element before changing anything.
+  [[nodiscard]] static std::optional<ChannelColoring> parseXml(const QDomElement& element);
 
-  // What the config rows call on a user edit: the layer's setters.
-  struct Setters {
-    std::function<void(PJ::Colormap)> colormap;
-    std::function<void(bool)> auto_range;
-    std::function<void(double, double)> manual_range;
-  };
   // Adds the rows "Colors:", "Auto range:", "Range min:", "Range max:" to `form`,
   // initialised from this state. The scrubbers are named `<prefix>_range_min` /
   // `<prefix>_range_max` and the colormap combo `<prefix>_colormap` (stable
-  // names: tests and stylesheets find them). Switching auto off seeds the
-  // scrubbers from the last auto range; nudging one scrubber past the other drags
-  // it along. `context` owns the connections.
+  // names: tests and stylesheets find them). A user edit goes through this
+  // object's setters and then calls `changed`, only when the state changed.
+  // Switching auto off seeds the scrubbers from the last auto range; nudging one
+  // scrubber past the other drags it along. `context` owns the connections and
+  // must not outlive this object (the layer that holds both).
   void addConfigRows(
-      QFormLayout* form, QWidget* parent, QObject* context, const QString& prefix, const Setters& setters) const;
+      QFormLayout* form, QWidget* parent, QObject* context, const QString& prefix, std::function<void()> changed);
 
  private:
   PJ::Colormap colormap_ = PJ::Colormap::kTurbo;

@@ -17,7 +17,7 @@ layout(std140, binding = 0) uniform MeshMapUniforms {
 } mm;
 
 layout(location = 0) in vec3 position;
-layout(location = 1) in float value;  // channel value; >= 3e38 in magnitude = "no data"
+layout(location = 1) in float value;  // channel value; above 1e29 in magnitude = "no data"
 layout(location = 2) in vec4 color;   // RGBA8 vertex / line colour
 
 layout(location = 0) out float channel_value;

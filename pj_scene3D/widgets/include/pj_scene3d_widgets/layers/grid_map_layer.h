@@ -90,6 +90,10 @@ class GridMapLayer : public Scene3DLayer {
   [[nodiscard]] std::pair<double, double> manualRange() const {
     return coloring_.manualRange();
   }
+  // The range the colormap maps for `data` (ChannelColoring::effectiveRange).
+  [[nodiscard]] std::pair<float, float> effectiveRange(const FiniteRange& data) const {
+    return coloring_.effectiveRange(data);
+  }
   [[nodiscard]] bool lighting() const {
     return lighting_;
   }
@@ -168,6 +172,8 @@ class GridMapLayer : public Scene3DLayer {
   // Returns false when the grid offers no usable color field.
   bool resolveFields(const PJ::sdk::GridMap& grid);
   void pushDisplayParamsToPass();
+  // A colormap or range edit: push, persist and repaint.
+  void coloringChanged();
   // Bounds change inside renderAt, i.e. during the paint that follows the dock's
   // bounds union, so a changed extent requests another repaint to re-fit the camera.
   void setBounds(std::optional<AABB> bounds);

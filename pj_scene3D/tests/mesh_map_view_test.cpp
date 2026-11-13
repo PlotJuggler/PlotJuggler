@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -136,7 +137,7 @@ TEST(MeshMapViewTest, DecodesGeometryAndChannels) {
   EXPECT_EQ(state.indices, (std::vector<uint32_t>{0, 1, 2, 0, 2, 3}));
   const MeshMapChannelState* height = state.find(Target::kVertex, "height");
   ASSERT_NE(height, nullptr);
-  EXPECT_FLOAT_EQ(height->values[1], 20.0F);
+  EXPECT_DOUBLE_EQ(height->values[1], 20.0);
   EXPECT_TRUE(std::isnan(height->values[2]));  // the integer no-data value became NaN
   EXPECT_EQ(state.find(Target::kFace, "height"), nullptr);
 }
@@ -176,7 +177,7 @@ TEST(MeshMapViewTest, UploadDeIndexesEveryColorMode) {
   fillMeshMapColors(state, "vertex:height", upload);
   ASSERT_EQ(upload.values.size(), 6u);
   for (const float value : upload.values) {
-    EXPECT_TRUE(std::isnan(value));
+    EXPECT_EQ(value, kMeshMapNoDataValue);
   }
   EXPECT_FALSE(upload.color_range.valid);
 
@@ -204,16 +205,16 @@ TEST(MeshMapViewTest, AppliesPatches) {
   // Sparse, with one record past the 2 faces.
   auto result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "cost", {9.0F, 1.0F}, {1, 5}));
   EXPECT_TRUE(result.applied);
-  EXPECT_EQ(result.skipped_records, 1u);
-  EXPECT_FLOAT_EQ(state.find(Target::kFace, "cost")->values[0], 1.5F);
-  EXPECT_FLOAT_EQ(state.find(Target::kFace, "cost")->values[1], 9.0F);
+  EXPECT_EQ(result.skipped_indices, 1u);
+  EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 1.5);
+  EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[1], 9.0);
 
   // Dense: replaces the channel; a dense patch of the wrong size is skipped.
   result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "cost", {5.0F, 6.0F}));
-  EXPECT_FLOAT_EQ(state.find(Target::kFace, "cost")->values[0], 5.0F);
+  EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 5.0);
   result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "cost", {7.0F}));
   EXPECT_EQ(result.skipped_patches, 1u);
-  EXPECT_FLOAT_EQ(state.find(Target::kFace, "cost")->values[0], 5.0F);
+  EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 5.0);
 
   // A new channel: "no data" where the patch is silent.
   result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "occupancy", {0.25F}, {0}));
@@ -231,10 +232,10 @@ TEST(MeshMapViewTest, AppliesPatches) {
   MeshMapUpdate other = makeUpdate(bytes, Target::kFace, "cost", {100.0F, 100.0F});
   other.geometry_id = "8";
   EXPECT_FALSE(applyMeshMapUpdate(state, other).applied);
-  EXPECT_FLOAT_EQ(state.find(Target::kFace, "cost")->values[0], 5.0F);
+  EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 5.0);
   other.geometry_id.clear();
   EXPECT_TRUE(applyMeshMapUpdate(state, other).applied);
-  EXPECT_FLOAT_EQ(state.find(Target::kFace, "cost")->values[0], 100.0F);
+  EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 100.0);
 }
 
 TEST(MeshMapViewTest, LinksBecomeCentroidSegmentsColouredByKind) {
@@ -264,6 +265,148 @@ TEST(MeshMapViewTest, BoundsFollowTheOriginPose) {
   EXPECT_FLOAT_EQ(box.max.x, 11.0F);
   EXPECT_FLOAT_EQ(box.max.z, 2.0F);
   EXPECT_FALSE(meshMapBounds(MeshMapState{}).valid);
+}
+
+// "No data" is compared at the channel's own precision: the sentinels at the top
+// of uint32, int32 and a float32 1e30 all fold into NaN, and their neighbours
+// stay data.
+TEST(MeshMapViewTest, NoDataIsComparedBeforeNarrowing) {
+  Fixture fixture;
+  Bytes& bytes = fixture.bytes;
+  PJ::sdk::ChannelInfo u32;
+  u32.no_data = 4294967295.0;
+  PJ::sdk::ChannelInfo i32;
+  i32.no_data = 2147483647.0;
+  PJ::sdk::ChannelInfo f32;
+  f32.no_data = 1e30;
+  fixture.mesh.channels = {
+      makeChannel(
+          bytes, "u32", Target::kFace, Datatype::kUint32, bytes.add(std::vector<uint32_t>{4294967295U, 4294967294U}),
+          u32),
+      makeChannel(
+          bytes, "i32", Target::kFace, Datatype::kInt32, bytes.add(std::vector<int32_t>{2147483647, 2147483646}), i32),
+      makeChannel(bytes, "f32", Target::kFace, Datatype::kFloat32, bytes.add(std::vector<float>{1e30F, 2.0F}), f32),
+  };
+  const MeshMapState state = decodeMeshMap(fixture.mesh);
+  for (const char* name : {"u32", "i32", "f32"}) {
+    const MeshMapChannelState* channel = state.find(Target::kFace, name);
+    ASSERT_NE(channel, nullptr) << name;
+    EXPECT_TRUE(std::isnan(channel->values[0])) << name << " sentinel drawn as data";
+    EXPECT_FALSE(std::isnan(channel->values[1])) << name;
+  }
+  EXPECT_EQ(state.find(Target::kFace, "u32")->values[1], 4294967294.0);
+  EXPECT_EQ(state.find(Target::kFace, "i32")->values[1], 2147483646.0);
+}
+
+// Category ids above 2^24 keep their identity.
+TEST(MeshMapViewTest, LargeCategoryIdsStayDistinct) {
+  Fixture fixture;
+  Bytes& bytes = fixture.bytes;
+  PJ::sdk::ChannelInfo info;
+  info.kind = ChannelKind::kCategorical;
+  PJ::sdk::ChannelCategory a;
+  a.value = 16777216;
+  a.color = PJ::sdk::ColorRGBA{10, 0, 0, 255};
+  PJ::sdk::ChannelCategory b;
+  b.value = 16777217;
+  b.color = PJ::sdk::ColorRGBA{20, 0, 0, 255};
+  info.categories = {a, b};
+  fixture.mesh.channels = {makeChannel(
+      bytes, "region", Target::kFace, Datatype::kUint32, bytes.add(std::vector<uint32_t>{16777216U, 16777217U}), info)};
+  const MeshMapState state = decodeMeshMap(fixture.mesh);
+  MeshMapUpload upload;
+  fillMeshMapGeometry(state, upload);
+  fillMeshMapColors(state, "face:region", upload);
+  ASSERT_EQ(upload.colors.size(), 6u);
+  EXPECT_EQ(upload.colors[0] & 0xFFU, 10U);
+  EXPECT_EQ(upload.colors[3] & 0xFFU, 20U);
+}
+
+// float64 positions far from the origin keep their spacing: the decode removes a
+// double-precision offset and moves it into the origin pose.
+TEST(MeshMapViewTest, Float64PositionsKeepPrecisionFarFromTheOrigin) {
+  Fixture fixture;
+  fixture.mesh.position_type = Datatype::kFloat64;
+  fixture.mesh.positions =
+      fixture.bytes.add(std::vector<double>{4500000.10, 0, 0, 4500000.35, 0, 0, 4500000.35, 1, 0, 4500000.10, 1, 0});
+  fixture.mesh.origin.position = {.x = 0.0, .y = 0.0, .z = 5.0};
+  ASSERT_TRUE(PJ::validateMeshMap(fixture.mesh));
+  const MeshMapState state = decodeMeshMap(fixture.mesh);
+  EXPECT_NEAR(state.positions[3] - state.positions[0], 0.25F, 1e-3F);
+  EXPECT_NEAR(state.origin.position.x + static_cast<double>(state.positions[0]), 4500000.10, 1e-6);
+  EXPECT_NEAR(state.origin.position.z + static_cast<double>(state.positions[2]), 5.0, 1e-6);
+  const AABB box = meshMapBounds(state);
+  ASSERT_TRUE(box.valid);
+  EXPECT_NEAR(box.min.x, 4500000.10, 0.5);
+  EXPECT_NEAR(box.max.x, 4500000.35, 0.5);
+  EXPECT_NEAR(box.min.z, 5.0, 1e-3);
+}
+
+// A categorical vertex channel follows the whole-face no-data rule too.
+TEST(MeshMapViewTest, CategoricalVertexChannelDrawsAFaceTouchingNoDataAsNoData) {
+  Fixture fixture;
+  Bytes& bytes = fixture.bytes;
+  PJ::sdk::ChannelInfo info;
+  info.kind = ChannelKind::kCategorical;
+  info.no_data = -1.0;
+  fixture.mesh.channels = {makeChannel(
+      bytes, "label", Target::kVertex, Datatype::kInt16, bytes.add(std::vector<int16_t>{1, 1, 1, -1}), info)};
+  const MeshMapState state = decodeMeshMap(fixture.mesh);
+  MeshMapUpload upload;
+  fillMeshMapGeometry(state, upload);
+  fillMeshMapColors(state, "vertex:label", upload);
+  ASSERT_EQ(upload.colors.size(), 6u);
+  EXPECT_EQ(upload.colors[0], categoricalColor(1));  // face 0 has no no-data corner
+  for (size_t corner = 3; corner < 6; ++corner) {
+    EXPECT_EQ(upload.colors[corner], upload.colors[5]) << "face 1 blends towards no data at corner " << corner;
+  }
+  EXPECT_NE(upload.colors[3], categoricalColor(1));
+}
+
+// Only uint8 vertex channels named red/green/blue/alpha are the vertex colour;
+// float ones are data channels.
+TEST(MeshMapViewTest, OnlyUint8ColorChannelsAreTheVertexColor) {
+  Fixture fixture;
+  Bytes& bytes = fixture.bytes;
+  fixture.mesh.channels = {
+      makeChannel(bytes, "red", Target::kVertex, Datatype::kFloat32, bytes.add(std::vector<float>{1, 0.5F, 0, 0})),
+      makeChannel(bytes, "green", Target::kVertex, Datatype::kFloat32, bytes.add(std::vector<float>{0, 0, 0, 0})),
+      makeChannel(bytes, "blue", Target::kVertex, Datatype::kFloat32, bytes.add(std::vector<float>{0, 0, 0, 0})),
+  };
+  const MeshMapState state = decodeMeshMap(fixture.mesh);
+  const auto sources = meshMapColorSources(state);
+  EXPECT_EQ(std::count(sources.begin(), sources.end(), std::string(kMeshMapSourceVertexColor)), 0);
+  EXPECT_EQ(defaultMeshMapColorSource(state), "vertex:red");
+
+  // The uint8 fixture is the vertex colour.
+  EXPECT_EQ(defaultMeshMapColorSource(decodeMeshMap(Fixture{}.mesh)), "face:cost");
+  const auto uint8_sources = meshMapColorSources(decodeMeshMap(Fixture{}.mesh));
+  EXPECT_EQ(std::count(uint8_sources.begin(), uint8_sources.end(), std::string(kMeshMapSourceVertexColor)), 1);
+}
+
+// Colours with alpha below 255 mark the upload translucent.
+TEST(MeshMapViewTest, ColoursReportTranslucency) {
+  Fixture fixture;
+  const MeshMapState state = decodeMeshMap(fixture.mesh);
+  MeshMapUpload upload;
+  fillMeshMapGeometry(state, upload);
+  for (const std::string_view source :
+       {std::string_view("face:cost"), std::string_view("face:surface"), kMeshMapSourceVertexColor,
+        kMeshMapSourceSolid}) {
+    fillMeshMapColors(state, source, upload);
+    EXPECT_FALSE(upload.translucent) << source;
+  }
+  Fixture with_alpha;
+  with_alpha.mesh.channels.push_back(makeChannel(
+      with_alpha.bytes, "alpha", Target::kVertex, Datatype::kUint8,
+      with_alpha.bytes.add(std::vector<uint8_t>{255, 255, 128, 255})));
+  fillMeshMapColors(decodeMeshMap(with_alpha.mesh), kMeshMapSourceVertexColor, upload);
+  EXPECT_TRUE(upload.translucent);
+
+  Fixture categorical;
+  categorical.mesh.channels[0].info.categories[0].color = PJ::sdk::ColorRGBA{200, 10, 20, 100};
+  fillMeshMapColors(decodeMeshMap(categorical.mesh), "face:surface", upload);
+  EXPECT_TRUE(upload.translucent);
 }
 
 }  // namespace

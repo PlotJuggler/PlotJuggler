@@ -35,10 +35,6 @@ constexpr float kModeVertexColor = 1.0F;  // RGBA8 colours: vertex colour or a c
 constexpr float kModeSolid = 2.0F;
 constexpr float kModeLine = 3.0F;
 
-// "No data" travels as this sentinel, not NaN: NaN need not survive attribute
-// interpolation on every driver (the shader tests abs(v) >= 3e38).
-constexpr float kNoDataSentinel = std::numeric_limits<float>::max();
-
 constexpr quint32 kMinimumBufferBytes = 64U * 1024U;
 
 bool drawable(const MeshMapUpload& mesh) {
@@ -63,21 +59,17 @@ QRhiVertexInputLayout inputLayout() {
   return layout;
 }
 
-// Grows `buffer` to `bytes` and uploads `data`; false when it cannot be allocated.
-bool uploadBuffer(
-    QRhi* rhi, QRhiResourceUpdateBatch* updates, QRhiBuffer*& buffer, quint32& capacity, const void* data,
-    std::size_t bytes) {
-  if (bytes > std::numeric_limits<quint32>::max()) {
-    return false;
+// Grows `buffer` to hold `bytes`; false when it cannot be allocated.
+bool ensureBuffer(QRhi* rhi, QRhiBuffer*& buffer, quint32& capacity, std::size_t bytes) {
+  return bytes <= std::numeric_limits<quint32>::max() &&
+         ensureStaticVertexBuffer(rhi, buffer, capacity, static_cast<quint32>(bytes), kMinimumBufferBytes);
+}
+
+// Records the upload of `bytes` of `data` into `buffer`, already large enough.
+void recordUpload(QRhiResourceUpdateBatch* updates, QRhiBuffer* buffer, const void* data, std::size_t bytes) {
+  if (bytes != 0) {
+    PJ::uploadStaticBufferInPieces(updates, buffer, 0, static_cast<quint32>(bytes), data);
   }
-  const auto size = static_cast<quint32>(bytes);
-  if (!ensureStaticVertexBuffer(rhi, buffer, capacity, size, kMinimumBufferBytes)) {
-    return false;
-  }
-  if (size != 0) {
-    PJ::uploadStaticBufferInPieces(updates, buffer, 0, size, data);
-  }
-  return true;
 }
 
 }  // namespace
@@ -112,6 +104,7 @@ bool MeshMapRhiPass::initialize(const RhiPassSetup& setup) {
   desc.depth_write = false;  // depth test only
   translucent_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.topology = QRhiGraphicsPipeline::Lines;
+  translucent_line_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.depth_write = true;
   line_pipeline_ = setup.pipelines->add(desc, setup.part);
   return ready();
@@ -141,55 +134,54 @@ void MeshMapRhiPass::admit(const PlaceFn& place) {
   }
 }
 
-void MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu) {
+bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu) {
   const MeshMapUpload& mesh = *layer->stagedMesh();
-  if (gpu.uploaded_geometry != mesh.geometry_revision) {
-    if (!uploadBuffer(
-            rhi, updates, gpu.positions, gpu.positions_capacity, mesh.positions.data(),
-            mesh.positions.size() * sizeof(float)) ||
-        !uploadBuffer(
-            rhi, updates, gpu.link_positions, gpu.link_positions_capacity, mesh.link_positions.data(),
-            mesh.link_positions.size() * sizeof(float)) ||
-        !uploadBuffer(
-            rhi, updates, gpu.link_colors, gpu.link_colors_capacity, mesh.link_colors.data(),
-            mesh.link_colors.size() * sizeof(std::uint32_t))) {
-      layer->noteRenderFailure(tr("Could not allocate the mesh-map vertex buffers"));
-      releaseLayerGpu(gpu);
-      return;
-    }
+  const bool geometry = gpu.uploaded_geometry != mesh.geometry_revision;
+  const bool colors = geometry || gpu.uploaded_revision != layer->stagedRevision();  // colours follow the geometry
+  if (!colors) {
+    return true;
+  }
+  const void* attribute_data = nullptr;
+  std::size_t attribute_bytes = 0;
+  if (mesh.color_mode == MeshMapColorMode::kChannel) {
+    attribute_data = mesh.values.data();  // "no data" already kMeshMapNoDataValue
+    attribute_bytes = mesh.values.size() * sizeof(float);
+  } else if (mesh.color_mode == MeshMapColorMode::kRgba) {
+    attribute_data = mesh.colors.data();
+    attribute_bytes = mesh.colors.size() * sizeof(std::uint32_t);
+  }
+
+  // Every buffer is allocated before any upload is recorded: the frame's batch
+  // keeps raw buffer pointers, so a failure must not delete one it references.
+  const std::size_t link_position_bytes = mesh.link_positions.size() * sizeof(float);
+  const std::size_t link_color_bytes = mesh.link_colors.size() * sizeof(std::uint32_t);
+  if (geometry && (!ensureBuffer(rhi, gpu.positions, gpu.positions_capacity, mesh.positions.size() * sizeof(float)) ||
+                   !ensureBuffer(rhi, gpu.link_positions, gpu.link_positions_capacity, link_position_bytes) ||
+                   !ensureBuffer(rhi, gpu.link_colors, gpu.link_colors_capacity, link_color_bytes))) {
+    layer->noteRenderFailure(tr("Could not allocate the mesh-map vertex buffers"));
+    releaseLayerGpu(gpu);
+    return false;
+  }
+  if (!ensureBuffer(rhi, gpu.attributes, gpu.attributes_capacity, attribute_bytes)) {
+    layer->noteRenderFailure(tr("Could not allocate the mesh-map colour buffer"));
+    releaseLayerGpu(gpu);
+    return false;
+  }
+
+  if (geometry) {
+    recordUpload(updates, gpu.positions, mesh.positions.data(), mesh.positions.size() * sizeof(float));
+    recordUpload(updates, gpu.link_positions, mesh.link_positions.data(), link_position_bytes);
+    recordUpload(updates, gpu.link_colors, mesh.link_colors.data(), link_color_bytes);
     gpu.surface_vertices = static_cast<quint32>(mesh.positions.size() / 3);
     gpu.link_vertices = static_cast<quint32>(mesh.link_positions.size() / 3);
     gpu.uploaded_geometry = mesh.geometry_revision;
-    gpu.uploaded_revision = ~std::uint64_t{0};  // colours follow the geometry
     ++geometry_upload_count_;
   }
-  if (gpu.uploaded_revision == layer->stagedRevision()) {
-    return;
-  }
-  bool ok = true;
-  if (mesh.color_mode == MeshMapColorMode::kChannel) {
-    value_scratch_.resize(mesh.values.size());
-    for (std::size_t i = 0; i < mesh.values.size(); ++i) {
-      value_scratch_[i] = std::isfinite(mesh.values[i]) ? mesh.values[i] : kNoDataSentinel;
-    }
-    ok = uploadBuffer(
-        rhi, updates, gpu.attributes, gpu.attributes_capacity, value_scratch_.data(),
-        value_scratch_.size() * sizeof(float));
-    gpu.attributes_are_colors = false;
-  } else if (mesh.color_mode == MeshMapColorMode::kRgba) {
-    ok = uploadBuffer(
-        rhi, updates, gpu.attributes, gpu.attributes_capacity, mesh.colors.data(),
-        mesh.colors.size() * sizeof(std::uint32_t));
-    gpu.attributes_are_colors = true;
-  }
+  recordUpload(updates, gpu.attributes, attribute_data, attribute_bytes);
   gpu.attributes_in_use = mesh.color_mode != MeshMapColorMode::kSolid;
-  if (!ok) {
-    layer->noteRenderFailure(tr("Could not allocate the mesh-map colour buffer"));
-    releaseLayerGpu(gpu);
-    return;
-  }
   gpu.uploaded_revision = layer->stagedRevision();
   ++color_upload_count_;
+  return true;
 }
 
 void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams& shading) {
@@ -211,20 +203,20 @@ void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
     if (!ensureLayerGpu(frame.rhi, layer, gpu)) {
       continue;
     }
-    upload(frame.updates, frame.rhi, layer, gpu);
-    if (gpu.positions == nullptr) {
+    if (!upload(frame.updates, frame.rhi, layer, gpu)) {
       continue;  // the upload failed and released the layer's buffers
     }
+    layer->noteRenderSuccess();
 
     const glm::mat4 model_f =
         relativeModel(admitted.fixed_from_source.matrix() * poseTransform(mesh.origin).matrix(), frame.render_origin);
-    float color_lo = static_cast<float>(layer->manualRange().first);
-    float color_hi = static_cast<float>(layer->manualRange().second);
-    if (layer->autoRange()) {
-      color_lo = mesh.color_range.valid ? mesh.color_range.lo : 0.0F;
-      color_hi = mesh.color_range.valid ? mesh.color_range.hi : 0.0F;
-    }
+    const auto [color_lo, color_hi] = layer->effectiveRange(mesh.color_range);
     const auto opacity = static_cast<float>(layer->opacity());
+    // Blending surfaces draw after the opaque ones without writing depth: below
+    // full layer opacity, or with a colour whose own alpha is below 255. The links
+    // carry the layer opacity alone.
+    const DrawClass layer_class = opacity < 0.999F ? DrawClass::kTranslucent : DrawClass::kOpaque;
+    const DrawClass surface_class = mesh.translucent ? DrawClass::kTranslucent : layer_class;
     float mode = kModeSolid;
     if (mesh.color_mode == MeshMapColorMode::kChannel) {
       mode = kModeChannel;
@@ -246,18 +238,14 @@ void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
     uniforms.flags = {mode, 0.0F, 0.0F, 0.0F};
     frame.updates->updateDynamicBuffer(gpu.surface_uniforms, 0, kUniformBytes, &uniforms);
     draws_.push_back(
-        Draw{
-            .layer = layer,
-            .lines = false,
-            .vertex_count = gpu.surface_vertices,
-            .draw_class = opacity < 0.999F ? DrawClass::kTranslucent : DrawClass::kOpaque});
+        Draw{.layer = layer, .lines = false, .vertex_count = gpu.surface_vertices, .draw_class = surface_class});
     last_vertex_count_ += static_cast<int>(gpu.surface_vertices);
 
     if (layer->showLinks() && gpu.link_vertices > 0) {
       uniforms.flags = {kModeLine, 0.0F, 0.0F, 0.0F};
       frame.updates->updateDynamicBuffer(gpu.line_uniforms, 0, kUniformBytes, &uniforms);
       draws_.push_back(
-          Draw{.layer = layer, .lines = true, .vertex_count = gpu.link_vertices, .draw_class = DrawClass::kOpaque});
+          Draw{.layer = layer, .lines = true, .vertex_count = gpu.link_vertices, .draw_class = layer_class});
       last_vertex_count_ += static_cast<int>(gpu.link_vertices);
     }
     ++last_layer_count_;
@@ -272,9 +260,9 @@ bool MeshMapRhiPass::submit(
     return false;
   }
   const LayerGpu& gpu = found->second;
-  const ScenePipeline* registered = draw.lines                                   ? line_pipeline_
-                                    : draw.draw_class == DrawClass::kTranslucent ? translucent_pipeline_
-                                                                                 : opaque_pipeline_;
+  const bool translucent = draw.draw_class == DrawClass::kTranslucent;
+  const ScenePipeline* registered = draw.lines ? (translucent ? translucent_line_pipeline_ : line_pipeline_)
+                                               : (translucent ? translucent_pipeline_ : opaque_pipeline_);
   QRhiGraphicsPipeline* pipeline = registry.resolve(registered, pass);
   if (pipeline == nullptr) {
     return false;
@@ -324,7 +312,6 @@ bool MeshMapRhiPass::ensureLayerGpu(QRhi* rhi, MeshMapLayer* layer, LayerGpu& gp
     releaseLayerGpu(gpu);
     return false;
   }
-  layer->noteRenderSuccess();
   return true;
 }
 
@@ -353,6 +340,7 @@ void MeshMapRhiPass::release() {
   opaque_pipeline_ = nullptr;
   translucent_pipeline_ = nullptr;
   line_pipeline_ = nullptr;
+  translucent_line_pipeline_ = nullptr;
   layout_shader_resources_ = nullptr;
   layout_uniform_buffer_ = nullptr;
   render_mode_uniforms_ = nullptr;
