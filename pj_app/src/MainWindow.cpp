@@ -113,9 +113,6 @@
 #include "LayoutImportBatch.h"
 #include "LayoutReplayHints.h"
 #include "LayoutXml.h"
-#ifndef PJ_TARGET_WASM
-#include "mcp/McpServer.h"
-#endif
 #include "PendingDisplayBinder.h"
 #include "PluginPlotTabsController.h"
 #include "PreferencesDialog.h"
@@ -129,6 +126,8 @@
 #include "TitleBar.h"
 #include "ToolboxHostWiring.h"
 #include "TopicDemandController.h"
+#include "mcp/McpBrowserLink.h"
+#include "mcp/McpServer.h"
 #ifdef PJ_TARGET_WASM
 #include "WelcomePresetsDialog.h"
 #endif
@@ -2429,11 +2428,9 @@ MainWindow::~MainWindow() {
   // and engines are all still alive: a floating window is a QObject child,
   // and left to the base-class child sweep it would die after the members.
   teardownAllToolboxes();
-#ifndef PJ_TARGET_WASM
   // The MCP server goes right after the toolboxes, whose endpoints revoked their tokens as they
   // went: no plugin is left to start it again, and its agent sessions point into the services below.
   mcp_server_.reset();
-#endif
   // Whatever takeover remains is not a toolbox (marketplace, filter editor),
   // but its PanelEngine is a QObject child of this window — the base-class
   // child sweep would destroy it only AFTER the members (incl. session_) are
@@ -6756,6 +6753,11 @@ void MainWindow::startBrowserPresets(const QUrl& page_url) {
         connect(this, &MainWindow::layoutUrlLoadFinished, presets_dialog_, &WelcomePresetsDialog::layoutLoadFinished);
         connect(this, &MainWindow::layoutUrlLoadProgress, presets_dialog_, &WelcomePresetsDialog::layoutLoadProgress);
         ui_->actionPresets->setVisible(true);
+        // A page an agent opened (?mcp=) is the agent's to set up: an application-modal welcome
+        // would hold every mutating tool until the user closed it. File → Presets still opens it.
+        if (mcp_relay_link_ != nullptr && deep_link.isEmpty() && deep_link_error.isEmpty()) {
+          return;
+        }
         presets_dialog_->show();
         if (!deep_link_error.isEmpty()) {
           presets_dialog_->showError(deep_link_error);
@@ -10643,12 +10645,12 @@ PJ_service_registry_t MainWindow::toolboxSessionServices(ToolboxPanelSession& se
   return session.builder->view();
 }
 
-#ifndef PJ_TARGET_WASM
 McpServer* MainWindow::ensureMcpServer() {
   if (mcp_server_ != nullptr) {
     return mcp_server_.get();
   }
   auto server = std::make_unique<McpServer>(*this);
+#ifndef PJ_TARGET_WASM
   if (!server->listening()) {
     // Every acquire retries (one per Assistant turn): one report until a start succeeds.
     if (!std::exchange(mcp_listen_failure_reported_, true)) {
@@ -10658,6 +10660,7 @@ McpServer* MainWindow::ensureMcpServer() {
     }
     return nullptr;
   }
+#endif
   mcp_listen_failure_reported_ = false;
   connect(server.get(), &McpServer::activeClientChanged, this, [this](const QString& client) {
     if (mcp_client_label_ == nullptr) {
@@ -10666,8 +10669,14 @@ McpServer* MainWindow::ensureMcpServer() {
       statusBar()->addPermanentWidget(mcp_client_label_);
     }
     mcp_client_label_->setText(tr("AI agent: %1").arg(client));
+#ifdef PJ_TARGET_WASM
+    mcp_client_label_->setToolTip(
+        tr("%1 is controlling PlotJuggler through MCP. Closing the agent's session or this page stops it.")
+            .arg(client));
+#else
     mcp_client_label_->setToolTip(
         tr("%1 is controlling PlotJuggler through MCP. Turn this off in Preferences → Appearance.").arg(client));
+#endif
     // Only the label: the bar also carries other messages (undo failures).
     mcp_client_label_->setVisible(!client.isEmpty());
   });
@@ -10690,7 +10699,24 @@ void MainWindow::closeMcpPublicAccess() {
 bool MainWindow::mcpPublicAccess() const {
   return mcp_server_ != nullptr && mcp_server_->publicAccess();
 }
-#endif
+
+bool MainWindow::connectMcpRelay(const QUrl& relay) {
+  if (!McpBrowserLink::acceptableRelay(relay)) {
+    emitDiagnostic(
+        DiagnosticLevel::kError, "MCP", "relay-refused",
+        tr("Not connecting to the AI agent relay %1: it must be an http address on this computer (127.0.0.1).")
+            .arg(relay.toDisplayString(QUrl::RemoveQuery)));
+    return false;
+  }
+  McpServer* server = ensureMcpServer();
+  if (server == nullptr) {
+    return false;
+  }
+  server->openPublicAccess();
+  delete mcp_relay_link_.data();
+  mcp_relay_link_ = new McpBrowserLink(*server, relay, windowTitle(), server);
+  return true;
+}
 
 void MainWindow::launchToolbox(
     const QString& plugin_id, const QString& initial_config, ToolboxLaunchTarget target, const QString& pin_tab_name) {

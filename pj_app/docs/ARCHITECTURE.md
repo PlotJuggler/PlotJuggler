@@ -1,5 +1,15 @@
 # pj_app Architecture
 
+How the executable shell is put together. `../CLAUDE.md` holds the rules and
+pitfalls; this document is the subsystem reference. The wiring itself is best
+read from `src/MainWindow.cpp` and `src/main.cpp`; the headers own per-class
+contracts (threading, ownership, call order), so this document describes only
+what spans several classes.
+
+Derived data (on-demand nodes, series, marker rules, filters and transforms) is
+designed in [`../../docs/derived_objects/ARCHITECTURE.md`](../../docs/derived_objects/ARCHITECTURE.md);
+the sections below cover only the shell's half of it.
+
 ## Playback and panel access
 
 The bottom `TimelineWidget` seeks directly on a slider-track click and keeps the
@@ -12,16 +22,6 @@ is hidden and **Close Settings** when it is visible. The host-supplied visibilit
 query runs when the menu opens. `settingsPanelToggleRequested` passes through
 `PlotDocker` to `MainWindow`, which binds the settings page to that dock and toggles
 the right panel through its existing visibility button.
-
-How the executable shell is put together. `../CLAUDE.md` holds the rules and
-pitfalls; this document is the subsystem reference. The wiring itself is best
-read from `src/MainWindow.cpp` and `src/main.cpp`; the headers own per-class
-contracts (threading, ownership, call order), so this document describes only
-what spans several classes.
-
-Derived data (on-demand nodes, series, marker rules, filters and transforms) is
-designed in [`../../docs/derived_objects/ARCHITECTURE.md`](../../docs/derived_objects/ARCHITECTURE.md);
-the sections below cover only the shell's half of it.
 
 ## Window frame
 
@@ -246,8 +246,8 @@ position IS its page index.
   log, never into the toast: a toast listing one line per file stops being
   readable at three sources.
 
-The recording format and the write-queue budget are in
-`../../docs/session_recorder_design.md`.
+The recording design and the write-queue budget are in
+`../../docs/RECORDING_AND_CACHING.md`; the on-disk contract is `pj_runtime`'s `RecordingFormat.h`.
 
 ## Layout files and derived recipes
 
@@ -547,14 +547,15 @@ imports it from the embedded stdlib zip.
 
 ## MCP server
 
-AI agents read and drive a running PlotJuggler over the Model Context Protocol, desktop only (`src/mcp/` is left out
-of the browser build). External agents come in through the stdio bridge `--mcp-bridge` with the public token (on
-by default); toolbox plugins lease a private, agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The design
+AI agents read and drive a running PlotJuggler over the Model Context Protocol. External agents come in through
+the stdio bridge `--mcp-bridge` with the public token (on by default); toolbox plugins lease a private,
+agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The browser build, which cannot listen, links out to an
+agent's relay instead (`McpBrowserLink`, `?mcp=`), and has neither bridge nor plugin endpoint. The design
 (tool sets, tokens and owners, lifetimes and revocation, discovery, the user-first rules, security, tests) is in
 [`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md).
 
-What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp`, `McpServer` (with
-`McpEndpointHost`), `McpServerTools.cpp` (the app tools over `MainWindow`'s public "agent control" block). The
+What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp` (desktop), `McpServer` (with
+`McpEndpointHost`, desktop), `McpBrowserLink`, `McpServerTools.cpp` (the app tools over `MainWindow`'s public "agent control" block). The
 agent tools come from `pj_runtime`'s `pj_agent_tools`. The shell's part of the teardown order:
 `~ToolboxPanelSession` resets `mcp_endpoint` after `handle` and before every service, and `~MainWindow` destroys
 the server right after `teardownAllToolboxes`.

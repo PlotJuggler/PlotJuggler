@@ -24,6 +24,9 @@ build:
     file: build.sh
     env:
       PJ_QT_MIN_VERSION: ${{ qt6_main }}
+      # The script's environment is isolated from the caller's, so the
+      # compiler cache directory is forwarded by name; empty builds uncached.
+      CCACHE_DIR: ${{ env.get("CCACHE_DIR", default="") }}
 
 requirements:
   build:
@@ -34,6 +37,7 @@ requirements:
     - cmake >=3.28
     - ninja
     - pkg-config
+    - ccache
   host:
     # The Qt 6 of the environment it installs into (variants.yaml).
     - qt6-main ${{ qt6_main }}.*
@@ -70,7 +74,6 @@ requirements:
     - luau 0.700.*
     - libmcap 2.1.*
     - cloudini 1.4.*
-    - kissfft 131.1.*
     - libnanoarrow >=0.9
   # ffmpeg's run_export demands at least the patch release built against,
   # often newer than a RoboStack snapshot's; the ABI holds within a major.

@@ -20,9 +20,15 @@ Q_LOGGING_CATEGORY(lcMcp, "pj.mcp")
 
 namespace {
 
+#ifdef PJ_TARGET_WASM
+#define PJ_MCP_WHERE "in their web browser"
+#else
+#define PJ_MCP_WHERE "on their desktop"
+#endif
 /// What every client is told: the agent tools, which every token serves.
 constexpr auto kAgentToolInstructions =
-    "PlotJuggler is the user's time-series and 3D data viewer, running on their desktop. Find topics with "
+    "PlotJuggler is the user's time-series and 3D data viewer, running " PJ_MCP_WHERE
+    ". Find topics with "
     "list_topics / describe_topic (exact paths; a unique suffix also resolves; \"dataset:topic/field\" picks "
     "one dataset). For numbers use read_series (statistics, min/max buckets, raw samples) and evaluate (a Luau "
     "computation over series or objects that leaves nothing behind) instead of decoding files yourself. "
@@ -30,13 +36,23 @@ constexpr auto kAgentToolInstructions =
     "keeps in their layout. Draw only in your own tabs (plot_tab, scene_view); you cannot see or change the "
     "user's. playback moves the shared time cursor. If a tool says the user has a dialog open, wait and try "
     "again.";
+#undef PJ_MCP_WHERE
 /// What a client with the app's own tools is told after kAgentToolInstructions.
+#ifdef PJ_TARGET_WASM
+// No export_series nor about in the browser (McpServerTools.cpp).
+constexpr auto kAppToolInstructions =
+    " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
+    "format PlotJuggler reads (the relay hands the page the file), start_stream starts a live source. "
+    "add_script_series (Luau or Python) and add_filter install live derived series too. Take a screenshot to "
+    "check what the user sees.";
+#else
 constexpr auto kAppToolInstructions =
     " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
     "format PlotJuggler reads, start_stream starts a live source. export_series gives aligned CSV for your own "
     "tools; add_script_series (Luau or Python) and add_filter install live derived series too. Take a "
     "screenshot to check what the user sees. Read about before explaining how to do something in the "
     "PlotJuggler UI.";
+#endif
 
 }  // namespace
 
@@ -69,6 +85,12 @@ bool isReadOnlyTool(const std::string& name) {
 
 namespace {
 
+#ifdef PJ_TARGET_WASM
+#define PJ_MCP_ABOUT_SOURCES ""
+#else
+#define PJ_MCP_ABOUT_SOURCES "; about says what each one is"
+#endif
+
 /// The tools/list entries of the app's own tools (McpServerTools.cpp).
 json appToolEntries() {
   const auto tool = [](const char* name, const char* desc, json input) {
@@ -87,12 +109,14 @@ json appToolEntries() {
           "sources start_stream can start, time range, current time, your agent id and tabs, whether "
           "PlotJuggler has the user's focus and any dialog the user has open.",
           schema(json::object())),
+#ifndef PJ_TARGET_WASM
       tool(
           "about",
           "What this PlotJuggler can do: built-in features with where to find them in the UI, known limitations, "
           "and the plugins that are loaded, installed or installable. Read it before telling the user how to do "
           "something in PlotJuggler.",
           schema(json::object())),
+#endif
       tool(
           "open_file",
           "Load a data file (MCAP, CSV, ULog, Parquet...). Returns when the import has finished (a client tool "
@@ -115,7 +139,7 @@ json appToolEntries() {
           schema({{"dataset", dataset}}, {"dataset"})),
       tool(
           "start_stream",
-          "Start a live streaming source (get_status lists stream_sources; about says what each one is). By "
+          "Start a live streaming source (get_status lists stream_sources" PJ_MCP_ABOUT_SOURCES "). By "
           "default it uses the settings the user last confirmed in that source's dialog; config passes your own "
           "(get_status shows a live stream's config, as a template); ask_user=true opens the source's dialog so "
           "the user sets it up, and the call returns when they finish or cancel. Topics appear as the source "
@@ -128,6 +152,7 @@ json appToolEntries() {
       tool(
           "stop_stream", "Stop a live stream; its data stays loaded. dataset: a live stream from get_status.",
           schema({{"dataset", dataset}}, {"dataset"})),
+#ifndef PJ_TARGET_WASM
       tool(
           "export_series",
           "Write several series to ONE time-aligned file for your own analysis (numpy/pandas): fits, "
@@ -144,6 +169,7 @@ json appToolEntries() {
                {"t0", {{"type", "number"}}},
                {"t1", {{"type", "number"}}}},
               {"paths"})),
+#endif
       tool(
           "add_script_series",
           "Create your own derived series with a Luau or Python script. Python: first line '# pj-script: python', "
@@ -190,6 +216,8 @@ json appToolEntries() {
 }
 
 }  // namespace
+
+#undef PJ_MCP_ABOUT_SOURCES
 
 json toolList(ToolSet set) {
   json tools = set == ToolSet::kFull ? appToolEntries() : json::array();
@@ -358,13 +386,14 @@ int parseHttpRequest(const QByteArray& buffer, HttpRequest& out) {
   qsizetype length = 0;
   if (const auto it = request.headers.constFind("content-length"); it != request.headers.cend()) {
     bool ok = false;
-    length = it->toLongLong(&ok);
-    if (!ok || length < 0 || it->startsWith('+')) {
+    const qlonglong declared = it->toLongLong(&ok);
+    if (!ok || declared < 0 || it->startsWith('+')) {
       return 400;
     }
-    if (length > kMaxBodyBytes) {
+    if (declared > kMaxBodyBytes) {
       return 413;
     }
+    length = static_cast<qsizetype>(declared);  // checked above: fits a 32-bit qsizetype too
   }
   if (buffer.size() - header_end - 4 < length) {
     return 0;

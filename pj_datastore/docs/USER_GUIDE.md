@@ -16,7 +16,7 @@ All are defined in `pj_base/sdk/plugin_data_api.hpp` (the `pj_base` headers come
 
 - **Dataset**: One data source (one file, one network connection). Created automatically by the host.
 - **Topic**: A named data stream within a dataset. Has typed columns sharing one timestamp column. Example: a ROS topic `/imu/data` with columns `angular_velocity.x`, `angular_velocity.y`, etc.
-- **Field**: A typed column within a topic. Types: `float32`, `float64`, `int32`, `int64`, `uint64`, `bool`, `string`.
+- **Field**: A typed column within a topic. Storage types: `float32`, `float64`, `int32`, `int64`, `uint64`, `bool`, `string`; the other integer `PrimitiveType`s are stored widened (`int8`/`int16` as `int64`, every unsigned width as `uint64`; see `storageKindOf` in `column_buffer.hpp`).
 - **Timestamp**: `int64_t` nanoseconds since Unix epoch. Always absolute — never subtract a base time during ingestion.
 
 ### ValueRef — Preserve Native Types
@@ -214,6 +214,8 @@ runtimeHost().pushMessage(
 
 ## 5. Reading Data
 
+This section is the host-side `DataReader` API that app modules (plotting, scenes, runtime) use. A Toolbox plugin reads through `ToolboxHostView` instead (`readSeries`, `readSeriesArrow`).
+
 ### Series Reads
 
 Use `SeriesReader` for application-level access to one numeric/bool field as a
@@ -257,9 +259,11 @@ cursor->forEach([](const PJ::SampleRow& row) {
 ```cpp
 auto sample = reader.latestAt({.topic_id = topic_id, .t = now_ns});
 if (sample && *sample) {
-    double val = (*sample)->chunk->readNumericAsDouble(0, (*sample)->row_index);
+    double val = (*sample)->values[0];  // column 0; a null reads as 0.0
 }
 ```
+
+`latestAt` returns a `MaterializedSample`: the row's columns are read out as doubles under the engine lock, so no chunk pointer escapes.
 
 ### Read Methods
 

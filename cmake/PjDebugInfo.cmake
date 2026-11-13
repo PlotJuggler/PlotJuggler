@@ -3,8 +3,10 @@
 # (workspace findings): with plain -g every executable is ~94 % DWARF and the
 # same module DWARF is copied into each of 300+ test binaries. Split DWARF
 # stores it once per object (.dwo); type units dedupe Qt template types within
-# a link; zlib halves what remains. MSVC keeps /Z7 (PDB duplication is a
-# separate problem this file does not address).
+# a link; zlib halves what remains. Mach-O keeps DWARF in the object files, so
+# on macOS the level only costs compile time and compiler-cache size, and
+# `split` has nothing to add over `full`. MSVC is not handled here: its debug
+# format comes from CMAKE_MSVC_DEBUG_INFORMATION_FORMAT on the command line.
 set(PJ_DEBUG_INFO "full" CACHE STRING "Debug info level: none|lines|full|split")
 set_property(CACHE PJ_DEBUG_INFO PROPERTY STRINGS none lines full split)
 option(PJ_COMPRESS_DEBUG "Compress ELF debug sections with zlib (-gz)" OFF)
@@ -13,7 +15,7 @@ if(NOT PJ_DEBUG_INFO MATCHES "^(none|lines|full|split)$")
     message(FATAL_ERROR "PJ_DEBUG_INFO must be none, lines, full or split (got '${PJ_DEBUG_INFO}')")
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT EMSCRIPTEN)
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT EMSCRIPTEN)
     # Strip CMake's stock RelWithDebInfo -g so the policy below is the single
     # source of debug flags for that configuration.
     string(REPLACE "-g " "" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} ")
@@ -26,6 +28,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
         add_compile_options("$<${_pj_dbg}:-g0>")
     elseif(PJ_DEBUG_INFO STREQUAL "lines")
         add_compile_options("$<${_pj_dbg}:-g1>")
+    elseif(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_compile_options("$<${_pj_dbg}:-g>")
     elseif(PJ_DEBUG_INFO STREQUAL "full")
         add_compile_options(
             "$<${_pj_dbg}:-g>"
@@ -47,6 +51,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
         # No --gdb-index: GNU ld (bfd, the linker in the builder image) rejects it;
         # only gold/lld accept it.
     endif()
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT EMSCRIPTEN)
     if(PJ_COMPRESS_DEBUG AND NOT PJ_DEBUG_INFO STREQUAL "none")
         add_compile_options("$<${_pj_dbg}:-gz=zlib>")
         add_link_options("$<${_pj_dbg}:-gz=zlib>")

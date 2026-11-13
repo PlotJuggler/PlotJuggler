@@ -2,9 +2,9 @@
 
 ## Goal
 
-Build **PlotJuggler 4** from scratch as a modern desktop application that reaches parity-plus with PlotJuggler 3.x.
+**PlotJuggler 4** is a modern desktop and browser application for time-series and robotics data, built on the `plotjuggler_sdk` foundation.
 
-This is a greenfield app repo. It is not a refactor of PJ3. Code is cherry-picked from PJ3 and rebuilt on top of the `plotjuggler_sdk` foundation.
+It is mostly feature-complete: work here is maintenance, fixes and new features on a finished base. The port from PlotJuggler 3.x is done. PJ3 lives on the `main-3.x` branch and is not a reference for new code.
 
 ## License
 
@@ -15,7 +15,7 @@ header. The `plotjuggler_sdk` Conan package is a separate repo with its own lice
 
 ## Architecture
 
-Module boundaries and dependency rules are below; each module's `CLAUDE.md` and `docs/` describe its implementation. Cross-module designs: derived series and objects in [docs/derived_objects/](./docs/derived_objects/ARCHITECTURE.md), recording and source cache in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md), AI agents over MCP (server, bridge, plugin endpoint) in [MCP_SERVER.md](./docs/MCP_SERVER.md). [docs/archive/](./docs/archive) holds retired plans (history only).
+Module boundaries and dependency rules are below; each module's `CLAUDE.md` and `docs/` describe its implementation. Cross-module designs: derived series and objects in [docs/derived_objects/](./docs/derived_objects/ARCHITECTURE.md), recording and source cache in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md), AI agents over MCP (server, bridge, plugin endpoint) in [MCP_SERVER.md](./docs/MCP_SERVER.md). [docs/archive/](./docs/archive) holds retired plans (history only).
 
 ```
 PJ4/
@@ -70,6 +70,8 @@ Each PJ4 module owns its intent docs. An agent landing in the repo reads root `C
 
 Record hard-won lessons in the owning module's `docs/TECHNICAL_NOTES.md`, written as the current state of the code (no history); prune them when the code changes.
 
+**What the docs hold, and what the code holds.** The docs exist so the next reader knows what already exists (and does not write it twice), why it is built this way, and which mistakes were already made. They hold rationale, invariants, threading and lifetime rules, cross-module flows, rejected alternatives, pitfalls, and pointers to reusable entry points. The code is the source of truth for everything that drifts: signatures, private member names, test names, line numbers, constant values and file lists. Name the public class or header and describe the behaviour instead of restating those; quote a number only when it is a contract the reader must know, and say which symbol defines it.
+
 ### Code doc-comments
 
 Every class, struct, function, and method — and any member that is not self-explanatory — carries a **concise doc-comment**, especially in **header files** (the API surface a reader meets first).
@@ -93,7 +95,7 @@ Every PJ4 module (anything matching `pj_*/`) owns:
   - **Standard module**: `docs/REQUIREMENTS.md` (the WHAT).
   - **Module with non-obvious internals**: add `docs/ARCHITECTURE.md` (the HOW). See `pj_scene2D/docs/` for the reference shape.
 
-Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`. Its scope is described in [`docs/README.md`](./docs/README.md). Notably, [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) records the current Qt baseline from [`versions.env`](./versions.env) and what changed since 6.8 — read it before using an unfamiliar Qt API.
+Cross-cutting docs (glossary, ADRs, cross-module designs) live in top-level `docs/`. Its scope is described in [`docs/README.md`](./docs/README.md). Notably, [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) records the current Qt baseline from [`versions.env`](./versions.env) and what changed since 6.8 — read it before using an unfamiliar Qt API.
 
 ### Module documentation index
 
@@ -123,7 +125,6 @@ Before any commit that changes behavior, public APIs, ABI structs, module owners
 
 **`plotjuggler_sdk`** (`pj_base` + `pj_plugins`, consumed as-is; its repo's `CLAUDE.md` tells the full story) is pinned as `plotjuggler_sdk/<version>` in `conanfile.txt`. To move to a new SDK: bump the pin there, then `conan lock add --requires=plotjuggler_sdk/<v>#<rrev>` on `conan.lock`. Sourcing details (JFrog remote, non-Conan fallback, `--sdk-local`): [docs/BUILDING.md](./docs/BUILDING.md#build-internals).
 
-**The PJ3 reference tree (read-only)**: [github.com/facontidavide/PlotJuggler](https://github.com/facontidavide/PlotJuggler); point `PJ3_SOURCE_DIR` at a local checkout (no default). It is **the primary source for cherry-picked code**: `plotjuggler_app/` (plot widgets, docker, zoomers, `AxisTimeOffset`, tracker, drag-drop, per-curve transform UI, Lua engine), `plotjuggler_base/` (cross-check against `pj_base`), `plotjuggler_plugins/` (already ported; reference only). Treat it as read-only. Do not modify it from this repo. Plot widgets follow the "wholesale lift" (see `pj_plotting/CLAUDE.md`): port files largely intact, then rebind data reads (`PlotDataMapRef` → `DatastoreCurveAdapter` against `pj_datastore::DataReader`). Do not rebuild plot widgets from scratch.
 
 ## Build and test
 
@@ -151,9 +152,9 @@ C++20, CMake + Conan, Qt pinned by `PJ_QT_VERSION` in [`versions.env`](./version
 
 ## v1 scope
 
-Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua and Python via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes, session recording of streaming sources to MCAP.
+Shipped feature set: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua and Python via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes, session recording of streaming sources to MCAP.
 
-**Session recording is a runtime capability**, not a build flag: `RecordingService::isSupported()` decides and every Record affordance follows it (only the MCAP sink is desktop-only). One Record press = one `pj_<UTC timestamp>/` folder in the Preferences recording folder, holding ONE MCAP file per source (named after it, written straight into its final name), all sharing a `capture_id`; a file without a summary section was not stopped cleanly and still opens (`mcap recover` rebuilds its index); the write-queue budget is per source. See [docs/session_recorder_design.md](./docs/session_recorder_design.md).
+**Session recording is a runtime capability**, not a build flag: `RecordingService::isSupported()` decides and every Record affordance follows it (only the MCAP sink is desktop-only). One Record press = one `pj_<UTC timestamp>/` folder in the Preferences recording folder, holding ONE MCAP file per source (named after it, written straight into its final name), all sharing a `capture_id`; a file without a summary section was not stopped cleanly and still opens (`mcap recover` rebuilds its index); the write-queue budget is per source. See [docs/RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md).
 
 Scene3D (wired into `pj_app` via `Scene3DDockWidget`), the plots and the Scene2D viewer render through QRhi (OpenGL, D3D11, Metal, WebGL2; `PJ_GRAPHICS_API` overrides at run time). Browser (WebAssembly) rules, details in [docs/WASM_DEPLOYMENT.md](./docs/WASM_DEPLOYMENT.md):
 
@@ -176,22 +177,29 @@ Scene3D (wired into `pj_app` via `Scene3DDockWidget`), the plots and the Scene2D
 - Architectural questions → consult the placement rules above and the owning module's `CLAUDE.md` / `docs/`.
 - New modules must respect the dependency rules above.
 - Keep host code (`pj_app`, `pj_runtime`, `conanfile.txt`) **domain-neutral**: no plugin-specific terms (dataset-domain names, "episode") or hardcoded per-plugin policy. Mechanisms/protocols stay generic; the plugin supplies the domain meaning. A genuinely general capability motivated by one plugin is fine (e.g. a standard codec); a plugin-specific reference or branch in the host is not.
-- Delegating to Codex: run it **harness-tracked with a watchdog** (`codex exec` in a backgrounded, timeout-bounded `Bash`); the companion job model sends no completion notification and Codex can hang silently. Judge liveness by job-log mtime, not the "running" status; on timeout, cancel and take over the build/test yourself. When it finishes, act on its findings (usually high quality).
+- Delegating to Codex: run it **harness-tracked with a watchdog** (`codex exec` in a backgrounded, timeout-bounded `Bash`); the companion job model sends no completion notification and Codex can hang silently. Judge liveness by job-log mtime, not the "running" status; on timeout, cancel and take over the build/test yourself. When it finishes, check its findings against the code before acting on them (they are usually high quality).
 
 ### Execution autonomy
 
-Once we've agreed on an approach, run the plan to completion — work through implementation, build, and tests **without pausing for "should I proceed?" check-ins**. The User reviews the final result, not each step; don't ask for mid-task confirmation on reversible work. "Run to completion" stops **at the commit boundary, not through it**: commits (see Commit policy), pushes/PRs, and anything outward-facing or destructive still require a stop-and-surface.
+Once we've agreed on an approach, run the plan to completion — work through implementation, build, and tests **without pausing for "should I proceed?" check-ins**. The User reviews the final result, not each step; don't ask for mid-task confirmation on reversible work. "Run to completion" stops **at the commit boundary, not through it**: the actions listed under Commit policy need my go-ahead, and nothing else does.
 
 ### Verifying visual / performance changes
 
 Don't just assert a change works ("I don't see any difference" is a recurring round-trip); calibrate the claim to what you actually checked:
 
-- **Visual / widget / layout changes** — a *suggestion*, not a rule: when cheap, take a screenshot (qt-widgeteer harness or `/run`); otherwise say honestly what you did and didn't confirm instead of implying it's visually verified.
+- **Visual / widget / layout changes** — a *suggestion*, not a rule: when cheap, take a screenshot (the MCP `screenshot` tool, `plotjuggler4 --screenshot <png>` for the first 3D view, or `/run`); otherwise say honestly what you did and didn't confirm instead of implying it's visually verified.
 - **Performance changes** — measurable, so give a **number**, not an assertion (replot/repaint rate, which should stay ≤60 Hz; frame time; a profiler counter).
 
 ### Commit policy
 
-- **Never commit autonomously.** Surface the diff, then ask for approval. Commit only after explicit user confirmation in that turn.
+- **Get my explicit go-ahead before each of these actions**, by surfacing the diff (or the exact command) and asking:
+  - `git commit`, and `git push` including any force-push;
+  - creating, merging, closing or commenting on a PR or an issue;
+  - tags and releases, Conan and plugin-registry uploads, production deploys (`app.plotjuggler.io`);
+  - `./scripts/worktree-rm.sh` and deleting a branch.
+- **A go-ahead names the action and comes after I have seen the diff.** One given for an earlier task does not carry over to the next.
+- **Exception, documentation only:** a change that touches nothing but `docs/`, module `docs/` and `CLAUDE.md` files is committed and pushed straight to `main`, with no PR, once `pre-commit` passes on it.
+- **No go-ahead needed:** `git fetch`, new worktrees and branches, builds, `./test.sh`, read-only `git` and `gh` commands, re-running or dispatching CI for an existing branch, deleting build and scratch directories.
 
 ### Git gotchas (these cost time repeatedly)
 
@@ -200,10 +208,10 @@ Don't just assert a change works ("I don't see any difference" is a recurring ro
 - After a squash-merge, verify every intended commit landed (`git log --oneline <merge-commit>`); commits pushed after the squash diff was prepared get silently dropped.
 - After merging `origin/main` into a feature branch, grep that the feature's entry points still have **production callers** (not just defs/tests) — a modify/delete conflict can accept the deletion and silently drop wiring while CI stays green.
 
-### Porting policy from PJ3
+### Reuse before writing
 
-- **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check the PJ3 tree at `${PJ3_SOURCE_DIR}` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
-- **Style changes are expected; widget names are not.** When porting, adapt file/class names and member conventions to plotjuggler_sdk style (`PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col). But **preserve the `objectName` of widgets inside `.ui` files verbatim** (e.g. `buttonLoadDatafile`, `frameFile`, `checkBoxAddPrefix`, `displayTime`, `playbackLoop`, `streamingSpinBox`) so existing layout files, stylesheet selectors, and user muscle memory keep working — unless I explicitly ask you to rename one.
-- **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_runtime` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `DataProcessorService`). That's the one systematic rewrite.
-- **Proactively surface improvement opportunities.** If you see a chance to improve separation of concerns, reusability, testability, or remove duplication while you're porting — flag it and **ask for approval before changing**. Don't silently refactor, and don't silently skip obvious wins. The bar is: "is there a cleaner shape that we'd regret not taking?" If yes, ask.
-- **Don't fix what isn't broken.** Code that already reads cleanly and does the right thing gets ported close to verbatim (modulo style). Save the refactor energy for real problems.
+- **Search before you add.** Before writing a widget, helper or service, look for one that already exists: the owning module's `CLAUDE.md` key-header list first (reusable Qt controls are catalogued in `pj_widgets/CLAUDE.md`), then the code. Reuse or extend it. If nothing fits, say in the summary where you looked.
+- **Match the module you are in.** Follow the file naming, namespace and member conventions of the surrounding module; clang-format owns the layout (Google C++ / 2-space / 120-col).
+- **Widget `objectName`s in `.ui` files are stable.** Layout files, stylesheet selectors and tests depend on them (e.g. `buttonLoadDatafile`, `displayTime`, `playbackLoop`, `streamingSpinBox`). Rename one only when I explicitly ask.
+- **Proactively surface improvement opportunities.** If you see a chance to improve separation of concerns, reusability, testability, or remove duplication near your change — flag it and **ask for approval before changing**. Don't silently refactor, and don't silently skip obvious wins. The bar is: "is there a cleaner shape that we'd regret not taking?" If yes, ask.
+- **Don't fix what isn't broken.** Code that already reads cleanly and does the right thing stays as it is. Save the refactor energy for real problems.

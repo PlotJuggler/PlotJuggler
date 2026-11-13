@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <glm/ext/vector_double3.hpp>
 #include <glm/trigonometric.hpp>
@@ -13,9 +14,17 @@
 // defaults. Keeping them here (instead of duplicated literals) means a default
 // changes in one place.
 //
-// These are the User's 2026-06-13 look-dev picks. Pure C++ (glm + <cmath>), no
+// These are the User's look-dev picks. Pure C++ (glm + <cmath>), no
 // Qt, so it is includable from every layer that needs a default.
 namespace pj::scene3d::look {
+
+// The exact sRGB decode of one display-referred channel (0..1) to linear light:
+// the C++ twin of srgbToLinear() in rhi/shaders/srgb.glslinc, for colours the CPU
+// linearizes (the HDR clear) and for mirrors of shader maths (cube_mesh.h).
+inline double srgbToLinear(double channel) {
+  const double c = std::max(channel, 0.0);
+  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
 
 // World-space direction TO the key ("sun") light from azimuth/elevation in
 // degrees (Z-up). Shared by MeshShadingParams' key_light_dir default and the
@@ -53,10 +62,10 @@ inline constexpr float kGridMapFill = 0.4f;
 
 // ---- Composite / post (CompositeParams) ----
 inline constexpr int kTonemapMode = 1;  // 0 None, 1 ACES, 2 AgX, 3 Neutral
-inline constexpr float kExposure = 1.3f;
-inline constexpr float kSaturation = 1.3f;  // post-tonemap saturation boost
-inline constexpr float kAoStrength = 1.0f;  // SSAO blend into the composite
-inline constexpr float kEdlFloor = 0.3f;    // EDL darkens toward floor*color
+inline constexpr float kExposure = 1.0f;
+inline constexpr float kSaturation = 1.15f;  // post-tonemap saturation boost
+inline constexpr float kAoStrength = 1.0f;   // SSAO blend into the composite
+inline constexpr float kEdlFloor = 0.3f;     // EDL darkens toward floor*color
 
 // ---- Screen-space passes (SSAO / EDL) ----
 inline constexpr float kSsaoRadiusM = 0.4f;  // SSAO sample radius (metres)

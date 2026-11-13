@@ -28,6 +28,7 @@
 #include <functional>
 #include <glm/gtc/matrix_transform.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -279,6 +280,114 @@ TEST_F(Scene3dRhiModelCacheTest, TexturesAreSharedAcrossMeshesAndLayers) {
   second.put("f", cube(0.6F, solid({0.5F, 0.5F, 0.5F, 1.0F})), {1.0, 0.0, 0.5});
   GRAB_OR_SKIP(untextured, scene.view());
   EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).cachedTextureCountForTest(), 0);
+}
+
+// Colour texels (base colour, emissive) are sRGB-encoded on every backend: a
+// cube textured with sRGB 128 renders like an untextured cube whose linear
+// factor is 128's decoded value, not its raw 128/255. Qt's OpenGL backend
+// ignores QRhiTexture::sRGB for uncompressed formats, so a texture sampled raw
+// there renders as linear 0.5 instead (ANYmal's red shell went salmon).
+TEST_F(Scene3dRhiModelCacheTest, ColorTexturesDecodeSrgbOnEveryBackend) {
+  QImage grey(2, 2, QImage::Format_RGBA8888);
+  grey.fill(QColor(128, 128, 128));
+  QByteArray png;
+  QBuffer buffer(&png);
+  buffer.open(QIODevice::WriteOnly);
+  grey.save(&buffer, "PNG");
+  pj::scene3d::TextureSource texture;
+  texture.bytes.assign(png.cbegin(), png.cend());
+  texture.key = "srgb-128";
+  const float decoded = std::pow((128.0F / 255.0F + 0.055F) / 1.055F, 2.4F);  // 0.2158
+  const float raw = 128.0F / 255.0F;
+
+  FakeModelLayer layer{kLink};
+  layer.put("cube", cube(1.0F, solid({raw, raw, raw, 1.0F})), {0.5, 0.0, 0.5});
+  ModelView scene;
+  SKIP_UNLESS(scene.show({&layer}));
+  // The centre pixel of the cube drawn with `material`.
+  const auto center = [&](std::shared_ptr<const pj::scene3d::Material> material) -> std::optional<QRgb> {
+    layer.put("cube", cube(1.0F, std::move(material)), {0.5, 0.0, 0.5});
+    const QImage image = grab(scene.view());
+    return image.isNull() ? std::nullopt : std::optional(image.pixel(image.width() / 2, image.height() / 2));
+  };
+  const auto emissive = [](float factor, const pj::scene3d::TextureSource* map) {
+    auto material = std::make_shared<pj::scene3d::Material>();
+    material->base_color_factor = glm::vec4(0.0F, 0.0F, 0.0F, 1.0F);
+    material->emissive_factor = glm::vec3(factor);
+    if (map != nullptr) {
+      material->emissive = *map;
+    }
+    return material;
+  };
+  auto base_textured = std::make_shared<pj::scene3d::Material>();
+  base_textured->base_color_factor = glm::vec4(1.0F);
+  base_textured->base_color = texture;
+
+  struct Case {
+    const char* slot;
+    std::shared_ptr<const pj::scene3d::Material> textured, as_decoded, as_raw;
+  };
+  for (const Case& c :
+       {Case{"base colour", base_textured, solid({decoded, decoded, decoded, 1.0F}), solid({raw, raw, raw, 1.0F})},
+        Case{"emissive", emissive(1.0F, &texture), emissive(decoded, nullptr), emissive(raw, nullptr)}}) {
+    const auto textured = center(c.textured);
+    const auto as_decoded = center(c.as_decoded);
+    const auto as_raw = center(c.as_raw);
+    if (!textured || !as_decoded || !as_raw) {
+      PJ_SKIP_WITHOUT_GPU("no presented frame on this backend");
+    }
+    EXPECT_LE(pj::scene3d::test::channelDeltaSum(*textured, *as_decoded), 6)
+        << c.slot << ": textured " << qGray(*textured) << " vs decoded factor " << qGray(*as_decoded);
+    EXPECT_GT(pj::scene3d::test::channelDeltaSum(*textured, *as_raw), 60)
+        << c.slot << ": textured " << qGray(*textured) << " vs raw factor " << qGray(*as_raw);
+  }
+}
+
+// One sRGB curve for every colour source: a dark vertex colour renders exactly like
+// the same value sampled from a texture (exact sRGB decode). A 2.2-power vertex decode
+// lands 2 levels per channel darker here, after the light and the tonemap (sum 6).
+TEST_F(Scene3dRhiModelCacheTest, VertexColorAndTextureShareTheSrgbDecode) {
+  constexpr int kLevel = 26;  // dark, where the 2.2 power and the sRGB curve part most
+  QImage dark(2, 2, QImage::Format_RGBA8888);
+  dark.fill(QColor(kLevel, kLevel, kLevel));
+  QByteArray png;
+  QBuffer buffer(&png);
+  buffer.open(QIODevice::WriteOnly);
+  dark.save(&buffer, "PNG");
+  auto textured = std::make_shared<pj::scene3d::Material>();
+  textured->base_color_factor = glm::vec4(1.0F);
+  textured->base_color.bytes.assign(png.cbegin(), png.cend());
+  textured->base_color.key = "srgb-26";
+  const auto vertex_colored = [](float level) {
+    MeshData mesh = cube(1.0F, solid({1.0F, 1.0F, 1.0F, 1.0F}));
+    for (pj::scene3d::Vertex& vertex : mesh.vertices) {
+      vertex.color = glm::vec4(level, level, level, 1.0F);
+    }
+    return mesh;
+  };
+
+  FakeModelLayer layer{kLink};
+  layer.put("cube", cube(1.0F, textured), {0.5, 0.0, 0.5});
+  ModelView scene;
+  // A fixed exposure, not the default look: it sets how far the dark cube sits
+  // from black and how far apart the two decodes land.
+  scene.view().compositeParams().exposure = 1.3F;
+  SKIP_UNLESS(scene.show({&layer}));
+  const auto center = [&](MeshData mesh) -> std::optional<QRgb> {
+    layer.put("cube", std::move(mesh), {0.5, 0.0, 0.5});
+    const QImage image = grab(scene.view());
+    return image.isNull() ? std::nullopt : std::optional(image.pixel(image.width() / 2, image.height() / 2));
+  };
+  const auto from_texture = center(cube(1.0F, textured));
+  const auto from_vertex = center(vertex_colored(static_cast<float>(kLevel) / 255.0F));
+  const auto black = center(vertex_colored(0.0F));
+  if (!from_texture || !from_vertex || !black) {
+    PJ_SKIP_WITHOUT_GPU("no presented frame on this backend");
+  }
+  EXPECT_LE(pj::scene3d::test::channelDeltaSum(*from_texture, *from_vertex), 3)
+      << "texture " << qGray(*from_texture) << " vs vertex colour " << qGray(*from_vertex);
+  EXPECT_GT(pj::scene3d::test::channelDeltaSum(*from_texture, *black), 15)
+      << "the cube is indistinguishable from black (" << qGray(*from_texture) << ")";
 }
 
 // Edge lists are built on the first wireframe draw, once per mesh; toggling back

@@ -161,7 +161,7 @@ jobs:
           # compiler_check=content, hash_dir=false, base_dir (below).
           restore-keys: |
             ccache-appimage-
-            ccache-linux-build-main-
+            ccache-linux-g1-main-
 
       - name: Configure ccache
         # compiler_check=content + hash_dir=false + base_dir make object hashes
@@ -341,7 +341,7 @@ jobs:
         # the SHA (cache keys are immutable), so saving whenever the exact key
         # missed wrote a new ~2 GB blob per dispatch into per-GB-month billed
         # Depot Cache storage. The restore-keys above fall back to CI's
-        # ccache-linux-build-main-, which every push to main refreshes, and
+        # ccache-linux-g1-main-, which every push to main refreshes, and
         # hash_dir=false + base_dir make those objects valid here — so the warm
         # path survives without this workflow keeping its own generation.
         if: always() && github.ref_type != 'tag' && steps.ccache-restore.outputs.cache-matched-key == ''

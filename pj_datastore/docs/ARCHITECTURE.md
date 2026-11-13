@@ -76,7 +76,7 @@ Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant
 - `expandArray()` — variable-length array expansion. Seals current builder, adds new `ColumnDescriptor`s, updates `TopicStorage`. Clamps to `array_expansion_limit`.
 - `appendColumns()` — bulk ingest with auto-chunking: splits batches that exceed `max_chunk_rows`, calling `appendTimestamps` / `appendColumn` / `finishBulkAppend` / `autoSeal` per sub-batch.
 - `flush()` / `flushAll()` — seals remaining builders and returns `vector<pair<TopicId, TopicChunk>>` for `commitChunks()`.
-- `autoSeal()` — called when builder is full (`rowCount >= max_chunk_rows`). Seals builder, moves chunk to `pending_chunks_`.
+- `autoSeal()` — called when builder is full (`rowCount >= max_chunk_rows`). Seals builder, moves chunk to the writer's pending list.
 
 ### Reader Layer
 
@@ -198,7 +198,7 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 2. Plugin calls `writeHost.ensureField(topic, name, type)` -> host calls `DataWriter::ensureColumn()`
 3. Plugin calls `writeHost.appendRecord(topic, timestamp, fields)` -> host calls `DataWriter::beginRow()`, `set()` per field, `finishRow()`
 4. `finishRow()` pads unset columns with null, updates per-column stats
-5. If builder is full (`rowCount >= max_chunk_rows`): `autoSeal()` seals builder, moves `TopicChunk` to `pending_chunks_`
+5. If builder is full (`rowCount >= max_chunk_rows`): `autoSeal()` seals builder, moves `TopicChunk` to the writer's pending list
 6. Host calls `flushPending()` -> `DataWriter::flushAll()` seals remaining builders -> `DataEngine::commitChunks()` appends to `TopicStorage`
 7. Chunks are now visible to readers and incremental engine
 
@@ -253,7 +253,7 @@ The derived engines' pool workers (`BatchEngine`, `OnDemandService`) keep the on
 touching the `DataEngine`: they work only on copies the GUI thread staged before the run
 (`docs/derived_objects/ARCHITECTURE.md` §11). EVERY engine access — read or
 write, on any thread — holds the lock via `lockEngine()`. `DataWriter` accumulates
-in-memory and is not itself shared; `TopicChunkBuilder::next_chunk_id_` remains a
+in-memory and is not itself shared; the chunk-id counter of `TopicChunkBuilder` remains a
 `std::atomic`.
 
 The mutex is **recursive** so the same thread may re-acquire it without
@@ -343,7 +343,7 @@ The tests in `tests/` are built into these runners (the authoritative live set i
 
 - `pj_datastore_tests`: one gtest runner for the whole module, registered with `gtest_discover_tests`, so ctest
   names are `<runner>.<Suite>.<Case>` and each case runs in its own process. Filter one suite with
-  `ctest --test-dir build -R '^pj_datastore_tests\.ObjectStoreTest\.'`.
+  `./test.sh -R '^pj_datastore_tests\.ObjectStoreTest\.'`.
 - `chunk_test`: a separate executable, because it holds death tests.
 - `engine_concurrency_test`, `engine_thread_safety_test`: separate executables with a 90-second timeout; they are the
   ThreadSanitizer entry points used by `build.sh` and CI.
@@ -359,4 +359,4 @@ and round-trip.
 built (commented out in `CMakeLists.txt`) and have not been rewritten against the v4 Arrow-stream path
 (`read_series_arrow`); `arrow_stream_round_trip_test` covers that path.
 
-Build and run from the PJ4 repo root: `./build.sh`, then `ctest --test-dir build -R '^pj_datastore_tests\.'` (the separate executables run by their own names, e.g. `-R chunk_test`).
+Build and run from the PJ4 repo root: `./build.sh`, then `./test.sh -R '^pj_datastore_tests\.'` (the separate executables run by their own names, e.g. `-R chunk_test`).

@@ -29,13 +29,13 @@ If the edit "had no effect", suspect this step before suspecting the code.
 ```
 
 - `run.sh` already unsets `QT_IM_MODULE` (IBus segfault) and pins the bundled Qt plugins — launch through it, not the raw binary.
-- Test data: `example.mcap` at the repo root; more under module test assets.
+- Test data: module test assets (`tests/` fixtures), or a recording the user names.
 - Bound the run: `timeout 20 ./run.sh …` for scripted checks so nothing hangs the session.
 
 ## Step 3 — Observe by change type
 
 **Visual / layout / widget:**
-- Screenshot when cheap: `pj_app`'s `--screenshot` flag, or the qt-widgeteer harness (`3rdparty/qt-widgeteer`, in-process `WidgeteerClient`).
+- Screenshot when cheap: the MCP `screenshot` tool on the running app (any tab), or `plotjuggler4 --screenshot <png>` (grabs the first 3D view, then exits).
 - **GNOME Wayland blocks external window capture** (grim etc. return nothing) — that's the environment, not the app. Use the in-app paths above or XWayland.
 - Sizing looks wrong / C++ sizing calls ignored: that's QSS overriding C++ (`QStyleSheetStyle`). Diagnose in the **live** app with an env-gated `qWarning` dump of size/min/max/iconSize + `style()->className()` — offscreen tests use a different style and cannot reproduce it. Fix in QSS, not C++.
 

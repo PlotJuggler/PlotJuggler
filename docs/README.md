@@ -9,7 +9,6 @@ This folder is for **cross-cutting documentation only** — material that doesn'
 
 Examples of what belongs here:
 
-- Porting strategy / migration notes that span multiple modules.
 - Glossary or terminology references used across the repo.
 - Architecture decision records (ADRs) for choices that affect multiple modules.
 - **Research notes** that informed multiple modules' designs — under `research/`.
@@ -39,8 +38,8 @@ Examples of what belongs here:
 | `WASM_PRESETS.md` | Guide | Browser presets: the layout contract, authoring a preset, `package_wasm.mjs --presets` and what it refuses, the sample tests, and the hosting limits and procedure. |
 | `WASM_HOSTING.md` | Guide | Serving the browser app from a robot over HTTPS with Caddy ([`wasm/Caddyfile`](./wasm/Caddyfile)), which also proxies the PlotJuggler Bridge at `/bridge`: setup, certificates, robot presets with `${deployment.ws_origin}/bridge`, troubleshooting and the spec that runs the file. |
 | `update_channels_design.md` | Design (delivered) | **How a release reaches an already-installed machine.** Why the apt repository and the Windows update repository are hosted on Cloudflare R2 rather than a metered package service, the publish orderings that keep index and payload consistent, accepted trade-offs (signing key in CI, no delta updates), and what is verified versus merely reviewed. |
-| `undo_redo_integrity_plan.md` | Plan (delivered) | Consolidated undo/redo state-integrity delivery plan: dataset identity, transactional undo, timeline-state snapshots, processor/scene persistence — five incremental PRs (#373 #377 #379 #380 #382, all merged) distilled from two prior solution branches. |
-| `was_pending_followup_plan.md` | Plan (draft) | Follow-up to the state-integrity epic: unified was-pending semantics for scene restore queues — serialize binding state instead of origin so exact-restore correctness is structural rather than shell-maintained. |
+| `archive/undo_redo_integrity_plan.md` | Retired | The delivered undo/redo state-integrity delivery plan: dataset identity, transactional undo, timeline-state snapshots, processor/scene persistence — five incremental PRs (#373 #377 #379 #380 #382, all merged) distilled from two prior solution branches. |
+| `archive/was_pending_followup_plan.md` | Retired (never implemented) | Draft follow-up to the state-integrity epic: serialize each scene restore-queue entry's binding state (`was_pending`) instead of its origin, so exact restore is structural. Not scheduled; the code still uses `pending_intent`. |
 | `research/dataset_format_comparison.md` | Reference | Cross-cutting comparison of MCAP, RLDS, LeRobot, Zarr. Informs pj_scene2D and any future dataset-format work. |
 | `research/rerun_notes.md` | Reference | Analysis of Rerun's 2D architecture; comparison input for pj_scene2D and (potentially) pj_scene3D. |
 | `research/pixi_build_exploration.md` | Reference | Findings from building PJ4 with pixi / conda-forge instead of Conan: what maps one to one, the local recipes under `recipes/`, the CMake portability fixes and the semantic deltas. The pins quoted in it are those of the exploration; `pixi.toml` and `versions.env` are authoritative. |
@@ -48,8 +47,8 @@ Examples of what belongs here:
 | [`derived_objects/`](./derived_objects/) | Reference | **Derived objects:** functions over scalar and object topics, evaluated on demand. Start at [`README.md`](./derived_objects/README.md) (the engines and the path from a script to a layer); [`ARCHITECTURE.md`](./derived_objects/ARCHITECTURE.md) is the design as built, with its known limits (§20) and recipes for common changes (§21); [`REQUIREMENTS.md`](./derived_objects/REQUIREMENTS.md) holds the decisions D1-D30. |
 | [`MCP_SERVER.md`](./MCP_SERVER.md) | Reference | **AI agents over MCP.** The in-app server, its stdio bridge and the `pj.mcp_endpoint.v1` plugin endpoint: tool sets, public vs plugin tokens, lifetimes and revocation, opt-in and discovery, the Assistant as consumer, security and tests. |
 | [`LOCALIZATION.md`](./LOCALIZATION.md) | Reference | **Interface translations.** Language selection, the embedded zh_CN catalog, keeping it current (a lagging catalog warns, never fails CI), lupdate-visible contexts, the browser CJK font, terminology. |
-| `RECORDING_AND_CACHING.md` | Reference | **Recording and caching, the durable spec.** Intent, goals, architecture, accepted trade-offs and rejected alternatives (plugin-side caching, provider-driven cache ABI, parser config in the file, promote-at-stop) for the session recorder and the source cache. Read this first; `session_recorder_design.md` is the working design behind it. |
-| `session_recorder_design.md` | Design (M1 shipped) | Host-side raw recording of delegated-ingest messages into MCAP: stream Record/Stop (M1, shipped as `RecordingService`), then the connector source cache on the same core and the Mosaico transport/parser split (status in `RECORDING_AND_CACHING.md`). Records the 2026-08-31 decisions (raw only, subscribed topics, bounded backpressure, global+per-source, auto-named folder). |
+| `RECORDING_AND_CACHING.md` | Reference | **Recording and caching, the durable spec.** Intent, goals, architecture, accepted trade-offs and rejected alternatives (plugin-side caching, provider-driven cache ABI, parser config in the file, promote-at-stop) for the session recorder and the source cache. |
+| `archive/session_recorder_design.md` | Retired | The delivered working design of the session recorder and the source cache: the 2026-08-31 decisions D1–D9 (raw only, subscribed topics, drop-largest, one file per source, parser policy in the layout) and the milestone history. The current design is `RECORDING_AND_CACHING.md`. |
 
 ## Where to find module docs
 

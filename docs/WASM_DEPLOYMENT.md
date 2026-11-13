@@ -308,7 +308,8 @@ What to know before changing it:
 - **Size budget.** It adds about 1.9 MB to the Brotli download (2026-10-21,
   the acceptance configuration with and without it), about 12 % of the
   production package's 16.13 MB. CI fails the production package above
-  16,932,000 B, 5 % over that measurement (`scripts/wasm_size_budget.mjs`; the
+  16,932,000 B, 5 % over that measurement, raised to 17,090,000 B for the MCP
+  server in the browser (+156 KB, 2026-11-11) (`scripts/wasm_size_budget.mjs`; the
   sample `presets/` are fetched on demand and not counted): an absolute budget,
   since both configurations now carry Python and a delta would need a third
   build. About 0.67 MB of it is the stdlib zip, stored uncompressed

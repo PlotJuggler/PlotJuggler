@@ -34,11 +34,8 @@ though in shapes that differ from what this document first proposed:
 - **Time updates: `IDataWidget` in `pj_runtime`** (resolved). pj_scene2D
   widgets implement `PJ::IDataWidget` (from
   `pj_runtime/include/pj_runtime/IDataWidget.h`) and are driven by
-  `pj_runtime::PlaybackEngine`. The original proposal was a
-  `TimelineCursor` header in `pj_base` to which widgets would subscribe;
-  the as-built model instead has widgets implement an interface and the
-  runtime call them on each tick. The contract property still holds:
-  widgets only *receive* time, they never drive the clock. See §4.5 and
+  `pj_runtime::PlaybackEngine`, which calls them on each tick.
+  Widgets only *receive* time, they never drive the clock. See §4.5 and
   §6 for the current wording.
 
 - **Two-host parser ingest: protocol v4 + service-registry bindings**
@@ -50,15 +47,6 @@ though in shapes that differ from what this document first proposed:
   media). A parser binds whichever services it needs and writes to them
   inside its single `parse()` call. The net behaviour matches what §4.4
   requires.
-
-**One related implementation item is still pending:** the per-topic
-keyframe-index sidechannel (referred to as `MediaIndexRegistry` in §4.4
-and ARCHITECTURE.md §6) is designed but not yet implemented. Today
-`StreamingVideoDecoder` maintains its own inline keyframe vector — the
-host's only video decode path — which works without the registry. The
-registry would only be needed if a future file-backed ObjectStore path
-lands. Treat `MediaIndexRegistry` references in §4.4 as **designed, not
-yet realised**.
 
 **Note on keyframe tracking**: pj_scene2D does NOT ask ObjectStore to
 know anything about keyframes. Per `OBJECT_STORE_DESIGN.md §3.6`,
@@ -289,13 +277,9 @@ on top of that protocol:
   `object_write_host.register_topic()` itself and then pushes entries
   directly via `push_owned` (streaming) or `push_lazy` (file-backed). The
   plugin handles the raw bytes end-to-end, with no parser in the loop.
-  For video topics on a future file-backed ObjectStore source, the design
-  calls for the plugin to additionally publish a pre-computed keyframe
-  timestamp list to a pj_scene2D-side `MediaIndexRegistry` sidechannel
-  (not yet implemented — see Prerequisites). Today the live
+  For video topics the plugin publishes no keyframe information:
   `StreamingVideoDecoder` builds its own keyframe vector inline (the
-  host's only video decode path), so the registry is not on the critical
-  path. Direct ingest is appropriate when the format is
+  host's only video decode path). Direct ingest is appropriate when the format is
   format-tight enough that a dedicated parser adds no value (raw-JPEG
   folder, LeRobot MP4, dedicated MCAP importer, etc.).
 
@@ -339,7 +323,7 @@ Prerequisites note on protocol v4 + service-registry bindings.)
 | Topic metadata (`media_class`, `encoding`, `schema`) | DataSource at registration time |
 | Frame reassembly from sub-frame packets | DataSource |
 | Raw-bytes push (`push_owned` / `push_lazy`) | Parser (delegated) or DataSource (direct) |
-| Video keyframe indexing | `pj_scene2d_core::StreamingVideoDecoder` inline keyframe vector (streaming, incremental NAL inspection) — the host's only video decode path. A separate `MediaIndexRegistry` sidechannel is designed for a future file-backed ObjectStore path but is not yet implemented. |
+| Video keyframe indexing | `pj_scene2d_core::StreamingVideoDecoder` inline keyframe vector (streaming, incremental NAL inspection) — the host's only video decode path. |
 | Retention budget / eviction trigger | Application (budget) + ObjectStore (enforcement) |
 
 **Frame granularity**: following the `VideoFrame` schema convention in
@@ -357,21 +341,12 @@ for H.264/H.265, OBU type for AV1). The wire schema has none, and ObjectStore
 also has none. Today the keyframe index lives inside the decoder that
 needs it:
 
-- **Streaming sources (implemented)**: `StreamingVideoDecoder` builds
+- **Streaming sources**: `StreamingVideoDecoder` builds
   the keyframe index incrementally as entries arrive, NAL-parsing each
   new entry on the decoder thread. One-time inspection per entry;
   amortised over live playback at no user-visible cost. This is the
   host's only video decode path.
-- **File-backed ObjectStore path (designed, not yet implemented)**: the
-  original plan was for a DataSource plugin to pre-compute the keyframe
-  list at open time and publish it via a C ABI slot
-  (`object_write_host.publish_keyframe_index(topic, timestamps, count)`),
-  with the host populating a pj_scene2D-side `MediaIndexRegistry`
-  keyed by `ObjectTopicId`. Neither the C ABI slot nor the registry
-  exist in code today. They are kept in the design (see
-  ARCHITECTURE.md §6) for the day that path lands.
-
-In every realised path the indexing lives in `pj_scene2d_core`, never
+The indexing lives in `pj_scene2d_core`, never
 in ObjectStore. No pattern adds codec-specific fields or methods to
 ObjectStore.
 
@@ -397,21 +372,10 @@ gate host wiring on a parser-level flag.
    via `push_lazy`.
 3. For streaming sources: accumulate incoming bytes and push via
    `push_owned`.
-4. **For video topics — implemented today, no DataSource action required**:
-   streaming video sources rely on `StreamingVideoDecoder`'s incremental
-   keyframe scan (the host's only video decode path). A future
-   file-backed-ObjectStore path is designed to take a
-   pre-computed keyframe list via
-   `object_write_host.publish_keyframe_index(topic, timestamps, count)`,
-   forwarded to a pj_scene2D-side `MediaIndexRegistry` keyed by
-   `ObjectTopicId` — neither the slot nor the registry exist in code yet
-   (see Prerequisites). When that path lands, the DataSource will not
-   link `pj_scene2d_core` — communication will be through the C ABI
-   write host only. Non-video media topics (self-contained JPEG/PNG,
-   point clouds, scene primitives) do not need any keyframe information
-   in any of these paths.
-5. Publish optional rate hints (`preferred_fps`, `natural_range_ns`) so
-   the application clock can pace playback appropriately.
+4. For video topics no DataSource action is required: the host's
+   `StreamingVideoDecoder` finds keyframes itself with an incremental
+   scan. Non-video media topics (self-contained JPEG/PNG, point clouds,
+   scene primitives) need no keyframe information at all.
 
 **Timestamp mapping (LeRobot example)**: the DataSource plugin owns all
 format-specific timestamp translation. A LeRobot plugin reading Parquet
@@ -431,17 +395,10 @@ Media channels share the global timeline:
   of the application's `AppSession`). pj_scene2D widgets implement
   `PJ::IDataWidget` (from `pj_runtime/IDataWidget.h`); the runtime calls
   `onTrackerTime(double time)` on each tick. Widgets never drive the
-  clock — they only receive time. (The original design called for a
-  `TimelineCursor` header in `pj_base`; the realised model puts the
-  contract in `pj_runtime` instead — see Prerequisites.)
-- **Rate hints**: DataSource plugins publish optional hints at startup
-  (`preferred_fps`, `natural_range_ns`). The timeline cursor aggregates
-  hints across sources and picks a default playback pace, which the user
-  may override.
+  clock — they only receive time.
 - **MP4-dominated sessions**: when a DataSource has only MP4 data with no
   sidecar nanosecond timestamps, it synthesizes them (0-based or via a
-  user-provided epoch offset) and publishes a rate hint. The clock honors
-  the hint; playback proceeds at the MP4's natural rate.
+  user-provided epoch offset).
 - **Per-source stamps**: MCAP carries ns timestamps directly. MP4 requires
   a mapping table (LeRobot Parquet, or user-provided epoch). Live streams
   use source-provided stamps (e.g., ROS header.stamp) with time-of-arrival
@@ -529,10 +486,8 @@ flag polled by the decoder between NAL units. A new request flips the
 previous token, and the decoder returns early without publishing a partial
 frame.
 
-**Keyframe seek**: video decoders use whichever keyframe index their
-path provides (`StreamingVideoDecoder`'s in-decoder index for streaming
-sources today — the host's only video decode path; a future
-`MediaIndexRegistry` for the file-backed ObjectStore path — see §4.4) to
+**Keyframe seek**: the video decoder uses its in-decoder keyframe index
+(`StreamingVideoDecoder`, the host's only video decode path) to
 find the seek target in O(log k). For ObjectStore
 paths they then call `ObjectStore::latestAt(topic, keyframe_ts)` for
 the keyframe bytes, flush the FFmpeg context, and iterate forward via

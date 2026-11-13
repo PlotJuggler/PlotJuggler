@@ -15,8 +15,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
+#include <QPointer>
 #include <QRectF>
 #include <QSettings>
+#include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -41,6 +43,7 @@
 #include "PluginPlotTabsController.h"
 #include "PreferencesDialog.h"
 #include "StreamingSourceManager.h"
+#include "mcp/McpBrowserLink.h"
 #include "mcp/McpProtocol.h"
 #include "mcp/McpServer.h"
 #include "pj_base/sdk/plugin_data_api.hpp"
@@ -128,7 +131,7 @@ class McpTestPeer {
 
  private:
   static McpServer::Caller callerOf(const McpServer& server, const QByteArray& token, QTcpSocket* socket) {
-    return {.token = token, .owner = token == server.public_token_ ? u"agent-test"_s : QString(), .socket = socket};
+    return {.token = token, .owner = token == server.public_token_ ? u"agent-test"_s : QString(), .connection = socket};
   }
 };
 
@@ -1005,6 +1008,114 @@ TEST_F(McpQueuedLoadTest, ClosingPublicAccessCancelsAReloadFileWaitingInTheQueue
 }
 
 /// A toolbox plugin's endpoint, with public access closed unless a case opens it.
+/// A relay as pj_mcp_relay.py serves the browser link (McpBrowserLink), one HTTP request per
+/// connection, answered by the test: what the page asked, and the socket to answer on.
+class FakeRelay {
+ public:
+  struct Request {
+    PJ::mcp::HttpRequest http;
+    QPointer<QTcpSocket> socket;
+  };
+
+  FakeRelay() {
+    QObject::connect(&server_, &QTcpServer::newConnection, [this] {
+      while (QTcpSocket* socket = server_.nextPendingConnection()) {
+        auto buffer = std::make_shared<QByteArray>();
+        QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket, buffer] {
+          *buffer += socket->readAll();
+          PJ::mcp::HttpRequest request;
+          if (PJ::mcp::parseHttpRequest(*buffer, request) == 200) {
+            requests_.push_back({std::move(request), socket});
+          }
+        });
+        QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+      }
+    });
+    EXPECT_TRUE(server_.listen(QHostAddress::LocalHost));
+  }
+
+  /// The relay's address with its secret, as its launch hands it to the page.
+  [[nodiscard]] QUrl url() const {
+    return QUrl(u"http://127.0.0.1:%1/?key=s3cret"_s.arg(server_.serverPort()));
+  }
+
+  /// Pumps until the page sends a request to `path`, and takes it.
+  Request next(const QByteArray& path) {
+    std::optional<Request> found;
+    EXPECT_TRUE(pumpUntil([&] {
+      const auto it = std::find_if(
+          requests_.begin(), requests_.end(), [&](const Request& r) { return r.http.path.startsWith(path); });
+      if (it == requests_.end()) {
+        return false;
+      }
+      found = std::move(*it);
+      requests_.erase(it);
+      return true;
+    })) << "the page never asked for "
+        << path.toStdString();
+    return found.value_or(Request{});
+  }
+
+  static void answer(const Request& request, int status, const json& body = nullptr) {
+    if (request.socket != nullptr) {
+      request.socket->write(
+          PJ::mcp::httpResponse(status, body.is_null() ? QByteArray() : QByteArray::fromStdString(body.dump())));
+      request.socket->disconnectFromHost();
+    }
+  }
+
+ private:
+  QTcpServer server_;
+  std::vector<Request> requests_;
+};
+
+TEST_F(McpServerTest, ARelayedCallIsAnsweredAsThePublicClientTheRelayNames) {
+  FakeRelay relay;
+  ASSERT_TRUE(window_->connectMcpRelay(relay.url()));
+  const FakeRelay::Request hello = relay.next("/link/hello");
+  EXPECT_EQ(json::parse(hello.http.body.toStdString(), nullptr, false).value("protocol", 0), 1);
+  // The secret travels in the header on every request, never in a path.
+  EXPECT_EQ(hello.http.path, "/link/hello");
+  EXPECT_EQ(hello.http.headers.value("x-pj-link"), "s3cret");
+  FakeRelay::answer(hello, 200, {{"id", "tab-1"}});
+
+  const FakeRelay::Request poll = relay.next("/link/next");
+  EXPECT_EQ(poll.http.path, "/link/next?id=tab-1");
+  EXPECT_EQ(poll.http.headers.value("x-pj-link"), "s3cret");
+  FakeRelay::answer(
+      poll, 200, {{"seq", 7}, {"client", "claude-code"}, {"message", toolsCall("get_status", json::object())}});
+
+  const FakeRelay::Request reply = relay.next("/link/reply");
+  EXPECT_EQ(reply.http.path, "/link/reply?id=tab-1");
+  EXPECT_EQ(reply.http.headers.value("x-pj-link"), "s3cret");
+  const json body = json::parse(reply.http.body.toStdString(), nullptr, false);
+  EXPECT_EQ(body.value("seq", 0), 7);
+  const json content = body["response"]["result"].value("content", json::array());
+  ASSERT_FALSE(content.empty()) << body.dump();
+  const json status = json::parse(content[0].value("text", ""), nullptr, false);
+  EXPECT_EQ(status.value("agent", ""), "agent-claude-code") << "owned by the client the relay names";
+  FakeRelay::answer(reply, 204);
+  // It keeps polling for the next message.
+  FakeRelay::answer(relay.next("/link/next"), 204);
+  FakeRelay::answer(relay.next("/link/next"), 204);
+}
+
+TEST_F(McpServerTest, ALinkForgottenByARestartedRelayIntroducesItselfAgain) {
+  FakeRelay relay;
+  ASSERT_TRUE(window_->connectMcpRelay(relay.url()));
+  FakeRelay::answer(relay.next("/link/hello"), 200, {{"id", "old"}});
+  FakeRelay::answer(relay.next("/link/next"), 404);
+  FakeRelay::answer(relay.next("/link/hello"), 200, {{"id", "new"}});
+  EXPECT_EQ(relay.next("/link/next").http.path, "/link/next?id=new");
+}
+
+TEST_F(McpServerTest, OnlyALoopbackHttpRelayIsLinked) {
+  EXPECT_FALSE(window_->connectMcpRelay(QUrl(u"http://example.com:7381"_s)));
+  EXPECT_FALSE(window_->connectMcpRelay(QUrl(u"https://127.0.0.1:7381"_s)));
+  EXPECT_FALSE(window_->connectMcpRelay(QUrl(u"http://127.0.0.1"_s)));  // no port
+  EXPECT_TRUE(PJ::McpBrowserLink::acceptableRelay(QUrl(u"http://localhost:7381"_s)));
+}
+
 class McpEndpointTest : public McpServerTest {
  protected:
   McpEndpointTest() {

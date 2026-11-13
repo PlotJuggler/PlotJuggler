@@ -18,7 +18,7 @@ keyboard focus, release, auto-repeat, and deactivation.
 
 ## 1. Core adapters (`core/`)
 
-- **`DatastoreCurveAdapter`** bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`.
+- **`DatastoreCurveAdapter`** bridges `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`.
   It, `FilteredCurveAdapter` and `PointSeriesXY` implement `RevisionedSeries` (§3.6).
 - **`FilteredCurveAdapter`** is a lazy `DatastoreCurveAdapter` subclass that serves the output of a
   `proc::DataProcessor`: the Filter Editor's before/after preview, refreshed on the streaming commit path.

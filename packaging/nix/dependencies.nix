@@ -90,41 +90,58 @@ in
     )
   );
 
-  cloudini = stdenv.mkDerivation (
-    {
-      pname = "pj4-cloudini";
-      nativeBuildInputs = [
-        cmake
-        ninja
-      ];
-      propagatedBuildInputs = [
-        lz4
-        zstd
-      ];
-      cmakeDir = "../cloudini_lib";
-      # Cloudini probes only the static zstd target; Nix supplies the shared one.
-      postPatch = ''
-        substituteInPlace cloudini_lib/CMakeLists.txt cloudini_lib/cmake/find_or_download_zstd.cmake \
-          --replace-fail 'zstd::libzstd_static' 'zstd::libzstd_shared'
-      '';
-      cmakeFlags = [
-        "-DCLOUDINI_FORCE_VENDORED_DEPS=OFF"
-        "-DCLOUDINI_BUILD_TOOLS=OFF"
-        "-DCLOUDINI_BUILD_BENCHMARKS=OFF"
-        "-DBUILD_TESTING=OFF"
-        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-        "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
-      ];
-      postInstall = ''
-        install -Dm644 ${../../recipes/cloudini/cloudini-config.cmake} \
-          "$out/lib/cmake/cloudini/cloudini-config.cmake"
-      '';
-      meta.license = lib.licenses.asl20;
-    }
-    // recipeSource "cloudini" (
-      v: "https://github.com/facontidavide/cloudini/archive/refs/tags/${v}.tar.gz"
-    )
-  );
+  # Pinned here, not through recipeSource: conda takes cloudini from conda-forge,
+  # so recipes/ has no cloudini entry. Keep the version at conanfile.txt's.
+  cloudini = stdenv.mkDerivation rec {
+    pname = "pj4-cloudini";
+    version = "1.4.1";
+    src = fetchurl {
+      url = "https://github.com/facontidavide/cloudini/archive/refs/tags/${version}.tar.gz";
+      sha256 = "0fb83aa71c665fc73fdaaf3eefb2f16282f554f3d326c626437467acb203f59b";
+    };
+    nativeBuildInputs = [
+      cmake
+      ninja
+    ];
+    propagatedBuildInputs = [
+      lz4
+      zstd
+    ];
+    cmakeDir = "../cloudini_lib";
+    # Cloudini probes only the static zstd target; Nix supplies the shared one.
+    postPatch = ''
+      substituteInPlace cloudini_lib/CMakeLists.txt cloudini_lib/cmake/find_or_download_zstd.cmake \
+        --replace-fail 'zstd::libzstd_static' 'zstd::libzstd_shared'
+    '';
+    cmakeFlags = [
+      "-DCLOUDINI_FORCE_VENDORED_DEPS=OFF"
+      "-DCLOUDINI_BUILD_TOOLS=OFF"
+      "-DCLOUDINI_BUILD_BENCHMARKS=OFF"
+      "-DBUILD_TESTING=OFF"
+      "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+      "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+    ];
+    meta.license = lib.licenses.asl20;
+  };
+
+  # Header-only; pj_scripting/cmake/PjPocketfft.cmake finds the header. Same commit as
+  # that module's fetch fallback (pocketfft has no releases).
+  pocketfft = stdenv.mkDerivation {
+    pname = "pj4-pocketfft";
+    version = "0-unstable-2026-10-18";
+    src = fetchurl {
+      url = "https://github.com/mreineck/pocketfft/archive/4d865cba24359b05b37da4e75aee24498c3b78e7.tar.gz";
+      sha256 = "db236e44b1020dd0b415e5040ce10d8be604fefb7ce83ec0b32bc0f78975aa2f";
+    };
+    dontConfigure = true;
+    dontBuild = true;
+    installPhase = ''
+      runHook preInstall
+      install -Dm644 pocketfft_hdronly.h "$out/include/pocketfft_hdronly.h"
+      runHook postInstall
+    '';
+    meta.license = lib.licenses.bsd3;
+  };
 
   mcap = stdenv.mkDerivation (
     {

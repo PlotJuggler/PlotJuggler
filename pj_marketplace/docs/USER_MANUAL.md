@@ -19,12 +19,9 @@
 
 ### For Plugin Developers
 
-1. Use the [extension-template](https://github.com/plotjuggler/extension-template) on GitHub
-2. Click "Use this template" to create your repo
-3. Modify the plugin code in `src/`
-4. Push a tag (`git tag v1.0.0 && git push --tags`)
-5. CI automatically builds, packages, and publishes
-6. Submit PR to add your extension to the registry
+1. Write the plugin against the SDK ([`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk): the guides under `pj_plugins/docs/`)
+2. Package the built library as a ZIP and try it with **Install from local ZIP** (§3.1)
+3. Publish a release per platform and add it to the registry (§5.2)
 
 ---
 
@@ -48,10 +45,12 @@ The marketplace window shows a list of all extensions with their status:
 | Column | Content |
 |--------|---------|
 | **Name** | Extension name |
-| **Version** | Installed version when available, otherwise registry version. The registry version is appended (`1.0.0 → 1.1.0`) only when an update is available; a locally-newer build shows just its own version, and the `Installed` column says `Local newer` |
-| **Status** | `[install]`, `[installed]`, `[update]`, or `[local newer]` |
+| **Category** | The registry category (data loader, streamer, parser, toolbox, ...) |
+| **Installed** | The installed version, or "—" when it is not installed. A locally newer build shows its own version |
+| **Marketplace** | The registry version, highlighted when it is an update |
+| **Description** | Short description |
 
-**To see extension details:** Double-click on any extension to open a detail dialog with full information (description, author, changelog).
+**To see extension details:** select a row. The **Details** footer under the table shows that extension and carries its secondary actions (uninstall, the enable toggle).
 
 If PlotJuggler already has the plugin loaded at startup, the marketplace is seeded with that loaded state before the first render so the card version matches what the app already opened.
 
@@ -81,7 +80,7 @@ parsers. The search box narrows the result further.
 ### 2.4 Installing an Extension
 
 1. Find the extension in the list
-2. (Optional) Double-click to see details in a dialog
+2. (Optional) Select it to see its details in the footer
 3. Click the **[install]** button next to the extension
 4. Wait for download and extraction
 5. See "Installation complete" message
@@ -129,7 +128,7 @@ Core (bundled) extensions have no Uninstall action — see §2.8.
 
 ### 2.7 Enabling/Disabling Extensions
 
-*Planned — see [TODO.md](TODO.md). Today, removing an extension requires Uninstall.*
+Select an installed extension and use the enable toggle in the **Details** footer. The choice is saved at once and takes effect at the next start: a disabled extension stays installed and is not loaded.
 
 ### 2.8 Core (Bundled) Extensions
 
@@ -157,7 +156,7 @@ regardless of version. The same page lists every scanned plugin folder.
 >
 > Plugins are pure C++ DSOs that consume the C ABI declared in
 > `plotjuggler_sdk/pj_plugins`. They do **not** link Qt — only the
-> host (PlotJuggler / the marketplace) does. Each plugin exposes a
+> host (PlotJuggler / the marketplace) does (Widget plugins excepted). Each plugin exposes a
 > small embedded JSON manifest (`id`, `name`, `version`, …) through the
 > SDK export macro; the marketplace reads that manifest to recognise
 > installed plugins. The workflow below describes the full process
@@ -170,55 +169,9 @@ regardless of version. The same page lists every scanned plugin folder.
 
 ### 3.1 Creating a New Extension
 
-**Prerequisites:**
-- C++ development environment
-- CMake 3.16+
-- Conan package manager
-- Git
-
-**Steps:**
-
-1. **Create repo from template:**
-   ```bash
-   # Go to https://github.com/plotjuggler/extension-template
-   # Click "Use this template"
-   # Clone your new repo
-   git clone https://github.com/YOUR_USERNAME/my-extension.git
-   cd my-extension
-   ```
-
-2. **Modify the plugin:**
-   - Edit `src/my_plugin.cpp`
-   - Update the embedded manifest string passed to the SDK export macro
-   - Add UI in `ui/my_dialog.ui` (optional)
-
-3. **Build locally:**
-   ```bash
-   conan install . --profile profiles/linux_static --build=missing
-   cmake --preset conan-release
-   cmake --build --preset conan-release
-   ```
-
-4. **Test locally:**
-   - Copy built files to your platform's extensions directory (Linux: `~/.local/share/PlotJuggler/PlotJuggler4/extensions/my-extension/` — see §5.1 for other OSes)
-   - Open PlotJuggler and verify plugin loads
-
-5. **Release:**
-   ```bash
-   git add .
-   git commit -m "feat: my awesome plugin"
-   git tag v1.0.0
-   git push && git push --tags
-   ```
-
-6. **Wait for CI:**
-   - CI builds for Linux, Windows, macOS
-   - CI creates GitHub Release with artifacts
-   - CI generates registry PR
-
-7. **Submit to registry:**
-   - Review the auto-generated PR
-   - Merge to add to public marketplace
+1. **Write the plugin.** Start from the SDK guide of its family (`data-source-guide.md`, `message-parser-guide.md`, `toolbox-guide.md`, `dialog-plugin-guide.md` under `pj_plugins/docs/` in the [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) repository). The plugins in [`pj-official-plugins`](https://github.com/PlotJuggler/pj-official-plugins) are working examples, with their build and release setup.
+2. **Try it locally.** Either start PlotJuggler with `--plugin-dir <folder holding the built library>`, or zip the library (plus any `.ui` file) and use **Install from local ZIP** in the Marketplace. A local ZIP is checked like a registry download: it must hold a loadable plugin whose embedded manifest passes the compatibility gate.
+3. **Publish.** Build one ZIP per supported platform (§5.3), publish them where they can be downloaded by direct URL, and add the release to the registry (§5.2; the entry format is in `REQUIREMENTS.md` §11.1).
 
 ### 3.2 Embedded Plugin Manifest
 
@@ -251,7 +204,7 @@ A single `DataSourcePluginBase` serves both file and streaming sources; whether 
 
 ### 3.4 Best Practices
 
-- **No Qt dependency:** Use the SDK, not Qt directly
+- **No Qt dependency:** use the SDK, not Qt directly. Widget plugins are the exception: they link Qt and must be built against the Qt version PlotJuggler ships
 - **Static linking:** Embed all dependencies
 - **Test on all platforms:** Use CI matrix build
 - **Semantic versioning:** Follow semver strictly
@@ -384,79 +337,3 @@ its built-in default.
 | Parser | `parser` | Protobuf, FlatBuffers |
 | Toolbox | `toolbox` | FFT, CSV exporter |
 | Bundle | `bundle` | ROS 2 Complete |
-
----
-
-## 6. For LLMs/AI Assistants
-
-### 6.1 Project Context
-
-This is the **PlotJuggler Marketplace**, an extension distribution system for PlotJuggler (a robotics data visualization tool). Key points:
-
-- **Stack:** C++20, Qt 6.12 Widgets, CMake, Conan
-- **Architecture:** Serverless (GitHub-hosted registry and artifacts)
-- **Key innovation:** Plugins don't depend on Qt (ABI stability)
-
-### 6.2 Key Files
-
-| File | Purpose |
-|------|---------|
-| `REQUIREMENTS.md` | What the system should do |
-| `ARCHITECTURE.md` | How the system is designed |
-| `USER_MANUAL.md` | This file - how to use it |
-| `TODO.md` | Remaining work and deferred follow-ups |
-
-### 6.3 Common Tasks
-
-**"Add a new feature"**
-1. Check if it's in REQUIREMENTS.md
-2. Design in ARCHITECTURE.md
-3. Implement following the code structure
-4. Update USER_MANUAL.md if user-facing
-
-**"Fix a bug"**
-1. Reproduce the issue
-2. Find relevant component in ARCHITECTURE.md
-3. Fix and test
-4. Update docs if behavior changed
-
-**"Help user install extension"**
-1. Guide through Section 2.4 of this manual
-2. Check troubleshooting if issues arise
-
-### 6.4 Code Locations
-
-| Component | Path |
-|-----------|------|
-| Registry fetching | `src/core/RegistryManager.cpp` |
-| Installation logic | `src/core/ExtensionManager.cpp` |
-| Download handling | `src/core/DownloadManager.cpp` |
-| Diagnostic-sink bridge | `src/core/QtDiagnosticBridge.cpp` |
-| Main UI | `src/ui/marketplace_window.{cpp,ui}` |
-| Extension detail dialog | `src/ui/extension_detail_dialog.{cpp,ui}` |
-| Public headers (incl. data models) | `include/pj_marketplace/` |
-
-### 6.5 Testing
-
-`pj_marketplace` builds as part of the PJ4 monorepo (root `CMakeLists.txt` `add_subdirectory(pj_marketplace)`); the repo defines no CMakePresets.json.
-
-```bash
-# Build (output dir build/, RelWithDebInfo)
-./build.sh
-
-# Run tests
-ctest --test-dir build/pj_marketplace
-
-# Run standalone (target pj_marketplace_app — no OUTPUT_NAME override)
-./build/pj_marketplace/pj_marketplace_app
-```
-
----
-
-## Document Maintenance
-
-Update this manual when:
-- User-facing features change
-- New troubleshooting items discovered
-- Developer workflow changes
-- New platforms supported

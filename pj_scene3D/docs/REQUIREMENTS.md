@@ -89,7 +89,7 @@ layer, no separate widget.
   `foxglove_msgs/CompressedPointCloud` (Foxglove ROS2 schema; its `pose` is read but dropped — clouds
   are placed via TF on `frame_id`) and `point_cloud_interfaces/CompressedPointCloud2`
   (ros-perception/point_cloud_transport). The parser only repackages bytes; it never decodes.
-- **Decode location:** `core/pointcloud_codecs.cpp` (`decodeCompressedPointCloud`), `draco` + `cloudini`
+- **Decode location:** `core/src/pointcloud_codecs.cpp` (`decodeCompressedPointCloud`), `draco` + `cloudini`
   linked PRIVATE to `pj_scene3d_core` — mirrors `pj_scene2d_core` decoding JPEG/PNG.
 - **Off the UI thread:** decode is CPU-heavy (Draco ≈100 ms for ~1M points), so it runs on the Qt
   thread pool (`QtConcurrent` + `QFutureWatcher`) with latest-wins coalescing; the decoded cloud is
@@ -306,24 +306,3 @@ Third-party drawable type registration by plugins. Out of v1 scope. Built-in dra
 - **Test framework**: `gtest` (matches `pj_scene2D`).
 
 `pj_scene3D`, `pj_scene2D` and the plot canvas all render through QRhi inside the same PJ4 process, one graphics API per top-level window. They are sibling widget families that never share GPU state.
-
-## 14. TF prototype adaptation summary
-
-The TF prototype has been promoted into the `pj_tf` module as the `TransformBuffer` class (`pj_tf/tf_buffer.h`, `pj_tf/transform.h`) — single source of truth, no wrapper layer. The edits applied during promotion were:
-
-1. **`sampleAt` rewritten to zero-order hold** (nearest sample at or before `t`), replacing the prototype's lerp+slerp interpolation. The free-function `interpolate()` becomes unused inside the buffer (may be deleted or kept exposed as a free utility).
-2. **`TimePoint` retyped** from `std::chrono::steady_clock::time_point` to a replay-time-friendly type compatible with `PlaybackEngine`'s tracker time. (Final concrete type chosen at integration time.)
-3. **Internal `std::shared_mutex`** guarding the buffer: `setTransform` exclusive; `lookupTransform`, `tryLookupTransform`, `canTransform`, `latestCommonTime`, and the introspection getters take shared locks.
-4. **Introspection getters**:
-   - enumerate all known frames,
-   - query the parent of a frame,
-   - query the latest sample stamp for a frame's edge.
-5. **Non-throwing query variant**: `tryLookupTransform(target, source, t) → PJ::Expected<Transform, LookupError>` — the primary accessor for the render hot path; the typed `LookupError` enum (`UnknownSource`/`UnknownTarget`/`Disconnected`/`NoSampleAtTime`) keeps render-loop misses allocation-free. The throwing `lookupTransform` is a thin wrapper over it.
-6. **`setTransform` normalizes the quaternion on insert** to defend against ingest noise accumulating through composed transforms.
-
-**Unchanged** from the prototype:
-- The `T_target_from_source` convention.
-- Tree-not-DAG enforcement: a reparent conflict (a child already claimed under a different parent) and a self-loop edge (child == parent) are both rejected — `setTransform` returns `PJ::unexpected(SetTransformError::ReparentConflict)` or `SetTransformError::SelfLoop` respectively, dropping that one edge (non-throwing) so a bulk ingest continues. Self-loop rejection fires first to prevent `chainToRoot` from hanging on malformed TF data.
-- Common-ancestor walk algorithm.
-- Per-edge `std::deque` sample storage with 10-second cache window pruning.
-- The `Transform` struct (translation + unit quaternion).

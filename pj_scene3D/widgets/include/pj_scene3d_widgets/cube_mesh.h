@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include "pj_scene3d_widgets/scene_look_defaults.h"
+
 // Shared unit-cube geometry + the C++ mirrors of the GLSL helpers (shaders/cube/*.glslinc,
 // which the shaders #include; scene3d_shader_constants_test checks the mirrors against
 // them) for every instanced-cube pass (the point-cloud "cube" shape and the voxel grid).
@@ -123,9 +125,8 @@ inline constexpr std::array<uint16_t, 18> kCubeFanIndices = {{
 // RE-DERIVED in a headless test instead of trusted, on every platform.
 inline constexpr float kCubeEdgeWidth = 0.06f;
 inline constexpr float kCubeEdgeDarken = 0.6f;
-inline constexpr float kCubeSrgbGamma = 2.2f;
 
-// Mean of pow(1 - kCubeEdgeDarken * cubeEdgeFactor(local), kCubeSrgbGamma) over one
+// Mean of srgbToLinear(1 - kCubeEdgeDarken * cubeEdgeFactor(local)) over one
 // face: how much darker the edge band makes a cube on average, in the LINEAR space the
 // LOD sprite writes. Integrated in closed-ish form over the face's distance-to-edge
 // distribution — for a unit face the distance t = min(0.5-|u|, 0.5-|v|) has density
@@ -138,13 +139,13 @@ inline constexpr float kCubeSrgbGamma = 2.2f;
     const double smoothstep = s * s * (3.0 - 2.0 * s);
     const double edge_factor = 1.0 - smoothstep;
     const double density = 4.0 * (1.0 - 2.0 * t);
-    total += std::pow(1.0 - kCubeEdgeDarken * edge_factor, kCubeSrgbGamma) * density * (0.5 / samples);
+    total += look::srgbToLinear(1.0 - kCubeEdgeDarken * edge_factor) * density * (0.5 / samples);
   }
   return total;
 }
 
 // The value cube_sprite.glslinc hard-codes, mirrored for the test that checks the two agree.
-inline constexpr float kCubeEdgeMeanScale = 0.887f;
+inline constexpr float kCubeEdgeMeanScale = 0.886f;
 
 // kSphereDiscShading from cube_point_color.glslinc, mirrored for the test that re-derives it.
 inline constexpr float kSphereDiscShading = 0.702f;

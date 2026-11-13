@@ -6,37 +6,6 @@ rules this plan refers to are in [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md). How
 the renderer got here is archived in
 [`docs/archive/QRHI_MIGRATION.md`](../../docs/archive/QRHI_MIGRATION.md).
 
-## Release N notes
-
-For the release notes and the PR description:
-
-> The 3D view, the plots and the image viewer now render through Qt's RHI on
-> each platform's native graphics API: OpenGL on Linux (3.3 is enough), Direct3D 11
-> on Windows (with the WARP software renderer when there is no GPU, so a GPU-less
-> machine still gets 3D), and Metal on macOS (OpenGL 4.1 as its fallback).
->
-> - **Overrides:** `PJ_GRAPHICS_API=opengl|vulkan|d3d11|d3d12|metal` picks the API
->   at run time (Vulkan is opt-in on Linux); `QSG_RHI_PREFER_SOFTWARE_RENDERER=1`
->   forces WARP on Windows; `LIBGL_ALWAYS_SOFTWARE=1` forces Mesa's software
->   renderer on Linux. For plots only, Preferences → "GPU canvas" off (or
->   `--disable-opengl`) gives the raster canvas. The 3D view has no CPU renderer.
-> - **3D view:** a translucent layer blends over the layers behind it whatever
->   its position in the layer list; wireframe shows every triangle edge on every
->   backend; markers draw at the layer's default 0.6 opacity; the grid follows the
->   light/dark theme; plain URDF primitives are no longer darkened twice.
-> - **Plots:** crisper lines (one sample per pixel with shader anti-aliasing,
->   axis-aligned lines on whole pixels as Qwt draws them), GPU dashes, and the 1 px
->   canvas frame. Against the previous OpenGL canvas: a tracker move during
->   playback costs 0.18x, dashed curves 0.94x, dense curves 0.91x, streaming half
->   the time at a third of the CPU; GPU memory per plot is 0.69-0.78x.
-> - **Performance:** a 10-million-point cloud renders as fast as before, a layout
->   of 6 plots and a 3D view takes half the CPU, and many-layer scenes are faster
->   and far lighter (1000 layers: 0.16x the memory), and a large cloud holds no
->   more memory than before. Floating a 3D view takes 10-15% longer than
->   before.
-> - **Floating docks on X11** stay non-native windows: floating a dock no longer
->   turns the docked area into native child windows.
-
 ## Golden writer
 
 The golden corpus (`pointcloud_golden_test`, TECHNICAL_NOTES §7) compares against
@@ -176,15 +145,8 @@ Deferred with a trigger, not failing any row:
 ## P6: the pinned Qt
 
 The pinned Qt (`PJ_QT_VERSION` in `versions.env`; `docs/QT_NOTES.md`) is an LTS. QRhi has no cross-minor
-compatibility guarantee, so the upgrade is one change across every channel:
+compatibility guarantee, so an upgrade is one change across every channel (`versions.env`, the `qt6-main` pin in `pixi.toml`, `PJ_EMSCRIPTEN_VERSION`, and every `.qsb` pack re-baked with the new `qsb`). Left from the last one:
 
-- [x] `PJ_QT_VERSION` in `versions.env`, the `qt6-main` pin in `pixi.toml` (Windows,
-  macOS and WASM CI read `versions.env`), and `PJ_EMSCRIPTEN_VERSION`.
-- [x] Every `.qsb` pack re-baked with the pinned Qt's `qsb`, which reproduces the committed
-  bytes. The WASM configure hash-checks them; re-bake
-  with `pj_scene3D/widgets/rhi/shaders/bake.sh`, `pj_plotting/widget/shaders/bake.sh`,
-  the Scene2D packs (`pj_scene2D/docs/TECHNICAL_NOTES.md`, "Shader Toolchain") and
-  the capability probe whenever a shader changes.
 - [ ] Re-test the two grab workarounds before removing either: the never-shown
   `grabFramebuffer()` that works once, and the OpenGL stale uniforms in grab-only
   frames (`grabPresentedFrame()` presents a real frame first). Keep each until a
@@ -201,7 +163,7 @@ compatibility guarantee, so the upgrade is one change across every channel:
 
 Not scheduled; each item names what would bring it back.
 
-- **Raw `delete` in the passes** (about 110 left): convert a pass to owning
+- **Raw `delete` in the passes** (about 120 left): convert a pass to owning
   pointers when it is next edited.
 - **Test-only surface in production classes:** the layer and pass `*ForTest`
   accessors, the plot canvas probe and fault-injection code, and the remaining
@@ -249,8 +211,8 @@ Not scheduled; each item names what would bring it back.
   Firefox (`wasm-ci.yml`; Firefox's `editors.spec.js` is non-blocking until its
   main-thread heartbeat budget holds on CI runners). Safari waits for a WebKit
   lane.
-- **macOS distribution.** No macOS package ships from this repo; the `macos-ci`
-  lane is the only macOS gate, and a real Mac's OpenGL fallback is unverified.
+- **macOS.** The dmg is built by `macos-release.yml`; the `macos-ci` lane is the
+  only macOS test gate, and a real Mac's OpenGL fallback is unverified.
 - **ADS on Wayland.** Floating docks hide on every backend (TECHNICAL_NOTES §5);
   the fix belongs in the ADS fork, and filing it upstream is the maintainer's
   call.

@@ -3457,6 +3457,14 @@ for example when the stream is already rectified.</source>
             <source>Layout restore kept the current pinned panels: '%1' has a job still running.</source>
             <translation>恢复布局时保留了当前固定的面板：“%1”仍有任务在运行。</translation>
         </message>
+        <message>
+            <source>%1 is controlling PlotJuggler through MCP. Closing the agent's session or this page stops it.</source>
+            <translation>%1 正通过 MCP 控制 PlotJuggler。关闭该智能体的会话或此页面即可停止控制。</translation>
+        </message>
+        <message>
+            <source>Not connecting to the AI agent relay %1: it must be an http address on this computer (127.0.0.1).</source>
+            <translation>未连接到 AI 智能体中继 %1：它必须是本机（127.0.0.1）上的 http 地址。</translation>
+        </message>
     </context>
     <context>
         <name>PJ::MarkerTimeline</name>

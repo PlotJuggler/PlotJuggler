@@ -214,8 +214,10 @@ jobs:
 
       - name: Download budget of the production package
         # 5 % over the measured 16,125,617 B (2026-10-21, Python and the
-        # notices included). Raise it deliberately, with the new measurement.
-        run: node scripts/wasm_size_budget.mjs build-wasm-prod/deploy/manifest.json 16932000
+        # notices included), plus 158,000 B for the MCP server in the browser
+        # (2026-11-11: 16,836,762 B on main -> 16,992,912 B with it). Raise it
+        # deliberately, with the new measurement.
+        run: node scripts/wasm_size_budget.mjs build-wasm-prod/deploy/manifest.json 17090000
 
       - name: Cache Playwright browsers
         uses: actions/cache@v5

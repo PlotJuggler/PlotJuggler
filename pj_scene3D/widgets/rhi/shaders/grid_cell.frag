@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #version 440
 #extension GL_GOOGLE_include_directive : require
+#include "srgb.glslinc"
 
 // The filled-cell grid: the cell tone comes from the vertex colour, the grid
 // lines are drawn from the distance to the nearest cell edge, anti-aliased with
@@ -44,7 +45,7 @@ float floorShadow(vec3 position) {
 #endif
 
 vec3 targetSpace(vec3 color) {
-    return render_mode.x != 0 ? pow(max(color, vec3(0.0)), vec3(2.2)) : color;
+    return render_mode.x != 0 ? srgbToLinear(color) : color;
 }
 
 void main() {

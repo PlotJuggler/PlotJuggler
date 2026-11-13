@@ -202,6 +202,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/macos" \
             -DPJ_INSTALLATION=macos \
+            -DPJ_DEBUG_INFO=lines \
             -DPJ_BUILD_TESTS=OFF \
             -DPJ_BUILD_DEMOS=OFF \
             "${launcher_args[@]}"

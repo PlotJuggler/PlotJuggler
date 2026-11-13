@@ -1,10 +1,25 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
-// The sRGB encode of the shaders that write display-referred output
-// (present.frag, gizmo.frag, model.frag's direct target).
+// The exact sRGB transfer pair. linearToSrgb: the encode of the shaders that
+// write display-referred output (present.frag, gizmo.frag, model.frag's direct
+// target). srgbToLinear: every decode of a display-referred colour (theme, vertex,
+// colormap, texture) into the linear-light HDR target, so a flat colour
+// round-trips through present.frag unchanged. Guarded: several include chains
+// reach it.
+#ifndef PJ_SRGB_GLSLINC
+#define PJ_SRGB_GLSLINC
 
 vec3 linearToSrgb(vec3 color) {
     vec3 low = color * 12.92;
     vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
     return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
 }
+
+vec3 srgbToLinear(vec3 color) {
+    vec3 c = max(color, vec3(0.0));
+    vec3 low = c / 12.92;
+    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, lessThanEqual(c, vec3(0.04045)));
+}
+
+#endif  // PJ_SRGB_GLSLINC

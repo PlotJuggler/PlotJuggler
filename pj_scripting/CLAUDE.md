@@ -20,8 +20,8 @@ Python-free**: only `pj_scripting` links either runtime. `pj_scripting` never to
 ## Targets
 
 - **`pj_scripting_core`** (`src/luau_engine.cpp`, `src/marker_engine.cpp`) is the Luau engine plus the whole-series
-  marker analysis. It depends only on `pj_base`, `nlohmann_json` (public: `filter_class.h` exposes it), Luau and kissfft
-  (private). It is also packaged on its own for the SDK-only headless runner, which links the same engine so a rule
+  marker analysis. It depends only on `pj_base`, `nlohmann_json` (public: `filter_class.h` exposes it), Luau and the
+  header-only pocketfft (private; `cmake/PjPocketfft.cmake` finds it or fetches the pinned commit). It is also packaged on its own for the SDK-only headless runner, which links the same engine so a rule
   runs identically in the GUI and headless; `marker_engine_test` links only it (plus gtest) and guards that.
 - **`pj_scripting`** adds everything that needs the host: the data-processor adapters (`lua_siso_transform.cpp`,
   `lua_mimo_transform.cpp`), the filter catalogue, the object-script engines (Luau and Python) and `src/native/`. It

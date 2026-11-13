@@ -311,22 +311,23 @@ jobs:
           # silently ignores it, which is why prior runs showed "Compile
           # requests: 0" in sccache --show-stats.
           #
-          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded forces /Z7 instead
-          # of /Zi for RelWithDebInfo. /Zi writes to a shared PDB via
-          # mspdbsrv.exe which sccache cannot cache; /Z7 embeds debug info
-          # in each .obj and is fully cacheable.
+          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT compiles RelWithDebInfo, the
+          # configuration built here, without debug information. MSVC has no
+          # line-tables-only level, and full debug info writes the types of
+          # every included header into every .obj, which costs compile time,
+          # sccache storage and link time. The linker's /DEBUG still writes a
+          # PDB of public symbols, so a crash backtrace names its functions.
+          # Debug gets /Z7, never /Zi: /Zi writes a shared PDB through
+          # mspdbsrv.exe, which sccache cannot cache and parallel cl.exe
+          # workers race on (fatal C1041 on pj_base.pdb).
           #
           # CMAKE_POLICY_DEFAULT_CMP0141=NEW is required for CMake to honor
           # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT at all. The variable was added
           # in CMake 3.25 behind policy CMP0141; without NEW, CMake silently
-          # falls back to the legacy /Zi flag — which is what causes parallel
-          # cl.exe workers to race on pj_base.pdb (fatal C1041). We can't bump
+          # falls back to the legacy /Zi flag. We can't bump
           # cmake_minimum_required past 3.22 because Ubuntu 22.04 LTS ships
           # CMake 3.22.1, so the opt-in lives here in the CI invocation.
           # Only route the compiler through sccache if its install succeeded.
-          # /Z7 (Embedded debug info) below stays on regardless: it also avoids
-          # the parallel-cl.exe pj_base.pdb race, so it's correct with or
-          # without the cache.
           launcher_args=()
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache \
@@ -339,7 +340,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
             -DCMAKE_PREFIX_PATH="$QT_DIR" \
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
-            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
+            '-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug>:Embedded>' \
             "${launcher_args[@]}"
 
           # -k 0: one run lists every compile error.

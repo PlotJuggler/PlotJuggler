@@ -16,7 +16,7 @@
 //   kCubeEdgeMeanScale — the cube's dark edge band covers a fixed fraction of every face,
 //     so dropping it would make sprites read brighter than the cubes beside them. See
 //     cubeEdgeMeanScale() below, which re-derives it from the band's own constants.
-const float kCubeEdgeMeanScale = 0.887;
+const float kCubeEdgeMeanScale = 0.886;
 
 // Foreshortening of the three visible faces, from the direction the cube is actually
 // SEEN from — `to_camera` need not be normalized. Under an orthographic camera that is

@@ -77,7 +77,13 @@ function expand(value, variables) {
 // to the one with a pin (the first is a local directory).
 export async function declaredDependencies() {
   const cmake = (await readdir(path.join(ROOT, 'cmake'))).filter(name => /^PjWasm.*\.cmake$/.test(name));
-  const files = [...cmake.map(name => `cmake/${name}`), 'CMakeLists.txt', '3rdparty/qwt/CMakeLists.txt'];
+  const files = [
+    ...cmake.map(name => `cmake/${name}`),
+    'CMakeLists.txt',
+    '3rdparty/qwt/CMakeLists.txt',
+    // Shared with the desktop build, which prefers an installed pocketfft over this fetch.
+    'pj_scripting/cmake/PjPocketfft.cmake',
+  ];
   // The root CMakeLists.txt derives the SDK version from the conanfile.
   const sdkVersion = (await read('conanfile.txt')).match(/^plotjuggler_sdk\/([0-9][0-9A-Za-z.-]*)/m)?.[1];
   const found = new Map();
@@ -239,8 +245,11 @@ ${links ? `  Qt Advanced Docking System, PlotJuggler's fork with its changes: th
     3rdparty/Qt-Advanced-Docking submodule commit ${ads.commit},
     also at ${ads.url.replace(/\.git$/, '')}`}
 
-Qt and FFmpeg are unmodified upstream releases. The Qt modules came as The Qt Company's prebuilt WebAssembly
-(multithread) kit, built from the archives above; FFmpeg is compiled from its archive with configure options only.
+FFmpeg is an unmodified upstream release, compiled from its archive with configure options only. The Qt modules came
+as The Qt Company's prebuilt WebAssembly (multithread) kit, built from the archives above, with two Qt functions
+replaced at link time by modified copies (QWidgetRepaintManager::paintAndFlush and
+QBackingStoreDefaultCompositor::toTexture); their source, under Qt's licence, is
+pj_app/src/wasm/qt612_rhi_flush_override.cpp in the PlotJuggler 4 archive above.
 ${gitPins}
 The libraries are named with their licences in THIRD_PARTY_NOTICES.txt. The Emscripten
 runtime linked into the module (musl, libc++, compiler-rt, the zlib port) comes with the Emscripten SDK ${emscripten}

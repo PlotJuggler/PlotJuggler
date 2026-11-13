@@ -3,10 +3,10 @@
 **What this is.** The durable reference for how PlotJuggler 4 keeps the bytes that entered it and replays them
 later: the **session recorder** (Record/Stop on live sources) and the **source cache** (reusable artifacts for
 cloud-connector downloads). It records intent, goals, the architecture, the accepted trade-offs and the
-alternatives that were rejected. It is not an implementation plan; the working design with its milestone history
-is [`session_recorder_design.md`](./session_recorder_design.md).
+alternatives that were rejected. It is not an implementation plan; the retired working design with its decision history (D1–D9)
+is [`archive/session_recorder_design.md`](./archive/session_recorder_design.md).
 
-**Status.** Recorder: implemented (PJ4 #616). Source cache: designed, decisions taken 2026-09-01, not started.
+**Status.** Recorder and source cache: implemented.
 
 ## 1. Intent
 
@@ -68,8 +68,8 @@ plugin ──────────────► DataSourceRuntimeHost ─�
 | `Recorder` | `pj_runtime` | Per-source queue + writer thread. Overflow policy is a mode: drop-largest for live streams (§3.3); opt-in blocking for captures (§3.4). |
 | `McapRecordingWriter` | `pj_runtime` | Checked file sink (exclusive create, errno latched, fsync before close), schema dedup, per-channel sequences, `pj.recording` metadata at open and close. |
 | `RecordingService` | `pj_runtime` | One Record press = N recorders, one file per source in one batch folder; transactional start, synchronous stop, one result per press. |
-| `SourceCacheStore` (planned) | `pj_runtime` | Cache root, index (identity → path, size, hash, last hit), cross-process lock, LRU eviction that skips pinned artifacts. |
-| `SourceCaptureService` (planned) | `pj_runtime` | Decides to capture a descriptor import, runs a lossless `Recorder` into a partial, publishes on clean completion. |
+| `SourceCacheStore` | `pj_runtime` | Cache root, index (identity → path, size, hash, last hit), cross-process lock, LRU eviction that skips pinned artifacts. |
+| `SourceCaptureService` | `pj_runtime` | Decides to capture a descriptor import, runs a lossless `Recorder` into a partial, publishes on clean completion. |
 | Shell wiring | `pj_app` | Record/Stop in the streaming strip, Preferences (folders, budgets, toggle), the one ABI vtable entry, the cache-first hook in layout restore. |
 
 ### 3.3 Recording (Record/Stop)
@@ -144,14 +144,13 @@ plugin ──────────────► DataSourceRuntimeHost ─�
   at the next launch) plus the "Capture downloads for offline restore" toggle
   (`Settings::capture_enabled` → `SourceCaptureService::setCaptureEnabled`), which gates ARMING only and
   applies immediately: while off, newly created parser-ingest contexts do not arm a capture, in-flight armed
-  captures finish normally, and existing cache hits keep resolving. Remaining for M3: the #275 harvest half
-  in the Mosaico provider (trust/credentials/presentation).
+  captures finish normally, and existing cache hits keep resolving.
 
 ## 4. Decisions and accepted trade-offs
 
 | Decision | Accepted cost |
 |---|---|
-| **Raw messages only**, never decoded samples. | Sources that write decoded data directly (LSL, dummy, Mosaico before its split) are not recordable until they speak messages. |
+| **Raw messages only**, never decoded samples. | Sources that write decoded data directly (LSL, dummy) are not recordable until they speak messages. |
 | **Subscribed topics only.** | No "record all" mode; stated in the UI. |
 | **One file per source**, grouped per press. | N writer threads and N queue budgets per press; `mcap merge` when one shareable file is wanted. |
 | **Streams drop-largest, never block.** | A slow disk produces holes in the biggest topics; users are told, not slowed. |
@@ -195,9 +194,9 @@ plugin ──────────────► DataSourceRuntimeHost ─�
 
 ## 6. Consequences and known limits
 
-- **Recordable = speaks messages.** Direct-write connectors must split transport from parsing (Mosaico:
-  `parser_arrow` + a transport-only plugin) to become recordable and cacheable — which is also what lets the
-  host route them through installed parsers.
+- **Recordable = speaks messages.** A direct-write connector must split transport from parsing to become
+  recordable and cacheable, as the Mosaico toolbox does (Arrow IPC messages decoded by `parser_arrow`) — which
+  is also what lets the host route it through installed parsers.
 - **Pure-lazy pushes leave a hole.** A file-backed source that pushes an object lazily (bytes fetched later) is
   counted, not recorded. Only matters once file-backed sources are recordable.
 - **Peak memory during a capture is unchanged.** Objects are eager until the artifact is published. The
@@ -211,7 +210,8 @@ plugin ──────────────► DataSourceRuntimeHost ─�
 
 ## 7. Where to look
 
-- Working design, decision history (D1–D9), milestones: [`session_recorder_design.md`](./session_recorder_design.md).
+- On-disk contract (`pj.recording` and `pj.capture` metadata names, versions, terminal causes): `pj_runtime/include/pj_runtime/RecordingFormat.h`.
+- Decision history (D1–D9) and the retired working design: [`archive/session_recorder_design.md`](./archive/session_recorder_design.md).
 - Code: `pj_runtime/include/pj_runtime/{RecordTap,Recorder,McapRecordingWriter,RecordingService}.h`, shell wiring
   in `pj_app/src/MainWindow.cpp` and `pj_app/src/StreamingSourceManager.cpp`.
 - Request identity and descriptor types: SDK `pj_base/sdk/source/`.

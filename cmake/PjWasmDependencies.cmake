@@ -127,8 +127,8 @@ if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PRO
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.
     FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/ac3a781b86ad2be5a6f179125b544052e09fc5c0
-        URL_HASH SHA256=e46e0e2c705a54321ffc1ca1018c010eeee25d16a240bac8f5a177e485fe3361
+        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/dc410e1a75396037cc38979f60cd594f357d9b6a
+        URL_HASH SHA256=6d92211693e1b3dcf23b3d436f566deed9d65faa85e8b2f1b8c8477a35cf8990
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists)
     FetchContent_MakeAvailable(pj_official_plugins)
@@ -281,30 +281,4 @@ endif()
 
 if(PJ_WASM_WITH_PYTHON)
     include(${CMAKE_CURRENT_LIST_DIR}/PjWasmPython.cmake)
-endif()
-
-if(PJ_WASM_WITH_LUAU OR PJ_WASM_WITH_FFT)
-    # kissfft — pj_scripting's marker engine uses it for the bandPower primitive,
-    # and the FFT toolbox for its spectrum. Pure C
-    # with no OS calls, so it cross-compiles unchanged; it simply had no provider
-    # here, because the wasm build resolves nothing through Conan or pixi.
-    # Options mirror the Conan package and recipes/kissfft: static, float datatype.
-    set(KISSFFT_STATIC ON CACHE BOOL "" FORCE)
-    set(KISSFFT_DATATYPE "float" CACHE STRING "" FORCE)
-    set(KISSFFT_TEST OFF CACHE BOOL "" FORCE)
-    set(KISSFFT_TOOLS OFF CACHE BOOL "" FORCE)
-    set(KISSFFT_PKGCONFIG OFF CACHE BOOL "" FORCE)
-    # The source tree lands in a directory named kissfft so its parent also
-    # serves the installed-package include layout (<kissfft/kiss_fftr.h>).
-    FetchContent_Declare(kissfft
-        GIT_REPOSITORY https://github.com/mborgerding/kissfft.git
-        GIT_TAG 131.1.0
-        GIT_SHALLOW TRUE
-        SOURCE_DIR "${FETCHCONTENT_BASE_DIR}/kissfft-root/kissfft"
-        OVERRIDE_FIND_PACKAGE
-        SYSTEM)
-    FetchContent_MakeAvailable(kissfft)
-    get_filename_component(PJ_WASM_KISSFFT_PREFIXED_INCLUDE_DIR "${kissfft_SOURCE_DIR}" DIRECTORY)
-    # Upstream already aliases kissfft::kissfft and kissfft::kissfft-<datatype>,
-    # so pj_scripting's own non-Conan bridge finds its target and no-ops.
 endif()

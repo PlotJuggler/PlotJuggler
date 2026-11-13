@@ -142,18 +142,21 @@ if(TARGET pj_scene3d_widgets)
         src/ui/Scene3DConfigPanel.cpp
         src/ui/Scene3DConfigPanel.h)
 endif()
-# The MCP server and its stdio bridge (docs/ARCHITECTURE.md "MCP server"): desktop only, since a
-# page can neither listen on a socket nor be spawned. The agent tools are pj_runtime's pj_agent_tools.
+# The MCP server (docs/MCP_SERVER.md). The browser build cannot listen, so there it answers only
+# what its relay link brings in (McpBrowserLink); the stdio bridge needs a process, so it is desktop
+# only. The agent tools are pj_runtime's pj_agent_tools.
+target_sources(pj_app_shell PRIVATE
+    src/mcp/McpBrowserLink.cpp
+    src/mcp/McpBrowserLink.h
+    src/mcp/McpProtocol.cpp
+    src/mcp/McpProtocol.h
+    src/mcp/McpServer.cpp
+    src/mcp/McpServer.h
+    src/mcp/McpServerTools.cpp)
 if(NOT EMSCRIPTEN)
-    target_sources(pj_app_shell PRIVATE
-        src/mcp/McpBridge.cpp
-        src/mcp/McpProtocol.cpp
-        src/mcp/McpProtocol.h
-        src/mcp/McpServer.cpp
-        src/mcp/McpServer.h
-        src/mcp/McpServerTools.cpp)
-    target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
+    target_sources(pj_app_shell PRIVATE src/mcp/McpBridge.cpp)
 endif()
+target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
 
 if(EMSCRIPTEN)
     # Lazily read browser picks; the page side is browser_picked_file.js, linked into pj_app below.
@@ -376,6 +379,19 @@ if(EMSCRIPTEN)
     target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
     set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
+    # Link-time patch of two Qt 6.12.0 backing-store flush functions: without it, playback at HiDPI uploads
+    # nearly the whole window as a texture every frame. See the file's header; remove it once Qt has the fix.
+    option(PJ_WASM_QT_FLUSH_OVERRIDE "Link-time patch of Qt 6.12 paintAndFlush/toTexture (HiDPI playback)" ON)
+    if(PJ_WASM_QT_FLUSH_OVERRIDE)
+        find_package(Qt6 REQUIRED COMPONENTS GuiPrivate WidgetsPrivate)
+        target_sources(pj_app PRIVATE src/wasm/qt612_rhi_flush_override.cpp)
+        # Verbatim Qt code: keep the project's -Werror set off it.
+        set_source_files_properties(src/wasm/qt612_rhi_flush_override.cpp PROPERTIES COMPILE_OPTIONS "-w")
+        target_link_libraries(pj_app PRIVATE Qt6::GuiPrivate Qt6::WidgetsPrivate)
+        # ponytail: applies to the whole pj_app link, so it also silences any other duplicate symbol;
+        # it goes away with this file.
+        target_link_options(pj_app PRIVATE "LINKER:--allow-multiple-definition")
+    endif()
     if(PJ_WASM_WITH_PYTHON)
         # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
         # the main thread waits on it never starts.

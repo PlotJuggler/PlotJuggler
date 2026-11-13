@@ -1,8 +1,6 @@
 # PlotJuggler Marketplace — Requirements
 
-> **Version:** 1.0.0
-> **Last Updated:** 2026-07-17
-> **Purpose:** Define WHAT the application should do, not HOW
+What the marketplace must do, not how. Requirements that are not implemented say so.
 
 ---
 
@@ -26,10 +24,10 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 
 | Category           | Feature              | Description                                                   |
 | ------------------ | -------------------- | ------------------------------------------------------------- |
-| **Discovery**      | Extension listing    | Display all available extensions in VSCode-style cards        |
+| **Discovery**      | Extension listing    | Display all available extensions in a sortable table          |
 |                    | Search               | Search by name, description, tags, and publisher              |
 |                    | Filtering            | Any combination of Installed, Data Source, Streamer, Parsers, Toolboxes |
-|                    | Extension detail     | Panel with complete information, changelog, and dependencies  |
+|                    | Extension detail     | Details footer for the selected row: description, changelog, secondary actions |
 |                    | Startup snapshot     | Host app may seed the marketplace with already-loaded plugin ids/versions before first render |
 | **Installation**   | Secure download      | ZIP artifact download with SHA256 verification                |
 |                    | Automatic extraction | Decompression to extensions directory                         |
@@ -38,7 +36,7 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 |                    | Individual update    | Update a specific extension                                   |
 |                    | Bulk update          | "Update All" for multiple extensions                          |
 |                    | Automatic backup     | Backup of previous version before updating                    |
-| **Uninstallation** | Clean removal        | Directory deletion + installed cache refresh                  |
+| **Uninstallation** | Clean removal        | Staged: the directory is deleted at the next start            |
 |                    | Confirmation         | Confirmation dialog before uninstalling                       |
 |                    | Core lock            | Core (bundled) extensions cannot be uninstalled in default sessions (see §4.4) |
 | **Management**     | Backup diagnostics   | Report retained backup paths when an update install fails     |
@@ -48,9 +46,10 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 |                    | Unified diagnostics  | All lifecycle events (install / staged-promotion / quarantine / uninstall failures, registry-fetch errors) are surfaced through `ExtensionManager::diagnosticReported`, the in-memory ring buffer, AND an optional `PJ::DiagnosticSink` so embedding hosts can fold marketplace events into their own diagnostic stream |
 | **UI/UX**          | Download progress    | Progress bar in status bar                                    |
 |                    | Notifications        | Status messages and available update alerts                   |
-|                    | Context menu         | Quick actions per installed extension                         |
 
 ### 2.2 CI System Features (For Developers)
+
+These describe what an extension repository's own CI is expected to do (`pj-official-plugins` is the working example). Nothing in this module implements them.
 
 | Category       | Feature                    | Description                                                |
 | -------------- | -------------------------- | ---------------------------------------------------------- |
@@ -75,8 +74,8 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 |             | Versioning          | Current version and minimum PlotJuggler versions      |
 |             | Cross-platform      | URLs and checksums per platform (Linux/Windows/macOS) |
 | **Hosting** | Static GitHub       | JSON file accessible via raw.githubusercontent.com    |
-|             | Cache TTL           | Support for local cache with expiration time          |
-|             | Multiple registries | Configuration for alternative registries (enterprise) |
+|             | Cache TTL           | Deferred (F-11): the registry is fetched fresh each time |
+|             | Multiple registries | One configurable registry URL (F-24); several at once is not implemented (F-23) |
 
 ---
 
@@ -101,12 +100,10 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 These concerns are intentionally **not** part of `pj_marketplace` and belong
 elsewhere in the host application:
 
-- **Enable/disable installed plugins.** Toggling a plugin on or off without
-  uninstalling it is a host-application concern (e.g. a per-user config knob
-  in `pj_app` that filters which discovered DSOs the loader instantiates),
-  not a marketplace concern. The marketplace's job ends at "installed on
-  disk"; whether the host chooses to load that DSO at startup is decided by
-  the host's plugin loader and config.
+- **Deciding what the loader instantiates.** The marketplace owns the persisted
+  disabled list (`ExtensionManager::setEnabled` / `disabledExtensionIds`, with the
+  toggle in the Details footer); honouring it at load time is the host's plugin
+  loader (`pj_runtime`). A change takes effect at the next launch.
 - **Runtime hot-reload of plugin instances.** Out of scope per the
   [application non-goals](../../CLAUDE.md#non-goals-explicitly-deferred).
 
@@ -119,7 +116,7 @@ elsewhere in the host application:
 | ID | Requirement | Acceptance Criteria |
 |----|-------------|---------------------|
 | F-01 | Fetch and parse registry JSON from configurable URL | Given a valid URL, the system loads and parses extension metadata |
-| F-02 | List extensions in sidebar with cards | User sees all available extensions with name, description, version |
+| F-02 | List extensions in a table | User sees all available extensions with name, description, version |
 | F-03 | Search by name, description, tags | Typing "ros" shows all ROS-related extensions |
 | F-04 | Filter by any combination of facets | User can activate several category toggles at once (union) and intersect them with Installed |
 | F-05 | Show selected extension detail | Clicking an extension shows full information panel |
@@ -139,11 +136,13 @@ elsewhere in the host application:
 | F-13 | Automatic rollback if plugin fails | Deferred; backups may exist, but automatic restore is not implemented |
 | F-14 | Deferred update: apply on restart | Updates are downloaded and staged, then applied only after restart; a fresh install activates immediately |
 | F-31 | Recognise a local archive that changes nothing | A sideloaded ZIP whose extracted tree hashes identically to the installed one is reported as done without a confirmation, a staged copy, or a restart. Identity is the SHA-256 of every file plus its relative path, so a rebuild that only re-dates the archive still matches and one changed byte does not |
-| F-16 | Cancel download in progress | User can abort a download |
+| F-16 | Cancel download in progress | `DownloadManager::cancel` exists; the window offers no cancel action yet |
 | F-17 | Update All | Single action to update all extensions with available updates |
 | F-18 | Confirmation dialogs | User confirms before install/uninstall/update actions |
 
 ### 4.3 P2 — Polish
+
+Only F-20 is implemented (the changelog shows in the details footer). The others are open.
 
 | ID | Requirement | Acceptance Criteria |
 |----|-------------|---------------------|
@@ -175,11 +174,11 @@ combined behavior:
 | ID | Requirement | Metric |
 |----|-------------|--------|
 | NF-01 | C++20 | Module builds at C++20 (`CMAKE_CXX_STANDARD 20`), matching the rest of PJ4 and `plotjuggler_sdk` |
-| NF-02 | Qt 6.x Widgets | 6.12 LTS |
+| NF-02 | Qt 6.x Widgets | The pinned Qt (`PJ_QT_VERSION` in the root `versions.env`) |
 | NF-03 | Cross-platform | Works on Linux, Windows, macOS |
 | NF-04 | Build system: CMake | Standard CMake project |
 | NF-05 | Dependencies: Conan (current), Pixi (future) | Builds with specified tools |
-| NF-06 | No external dependencies beyond Qt | Single binary, no runtime deps |
+| NF-06 | Few dependencies | Qt, libarchive and the plugin SDK (`plotjuggler_sdk::plugin_host`) only |
 | NF-07 | Standalone → integrable into PlotJuggler | Works as standalone, then embeds |
 | NF-08 | Download in background thread | UI remains responsive during downloads |
 | NF-09 | Performance: <100ms to load/filter registry | With ~50 extensions |
@@ -194,7 +193,7 @@ combined behavior:
 **Actor:** PlotJuggler User
 **Preconditions:** PlotJuggler is running, internet available
 **Flow:**
-1. User opens Marketplace (Plugins → Marketplace)
+1. User opens Marketplace (File → Extensions Marketplace…)
 2. User searches for "ROS 2"
 3. System shows matching extensions
 4. User clicks on "ROS 2 Streaming"
@@ -231,10 +230,10 @@ combined behavior:
 3. User clicks "Uninstall" on extension
 4. System shows confirmation dialog
 5. User confirms
-6. System removes extension files
-7. System refreshes installed cache
+6. System stages the removal: the row shows **Needs Restart** and the plugin stays loaded for this session
+7. At the next start the system deletes the files
 
-**Postconditions:** Extension removed, installed cache refreshed
+**Postconditions:** Extension removed after the restart; its id stays on the disabled list until it is installed again
 
 ### UC-04: Plugin Fails to Load (Rollback Deferred)
 
@@ -333,7 +332,7 @@ combined behavior:
 
 | Scenario | Expected Behavior |
 |----------|-------------------|
-| No internet connection | Show cached registry (if available), disable install/update |
+| No internet connection | Show the registry error; installed extensions stay listed (there is no registry cache, F-11) |
 | Registry URL unreachable | Show error message, offer retry |
 | Download interrupted | Partial file deleted, user can retry |
 | Checksum mismatch | Download rejected, user notified |
@@ -352,7 +351,7 @@ combined behavior:
 
 | Scenario | Expected Behavior |
 |----------|-------------------|
-| Extension requires newer PlotJuggler | Show warning, prevent install |
+| Extension requires a newer plugin SDK (`min_sdk_required`) | Show the reason, prevent install. `min_plotjuggler_version` never gates |
 | Downgrade requested | Reject with a diagnostic; keep the local install unchanged |
 | Same version reinstall, different payload | Ask confirmation, then reinstall |
 | Same version reinstall, byte-identical payload | Report success without touching the installed directory: nothing is asked, staged, or restarted. Decided on the content digest of both trees, not on the declared version |
@@ -395,7 +394,7 @@ combined behavior:
 ### 9.1 Must NOT Do
 
 - **No backend server** — All hosting via GitHub (serverless)
-- **No Qt dependency in plugins** — Plugins use abstract SDK only
+- **No Qt dependency in data plugins** — they use the SDK's C ABI only. Widget plugins are the exception: they link Qt and are checked against the host's Qt at load
 - **No database** — Registry data is JSON; installed state is discovered from embedded DSO manifests, not a local state database
 - **No user accounts** — Anonymous usage
 - **No telemetry** — No data collection without consent
@@ -424,18 +423,7 @@ combined behavior:
 
 ## 10. Acceptance Criteria (MVP)
 
-The minimum viable product is successful if:
-
-1. [ ] Opens as standalone Qt Widgets app
-2. [ ] Loads registry JSON from URL (GitHub raw)
-3. [ ] Shows extension list with cards
-4. [ ] Allows searching and filtering by category
-5. [ ] Shows selected extension detail
-6. [ ] Downloads ZIP with checksum verification
-7. [ ] Extracts to local directory and registers as installed
-8. [ ] Detects new available versions
-9. [ ] Allows extension uninstallation
-10. [ ] Works on Linux (Windows/macOS as stretch goal for MVP)
+Met: the marketplace ships embedded in PlotJuggler on Linux, Windows and macOS, and as the standalone `pj_marketplace_app`.
 
 ---
 
@@ -458,11 +446,13 @@ The minimum viable product is successful if:
       "repository": "https://github.com/...",
       "license": "SPDX identifier",
       "icon_url": "https://... (optional)",
+      "entry_point": "where the user finds it in the app (optional)",
       "category": "data_loader|data_streamer|parser|toolbox|bundle",
       "tags": ["tag1", "tag2"],
       "version": "semver",
       "min_sdk_required": "semver",
-      "min_plotjuggler_version": "semver",
+      "suggested_sdk_version": "semver (optional)",
+      "min_plotjuggler_version": "semver (deprecated, never gates)",
       "plugins": [
         {
           "name": "PluginClassName",
@@ -506,7 +496,7 @@ Fields read from the embedded plugin manifest:
 | `min_plotjuggler_version` | Embedded plugin manifest key `"min_plotjuggler_version"`. Deprecated: read and displayed, never gates (see `min_sdk_required`) |
 | `install_date` | Last-modified timestamp of the extension root directory |
 | `path` | The scanned subdirectory itself |
-| `enabled` | Always `true` by default (no persistence yet) |
+| `enabled` | True unless the id is in the persisted disabled list (`ExtensionManager::disabledExtensionIds`) |
 
 A directory holding several plugin DSOs is installed and gated as one extension, so
 they must agree on `id` and `version`. The plugin version and each non-empty
@@ -524,43 +514,6 @@ checks embedded plugin version, ABI major, and `min_sdk_required`
 authoritative `--plugin-dir` copy retains strict id shadowing, but a copy that fails
 this gate is not loaded and does not fall back silently to the managed store.
 
-### 11.3 Registry Extension Schema
-
-```json
-{
-  "id": "extension-id",
-  "version": "semver",
-  "min_sdk_required": "semver",
-  "min_plotjuggler_version": "semver",
-  "plugins": [
-    {
-      "name": "PluginClassName",
-      "type": "plugin_type",
-      "library": "library_name",
-      "ui_file": "optional_ui_file.ui"
-    }
-  ]
-}
-```
-
----
-
 ## 12. Open Follow-Ups
 
 Remaining implementation follow-ups are tracked in [TODO.md](TODO.md).
-
----
-
-## Document Maintenance
-
-This file should be updated when:
-- New requirements are identified
-- Requirements are clarified or changed
-- Use cases are added or modified
-- Constraints change
-
-**Do NOT add:**
-- Implementation details
-- Code examples
-- Architecture decisions (→ ARCHITECTURE.md)
-- How-to guides (→ USER_MANUAL.md)

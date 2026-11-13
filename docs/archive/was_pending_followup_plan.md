@@ -1,5 +1,9 @@
 # Follow-up: unified was-pending semantics for scene restore queues
 
+> **Retired 2026-11-12: a draft that was never scheduled or implemented.** The code
+> still distinguishes pending entries by origin (`pending_intent`); nothing below
+> describes current behaviour.
+
 Epilogue to the undo/redo state-integrity epic (`undo_redo_integrity_plan.md`;
 PRs #373, #377, #379, #380, #382). Rank-1 item from the two post-merge design
 retrospectives on #382. Status: DRAFT — not scheduled.

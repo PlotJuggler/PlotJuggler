@@ -3,9 +3,10 @@
 ## Purpose
 
 Extension marketplace for PlotJuggler 4 — registry fetching, package download,
-and installed-extension lifecycle management, plus the marketplace UI. Three
-library targets (`pj_marketplace` core, `pj_marketplace_ui`, `pj_plugin_catalog`)
-and a standalone `pj_marketplace_app` harness.
+and installed-extension lifecycle management, plus the marketplace UI. Two
+library targets (`pj_marketplace` core, `pj_marketplace_ui`), the Qt-free
+`pj-plugin-check` admission helper, and a standalone `pj_marketplace_app` harness.
+Embedded-manifest discovery comes from the SDK (`plotjuggler_sdk::plugin_host`).
 
 **Core (bundled) extensions**: plugins shipped with the app are seeded into the
 extensions dir by the host (`pj_runtime`'s `ExtensionCatalogService` — the
@@ -19,11 +20,13 @@ default sessions, and offers downgrade-to-bundled. See
 - `include/pj_marketplace/` — public headers (`marketplace.hpp`, `registry_manager.hpp`,
   `registry_resolver.hpp`,
   `download_manager.hpp`, `extension_manager.hpp`, `installed_extension.hpp`,
-  `marketplace_window.hpp`, `extension_detail_dialog.hpp`, `platform_utils.hpp`,
-  `qt_diagnostic_bridge.hpp`).
+  `marketplace_window.hpp`, `platform_utils.hpp`,
+  `qt_diagnostic_bridge.hpp`, and the store layer). Every header by role, so a helper
+  that already exists (SHA-256, the file walk, version ordering, archive budgets) is
+  found before it is rewritten: `docs/ARCHITECTURE.md` §3.1.
 - `src/core/` — registry/download/extension managers plus the pure registry candidate
   resolver; `src/ui/` — `MarketplaceWindow`
-  + `ExtensionDetailDialog` (`.ui`-driven); `tests/` — manager and store suites share
+  (`.ui`-driven); `tests/` — manager and store suites share
   the `pj_marketplace_tests` gtest runner and its offscreen-capable `QApplication` main.
 
 Consumed by the app through `pj_runtime`'s `ExtensionCatalogService`.
@@ -37,10 +40,9 @@ lock-holder mode for the interprocess store lease test; `pj-plugin-check` is
 copied beside that executable for default helper lookup. The helper names the Widget family `"widget"`,
 and `PluginCheckRunner` starts it with Qt's library directory first on `LD_LIBRARY_PATH` (Linux) / `PATH`
 (Windows), because it `dlopen`s every candidate and a Widget plugin links Qt: outside the AppImage nothing
-else lets the loader find `libQt6Widgets`, and a failed load there reads as a rejected plugin. In a configured test
-tree, select all registered module tests with
-`ctest -R '^(pj_marketplace_tests\.|plugin_check_runner_test$|extension_manager_test$)'`
-inside the builder image. `extension_manager_check_plugin_management` remains
+else lets the loader find `libQt6Widgets`, and a failed load there reads as a rejected plugin. Run the module's registered tests with
+`./test.sh -R '^(pj_marketplace_tests\.|plugin_check_runner_test$|extension_manager_test$)'`.
+`extension_manager_check_plugin_management` remains
 a standalone, network-dependent harness excluded from CTest.
 
 ## Read deeper

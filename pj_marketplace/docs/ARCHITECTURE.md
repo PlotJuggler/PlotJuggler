@@ -1,8 +1,6 @@
 # PlotJuggler Marketplace — Architecture
 
-> **Version:** 1.0.0
-> **Last Updated:** 2026-05-19
-> **Purpose:** Document HOW the system is designed and built
+How the marketplace is designed and built, as it is now. The original March 2026 proposal (plugin template, release CI for extension repositories, UI mock-ups) is kept verbatim in the frozen [v1.0.0 spec](./plotjuggler-marketplace-spec-v1.0.0-en.md); it is history, not guidance.
 
 ---
 
@@ -50,7 +48,7 @@ ext ..> em : Download ZIP
 | **CI-first** | Lower barrier for developers | Template with automated release |
 | **Cross-platform** | PlotJuggler runs everywhere | Matrix build in CI |
 | **Static linking** | Avoid dependency hell | Single .so/.dll per plugin |
-| **Zero Qt in plugins** | ABI stability | Plugins use abstract SDK |
+| **No Qt in data plugins** | ABI stability | Plugins talk to the host through the SDK's C ABI; Widget plugins are the one family that links Qt (§6) |
 | **Dogfooding** | Ensure process works | Official plugins use same template |
 
 ---
@@ -63,48 +61,20 @@ Two approaches were considered: create an external plugin management tool (like 
 
 The reasoning is that the typical PlotJuggler user doesn't want to leave the application to install plugins. They want to open a window inside PlotJuggler, search for what they need, install it, and keep working. It's the VSCode experience, not managing packages from a terminal.
 
-The module ships **both as a standalone Qt app and as a static library embeddable in PJ4**, and CMake builds both targets unconditionally:
+The module ships **both as static libraries embedded in PJ4 and as a standalone Qt app**:
 
-- `pj_marketplace` — static library with the core (`DownloadManager`, `ExtensionManager`, `RegistryManager`, `PlatformUtils`, `QtDiagnosticBridge`). No UI dependency.
-- `pj_marketplace_ui` — static library with the Qt UI (`marketplace_window`, `extension_detail_dialog`).
-- `pj_marketplace_app` — standalone executable that links both libraries above.
+- `pj_marketplace` — static library with the core (`DownloadManager`, `ExtensionManager`, `RegistryManager`, the store layer, `PlatformUtils`, `QtDiagnosticBridge`).
+- `pj_marketplace_ui` — static library with the Qt UI (`marketplace_window`).
+- `pj-plugin-check` — the Qt-free admission helper executable (§4.9).
+- `pj_marketplace_app` — standalone executable that links both libraries, built when `PJ_BUILD_MARKETPLACE_APP` is on (it defaults to `PJ_BUILD_TESTS`).
 
 The standalone executable continues to exist precisely because it lets us iterate on the marketplace without rebuilding the whole PJ4 shell. The embedded `pj_app` integration consumes the same `pj_marketplace` / `pj_marketplace_ui` libraries, so behaviour stays in sync between the two entry points.
 
-### 2.2 Plugin Template as Product
+### 2.2 Artifacts are independent of the build tool
 
-A key insight is that **the barrier to creating plugins is too high**. Configuring CMake, Conan, cross-platform CI... that's days of work before writing a single line of plugin code.
+A ZIP with one or more plugin DSOs installs the same whether it was built with Conan, Pixi or by hand: installed metadata is read from each DSO's embedded manifest, and the registry only needs direct URLs to the ZIP artifacts. How an extension repository builds and releases is not this module's concern (plugin authoring is documented in the SDK and in `pj-official-plugins`).
 
-The solution is a **GitHub Template** that developers use as a starting point. They click "Use this template", clone the repo, and have:
-
-- Preconfigured CI that compiles for Linux, Windows, and macOS
-- Working Conan build system
-- Project structure with examples
-- Release workflow: creating a `v1.0.0` tag automatically triggers compilation, packaging, and publishing
-
-The goal is that a developer with C++ experience can have their first plugin published in the marketplace **in a day**, not a week.
-
-### 2.3 Build System: Conan, Pixi, and the Future
-
-The C++ ecosystem has multiple dependency managers, and PlotJuggler has used several over time:
-
-| Tool       | Status            | Context                                                                                                    |
-| ---------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
-| **CMake**  | Stable            | It's the de facto standard. No reason to change it.                                                        |
-| **Conan**  | Active            | Works well, has good commercial support (JFrog), and the team has experience.                              |
-| **Pixi**   | Under observation | It's gaining traction in the ROS community. Offers reproducible environments similar to conda but lighter. |
-| **Colcon** | Abandoned         | Was necessary for ROS 1/2 integration, but added unnecessary complexity outside that context.              |
-
-The current decision is to **use Conan for the plugin template**, but design the system so that generated artifacts are independent of the build tool. A ZIP with one or more plugin DSOs works the same whether it was generated with Conan, Pixi, or manual compilation; installed metadata is read from each DSO's embedded manifest.
-
-**Pixi timeline:**
-1. **Short term:** Template uses Conan (already works, already tested)
-2. **Medium term:** Add Pixi support as an alternative in the template
-3. **Long term:** Evaluate if Pixi can replace Conan based on community adoption
-
-The important thing is that this decision **doesn't affect marketplace users**. They just see plugins that install with one click.
-
-### 2.4 Sizing
+### 2.3 Sizing
 
 The system is designed for a modest catalog:
 
@@ -120,94 +90,17 @@ This means a simple JSON file is more than sufficient as a registry. We don't ne
 
 ### 3.1 Core Components
 
-Public headers live under `include/pj_marketplace/`; sources are split between `src/core/` (CamelCase) and `src/ui/` (snake_case to match `.ui` filenames).
+Public headers live under `include/pj_marketplace/`; sources under `src/core/` (managers, store, extraction), `src/models/` (the pure value types: content manifest, generation digest, loaded profile, store policy), `src/ui/` (`marketplace_window.{cpp,ui}`) and `helper/` (`pj-plugin-check`). The headers by role, so nothing here gets written twice:
 
-```
-pj_marketplace/
-├── CMakeLists.txt
-├── main.cpp
-├── include/
-│   └── pj_marketplace/
-│       ├── extension.hpp                 # Extension metadata struct
-│       ├── installed_extension.hpp       # Local installation record
-│       ├── extension_manager.hpp         # Install/uninstall/update API + signals
-│       ├── registry_manager.hpp          # Registry fetch/parse API
-│       ├── download_manager.hpp          # HTTP + checksum + libarchive extraction
-│       ├── platform_utils.hpp            # OS detection, standard paths
-│       ├── qt_diagnostic_bridge.hpp      # Adapts a PJ::DiagnosticSink to a queued Qt diagnosticReported() signal
-│       ├── marketplace.hpp               # Aggregate include
-│       ├── marketplace_window.hpp        # Main dialog
-│       └── extension_detail_dialog.hpp   # Per-extension detail dialog
-└── src/
-    ├── core/
-    │   ├── ExtensionManager.cpp
-    │   ├── RegistryManager.cpp
-    │   ├── DownloadManager.cpp
-    │   ├── PlatformUtils.cpp
-    │   └── QtDiagnosticBridge.cpp
-    └── ui/
-        ├── marketplace_window.{cpp,ui}
-        └── extension_detail_dialog.{cpp,ui}
-```
-
-`src/models/` and `src/utils/` exist as reserved directories (with `.gitkeep` files) but are empty today — the model headers live in `include/pj_marketplace/` and there are no shared utilities yet.
+- **Managers:** `extension_manager.hpp` (install, update, uninstall, enable, staged promotion, diagnostics), `registry_manager.hpp` and `registry_resolver.hpp` (fetch, then the pure candidate selection), `download_manager.hpp` (HTTP, checksum, extraction).
+- **Admission:** `plugin_compatibility.hpp` (the ABI major / `min_sdk_required` claims of one descriptor and their gate), `plugin_check_runner.hpp` (parent side of the `pj-plugin-check` child process), `version_compare.hpp` (`comparePluginVersions`, the one version ordering every badge and lock uses).
+- **Store layer:** `store_session.hpp` and `store_lease.hpp` (canonical store root, its sibling directories, the single-writer lease), `artifact_store.hpp` (immutable content-addressed objects), `loaded_profile.hpp` (id → object digest), `content_manifest.hpp` and `generation_digest.hpp` (the content identity), `store_policy.hpp` and `archive_limits.hpp` (size, entry and depth budgets), `store_rejection.hpp` (the stable refusal codes), `stored_file.hpp`.
+- **Helpers:** `sha256.hpp` (incremental SHA-256, file streaming), `fs_walk.hpp` (recursive regular-file walk that fails closed on symlinks), `platform_utils.hpp` (platform id, standard paths, `canonicalStoreRoot`), `qt_diagnostic_bridge.hpp`.
+- **Value types and UI:** `extension.hpp` (a registry entry), `installed_extension.hpp` (an installed one), `marketplace_window.hpp`, `marketplace.hpp` (aggregate include).
 
 ### 3.2 Data Models
 
-#### extension.hpp
-```cpp
-struct Platform {
-    QString url;
-    QString checksum;     // sha256:<hex>
-};
-
-struct ExtensionPlugin {
-    QString name;
-    QString type;
-    QString library;
-};
-
-struct Extension {
-    QString id;
-    QString name;
-    QString description;
-    QString author;
-    QString publisher;
-    QString website;
-    QString repository;
-    QString license;         // SPDX identifier
-    QString icon_url;        // Optional
-    QString category;        // "data_loader" | "data_streamer" | "parser" | "toolbox" | "bundle"
-    QStringList tags;
-    QString version;
-    QString min_sdk_required;
-    QString min_plotjuggler_version;
-
-    QList<ExtensionPlugin> plugins;
-    QMap<QString, Platform> platforms;  // linux-x86_64, windows-x86_64, etc.
-    QMap<QString, QString> changelog;   // version -> description
-};
-```
-
-#### installed_extension.hpp
-```cpp
-struct InstalledExtension {
-    QString id;
-    QString version;
-    QDateTime install_date;
-    QString path;
-    bool enabled;
-
-    // Read from the embedded manifest, so a plugin the registry does not list can
-    // still be rendered as a row and gated on every host contract it declares.
-    QString name;
-    QString description;
-    QString category;
-    uint32_t abi_major;
-    QString min_sdk_required;
-    QString min_plotjuggler_version;
-};
-```
+`Extension` (`extension.hpp`) is one registry release: identity and presentation fields, `min_sdk_required`, its plugins, and `platforms`, a map from platform id (`linux-x86_64`, ...) to `{url, checksum}` with the checksum as `sha256:<hex>`. `InstalledExtension` (`installed_extension.hpp`) is one installed directory; its fields are read from the DSO's embedded manifest, so a plugin the registry does not list can still be shown as a row and gated on every host contract it declares. `min_plotjuggler_version` is parsed and shown in both, and never gates.
 
 ### 3.3 Component Responsibilities
 
@@ -252,8 +145,7 @@ A companion no-arg `ExtensionManager()` overload also exists; it creates an owne
 `DownloadManager` and uses the standard user directories.
 
 **Design decisions:**
-- No `setExtensionsDir()` public setter — directory is fixed at construction time
-- No `detectPlatform()` private method — delegated to `PlatformUtils::currentPlatform()`
+- The extensions directory is fixed at construction time; the platform id comes from `PlatformUtils::currentPlatform()`
 - Local installation state (`QMap<QString, InstalledExtension>`) is a private cache in `ExtensionManager` — populated at construction by scanning `extensions_dir`, loading plugin DSOs, and reading their embedded manifests; testability is preserved via the `extensions_dir` parameter pointing to a temp directory
 - No local installed-state sidecars — disk is scanned, but `id` and `version` come from the embedded DSO manifest
 - Staged updates write a transient `.pj_pending_install` intent containing the registry id/version. It is deleted after promotion and exists only so restart-time validation can compare the staged DSO against the registry request that created it. Both the id and the version inside the intent file are validated against the same safe-path/regex rules used elsewhere, so a tampered intent cannot escape `extensions_dir`.
@@ -273,7 +165,7 @@ A companion no-arg `ExtensionManager()` overload also exists; it creates an owne
 | `diagnosticReported(QString id, QString message, bool is_error)` Qt signal | Standalone marketplace UI | Pushes into the status bar. |
 | Optional `PJ::DiagnosticSink` constructor parameter | Embedding hosts | Lets `PluginRegistry`, `ExtensionManager`, and any other module feed one chronological stream into a single GUI sink. |
 
-See `pj_base/include/pj_base/diagnostic_sink.hpp` for the sink contract; the standalone `pj_marketplace_app` does not pass a sink, preserving the previous behavior unchanged.
+See the SDK's `pj_base/diagnostic_sink.hpp` for the sink contract; the standalone `pj_marketplace_app` does not pass a sink, preserving the previous behavior unchanged.
 
 ---
 
@@ -287,9 +179,9 @@ download into a hidden transaction directory (`.pj_install_<id>_<uuid>/`) under
 that dir's filesystem (the promoting rename stays atomic) while staying outside
 the recursive plugin scan. Inside the scanned tree, a transaction holding an
 unpacked DSO would be discoverable, loadable content, and it survives a crash;
-the scanner applies no exclusion rule of its own. The DSO is **dlopened and its
+the scanner applies no exclusion rule of its own. The DSO is **opened and its
 embedded manifest validated** inside
-the transaction directory before promotion, then **re-validated at the final
+the transaction directory before promotion (by a child process, §4.9), then **re-validated at the final
 location** after the rename — this catches DSOs that depend on rpath/relative
 paths that hold in the staging area but break in `extensions/`. On failure
 the transaction directory is removed and no partial state survives.
@@ -628,6 +520,20 @@ download and the extraction still happen. What is saved is the promotion, not th
 wait. The registry path is untouched — `install()` already refuses an installed
 id and `update()` implies a different version.
 
+### 4.8 Content-addressed store
+
+Every successful install is also mirrored into an immutable object store, and the runtime prefers that copy as its load path.
+
+- **Layout.** `StoreSession::open()` canonicalizes the store root once and prepares its siblings on the same volume: `extensions.artifacts/<digest>/` (objects), `extensions.extraction/` (staging) and `extensions.profiles/loaded.json` (extension id → object digest). The session also carries the single-writer lease of §4.5, so the store has exactly one lock.
+- **Identity.** An object is named by its content-manifest digest (§4.7), computed the same way for an extracted archive and an adopted directory, so identical bytes share one object whatever their origin.
+- **Write path.** After the visible install is final, `ExtensionManager::registerInstalledExtension` adopts `extensions/<id>/` into the store (`ArtifactStore::adoptDirectory`, write-once) and records the digest in the loaded profile. It is best-effort and never gates the user's result: a refused tree (a symlink, a budget, an I/O fault) drops the id's mapping and leaves the classic directory as what loads.
+- **Load path.** `ExtensionManager::managedPluginDirs()` is what `pj_runtime`'s `ExtensionCatalogService` scans for the managed tier: one directory per id, the store object when the profile names one and its bytes still verify against the recorded manifest (`verifyArtifact`, a rehash, not an existence check), else `extensions/<id>/`. A present object that fails the check is never loaded and is reported.
+- **Collection.** `reconcileStore()` runs at startup after the pending queues drain: it drops profile entries whose `extensions/<id>/` is gone, then deletes objects no entry references. It skips the sweep when the profile is empty while extensions are installed, because that means the profile failed to load and an empty root set would erase the store.
+
+### 4.9 Out-of-process admission
+
+The first look at bytes that just arrived (a registry download, a local archive, a promoted directory being re-validated) is taken by `pj-plugin-check`, a Qt-free child process that `PluginCheckRunner` starts on one directory, with a wall-clock timeout, and whose JSON descriptor list it parses. Two reasons: a plugin that aborts in a static initializer cannot take the application down, and opening a payload at its staging path in this process would pin that image (§3.3, the glibc note) and poison the check at its final path. A helper that produced no verdict (spawn failure, crash, timeout) is reported as unproven, not as a bad plugin. Directories already admitted are still inspected in-process. The runner puts Qt's library directory first on the loader path, because a Widget plugin links Qt.
+
 ---
 
 ## 5. Directory Structure
@@ -656,6 +562,10 @@ The root is `QStandardPaths::AppDataLocation` (the `PlotJuggler/PlotJuggler4` or
 │   └── <id>.json                    # uninstall/downgrade, {operation,id,path}.
 │                                    # A third sibling, and deliberately NOT
 │                                    # inside the payload it describes — see §4.6
+├── extensions.artifacts/            # Immutable content-addressed objects (§4.8)
+│   └── <digest>/
+├── extensions.extraction/           # Transient: store extraction staging
+├── extensions.profiles/             # loaded.json: extension id -> object digest
 ├── .extensions.lock                 # Single-writer lock over extensions/ (§4.5);
 │                                    # a second live instance runs read-only
 ├── .extension_staging/      # Staging area: updates land here and are promoted
@@ -682,530 +592,42 @@ ros2-streaming-linux-x86_64.zip
 
 ## 6. ABI Compatibility Strategy
 
-### 6.1 The Problem
+### 6.1 Qt and plugins
 
-Binary compatibility (ABI) is the biggest technical challenge:
+A plugin compiled against one Qt breaks when the host moves to another, so the data families (sources, parsers, toolboxes) link no Qt: they talk to the host through the SDK's C ABI, and their dialogs are `.ui` files (plain XML) that the host loads through `pj_dialog_host`. A Qt upgrade of PlotJuggler therefore does not touch them.
 
-1. User installs plugin compiled with Qt 5.15.2
-2. User updates PlotJuggler to Qt 6.2
-3. Plugin crashes due to Qt internal structure changes
+Widget plugins are the exception: they create real Qt widgets, so they link Qt. The host compares each library's `build_info()` with its own Qt major.minor and compiler family before creating anything, and lists a mismatching library as unusable with its reason (`pj_runtime/docs/ARCHITECTURE.md`, "Widget plugins").
 
-### 6.2 The Solution: Zero Qt in Plugins
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         PLOTJUGGLER                                  │
-│                                                                      │
-│  ┌────────────────┐         ┌────────────────┐                      │
-│  │   Qt Widgets   │         │  Plugin SDK    │                      │
-│  │   (Qt 6.x)     │◄───────►│  (Abstract)    │                      │
-│  └────────────────┘         └───────┬────────┘                      │
-│                                     │                                │
-│  ┌────────────────┐                 │                                │
-│  │  .ui file      │─────────────────┤                                │
-│  │  (pure XML)    │                 │                                │
-│  └────────────────┘                 │                                │
-└─────────────────────────────────────┼────────────────────────────────┘
-                                      │
-                                      │ SDK Interface (stable)
-                                      │
-┌─────────────────────────────────────┼────────────────────────────────┐
-│                         PLUGIN                                       │
-│                                     │                                │
-│  ┌────────────────┐         ┌───────┴────────┐                      │
-│  │  Plugin Code   │◄───────►│  SDK Headers   │                      │
-│  │  (C++17+)      │         │  (No Qt!)      │                      │
-│  └────────────────┘         └────────────────┘                      │
-│                                                                      │
-│  NO Qt dependency = NO ABI breaks when PJ updates Qt                │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### 6.3 Compatibility Policy
+### 6.2 Compatibility Policy
 
 - The gate is the ABI major plus `min_sdk_required`: the registry and the embedded plugin manifest both declare the SDK floor, while discovery supplies the ABI major. A plugin that needs a newer host declares the SDK release that added the surface it needs. `min_plotjuggler_version` is still parsed and shown, but never gates.
 - One headless admission evaluator, backed by the SDK's strict `PJ::SemVer`, is shared by registry/local-ZIP admission, pending-install promotion, bundled-seed rescue, static registration, and runtime DSO loading. Plugin versions and floors fail closed when malformed. A multi-DSO extension retains the highest valid floor; invalid metadata keeps the complete extension unloadable without removing its installed marketplace row.
 - Registry metadata is only a pre-screen: after extraction the embedded ABI and SDK floor are rechecked before promotion, and staged work is rechecked again at restart. `platforms` remains registry-only; a foreign binary fails DSO discovery before the embedded gate.
 - Compatibility is a hard runtime gate. `--plugin-dir` and Preferences folders retain strict shadow priority: an incompatible authoritative copy suppresses a managed same-id fallback but is itself not loaded, making developer override failures explicit instead of silently testing another build.
-- If SDK changes incompatibly, PlotJuggler provides internal adapter
-- **Existing plugins are never broken by PlotJuggler updates**
-- Stability target: current Qt baseline 6.12 LTS; see REQUIREMENTS.md NF-02.
+- The Qt baseline is `PJ_QT_VERSION` in the root `versions.env`.
 
 ---
 
 ## 7. Build System
 
-> **POC-phase framing note:** §7.2 and §10.1 use "POC" / "post-POC" labels
-> reflecting the project's status when this document was first written.
-> The marketplace itself is no longer a POC — the static libraries
-> (`pj_marketplace`, `pj_marketplace_ui`) and standalone executable
-> (`pj_marketplace_app`) all build by default in PJ4 and have test
-> coverage. The "dummy plugin" section below remains useful as a
-> minimal-example reference for plugin authors; the "real plugin
-> template" subsection in §7.3 is the recommended starting point.
-
 ### 7.1 CMakeLists.txt (Marketplace)
 
 The actual CMakeLists.txt is the source of truth — see `pj_marketplace/CMakeLists.txt`. Notable points:
 
-- The marketplace splits into two static libs: `pj_marketplace` (core: ExtensionManager, RegistryManager, DownloadManager, PlatformUtils) and `pj_marketplace_ui` (MarketplaceWindow, ExtensionDetailDialog).
-- `pj_marketplace` depends on `pj_plugin_catalog` (from `pj_plugins/`) for embedded-DSO-manifest discovery; the standalone build inlines the same `plugin_catalog.cpp` source.
+- Targets: see §2.1.
+- `pj_marketplace` links `plotjuggler_sdk::plugin_host` for embedded-DSO-manifest discovery; a standalone configure (this directory as the CMake root) resolves the SDK itself. `pj-plugin-check` links only that and `nlohmann_json`, so its packaging closure stays Qt-free.
 - C++20, `-Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic`.
-- Tests are gated on `PJ_BUILD_TESTS`. `download_manager_test` and `registry_manager_test` always build; `extension_manager_test` builds only when the mock fixture plugin targets (`mock_data_source_plugin`, `mock_file_source_plugin`, `mock_data_source_v2_plugin`, `missing_id_data_source_plugin`) exist.
-
-### 7.2 Dummy Plugin CMakeLists.txt (POC)
-
-For the POC phase, dummy plugins are extremely simple — no Qt, no SDK, just pure C++:
-
-```cmake
-cmake_minimum_required(VERSION 3.16)
-project(dummy_extension VERSION 1.0.0 LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-add_library(dummy_extension SHARED
-    src/dummy_plugin.cpp
-)
-
-set_target_properties(dummy_extension PROPERTIES
-    PREFIX ""
-    POSITION_INDEPENDENT_CODE ON
-)
-
-install(TARGETS dummy_extension DESTINATION .)
-```
-
-**dummy_plugin.cpp:**
-```cpp
-#include <pj_base/sdk/data_source_plugin_base.hpp>
-
-class DummySource final : public PJ::DataSourcePluginBase {
-    // Implement the SDK interface...
-};
-
-PJ_DATA_SOURCE_PLUGIN(DummySource,
-    R"({"id":"dummy-extension","name":"Dummy Extension","version":"1.0.0"})")
-```
-
-> **Note:** Each dummy extension folder is an independent C++ project with its own CMakeLists.txt. The plugin DSO embeds its manifest through the SDK export macro; there is no Qt dependency in the plugin.
-
-### 7.3 Real Plugin Template CMakeLists.txt (Post-POC)
-
-For real plugins that use the PlotJuggler SDK:
-
-```cmake
-cmake_minimum_required(VERSION 3.16)
-project(my_extension VERSION 1.0.0 LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-find_package(plotjuggler_sdk REQUIRED)
-
-add_library(my_plugin SHARED
-    src/my_plugin.cpp
-)
-
-target_link_libraries(my_plugin PRIVATE
-    plotjuggler::sdk
-)
-
-set_target_properties(my_plugin PROPERTIES
-    PREFIX ""
-    POSITION_INDEPENDENT_CODE ON
-)
-
-install(TARGETS my_plugin DESTINATION .)
-install(FILES my_dialog.ui DESTINATION .)
-install(FILES README.md LICENSE DESTINATION .)
-```
-
-### 7.4 conanfile.py (Plugin Template)
-
-```python
-from conan import ConanFile
-from conan.tools.cmake import CMake, cmake_layout
-
-class MyExtensionConan(ConanFile):
-    name = "my-extension"
-    version = "1.0.0"
-    settings = "os", "compiler", "build_type", "arch"
-    generators = "CMakeToolchain", "CMakeDeps"
-
-    def requirements(self):
-        self.requires("plotjuggler_sdk/4.0.0")
-
-    def build(self):
-        cmake = CMake(self)
-        cmake.configure()
-        cmake.build()
-
-    def layout(self):
-        cmake_layout(self)
-```
-
-### 7.5 Conan Profile for Static Linking
-
-```ini
-[settings]
-os=Linux
-compiler=gcc
-compiler.version=13
-compiler.libcxx=libstdc++11
-build_type=Release
-arch=x86_64
-
-[options]
-*:shared=False
-*:fPIC=True
-```
-
-### 7.6 pixi.toml (Future Alternative)
-
-```toml
-[project]
-name = "my-extension"
-version = "1.0.0"
-channels = ["conda-forge", "plotjuggler"]
-platforms = ["linux-64", "win-64", "osx-arm64"]
-
-[dependencies]
-plotjuggler-sdk = ">=4.0"
-cmake = ">=3.16"
-ninja = "*"
-
-[tasks]
-build = "cmake --preset release && cmake --build --preset release"
-test = "ctest --preset release"
-package = "cmake --install build/release --prefix dist && cd dist && zip -r ../artifact.zip ."
-```
+- Tests are gated on `PJ_BUILD_TESTS`; the runners and why three suites keep their own executable are in `../CLAUDE.md`.
 
 ---
 
-## 8. GitHub Template for Developers
+## 8. UI
 
-### 8.0 Template Structure
-
-```
-plotjuggler/extension-template/
-├── .github/
-│   └── workflows/
-│       ├── ci.yml                  # Build + test on each push/PR
-│       └── release.yml             # Build + publish on tag
-├── src/
-│   ├── my_plugin.h
-│   └── my_plugin.cpp
-├── ui/
-│   └── my_dialog.ui
-├── test/
-│   └── test_my_plugin.cpp
-├── CMakeLists.txt
-├── conanfile.py
-├── pixi.toml                       # Future alternative
-├── conan_profiles/
-│   ├── linux_static
-│   ├── windows_static
-│   └── macos_static
-├── README.md
-├── LICENSE
-└── CLAUDE.md
-```
-
-### 8.1 CI Workflow (ci.yml)
-
-```yaml
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            profile: linux_static
-          - os: windows-2022
-            profile: windows_static
-          - os: macos-14
-            profile: macos_static
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Conan
-        run: pip install conan
-      - name: Configure Conan
-        run: |
-          conan profile detect
-          conan remote add plotjuggler https://conan.plotjuggler.io
-      - name: Install dependencies
-        run: conan install . --profile conan_profiles/${{ matrix.profile }} --build=missing
-      - name: Build
-        run: |
-          cmake --preset conan-release
-          cmake --build --preset conan-release
-      - name: Test
-        run: ctest --preset conan-release --output-on-failure
-```
+`MarketplaceWindow` is one `.ui`-driven window: a table of extensions (name, category, installed version, marketplace version, description) with a search box and filter toggles, and a details footer for the selected row that carries the secondary actions (uninstall, enable/disable). There is no separate detail dialog. End-user behaviour is in [`USER_MANUAL.md`](./USER_MANUAL.md).
 
 ---
 
-## 9. CI/CD Architecture
-
-### 9.0 Repository Strategy
-
-Extensions can be organized in two ways:
-
-1. **Separate repos** (one repo per extension): Each extension has its own CI, independent versioning, standard tag → release flow.
-
-2. **Mono-repo** (multiple extensions in one repo): A single repository with multiple extension folders, each with its own CMakeLists.txt. Releases are tagged per-component (e.g., `dummy-csv/v1.0.0`, `dummy-parquet/v2.0.0`).
-
-**Reference:** [Foxglove MCAP](https://github.com/foxglove/mcap) uses the mono-repo approach with per-component releases:
-- https://github.com/foxglove/mcap/releases
-- https://github.com/foxglove/mcap/tags
-
-> **Note:** The registry doesn't care which approach is used — it only needs direct URLs to the ZIP artifacts. Both approaches work.
-
-### 9.1 Release Workflow
-
-```yaml
-name: Release
-
-on:
-  push:
-    tags: ['v*']
-
-jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            platform: linux-x86_64
-          - os: windows-2022
-            platform: windows-x86_64
-          - os: macos-14
-            platform: macos-arm64
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build
-        run: |
-          conan install . --profile profiles/${{ matrix.platform }}
-          cmake --preset release
-          cmake --build --preset release
-
-      - name: Package
-        run: |
-          cmake --install build --prefix dist
-          cd dist && zip -r ../${{ github.event.repository.name }}-${{ matrix.platform }}.zip .
-
-      - name: Checksum
-        run: sha256sum *.zip > checksums.txt
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.platform }}
-          path: |
-            *.zip
-            checksums.txt
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            **/*.zip
-            **/checksums.txt
-
-  update-registry:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Generate registry entry
-        run: |
-          # Generate JSON snippet with URLs and checksums
-          # Create PR to registry repository
-```
-
-### 9.2 Registry Validation Workflow
-
-```yaml
-name: Validate Registry
-
-on:
-  pull_request:
-    paths: ['registry.json']
-
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate JSON schema
-        run: |
-          # Validate against schema
-
-      - name: Verify URLs
-        run: |
-          # Check all download URLs are reachable
-
-      - name: Verify checksums
-        run: |
-          # Download and verify SHA256 for each artifact
-```
-
----
-
-## 10. UI Layout
-
-> **Note (2026-03-05 meeting):** Two UI approaches were discussed. For the POC, the simpler approach (Approach A) is recommended. The VS Code-style panel layout (Approach B) can be implemented in future iterations if needed.
-
-### 10.1 Approach A: Simple List + Dialog (POC)
-
-This is the approach shown by Davide in the March 5th meeting mockup. It prioritizes simplicity and fast implementation.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  PlotJuggler Marketplace                              [X]   │
-├─────────────────────────────────────────────────────────────┤
-│ [Buscar...              ] [Categoría ▼] [Refresh]           │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│   CanOpen parser           v1.0.0    [install]              │
-│   Parquet parser           v2.1.0    [installed]            │
-│   FFT Toolbox              v1.3.0    [installed]            │
-│   CSV exporter             v1.0.0    [update] ⬆            │
-│   ROS 2 Streaming          v3.0.0    [install]              │
-│                                                              │
-├─────────────────────────────────────────────────────────────┤
-│  Status: Ready                              [████████] 100% │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Interaction model:**
-- **Mouseover** on item → QToolTip with brief description
-- **Double-click** on item → Opens QDialog with full details (author, URL, changelog)
-- **Click on button** → Executes action (install/uninstall/update)
-
-**Detail dialog (on double-click):**
-
-```
-┌───────────────────────────────────────┐
-│  FFT Toolbox                    [X]   │
-├───────────────────────────────────────┤
-│  Version: 1.3.0                       │
-│  Author: PlotJuggler Team             │
-│  Category: toolbox                    │
-│                                       │
-│  Description:                         │
-│  Fast Fourier Transform toolbox for   │
-│  signal analysis and frequency domain │
-│  visualization.                       │
-│                                       │
-│  Changelog:                           │
-│  v1.3.0 - Added Hamming window        │
-│  v1.2.0 - Performance improvements    │
-│                                       │
-│  [View on GitHub]  [Close]            │
-└───────────────────────────────────────┘
-```
-
-**Qt Widget Hierarchy (Approach A):**
-
-```
-MarketplaceWindow (QDialog)
-├── QVBoxLayout
-│   ├── QHBoxLayout (toolbar)
-│   │   ├── QLineEdit (Search)
-│   │   ├── QComboBox (Category filter)
-│   │   └── QPushButton (Refresh)
-│   ├── QTableWidget or QListWidget (extension list)
-│   │   └── Rows with: Name, Version, Action Button
-│   └── QStatusBar
-│       ├── QLabel (Status message)
-│       └── QProgressBar (Download progress)
-└── ExtensionDetailDialog (QDialog) ← Opens on double-click
-    ├── QLabel (Name, Version, Author)
-    ├── QTextBrowser (Description)
-    ├── QTextBrowser (Changelog)
-    └── QDialogButtonBox
-```
-
-### 10.2 Approach B: VS Code-Style Panel (Future)
-
-This more elaborate approach can be implemented after the POC if a richer UX is desired.
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  [Toolbar]  ← Back │ Forward →  │  Search...  │  ⚙ Settings    │
-├────────────────────┬─────────────────────────────────────────────┤
-│                    │                                             │
-│   SIDEBAR          │         DETAIL PANEL                       │
-│   (QListView)      │         (QWidget stack)                    │
-│                    │                                             │
-│  ┌──────────────┐  │  ┌─────────────────────────────────────┐   │
-│  │ QLineEdit    │  │  │  Icon + Name + Version              │   │
-│  │ QComboBox    │  │  │  by Publisher                       │   │
-│  ├──────────────┤  │  │                                     │   │
-│  │ INSTALLED    │  │  │  [Install] [Disable] [Uninstall]   │   │
-│  │  Card A      │  │  ├─────────────────────────────────────┤   │
-│  │  Card B      │  │  │  [Details] [Changelog]              │   │
-│  ├──────────────┤  │  │                                     │   │
-│  │ AVAILABLE    │  │  │  QTextBrowser (README)              │   │
-│  │  Card C      │  │  │                                     │   │
-│  │  Card D      │  │  └─────────────────────────────────────┘   │
-│  └──────────────┘  │                                             │
-├────────────────────┴─────────────────────────────────────────────┤
-│  QStatusBar: "3 updates available" │ QProgressBar              │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-**Qt Widget Hierarchy (conceptual target; current code keeps cards in `MarketplaceWindow` and opens `ExtensionDetailDialog` for details):**
-
-```
-MarketplaceWindow (QMainWindow or QDialog)
-├── QToolBar
-│   ├── QAction (Back)
-│   ├── QAction (Forward)
-│   ├── QLineEdit (Search)
-│   └── QAction (Settings)
-├── QSplitter (Central Widget)
-│   ├── ExtensionListWidget (QWidget)
-│   │   ├── QLineEdit (Search filter)
-│   │   ├── QComboBox (Category filter)
-│   │   └── QListView (with ExtensionCardDelegate)
-│   └── ExtensionDetailWidget (QStackedWidget)
-│       ├── EmptyStateWidget
-│       └── DetailWidget
-│           ├── HeaderWidget (icon, name, buttons)
-│           ├── QTabWidget
-│           │   ├── DetailsTab (QTextBrowser)
-│           │   └── ChangelogTab (QTextBrowser)
-└── QStatusBar
-    ├── QLabel (Status message)
-    └── QProgressBar (Download progress)
-```
-
----
-
-## 11. Technology Decisions
+## 9. Technology Decisions
 
 | Decision | Choice | Alternatives Considered | Rationale |
 |----------|--------|------------------------|-----------|
@@ -1218,40 +640,6 @@ MarketplaceWindow (QMainWindow or QDialog)
 
 ---
 
-## 12. Integration with PlotJuggler
+## 10. Integration with PlotJuggler
 
-### 12.1 Entry Point
-
-```cpp
-// In PlotJuggler main menu
-void MainWindow::openMarketplace() {
-    MarketplaceWindow dlg(&catalog.extensionManager(), registryUrlFromSettings(), this);
-    dlg.exec();
-
-    // After the window closes, reload plugins if needed
-    if (dlg.installationsChanged()) {
-        catalog.reload();
-    }
-}
-```
-
-### 12.2 Menu Integration
-
-```cpp
-// plugins_menu.cpp
-QAction* marketplaceAction = new QAction("Open Marketplace...", this);
-connect(marketplaceAction, &QAction::triggered, this, &MainWindow::openMarketplace);
-pluginsMenu->addAction(marketplaceAction);
-```
-
----
-
-## Document Maintenance
-
-This file should be updated when:
-- Architecture decisions change
-- New components are added
-- Flows are modified
-- Technology choices change
-
-**Review regularly** to ensure it matches the actual implementation.
+`pj_app` opens the marketplace from **File ▸ Extensions Marketplace…** (`MainWindow::onOpenMarketplace`). It is embedded in the central area like a toolbox, not shown as a modal dialog: `MainWindow` constructs a `MarketplaceWindow` over the session's `ExtensionManager` and the registry URL from Preferences, keeps it alive as a hidden controller, and lifts its `contentWidget()` into a banner-wrapped panel that can be closed or moved to a tab. When the panel closes and `installationsChanged()` is true, the shell reloads the plugin catalog. The gear button emits `pluginPreferencesRequested`, which the shell answers by opening Preferences ▸ Plugins; the marketplace has no dependency on the preferences UI.

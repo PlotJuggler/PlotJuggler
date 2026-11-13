@@ -1,6 +1,6 @@
 # Exploratory pixi/conda-forge build of PJ4 (parallel to the canonical Conan CI).
-# Builds the local-channel packages (the 5 conda-forge gaps: luau, mcap, cloudini,
-# nanoarrow, kissfft — plus the LGPL-lean ffmpeg, which win-64 NEEDS: conda-forge has no
+# Builds the local-channel packages (the 3 conda-forge gaps: luau, mcap, nanoarrow
+# — plus the LGPL-lean ffmpeg, which win-64 NEEDS: conda-forge has no
 # LGPL win-64 ffmpeg at all), then builds + tests PJ4 against a pixi environment
 # on Linux and Windows. This win-64 leg is also the only place the MSVC ffmpeg
 # package can be built/validated — a Linux dev box cannot produce it.
@@ -115,7 +115,7 @@ jobs:
           cache: false
 
       - name: Cache built local channel
-        # The gap packages (luau, mcap, cloudini, nanoarrow, kissfft, ffmpeg — the
+        # The gap packages (luau, mcap, nanoarrow, ffmpeg — the
         # latter compiled from source) are a pure function of recipes/**, yet
         # they were rebuilt on EVERY run (~20-40 min per leg). Cache the built
         # .conda channel and skip rattler-build entirely on an exact hit.

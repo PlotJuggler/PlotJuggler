@@ -126,9 +126,9 @@ The authoritative test list is the CMake registry (`core/CMakeLists.txt`, `widge
 - `scene3d_shader_constants_test`: its own executable (it uniquely defines `PJ_SCENE3D_SHADER_DIR`).
 
 ```bash
-ctest --test-dir build --output-on-failure -R \
+./test.sh -R \
   '^(pj_scene3d_.*|pointcloud_golden_test\..*|scene3d_rhi_.*|scene3d_frame_benchmark\..*|scene3d_shader_constants_test)$'
 ```
 
-Run the QRhi runners under a display; `-R '^pj_scene3d_'` runs only the headless runners. Keep this module's docs in
+The QRhi runners self-skip without a display: add `--display` (a private Xvfb, serial, never `-j`) to run them; `-R '^pj_scene3d_'` selects only the headless runners. Keep this module's docs in
 step with any behaviour change.

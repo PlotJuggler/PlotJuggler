@@ -11,9 +11,6 @@
 #   - luau      (pj_scripting's filter engine; not on conda-forge)
 #   - mcap      (C++ header-only reader/writer; the conda-forge `mcap` package
 #                is the *Python* wrapper, not the C++ lib)
-#   - cloudini  (compressed point clouds; our own library)
-#   - kissfft   (FFT for pj_scripting's marker-analysis bandPower; not on
-#                conda-forge)
 #   - ffmpeg    (NOT a conda-forge gap — a decode-only LGPL-only rebuild
 #                mirroring conanfile.txt's trimmed option set; replaces the
 #                feature-complete lgpl_* build on linux-64 and the GPL-only
@@ -21,7 +18,7 @@
 
 [workspace]
 name = "pj4"
-# local-channel/ holds the packages built from recipes/ (5 conda-forge gaps +
+# local-channel/ holds the packages built from recipes/ (4 conda-forge gaps +
 # the LGPL-lean ffmpeg) via:
 # rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 channels = ["conda-forge", "./local-channel"]
@@ -57,12 +54,11 @@ libpng = "1.6.*"
 backward-cpp = "1.6.*"
 draco = "*"                      # conanfile.txt pins draco to what its assimp recipe requires; conda resolves its own
 assimp = "*"                     # keep the same major as the assimp pin in conanfile.txt
+cloudini = "1.4.*"               # shared libcloudini_lib; CMake package cloudini_lib
 
 # --- local channel (gaps vs conda-forge; see recipes/) ------------------------
 luau = "0.700.*"
 libmcap = "2.1.*"                # C++ header-only mcap (conda-forge `mcap` is the Python wrapper)
-cloudini = "1.4.*"
-kissfft = "131.1.*"              # FFT for pj_scripting's bandPower (static, datatype=float)
 
 # Linux-only deps. elfutils backs backward-cpp's `dw` stack-trace backend
 # (Windows backward-cpp uses the DbgHelp/PDB backend instead); the libGL/EGL

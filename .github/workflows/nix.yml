@@ -11,6 +11,8 @@ on:
       - flake.nix
       - flake.lock
       - packaging/nix/**
+      # dependencies.nix reads source pins and CMake adapters from the recipes.
+      - recipes/**
       - .github/workflows/nix.yml
 
 jobs:

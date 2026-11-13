@@ -3,7 +3,8 @@
 // A point's colour and its outside-range cull, shared by every point-cloud shader
 // (point, cube and sprite). They take the already-resolved
 // `scalar` because how a shape gets one differs (vertex attribute, per-instance attribute
-// or fixed-frame axis), while everything downstream of it does not. Needs sampleColormap() (pj_widgets colormapGlsl()) declared before it.
+// or fixed-frame axis), while everything downstream of it does not. Needs sampleColormap() (pj_widgets colormapGlsl()) and srgbToLinear() (srgb.glslinc,
+// via point_uniforms.glslinc) declared before it.
 
 // Display-referred base colour. The colormaps are display-referred sRGB; callers
 // linearize for a linear-light target.
@@ -25,7 +26,7 @@ vec3 resolveBaseLinear(int color_mode, vec3 solid_color, vec3 per_point_rgb, int
                        float scalar, float range_min, float range_max) {
   vec3 base = resolveBaseColor(color_mode, solid_color, per_point_rgb, colormap_id, invert, scalar, range_min,
                                range_max);
-  return pow(max(base, vec3(0.0)), vec3(2.2));
+  return srgbToLinear(base);
 }
 
 // True when this draw must not emit the point at all: either the fade would leave nothing

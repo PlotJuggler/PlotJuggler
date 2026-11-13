@@ -338,10 +338,9 @@ jobs:
         env:
           SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
-          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded forces /Z7 (embedded)
-          # over /Zi (shared PDB). /Zi writes via mspdbsrv.exe which sccache
-          # cannot cache and which races between parallel cl.exe workers
-          # (fatal C1041 on pj_base.pdb). Requires CMP0141=NEW.
+          # Same debug format as windows-ci.yml (see its Build step), so the
+          # two share sccache objects: no debug information in RelWithDebInfo
+          # objects. The installer ships no PDB. Requires CMP0141=NEW.
           launcher_args=()
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache \
@@ -354,7 +353,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
             -DCMAKE_PREFIX_PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64" \
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
-            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
+            '-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug>:Embedded>' \
             -DPJ_INSTALLATION=windows \
             -DPJ_BUILD_TESTS=OFF \
             "${launcher_args[@]}"

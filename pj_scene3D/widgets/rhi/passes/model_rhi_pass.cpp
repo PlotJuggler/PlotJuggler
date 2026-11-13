@@ -973,8 +973,10 @@ bool ModelRhiPass::buildMesh(
       mesh.texture_refs.push_back(key);
       continue;
     }
-    const QRhiTexture::Flags flags = key.second ? QRhiTexture::sRGB : QRhiTexture::Flags{};
-    QRhiTexture* texture = rhi->newTexture(QRhiTexture::RGBA8, image->second.size(), 1, flags);
+    // Plain RGBA8 for every slot: model.frag decodes the colour slots itself,
+    // because Qt's OpenGL backend (desktop GL, WebGL) ignores QRhiTexture::sRGB
+    // for uncompressed formats and would hand the shader raw sRGB bytes as linear values.
+    QRhiTexture* texture = rhi->newTexture(QRhiTexture::RGBA8, image->second.size(), 1);
     if (texture == nullptr || !texture->create()) {
       delete texture;
       return fail(QT_TRANSLATE_NOOP("pj::scene3d::SceneViewWidget", "Could not allocate a model material texture"));
