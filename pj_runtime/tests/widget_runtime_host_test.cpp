@@ -572,8 +572,7 @@ class TextLogParser : public MessageParserPluginBase {
       log.level = sdk::Log::Level::kWarning;
       log.message = text;
       log.name = "node";
-      log.file = "node.cpp";
-      log.line = 42;
+      log.category = "motion";
       return sdk::ObjectRecord{ts, sdk::BuiltinObject{log}};
     };
     registerSchemaHandler(kLogSchema, std::move(handler));
@@ -654,8 +653,7 @@ TEST_F(WidgetRuntimeHostCanonicalTest, AParserBackedTopicDeliversCanonicalBytes)
   ASSERT_TRUE(log.has_value()) << log.error();
   EXPECT_EQ(log->message, "running");
   EXPECT_EQ(log->level, sdk::Log::Level::kWarning);
-  EXPECT_EQ(log->file, "node.cpp");
-  EXPECT_EQ(log->line, 42U);
+  EXPECT_EQ(log->category, "motion");  // canonical bytes keep every Log field
   EXPECT_EQ(log->timestamp_ns, kSecond);
 }
 

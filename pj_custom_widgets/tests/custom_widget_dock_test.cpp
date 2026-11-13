@@ -58,7 +58,7 @@ class TextLogParser : public MessageParserPluginBase {
       sdk::Log log;
       log.timestamp_ns = ts;
       log.message = text;
-      log.function = "spin";
+      log.category = "spin";
       return sdk::ObjectRecord{ts, sdk::BuiltinObject{log}};
     };
     registerSchemaHandler(kLogSchema, std::move(handler));
