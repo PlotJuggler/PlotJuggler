@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -9,6 +10,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace PJ::agent_tools {
 
@@ -76,10 +78,16 @@ struct ToolContext {
   // Hands `on_block` the numeric series of `field` from the sample stamped `first` (raw ns) on, in time order, as
   // blocks (ValueBlockSink: a null is a NaN), building no Arrow array. From the int64 minimum it is the whole series:
   // a windowed read_series gets its whole-series flat facts that way (FlatRunAccumulator::addBlock), and uses it only
-  // together with read_window. wait_for polls it from its cursor. Optional: unset, both read through `host`, where a
-  // null reads as 0.
+  // together with read_window. wait_for polls it from its cursor. Optional: unset, both read through `host`.
   std::function<PJ::Status(PJ::sdk::FieldHandle field, std::int64_t first, const ValueBlockSink& on_block)> scan_values;
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
 };
+
+// The value column's rows [begin, end) of `series` as doubles, whatever its numeric type. A null
+// sample (an empty CSV cell, an absent optional field) is a NaN, as every other read of the store
+// gives it: its slot in the view's buffer holds no value (hosts zero it). Empty for a column that
+// is not numeric (string, bool). The one place that turns the SDK's series view into numbers.
+[[nodiscard]] std::vector<double> seriesValuesAsDoubles(
+    const PJ::sdk::MaterializedSeriesView& series, std::size_t begin, std::size_t end);
 
 }  // namespace PJ::agent_tools

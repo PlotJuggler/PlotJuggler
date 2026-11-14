@@ -26,6 +26,37 @@
 #include "pj_runtime/agent_tools/series_stats.hpp"
 #include "tools_internal.hpp"
 
+namespace PJ::agent_tools {
+
+std::vector<double> seriesValuesAsDoubles(
+    const PJ::sdk::MaterializedSeriesView& series, std::size_t begin, std::size_t end) {
+  std::vector<double> out(end - begin);
+  const auto copy = [&](const auto* values) {
+    if (values == nullptr) {
+      return false;
+    }
+    std::transform(values + begin, values + end, out.begin(), [](auto v) { return static_cast<double>(v); });
+    return true;
+  };
+  // Each accessor answers only for its own column type.
+  if (!(copy(series.valuesAsFloat64()) || copy(series.valuesAsFloat32()) || copy(series.valuesAsInt64()) ||
+        copy(series.valuesAsInt32()) || copy(series.valuesAsInt16()) || copy(series.valuesAsInt8()) ||
+        copy(series.valuesAsUint64()) || copy(series.valuesAsUint32()) || copy(series.valuesAsUint16()) ||
+        copy(series.valuesAsUint8()))) {
+    return {};
+  }
+  if (series.nullCount() > 0) {
+    for (std::size_t row = begin; row < end; ++row) {
+      if (series.isNull(row)) {
+        out[row - begin] = std::numeric_limits<double>::quiet_NaN();
+      }
+    }
+  }
+  return out;
+}
+
+}  // namespace PJ::agent_tools
+
 namespace PJ::agent_tools::detail {
 namespace {
 
@@ -33,11 +64,9 @@ namespace {
 // a long series can't blow the context window. read_series coarsens to fit.
 constexpr std::size_t kMaxResponseBytes = 16 * 1024;
 
-// Materialize a numeric field into parallel timestamp + double columns,
-// coercing any numeric column type to double. A null sample (an empty CSV cell,
-// an absent optional field) reads as NaN, as every other read of the store gives
-// it: its slot in the view's value buffer holds no value (hosts zero it). Returns
-// false for a non-numeric column (string/bool) or an empty/mismatched read.
+// Materialize a numeric field into parallel timestamp + double columns (a null
+// as NaN, see seriesValuesAsDoubles). Returns false for a non-numeric column
+// (string/bool) or an empty/mismatched read.
 bool readSeriesDoubles(
     const PJ::sdk::MaterializedSeriesView& view, std::vector<std::int64_t>& out_ts, std::vector<double>& out_vals) {
   const std::size_t n = view.rowCount();
@@ -46,49 +75,8 @@ bool readSeriesDoubles(
     return false;
   }
   out_ts.assign(ts.begin(), ts.end());
-  out_vals.resize(n);
-
-  auto copy_from = [&](const auto* p) -> bool {
-    if (p == nullptr) {
-      return false;
-    }
-    for (std::size_t i = 0; i < n; ++i) {
-      out_vals[i] = static_cast<double>(p[i]);
-    }
-    if (view.nullCount() > 0) {
-      for (std::size_t i = 0; i < n; ++i) {
-        if (view.isNull(i)) {
-          out_vals[i] = std::numeric_limits<double>::quiet_NaN();
-        }
-      }
-    }
-    return true;
-  };
-
-  switch (view.type()) {
-    case PJ::PrimitiveType::kFloat64:
-      return copy_from(view.valuesAsFloat64());
-    case PJ::PrimitiveType::kFloat32:
-      return copy_from(view.valuesAsFloat32());
-    case PJ::PrimitiveType::kInt8:
-      return copy_from(view.valuesAsInt8());
-    case PJ::PrimitiveType::kInt16:
-      return copy_from(view.valuesAsInt16());
-    case PJ::PrimitiveType::kInt32:
-      return copy_from(view.valuesAsInt32());
-    case PJ::PrimitiveType::kInt64:
-      return copy_from(view.valuesAsInt64());
-    case PJ::PrimitiveType::kUint8:
-      return copy_from(view.valuesAsUint8());
-    case PJ::PrimitiveType::kUint16:
-      return copy_from(view.valuesAsUint16());
-    case PJ::PrimitiveType::kUint32:
-      return copy_from(view.valuesAsUint32());
-    case PJ::PrimitiveType::kUint64:
-      return copy_from(view.valuesAsUint64());
-    default:
-      return false;  // bool/string aren't plottable numeric series
-  }
+  out_vals = seriesValuesAsDoubles(view, 0, n);
+  return out_vals.size() == n;
 }
 
 json statsToJson(const SeriesStats& s) {
