@@ -289,6 +289,13 @@ TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
           .metadata_json = R"({"builtin_object_type":"kOccupancyGridUpdate"})",
       });
   ASSERT_TRUE(update_topic.has_value()) << update_topic.error();
+  auto mesh_update_topic = app_session.sessionManager().objectStore().registerTopic(
+      ObjectTopicDescriptor{
+          .dataset_id = dataset,
+          .topic_name = "/navmesh/updates",
+          .metadata_json = R"({"builtin_object_type":"kMeshMapUpdate"})",
+      });
+  ASSERT_TRUE(mesh_update_topic.has_value()) << mesh_update_topic.error();
   auto image_topic = app_session.sessionManager().objectStore().registerTopic(
       ObjectTopicDescriptor{
           .dataset_id = dataset,
@@ -318,6 +325,13 @@ TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
 
   EXPECT_TRUE(image_row->flags().testFlag(Qt::ItemIsDragEnabled));
   EXPECT_TRUE(image_row->toolTip(0).isEmpty());
+
+  // A mesh-map patch is applied by the layer of its map, like an occupancy update.
+  const QString mesh_update_key = keyOfTopic(app_session.catalogModel(), u"/navmesh/updates"_s);
+  QTreeWidgetItem* mesh_update_row = findRowByCatalogKey(tree->invisibleRootItem(), mesh_update_key);
+  ASSERT_NE(mesh_update_row, nullptr);
+  EXPECT_FALSE(mesh_update_row->flags().testFlag(Qt::ItemIsDragEnabled));
+  EXPECT_TRUE(mesh_update_row->toolTip(0).contains(u"mesh map"_s)) << mesh_update_row->toolTip(0).toStdString();
 
   // Not-draggable drag feedback wiring: the tree's signals must surface as
   // toastRequested. Invoked directly (signals are public-callable) — the

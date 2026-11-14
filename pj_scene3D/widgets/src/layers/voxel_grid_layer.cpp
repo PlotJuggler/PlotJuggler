@@ -22,7 +22,7 @@
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/grid_map_view.h"       // finiteRange
+#include "pj_scene3d_core/finite_range.h"
 #include "pj_scene3d_core/pointcloud_convert.h"  // findField (shared field lookup)
 #include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_core/tf/object_placement.h"

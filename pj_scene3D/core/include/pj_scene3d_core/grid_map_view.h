@@ -10,6 +10,7 @@
 
 #include "pj_base/builtin/grid_map.hpp"
 #include "pj_scene3d_core/camera/camera.h"  // AABB
+#include "pj_scene3d_core/finite_range.h"
 
 namespace pj::scene3d {
 
@@ -21,14 +22,6 @@ inline constexpr uint64_t kMaxRenderableGridMapCells = 16ull * 1024 * 1024;
 
 // Total cell count (column * row). 0 if either dimension is 0.
 [[nodiscard]] uint64_t gridMapCellCount(const PJ::sdk::GridMap& grid);
-
-// Finite min/max of a float array; `valid` is false when no element is finite.
-struct FiniteRange {
-  float lo = 0.0f;
-  float hi = 0.0f;
-  bool valid = false;
-};
-[[nodiscard]] FiniteRange finiteRange(const std::vector<float>& values);
 
 // One GridMap ready for the GPU: placement plus the two de-interleaved channels,
 // row-major `row_count * column_count` floats each (NaN = hole). `elevation` may

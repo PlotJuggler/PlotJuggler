@@ -8,6 +8,7 @@
 #include "../rhi/passes/grid_rhi_pass.h"
 #include "../rhi/passes/gridmap_rhi_pass.h"
 #include "../rhi/passes/marker_rhi_pass.h"
+#include "../rhi/passes/meshmap_rhi_pass.h"
 #include "../rhi/passes/model_rhi_pass.h"
 #include "../rhi/passes/occupancy_rhi_pass.h"
 #include "../rhi/passes/overlay_rhi_pass.h"
@@ -56,6 +57,7 @@ QStringList SceneViewTestAccess::builtFamilies(const SceneViewWidget& view) {
   note(view.marker_pass_->ready(), "markers");
   note(view.model_pass_->ready(), "models");
   note(view.gridmap_pass_->ready(), "grid maps");
+  note(view.meshmap_pass_->ready(), "mesh maps");
   return families;
 }
 

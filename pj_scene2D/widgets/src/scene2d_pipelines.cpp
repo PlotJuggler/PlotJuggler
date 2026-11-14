@@ -35,6 +35,9 @@ std::unique_ptr<CodecPipeline> makeScene2DPipelineFor(sdk::BuiltinObjectType obj
     case sdk::BuiltinObjectType::kVoxelGrid:
     // kGridMap is a heightfield rendered only by pj_scene3D; no 2D path.
     case sdk::BuiltinObjectType::kGridMap:
+    // kMeshMap(+Update) is a triangle mesh rendered only by pj_scene3D; no 2D path.
+    case sdk::BuiltinObjectType::kMeshMap:
+    case sdk::BuiltinObjectType::kMeshMapUpdate:
       return nullptr;
   }
   return nullptr;

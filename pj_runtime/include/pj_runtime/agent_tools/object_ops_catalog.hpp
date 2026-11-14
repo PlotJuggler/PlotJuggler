@@ -99,6 +99,8 @@ struct ObjectOperation {
     case BuiltinObjectType::kVoxelGrid:
     case BuiltinObjectType::kPlotMarkers:
     case BuiltinObjectType::kGridMap:
+    case BuiltinObjectType::kMeshMap:
+    case BuiltinObjectType::kMeshMapUpdate:
       return {};
   }
   return {};

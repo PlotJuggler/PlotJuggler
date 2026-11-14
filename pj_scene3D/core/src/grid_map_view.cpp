@@ -15,20 +15,6 @@ namespace pj::scene3d {
 
 namespace {
 
-void accumulate(FiniteRange& range, float value) {
-  if (!std::isfinite(value)) {
-    return;
-  }
-  if (!range.valid) {
-    range.lo = value;
-    range.hi = value;
-    range.valid = true;
-  } else {
-    range.lo = std::min(range.lo, value);
-    range.hi = std::max(range.hi, value);
-  }
-}
-
 // One element widened to float: a memcpy load on a little-endian host (every PJ
 // target), the byte-assembling readScalarAt otherwise.
 template <typename T>
@@ -46,14 +32,6 @@ float readAs(const uint8_t* data, PJ::sdk::PointField::Datatype datatype) {
 
 uint64_t gridMapCellCount(const PJ::sdk::GridMap& grid) {
   return static_cast<uint64_t>(grid.column_count) * grid.row_count;
-}
-
-FiniteRange finiteRange(const std::vector<float>& values) {
-  FiniteRange range;
-  for (const float value : values) {
-    accumulate(range, value);
-  }
-  return range;
 }
 
 std::vector<float> packGridMapField(

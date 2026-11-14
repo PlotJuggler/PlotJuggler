@@ -35,6 +35,8 @@
     <file>gizmo.frag.qsb</file>
     <file>gridmap.vert.qsb</file>
     <file>gridmap.frag.qsb</file>
+    <file>meshmap.vert.qsb</file>
+    <file>meshmap.frag.qsb</file>
     <file>trail.vert.qsb</file>
     <file>trail.frag.qsb</file>
   </qresource>

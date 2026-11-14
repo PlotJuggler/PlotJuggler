@@ -42,7 +42,7 @@ let
   );
   dependencies = callPackage ./dependencies.nix { };
   sdkVersion = builtins.head (
-    builtins.match ".*\nplotjuggler_sdk/([0-9.]+)\n.*" (builtins.readFile ../../conanfile.txt)
+    builtins.match ".*\nplotjuggler_sdk/([0-9][0-9A-Za-z.-]*)\n.*" (builtins.readFile ../../conanfile.txt)
   );
   sdkArchive = fetchurl {
     url = "https://github.com/PlotJuggler/plotjuggler_sdk/archive/refs/tags/v${sdkVersion}.tar.gz";

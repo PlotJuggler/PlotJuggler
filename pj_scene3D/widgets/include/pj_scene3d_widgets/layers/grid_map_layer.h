@@ -17,6 +17,7 @@
 #include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId, PJ::SequentialUID
 #include "pj_runtime/SessionManager.h"    // PJ::DatasetId
 #include "pj_scene3d_core/grid_map_view.h"
+#include "pj_scene3d_widgets/channel_coloring.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_widgets/Colormap.h"
 
@@ -81,13 +82,16 @@ class GridMapLayer : public Scene3DLayer {
   }
   // Display params as set (the persisted values).
   [[nodiscard]] PJ::Colormap colormap() const {
-    return colormap_;
+    return coloring_.colormap();
   }
   [[nodiscard]] bool autoRange() const {
-    return auto_range_;
+    return coloring_.autoRange();
   }
   [[nodiscard]] std::pair<double, double> manualRange() const {
-    return {manual_lo_, manual_hi_};
+    return coloring_.manualRange();
+  }
+  [[nodiscard]] const ChannelColoring& coloring() const {
+    return coloring_;
   }
   [[nodiscard]] bool lighting() const {
     return lighting_;
@@ -139,7 +143,7 @@ class GridMapLayer : public Scene3DLayer {
     return field_names_;
   }
   [[nodiscard]] std::pair<double, double> manualRangeForTest() const {
-    return {manual_lo_, manual_hi_};
+    return coloring_.manualRange();
   }
 #endif
 
@@ -167,11 +171,11 @@ class GridMapLayer : public Scene3DLayer {
   // Returns false when the grid offers no usable color field.
   bool resolveFields(const PJ::sdk::GridMap& grid);
   void pushDisplayParamsToPass();
+  // A colormap or range edit: push, persist and repaint.
+  void coloringChanged();
   // Bounds change inside renderAt, i.e. during the paint that follows the dock's
   // bounds union, so a changed extent requests another repaint to re-fit the camera.
   void setBounds(std::optional<AABB> bounds);
-  // The auto-range toggle plus the two manual-range scrubbers it seeds/enables.
-  void buildRangeRows(QFormLayout* form, QWidget* parent);
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
@@ -213,11 +217,7 @@ class GridMapLayer : public Scene3DLayer {
   std::optional<std::pair<std::string, std::string>> resolved_requests_;
   QString resolve_warning_;
 
-  PJ::Colormap colormap_ = PJ::Colormap::kTurbo;
-  bool auto_range_ = true;
-  double manual_lo_ = 0.0;
-  double manual_hi_ = 1.0;
-  FiniteRange last_auto_range_;  // seeds the manual spinboxes when auto is switched off
+  ChannelColoring coloring_;  // colormap, auto / manual range, the last auto range
   bool lighting_ = true;
   double opacity_ = 1.0;
 

@@ -37,6 +37,7 @@
 #include "passes/grid_rhi_pass.h"
 #include "passes/gridmap_rhi_pass.h"
 #include "passes/marker_rhi_pass.h"
+#include "passes/meshmap_rhi_pass.h"
 #include "passes/model_rhi_pass.h"
 #include "passes/occupancy_rhi_pass.h"
 #include "passes/overlay_rhi_pass.h"
@@ -50,6 +51,7 @@
 #include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/hud_overlay.h"
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
+#include "pj_scene3d_widgets/layers/mesh_map_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
@@ -265,6 +267,10 @@ const GridMapLayer* familyKey(
     const GridMapRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
   return contributes.grid_map;
 }
+const MeshMapLayer* familyKey(
+    const MeshMapRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.mesh_map;
+}
 
 }  // namespace
 
@@ -295,6 +301,7 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
   model_pass_ = std::make_unique<ModelRhiPass>();
   point_pass_ = std::make_unique<PointRhiPass>();
   gridmap_pass_ = std::make_unique<GridMapRhiPass>();
+  meshmap_pass_ = std::make_unique<MeshMapRhiPass>();
   trail_pass_ = std::make_unique<TrailRhiPass>();
   frame_ = std::make_unique<PreparedFrame>();
 
@@ -348,6 +355,7 @@ void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers
   std::vector<SceneEntitiesLayer*> markers;
   std::vector<ModelRenderable*> models;
   std::vector<GridMapLayer*> grid_maps;
+  std::vector<MeshMapLayer*> mesh_maps;
   const auto add = [](auto& family_layers, auto* layer) {
     if (layer != nullptr) {
       family_layers.push_back(layer);
@@ -368,6 +376,7 @@ void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers
     add(markers, contributes.markers);
     add(models, contributes.models);
     add(grid_maps, contributes.grid_map);
+    add(mesh_maps, contributes.mesh_map);
   }
   point_pass_->setLayers(points);
   trail_pass_->setLayers(trails);
@@ -377,6 +386,7 @@ void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers
   marker_pass_->setLayers(markers);
   model_pass_->setLayers(models);
   gridmap_pass_->setLayers(grid_maps);
+  meshmap_pass_->setLayers(mesh_maps);
   invalidateContent();
 }
 
@@ -748,6 +758,7 @@ void SceneViewWidget::forEachFamily(Visitor&& visitor) const {
   visitor(*marker_pass_);
   visitor(*model_pass_);
   visitor(*gridmap_pass_);
+  visitor(*meshmap_pass_);
 }
 
 void SceneViewWidget::initialize(QRhiCommandBuffer* command_buffer) {
@@ -856,6 +867,9 @@ void SceneViewWidget::forEachLazyFamily(QRhi& rhi, Visitor&& visitor) const {
   });
   visit(*gridmap_pass_, "grid-map pipelines", [this](const RhiPassSetup& setup) {
     return gridmap_pass_->initialize(setup);
+  });
+  visit(*meshmap_pass_, "mesh-map pipelines", [this](const RhiPassSetup& setup) {
+    return meshmap_pass_->initialize(setup);
   });
 }
 
@@ -990,7 +1004,8 @@ struct SceneViewWidget::PreparedFrame {
   // visitor's call for alternative 0 (SubmitDraw), so that slot holds no draw.
   using DrawRef = std::variant<
       std::monostate, DrawOf<PointRhiPass>, DrawOf<TrailRhiPass>, DrawOf<PoseRhiPass>, DrawOf<OccupancyRhiPass>,
-      DrawOf<VoxelRhiPass>, DrawOf<MarkerRhiPass>, DrawOf<ModelRhiPass>, DrawOf<GridMapRhiPass>>;
+      DrawOf<VoxelRhiPass>, DrawOf<MarkerRhiPass>, DrawOf<ModelRhiPass>, DrawOf<GridMapRhiPass>,
+      DrawOf<MeshMapRhiPass>>;
   // One prepared draw in submission terms: its logical slot (index into
   // layers_), blending class and family record.
   struct SceneDraw {
@@ -1290,6 +1305,7 @@ void SceneViewWidget::admitFrame(QRhi* rhi, FrameAdmission& admission) {
   pose_pass_->admit(place);
   occupancy_pass_->admit(place);
   gridmap_pass_->admit(place);
+  meshmap_pass_->admit(place);
   voxel_pass_->admit(rhi, place);
   marker_pass_->admit(place);
   model_pass_->admit(place, shading_params_, shading_params_.shadows_enabled && tf_ != nullptr);
@@ -1451,6 +1467,7 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
   occupancy_pass_->prepare(context);
   voxel_pass_->prepare(context);
   gridmap_pass_->prepare(context, shading_params_);
+  meshmap_pass_->prepare(context, shading_params_);
   trail_pass_->prepare(context, admission.fixed_frame, render_time_, render_size, pixel_scale);
 
   frame.viewport =

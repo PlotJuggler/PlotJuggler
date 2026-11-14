@@ -54,6 +54,7 @@ class OccupancyRhiPass;
 class MarkerRhiPass;
 class ModelRhiPass;
 class GridMapRhiPass;
+class MeshMapRhiPass;
 class TrailRhiPass;
 class GridRhiPass;
 class OverlayRhiPass;
@@ -565,6 +566,7 @@ class SceneViewWidget : public QRhiWidget {
   // Grid + TF connection lines, drawn first in every scene pass.
   std::unique_ptr<GridRhiPass> grid_pass_;
   std::unique_ptr<GridMapRhiPass> gridmap_pass_;
+  std::unique_ptr<MeshMapRhiPass> meshmap_pass_;
   // Standalone and pose-embedded trails.
   std::unique_ptr<TrailRhiPass> trail_pass_;
 

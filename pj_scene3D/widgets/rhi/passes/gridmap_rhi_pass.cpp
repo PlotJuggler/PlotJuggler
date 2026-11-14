@@ -9,9 +9,9 @@
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
 
+#include "lit_surface_uniforms.h"
 #include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
-#include "pj_scene3d_widgets/scene_look_defaults.h"
 
 namespace pj::scene3d {
 namespace {
@@ -120,11 +120,7 @@ void GridMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
   draws_.clear();
   last_layer_count_ = 0;
   last_vertex_count_ = 0;
-  const glm::mat4 view_to_scene = glm::inverse(frame.view);
-  const glm::vec3 eye(view_to_scene[3]);
-  const glm::vec3 view_z = glm::normalize(glm::vec3(view_to_scene[2]));
-  const float key_length = glm::length(shading.key_light_dir);
-  const glm::vec3 key_dir = key_length > 1e-6F ? shading.key_light_dir / key_length : glm::vec3(0.0F, 0.0F, 1.0F);
+  const LitSurfaceFrame lit = litSurfaceFrame(frame, shading);
   for (const auto& admitted : admitted_) {
     GridMapLayer* layer = admitted.layer;
     const GridMapUpload& grid = *layer->stagedGrid();
@@ -146,29 +142,15 @@ void GridMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
 
     const glm::mat4 model_f =
         relativeModel(admitted.fixed_from_source.matrix() * poseTransform(grid.origin).matrix(), frame.render_origin);
-    // An auto range with no finite sample collapses to lo == hi: the shader then
-    // paints the LUT midpoint instead of dividing by zero.
-    float color_lo = static_cast<float>(layer->manualRange().first);
-    float color_hi = static_cast<float>(layer->manualRange().second);
-    if (layer->autoRange()) {
-      color_lo = grid.color_range.valid ? grid.color_range.lo : 0.0F;
-      color_hi = grid.color_range.valid ? grid.color_range.hi : 0.0F;
-    }
     const auto opacity = static_cast<float>(layer->opacity());
 
     GridMapUniforms uniforms;
     copyMatrix(frame.view_projection, uniforms.view_projection);
     copyMatrix(model_f, uniforms.model);
     copyMatrix(glm::mat4(glm::transpose(glm::inverse(glm::mat3(model_f)))), uniforms.normal_to_world);
-    uniforms.eye = {eye.x, eye.y, eye.z, 0.0F};
-    uniforms.view_z = {view_z.x, view_z.y, view_z.z, 0.0F};
-    uniforms.key_dir = {key_dir.x, key_dir.y, key_dir.z, 0.0F};
+    fillLitSurfaceUniforms(uniforms, lit, layer->coloring(), grid.color_range, opacity, layer->lighting());
     uniforms.cell_dims = {
         grid.cell_size.x, grid.cell_size.y, static_cast<float>(grid.column_count), static_cast<float>(grid.row_count)};
-    uniforms.color_params = {color_lo, color_hi, static_cast<float>(layer->colormap()), opacity};
-    uniforms.light_params = {
-        look::kGridMapAmbient * shading.ambient_scale, look::kGridMapDirect * shading.direct_scale,
-        look::kGridMapFill * shading.fill_light_scale, layer->lighting() ? 1.0F : 0.0F};
     uniforms.flags = {has_elevation ? 1.0F : 0.0F, 0.0F, 0.0F, 0.0F};
     frame.updates->updateDynamicBuffer(gpu.uniform_buffer, 0, kUniformBytes, &uniforms);
 

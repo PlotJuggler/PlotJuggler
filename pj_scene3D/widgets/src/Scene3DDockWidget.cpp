@@ -42,6 +42,7 @@
 #include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
+#include "pj_scene3d_widgets/layers/mesh_map_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
@@ -68,6 +69,7 @@ Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 
 using pj::scene3d::DepthCloudLayer;
 using pj::scene3d::GridMapLayer;
+using pj::scene3d::MeshMapLayer;
 using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
 using pj::scene3d::PosesInFrameLayer;
@@ -339,6 +341,15 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         wireScene3DLayer(layer.get());
         return layer;
       });
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kMeshMap,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<MeshMapLayer>(topic_id, display_name, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
 
   frame_overlay_combo_ = new ComboBox(this);
   frame_overlay_combo_->setObjectName(u"scene3dFixedFrameCombo"_s);
@@ -573,7 +584,7 @@ bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
          object_type == sdk::BuiltinObjectType::kRobotDescription ||
          object_type == sdk::BuiltinObjectType::kSceneEntities ||
          object_type == sdk::BuiltinObjectType::kPosesInFrame || object_type == sdk::BuiltinObjectType::kVoxelGrid ||
-         object_type == sdk::BuiltinObjectType::kGridMap ||
+         object_type == sdk::BuiltinObjectType::kGridMap || object_type == sdk::BuiltinObjectType::kMeshMap ||
          // kImage is accepted only for DEPTH-encoded images; addTopic() peeks the
          // first sample's encoding and rejects color images (which share kImage).
          object_type == sdk::BuiltinObjectType::kImage;

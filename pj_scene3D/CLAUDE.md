@@ -6,7 +6,8 @@
 Draco/Cloudini-compressed), occupancy grids / costmaps, meshes and URDF robot models, scene entities (markers), pose
 arrays (`PosesInFrame`, per-pose triads), dense voxel grids (`VoxelGridLayer`, GPU-instanced cubes), depth images
 back-projected into clouds (`DepthCloudLayer`), motion trails (`TrailLayer`; a TF trail is a standalone layer, a pose
-trail is owned by its `PosesInFrameLayer`) and grid maps (`GridMapLayer`, a lit colormapped heightfield).
+trail is owned by its `PosesInFrameLayer`), grid maps (`GridMapLayer`, a lit colormapped heightfield) and mesh maps
+(`MeshMapLayer`, a channel-coloured triangle mesh such as a navigation mesh, with its `<topic>_updates` patches).
 `PosesInFrame` as a path and laser scans are not implemented.
 
 The renderer is one QRhi view on the desktop and in the browser: `SceneViewWidget` (`widgets/rhi/`: the view, its
@@ -52,13 +53,16 @@ catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline)
 ## Layout
 
 - `core/`: pure geometry/scene logic, **no Qt or GPU**: cameras, frame picking and connection lines over the `pj_tf`
-  buffer (TF types come from `pj_tf`, not this tree), `OccupancyGridReconstructor`, point-cloud conversion and codecs,
-  depth back-projection, `SceneLimits` and the per-family budgets, trail sampling, the grid-map and voxel views.
+  buffer (TF types come from `pj_tf`, not this tree), `OccupancyGridReconstructor` and `MeshMapReconstructor` (a map
+  plus its update stream at a time, store-free), point-cloud conversion and codecs,
+  depth back-projection, `SceneLimits` and the per-family budgets, trail sampling, the grid-map, mesh-map and voxel
+  views.
   Public links stay `glm` / `pj_base` / `nlohmann_json` / `pj_tf`.
 - `widgets/`: the view, passes, layers and dock. Key public headers in `widgets/include/pj_scene3d_widgets/`:
   `Scene3DDockWidget.h`, `scene_view_widget.h`, `scene3d_layer.h`, `point_renderable.h`, `model_renderable.h`,
   `resolve_object.h`, `latest_wins_worker.h`, `FixedFrameMemory.h`, `mesh_data.h`, `mesh_shading_params.h`,
-  `scene_look_defaults.h`, `hud_overlay.h`, `layout_resources.h` (the host resolves a layout's relative robot
+  `scene_look_defaults.h`, `channel_coloring.h` (colormap + auto/manual range state, layout attributes and config rows
+  shared by the channel-coloured layers), `hud_overlay.h`, `layout_resources.h` (the host resolves a layout's relative robot
   resource URLs against the layout's own URL before restoring; a web-hosted layout never points at local files), `layers/*.h`.
 - `widgets/testing/`: `SceneViewTestAccess`, the only way tests, benchmarks and browser probes read the view's
   internals (the view has no test API of its own).

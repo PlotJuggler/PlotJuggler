@@ -41,15 +41,6 @@ const PJ::sdk::PointField* scalarField(const std::vector<PJ::sdk::PointField>& f
   return field != nullptr && isScalarGridMapField(*field) ? field : nullptr;
 }
 
-// The manual colormap range the pass can store: finite, float-representable,
-// ordered. The setter normalizes to this; xmlLoadState rejects what violates it.
-constexpr double kManualRangeLimit = std::numeric_limits<float>::max();
-
-bool isValidManualRange(double lo, double hi) {
-  return std::isfinite(lo) && std::isfinite(hi) && std::abs(lo) <= kManualRangeLimit &&
-         std::abs(hi) <= kManualRangeLimit && lo <= hi;
-}
-
 bool sameField(const PJ::sdk::PointField& a, const PJ::sdk::PointField& b) {
   return a.name == b.name && a.offset == b.offset && a.datatype == b.datatype && a.count == b.count;
 }
@@ -101,10 +92,7 @@ QDomElement GridMapLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(u"grid_map"_s);
   el.setAttribute(u"elevation_field"_s, QString::fromStdString(elevation_request_));
   el.setAttribute(u"color_field"_s, QString::fromStdString(color_request_));
-  el.setAttribute(u"colormap"_s, static_cast<int>(colormap_));
-  el.setAttribute(u"auto_range"_s, auto_range_ ? 1 : 0);
-  el.setAttribute(u"range_lo"_s, manual_lo_);
-  el.setAttribute(u"range_hi"_s, manual_hi_);
+  coloring_.saveXml(el);
   el.setAttribute(u"lighting"_s, lighting_ ? 1 : 0);
   el.setAttribute(u"opacity"_s, opacity_);
   return el;
@@ -114,17 +102,10 @@ bool GridMapLayer::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "grid_map"_L1 || !detail::isLeafPayload(element)) {
     return false;
   }
-  int colormap = 0;
-  bool auto_range = true;
-  double range_lo = 0.0;
-  double range_hi = 1.0;
+  const auto coloring = ChannelColoring::parseXml(element);
   bool lighting = true;
   double opacity = 1.0;
-  if (!detail::parseBoundedInt(element, "colormap", 0, 0, PJ::kColormapCount - 1, colormap) ||
-      !detail::parseZeroOne(element, "auto_range", true, auto_range) ||
-      !detail::parseFiniteDouble(element, "range_lo", 0.0, -kManualRangeLimit, kManualRangeLimit, range_lo) ||
-      !detail::parseFiniteDouble(element, "range_hi", 1.0, -kManualRangeLimit, kManualRangeLimit, range_hi) ||
-      !isValidManualRange(range_lo, range_hi) || !detail::parseZeroOne(element, "lighting", true, lighting) ||
+  if (!coloring.has_value() || !detail::parseZeroOne(element, "lighting", true, lighting) ||
       !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, opacity)) {
     return false;
   }
@@ -132,9 +113,9 @@ bool GridMapLayer::xmlLoadState(const QDomElement& element) {
   // the request is honoured again once a sample carrying it arrives.
   setElevationField(element.attribute(u"elevation_field"_s));
   setColorField(element.attribute(u"color_field"_s));
-  setColormap(static_cast<PJ::Colormap>(colormap));
-  setAutoRange(auto_range);
-  setManualRange(range_lo, range_hi);
+  setColormap(coloring->colormap());
+  setAutoRange(coloring->autoRange());
+  setManualRange(coloring->manualRange().first, coloring->manualRange().second);
   setLighting(lighting);
   setOpacity(opacity);
   pushDisplayParamsToPass();
@@ -188,7 +169,7 @@ void GridMapLayer::resetStreamingState() {
   resolved_elevation_.clear();
   resolved_color_.clear();
   resolve_warning_.clear();
-  last_auto_range_ = {};
+  coloring_.resetAutoRange();
   setDataWarning(QString());
 }
 
@@ -366,12 +347,12 @@ void GridMapLayer::renderAt(int64_t time_ns) {
     upload.elevation = packGridMapField(grid, *findField(grid.fields, resolved_elevation_), &elevation_range);
   }
   upload.color_is_elevation = !resolved_elevation_.empty() && resolved_color_ == resolved_elevation_;
-  if (upload.color_is_elevation) {
-    last_auto_range_ = elevation_range;
-  } else {
-    upload.color = packGridMapField(grid, *findField(grid.fields, resolved_color_), &last_auto_range_);
+  FiniteRange color_range = elevation_range;
+  if (!upload.color_is_elevation) {
+    upload.color = packGridMapField(grid, *findField(grid.fields, resolved_color_), &color_range);
   }
-  upload.color_range = last_auto_range_;
+  coloring_.noteAutoRange(color_range);
+  upload.color_range = color_range;
   setBounds(gridMapBounds(grid, resolved_elevation_.empty() ? std::nullopt : std::optional{elevation_range}));
   stageGrid(std::move(upload));
   ++pack_count_;
@@ -467,39 +448,24 @@ void GridMapLayer::setColorField(const QString& field_name) {
 }
 
 void GridMapLayer::setColormap(PJ::Colormap colormap) {
-  if (colormap_ == colormap) {
-    return;
+  if (coloring_.setColormap(colormap)) {
+    coloringChanged();
   }
-  colormap_ = colormap;
-  pushDisplayParamsToPass();
-  emit configurationChanged();
-  emit repaintRequested();
 }
 
 void GridMapLayer::setAutoRange(bool on) {
-  if (auto_range_ == on) {
-    return;
+  if (coloring_.setAutoRange(on)) {
+    coloringChanged();
   }
-  auto_range_ = on;
-  pushDisplayParamsToPass();
-  emit configurationChanged();
-  emit repaintRequested();
 }
 
 void GridMapLayer::setManualRange(double lo, double hi) {
-  if (!std::isfinite(lo) || !std::isfinite(hi)) {
-    return;
+  if (coloring_.setManualRange(lo, hi)) {
+    coloringChanged();
   }
-  lo = std::clamp(lo, -kManualRangeLimit, kManualRangeLimit);
-  hi = std::clamp(hi, -kManualRangeLimit, kManualRangeLimit);
-  if (lo > hi) {
-    std::swap(lo, hi);
-  }
-  if (manual_lo_ == lo && manual_hi_ == hi) {
-    return;
-  }
-  manual_lo_ = lo;
-  manual_hi_ = hi;
+}
+
+void GridMapLayer::coloringChanged() {
   pushDisplayParamsToPass();
   emit configurationChanged();
   emit repaintRequested();
@@ -580,17 +546,7 @@ QWidget* GridMapLayer::createConfigWidget(QWidget* parent) {
       tr("Color by:"), u"grid_map_color_field"_s, &resolved_color_, &GridMapLayer::setColorField,
       /*with_none=*/false);
 
-  auto* colormap_combo = new PJ::ComboBox(container);
-  for (int idx = 0; idx < PJ::kColormapCount; ++idx) {
-    colormap_combo->addItem(tr(PJ::colormapName(static_cast<PJ::Colormap>(idx))), idx);
-  }
-  colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
-  form->addRow(tr("Colors:"), colormap_combo);
-  QObject::connect(colormap_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
-    setColormap(idx >= 0 && idx < PJ::kColormapCount ? static_cast<PJ::Colormap>(idx) : PJ::Colormap::kTurbo);
-  });
-
-  buildRangeRows(form, container);
+  coloring_.addConfigRows(form, container, this, u"grid_map"_s, [this] { coloringChanged(); });
 
   auto* lighting_toggle = new PJ::ToggleSwitch(container);
   lighting_toggle->setChecked(lighting_, /*animate=*/false);
@@ -606,57 +562,6 @@ QWidget* GridMapLayer::createConfigWidget(QWidget* parent) {
   QObject::connect(opacity_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) { setOpacity(v); });
 
   return container;
-}
-
-void GridMapLayer::buildRangeRows(QFormLayout* form, QWidget* parent) {
-  auto* auto_toggle = new PJ::ToggleSwitch(parent);
-  auto_toggle->setChecked(auto_range_, /*animate=*/false);
-  form->addRow(tr("Auto range:"), auto_toggle);
-
-  const auto add_scrubber = [this, form, parent](const QString& label, const QString& object_name, double value) {
-    auto* spin = new PJ::DoubleScrubber(parent);
-    spin->setObjectName(object_name);
-    spin->setRange(-1.0e9, 1.0e9);
-    spin->setDecimals(3);
-    spin->setValue(value);
-    spin->setEnabled(!auto_range_);
-    form->addRow(label, spin);
-    return spin;
-  };
-  auto* range_lo_spin = add_scrubber(tr("Range min:"), u"grid_map_range_min"_s, manual_lo_);
-  auto* range_hi_spin = add_scrubber(tr("Range max:"), u"grid_map_range_max"_s, manual_hi_);
-
-  QObject::connect(auto_toggle, &PJ::ToggleSwitch::toggled, this, [this, range_lo_spin, range_hi_spin](bool on) {
-    // Switching to manual starts from the range the user was just looking at.
-    if (!on && last_auto_range_.valid) {
-      const QSignalBlocker block_lo(range_lo_spin);
-      const QSignalBlocker block_hi(range_hi_spin);
-      range_lo_spin->setValue(last_auto_range_.lo);
-      range_hi_spin->setValue(last_auto_range_.hi);
-      setManualRange(last_auto_range_.lo, last_auto_range_.hi);
-    }
-    setAutoRange(on);
-    range_lo_spin->setEnabled(!on);
-    range_hi_spin->setEnabled(!on);
-  });
-  // Keep min <= max: nudging one scrubber past the other drags the sibling along
-  // (its signal blocked so it does not re-enter here), then pushes the pair once.
-  QObject::connect(
-      range_lo_spin, &PJ::DoubleScrubber::valueChanged, this, [this, range_lo_spin, range_hi_spin](double v) {
-        if (v > range_hi_spin->value()) {
-          const QSignalBlocker block(range_hi_spin);
-          range_hi_spin->setValue(v);
-        }
-        setManualRange(range_lo_spin->value(), range_hi_spin->value());
-      });
-  QObject::connect(
-      range_hi_spin, &PJ::DoubleScrubber::valueChanged, this, [this, range_lo_spin, range_hi_spin](double v) {
-        if (v < range_lo_spin->value()) {
-          const QSignalBlocker block(range_lo_spin);
-          range_lo_spin->setValue(v);
-        }
-        setManualRange(range_lo_spin->value(), range_hi_spin->value());
-      });
 }
 
 }  // namespace pj::scene3d

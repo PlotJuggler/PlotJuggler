@@ -751,6 +751,26 @@ shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages.
   29.6 ms on OpenGL; the 9.9M-sphere tab-switch lattice: 400 vs 310 ms, 311 ms
   as a point list; QRHI_NEXT.md).
 - ADS hides floating docks on Wayland, on every backend (§5).
+- Mesh maps (`MeshMapRhiPass`) are capped per layer by `kMaxRenderableMeshMapFaces`
+  but not counted in `kSceneLimits`' per-view budgets. Two QRhi render tests draw
+  them (`MeshMapDrawsChannelColoursAndNoData`: colours, no data, half opacity;
+  `MeshMapUpdateUploadsOnlyTheFacesItWrote`: the partial colour upload, by
+  `MeshMapRhiPass::colorUploadBytes()`); there is no golden, and no test pins
+  the pass's buffer-allocation failure path (no buffer fault hook exists). The
+  layer logic is covered by `mesh_map_layer_test`, the reconstruction by
+  `mesh_map_reconstructor_test` and the CPU colouring by `mesh_map_view_test`.
+- A partial colour upload is only valid on top of the revision it was computed
+  from: `MeshMapLayer::stagedColorDelta()` describes the step from
+  `stagedRevision() - 1`, and a pass that missed a revision (a hidden layer, a
+  second view, buffers rebuilt after a reparent) uploads whole.
+- A vertex-attribute "no data" sentinel needs headroom: `FLT_MAX / w` under
+  perspective-correct interpolation overflows to infinity and then NaN for
+  `w < 1`, which fails an `abs(v) >= x` test. The mesh map sends 1e30, tests
+  above 1e29 and clamps data to 1e28 (`mesh_map_view.h`).
+- An update topic's highest arrival UID at a time does not identify the set of
+  updates at or before it once arrival and stamp order differ; a memo keyed on
+  it alone misses updates when scrubbing. The mesh map also folds the
+  latest-by-stamp entry (`MeshMapLayer::updateKey`).
 - D3D11 (WARP) rasterizes 1 px lines differently from Mesa; three wide dashed plot
   lines end one dash later than Qwt's raster. The goldens and the dash test carry
   per-backend allowances for exactly these cases (§7).
