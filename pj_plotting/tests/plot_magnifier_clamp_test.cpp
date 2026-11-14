@@ -195,6 +195,29 @@ TEST(PlotMagnifierClamp, ValueAxisIsNotClamped) {
   EXPECT_LT(fixture.xWidth(), 2.0e-9) << "a value X axis has no ns floor";
 }
 
+// A zoom box may leave the view past the end of the data. Wheel zooming there must keep a forward window: clamping
+// its right edge to the data end alone would put it left of the left edge and fold the axis, and every later zoom
+// would then start from that collapsed window.
+TEST(PlotMagnifierClamp, WheelZoomBeyondTheDataKeepsAForwardWindow) {
+  MagnifierFixture fixture;
+  fixture.magnifier.setTimeXAxis(true);
+  fixture.magnifier.setDefaultMode(PJ::PlotMagnifier::kXAxis);
+  fixture.magnifier.setAxisLimits(QwtPlot::xBottom, 0.0, 1.0);  // the data spans 0..1 s
+  fixture.plot.setAxisScale(QwtPlot::xBottom, 1.5, 3.0);        // the view lies after it
+  fixture.plot.updateAxes();
+  fixture.plot.replot();
+
+  fixture.plantMouseAtCenter();  // one notch in, centered at 2.25 s
+  const QwtScaleDiv& zoomed = fixture.plot.axisScaleDiv(QwtPlot::xBottom);
+  EXPECT_LT(zoomed.lowerBound(), zoomed.upperBound()) << "the X axis folded";
+  EXPECT_GT(zoomed.upperBound() - zoomed.lowerBound(), 1.0) << "one notch shrinks the 1.5 s window only a little";
+
+  fixture.zoomX(0.01);  // and zooming back out reaches the data again
+  const QwtScaleDiv& out = fixture.plot.axisScaleDiv(QwtPlot::xBottom);
+  EXPECT_LT(out.lowerBound(), 1.0);
+  EXPECT_LT(out.lowerBound(), out.upperBound());
+}
+
 // Zooming OUT on a time axis is never affected by the floor.
 TEST(PlotMagnifierClamp, ZoomOutUnaffectedByFloor) {
   MagnifierFixture fixture;

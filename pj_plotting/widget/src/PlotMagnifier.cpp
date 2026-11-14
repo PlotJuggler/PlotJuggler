@@ -141,8 +141,13 @@ void PlotMagnifier::rescale(double factor, AxisMode axis) {
     // window a bound-clamped edge zoom would actually produce and can re-expand it
     // past the floor. Doing the floor first and the bounds after would let a bound
     // shave the window back below the floor and quietly undo the clamp.
-    v1 = std::max(v1, lower_bounds_[axis_id]);
-    v2 = std::min(v2, upper_bounds_[axis_id]);
+    // A window that lies outside the bounds (a zoom box can leave the view past
+    // the end of the data) is left as it is: clamping its edges would fold it.
+    if (const double low = std::max(v1, lower_bounds_[axis_id]), high = std::min(v2, upper_bounds_[axis_id]);
+        low < high) {
+      v1 = low;
+      v2 = high;
+    }
 
     // Time-axis zoom floor: never let the X window shrink below the minimum a
     // rounded-integer-nanosecond saved viewport can represent as a non-degenerate
