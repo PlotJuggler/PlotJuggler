@@ -2,8 +2,8 @@
 
 The UI uses Qt translation catalogs. A fresh profile stays in English whatever
 the operating-system locale. Preferences → Appearance offers English and
-Simplified Chinese; OK applies the choice on the next launch, Cancel leaves it.
-`plotjuggler4 --language zh_CN|en_US` overrides only the current session and
+Simplified Chinese and Traditional Chinese (Taiwan); OK applies the choice on the next launch, Cancel leaves it.
+`plotjuggler4 --language zh_CN|zh_TW|en_US` overrides only the current session and
 warns on any other value. An unsupported stored language (one a newer version
 saved) runs in English and is never overwritten by an unrelated OK. The
 interface language never changes `QLocale`, data parsing, numeric formatting,
@@ -12,9 +12,9 @@ serialized IDs, plugin protocols or user-authored text.
 ## Catalog and build
 
 - `pj_app/src/AppLanguage.{h,cpp}` owns the startup translator for the UI's lifetime.
-- `pj_app/cmake/PjAppLanguage.cmake` compiles `pj_app/translations/plotjuggler4_zh_CN.ts`,
-  merges Qt's own `qtbase_zh_CN` catalog (standard buttons, dialogs) and embeds the
-  result as a resource. Configuration fails if the Qt kit lacks `qtbase_zh_CN.qm`
+- `pj_app/cmake/PjAppLanguage.cmake` compiles `pj_app/translations/plotjuggler4_zh_CN.ts` and `plotjuggler4_zh_TW.ts`,
+  merges Qt's own `qtbase_zh_CN`/`qtbase_zh_TW` catalogs (standard buttons, dialogs) and embeds the
+  result as a resource. Configuration fails if the Qt kit lacks either `qtbase_zh_CN.qm` or `qtbase_zh_TW.qm`
   (relative, absolute and split-prefix translation directories are supported:
   Nix's `qtbase` points into `qttranslations`). The path test `QtTranslationPaths` covers the layouts.
 - `AppLanguage.cpp` extracts the `QFileDialog`/`QAbstractFileIconProvider` keys the
@@ -53,7 +53,7 @@ never through a free helper function. Mark object names and stylesheets in
 
 The browser has no system font fallback, so the WebAssembly build embeds
 `resources/fonts/NotoSansSC/NotoSansSC-Subset.otf` (OFL-1.1) as a fallback family
-after Noto Sans. It holds every character of the catalog plus the 3,755 common
+after Noto Sans. It holds every character of both catalogs plus the 3,755 common
 GB2312 level-1 hanzi, so Chinese series and file names render too. After a
 catalog refresh that adds new characters, regenerate it with
 `scripts/make_cjk_font_subset.py` (needs fontTools).
@@ -67,3 +67,14 @@ plugin. Spell out 二维/三维 views, keep canonical type names such as
 `SceneEntities`, and use 网络托管的布局 for a web-hosted layout. Chinese
 quotation marks belong in visible prose, never in HTML attributes, identifiers,
 placeholders or serialized keys.
+
+Traditional Chinese is seeded from the localized stable branch for matching source keys.
+Use `--catalog pj_app/translations/plotjuggler4_zh_TW.ts` with the checker to validate
+or refresh it separately; the CMake refresh target updates both. Locale selection
+changes presentation only; the color-map tokens stored in layouts remain English.
+
+Desktop startup exports the canonical selected UI locale in
+`PLOTJUGGLER_UI_LANGUAGE` before loading plugin libraries. This is a generic
+Qt-free plugin protocol; unsupported plugins remain in English. Plugin-owned
+translations are maintained separately, not in a host plugin-ID lookup table.
+Marketplace names and descriptions are outside this change.

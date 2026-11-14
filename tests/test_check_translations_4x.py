@@ -67,6 +67,13 @@ class TranslationGuardTest(unittest.TestCase):
         wrong = '<translation><numerusform>%n 个</numerusform><numerusform>%n 个</numerusform></translation>'
         self.assertTrue(validate(self.catalog(wrong, numerus=True))[1])
 
+    def test_traditional_catalog_uses_the_same_safety_checks(self) -> None:
+        root = self.catalog('<translation>你好 %1</translation>')
+        root.set('language', 'zh_TW')
+        self.assertFalse(validate(root)[1])
+        root.find('context/message/translation').text = '你好'
+        self.assertTrue(validate(root)[1])
+
     def test_wrong_context_is_missing_and_stale(self) -> None:
         root = self.catalog('<translation>你好 %1</translation>')
         messages = catalog_messages(root)

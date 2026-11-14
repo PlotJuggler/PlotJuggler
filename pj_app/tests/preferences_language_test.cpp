@@ -24,10 +24,11 @@ TEST(PreferencesLanguageTest, FreshProfileOffersChineseAndEnglishWithARestartNot
   PJ::PreferencesDialog dialog(theme);
   const auto* combo = dialog.findChild<PJ::ComboBox*>(u"languageCombo"_s);
   ASSERT_NE(combo, nullptr);
-  ASSERT_EQ(combo->count(), 2);
+  ASSERT_EQ(combo->count(), 3);
   EXPECT_EQ(combo->currentData().toString(), u"en_US"_s);
   EXPECT_EQ(combo->itemData(0).toString(), u"zh_CN"_s);
   EXPECT_EQ(combo->itemData(1).toString(), u"en_US"_s);
+  EXPECT_EQ(combo->itemData(2).toString(), u"zh_TW"_s);
   const auto* notice = dialog.findChild<QLabel*>(u"labelLanguageRestart"_s);
   ASSERT_NE(notice, nullptr);
   EXPECT_FALSE(notice->text().isEmpty());
@@ -126,7 +127,7 @@ TEST(PreferencesLanguageTest, LanguageSelectorHonorsBothSizeHintsAcrossFonts) {
     SCOPED_TRACE(font.toString().toStdString());
     QApplication::setFont(font);
     SCOPED_TRACE(QFontInfo(qApp->font()).family().toStdString());
-    for (const QString& requested : {u"en_US"_s, u"zh_CN"_s}) {
+    for (const QString& requested : {u"en_US"_s, u"zh_CN"_s, u"zh_TW"_s}) {
       SCOPED_TRACE(requested.toStdString());
       const PJ::AppLanguage running(*qApp, requested);
       PJ::Theme theme;
@@ -155,7 +156,7 @@ TEST(PreferencesLanguageTest, LanguageSelectorHonorsBothSizeHintsAcrossFonts) {
 }
 
 TEST(PreferencesLanguageTest, MinimumSizeKeepsTranslatedAppearanceControlsReachable) {
-  for (const QString& requested : {u"en_US"_s, u"zh_CN"_s}) {
+  for (const QString& requested : {u"en_US"_s, u"zh_CN"_s, u"zh_TW"_s}) {
     const PJ::AppLanguage running(*qApp, requested);
     PJ::Theme theme;
     PJ::PreferencesDialog dialog(theme);

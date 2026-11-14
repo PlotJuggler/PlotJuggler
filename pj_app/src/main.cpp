@@ -389,7 +389,7 @@ int main(int argc, char* argv[]) {
   parser.addVersionOption();
   const QCommandLineOption language_option(
       u"language"_s,
-      QCoreApplication::translate("AppLanguage", "Interface language for this session (zh_CN or en_US)."),
+      QCoreApplication::translate("AppLanguage", "Interface language for this session (zh_CN, zh_TW or en_US)."),
       u"language"_s);
   parser.addOption(language_option);
   const QCommandLineOption test_data_option(
@@ -501,7 +501,7 @@ int main(int argc, char* argv[]) {
   if (parser.isSet(language_option) && parser.value(language_option) != "en_US"_L1 &&
       PJ::AppLanguage::normalizedLanguage(parser.value(language_option)) == "en_US"_L1) {
     qWarning(
-        "Unsupported --language '%s' (use zh_CN or en_US); using English",
+        "Unsupported --language '%s' (use zh_CN, zh_TW or en_US); using English",
         qUtf8Printable(parser.value(language_option)));
   }
   const PJ::AppLanguage app_language(
@@ -509,6 +509,9 @@ int main(int argc, char* argv[]) {
                                          : PJ::AppLanguage::preferredLanguage(language_settings));
 
 #ifndef PJ_TARGET_WASM
+  // Qt-free plugins inherit only the canonical UI locale, before any DSO loads.
+  // English remains the fallback; neither data locale nor serialized keys change.
+  qputenv("PLOTJUGGLER_UI_LANGUAGE", app_language.language().toUtf8());
   if (parser.isSet(validate_plugins_option)) {
     return validatePlugins(parser.value(validate_plugins_option), parser.values(expect_plugin_option));
   }

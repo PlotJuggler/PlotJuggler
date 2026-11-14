@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Regenerate the Simplified Chinese UI font embedded in the browser build.
+"""Regenerate the Chinese UI font embedded in the browser build.
 
 The browser has no system font fallback, so the WebAssembly build embeds a
-subset of Noto Sans SC: every character the zh_CN catalog uses, the 3,755
+subset of Noto Sans SC: every character the zh_CN and zh_TW catalogs use, the 3,755
 common GB2312 level-1 hanzi (so Chinese series and file names render too),
 and CJK punctuation. Rerun after a catalog refresh adds new characters:
 
@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from fontTools import subset
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOG = ROOT / 'pj_app/translations/plotjuggler4_zh_CN.ts'
+CATALOGS = [ROOT / f'pj_app/translations/plotjuggler4_{language}.ts' for language in ('zh_CN', 'zh_TW')]
 OUTPUT = ROOT / 'resources/fonts/NotoSansSC/NotoSansSC-Subset.otf'
 
 
@@ -38,7 +38,8 @@ def gb2312_level1() -> str:
 
 
 def catalog_text() -> str:
-    return ''.join(''.join(t.itertext()) for t in ET.parse(CATALOG).getroot().iter('translation'))
+    return ''.join(''.join(t.itertext()) for catalog in CATALOGS
+                   for t in ET.parse(catalog).getroot().iter('translation'))
 
 
 def main() -> int:
@@ -46,7 +47,7 @@ def main() -> int:
     parser.add_argument('source', type=Path, help='NotoSansSC-Regular.otf')
     args = parser.parse_args()
     punctuation = ''.join(map(chr, range(0x3000, 0x3040))) + ''.join(map(chr, range(0xFF00, 0xFFF0))) + '“”‘’…—·'
-    text = set(catalog_text() + gb2312_level1() + punctuation + '中文简体')
+    text = set(catalog_text() + gb2312_level1() + punctuation + '中文简体繁體')
     # Latin comes from the bundled Noto Sans, first in the family list.
     text = ''.join(sorted(c for c in text if ord(c) > 0x7F))
     options = subset.Options()

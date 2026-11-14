@@ -11,7 +11,13 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 QString AppLanguage::normalizedLanguage(const QString& language) {
-  return language == "zh_CN"_L1 || language == "zh-CN"_L1 ? u"zh_CN"_s : u"en_US"_s;
+  if (language == "zh_CN"_L1 || language == "zh-CN"_L1) {
+    return u"zh_CN"_s;
+  }
+  if (language == "zh_TW"_L1 || language == "zh-TW"_L1) {
+    return u"zh_TW"_s;
+  }
+  return u"en_US"_s;
 }
 
 QString AppLanguage::preferredLanguage(const QSettings& settings) {
@@ -19,10 +25,11 @@ QString AppLanguage::preferredLanguage(const QSettings& settings) {
 }
 
 AppLanguage::AppLanguage(QCoreApplication& app, const QString& language) : language_(normalizedLanguage(language)) {
-  if (language_ == "zh_CN"_L1) {
-    catalog_loaded_ = translator_.load(u":/i18n/plotjuggler4_zh_CN.qm"_s) && app.installTranslator(&translator_);
+  if (language_ != "en_US"_L1) {
+    catalog_loaded_ =
+        translator_.load(u":/i18n/plotjuggler4_%1.qm"_s.arg(language_)) && app.installTranslator(&translator_);
     if (!catalog_loaded_) {
-      qWarning("Simplified Chinese translation catalog is missing; using English source text");
+      qWarning("Chinese translation catalog is missing; using English source text");
     }
   }
 }

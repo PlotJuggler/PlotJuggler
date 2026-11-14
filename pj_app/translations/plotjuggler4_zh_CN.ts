@@ -1,4 +1,5 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE TS>
 <TS version="2.1" language="zh_CN" sourcelanguage="en_US">
     <context>
         <name>AboutDialog</name>
@@ -27,8 +28,8 @@
         <name>AppLanguage</name>
         <message>
             <location filename="../src/main.cpp" line="+383" />
-            <source>Interface language for this session (zh_CN or en_US).</source>
-            <translation>本次会话的界面语言（zh_CN 或 en_US）。</translation>
+            <source>Interface language for this session (zh_CN, zh_TW or en_US).</source>
+            <translation>本次会话的界面语言（zh_CN、zh_TW 或 en_US）。</translation>
         </message>
     </context>
     <context>
@@ -5529,16 +5530,6 @@ Details: %1</source>
             <translation>保存文件</translation>
         </message>
         <message>
-            <location filename="../../pj_scene3D/widgets/src/mesh_import.h" line="+91" />
-            <source>mesh import threw: %1</source>
-            <translation>网格导入抛出异常：%1</translation>
-        </message>
-        <message>
-            <location line="+2" />
-            <source>mesh import threw an unknown exception</source>
-            <translation>网格导入抛出未知异常</translation>
-        </message>
-        <message>
             <location filename="../../pj_scene3D/widgets/src/mesh_load_queue.cpp" line="+220" />
             <source>could not start import: %1</source>
             <translation>无法开始导入：%1</translation>
@@ -5572,6 +5563,26 @@ Details: %1</source>
             <location line="+15" />
             <source>computed at %1 s</source>
             <translation>在 %1 秒处计算</translation>
+        </message>
+        <message>
+            <location filename="../src/BundledAdsTranslationKeys.h" line="+8" />
+            <source>List All Tabs</source>
+            <translation>列出所有标签页</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Detach Group</source>
+            <translation>分离分组</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Minimize</source>
+            <translation>最小化</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close Tab</source>
+            <translation>关闭标签页</translation>
         </message>
     </context>
     <context>
@@ -7057,6 +7068,657 @@ Details: %1</source>
             <location line="+35" />
             <source>Opacity:</source>
             <translation>不透明度：</translation>
+        </message>
+    </context>
+    <context>
+        <name>PJ::Colormap</name>
+        <message>
+            <location filename="../../pj_widgets/src/Colormap.cpp" line="+166" />
+            <location line="+8" />
+            <source>Turbo</source>
+            <translation>Turbo</translation>
+        </message>
+        <message>
+            <location line="-6" />
+            <source>Viridis</source>
+            <translation>Viridis</translation>
+        </message>
+        <message>
+            <location line="+2" />
+            <source>Plasma</source>
+            <translation>Plasma</translation>
+        </message>
+        <message>
+            <location line="+2" />
+            <source>Grayscale</source>
+            <translation>灰度</translation>
+        </message>
+    </context>
+    <context>
+        <name>PJ::PixelInspector</name>
+        <message>
+            <location filename="../../pj_scene2D/widgets/src/pixel_inspector.cpp" line="+305" />
+            <location line="+86" />
+            <location line="+30" />
+            <source>Position: %1, %2</source>
+            <translation>位置：%1，%2</translation>
+        </message>
+        <message>
+            <location line="+17" />
+            <source>Depth:    %1 m</source>
+            <translation>深度：%1 m</translation>
+        </message>
+        <message>
+            <location line="+2" />
+            <source>Depth:    — (no data)</source>
+            <translation>深度：—（无数据）</translation>
+        </message>
+    </context>
+    <context>
+        <name>PJ::BuiltinFilters</name>
+        <message>
+            <location filename="../../pj_plotting/widget/src/BuiltinFilterPresentation.cpp" line="+15" />
+            <source>None</source>
+            <translation>无</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Pass-through (no change).</source>
+            <translation>直接输出（不作更改）。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Absolute</source>
+            <translation>绝对值</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Absolute value |y|.</source>
+            <translation>绝对值 |y|。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Scale</source>
+            <translation>缩放</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Affine scale + offset, with a time shift.</source>
+            <translation>线性缩放与偏移，并可平移时间。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Offset</source>
+            <translation>偏移</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Time offset</source>
+            <translation>时间偏移</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Derivative</source>
+            <translation>求导</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Rate of change dv/dt.</source>
+            <translation>变化率 dv/dt。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Use fixed Δt</source>
+            <translation>使用固定 Δt</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Fixed Δt</source>
+            <translation>固定 Δt</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Integral</source>
+            <translation>积分</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Running trapezoidal integral of y over time.</source>
+            <translation>使用梯形法累计计算 y 对时间的积分。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Moving Average</source>
+            <translation>滑动平均</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Boxcar moving average.</source>
+            <translation>矩形窗口滑动平均。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Window</source>
+            <translation>窗口</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Center timestamp</source>
+            <translation>时间戳居中</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Moving Root Mean Squared</source>
+            <translation>滑动均方根</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Moving RMS over a window.</source>
+            <translation>计算窗口内的滑动均方根。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Moving Variance / Stdev</source>
+            <translation>滑动方差 / 标准差</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Moving variance or standard deviation.</source>
+            <translation>计算滑动方差或标准差。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Standard deviation</source>
+            <translation>标准差</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Outlier Removal</source>
+            <translation>异常值剔除</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Drop single-sample spikes.</source>
+            <translation>剔除单采样点尖峰。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Factor</source>
+            <translation>系数</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Samples Counter</source>
+            <translation>采样点计数</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Count of samples in a trailing time window.</source>
+            <translation>统计此前时间窗口内的采样点数。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Binary Filter</source>
+            <translation>二值滤波</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Boolean 0/1 predicate over the value.</source>
+            <translation>按条件将数值转换为 0 或 1。</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Comparison</source>
+            <translation>比较条件</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>== a</source>
+            <translation>== a</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>&lt; a</source>
+            <translation>&lt; a</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>&lt;= a</source>
+            <translation>&lt;= a</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>&gt; a</source>
+            <translation>&gt; a</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>&gt;= a</source>
+            <translation>&gt;= a</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>in [a, b]</source>
+            <translation>位于 [a, b] 内</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Threshold a</source>
+            <translation>阈值 a</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Threshold b</source>
+            <translation>阈值 b</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Tolerance (==)</source>
+            <translation>容差（==）</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Time Since Previous</source>
+            <translation>距上一个采样点的时间</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Δt between consecutive samples (seconds).</source>
+            <translation>相邻采样点之间的 Δt（秒）。</translation>
+        </message>
+    </context>
+    <context>
+        <name>PJ::MarketplaceDiagnostics</name>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_marketplace/src/core/RegistryManager.cpp" line="106" />
+            <source>Registry parse error: missing or empty required string field "%1"</source>
+            <translation>注册表解析错误：缺少必需的字符串字段“%1”，或该字段为空</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_marketplace/src/core/RegistryManager.cpp" line="119" />
+            <source>Registry parse error: field "%1" must be a string</source>
+            <translation>注册表解析错误：字段“%1”必须是字符串</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_marketplace/src/core/RegistryManager.cpp" line="131" />
+            <source>JSON parse error: %1</source>
+            <translation>JSON 解析错误：%1</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_marketplace/src/core/RegistryManager.cpp" line="137" />
+            <source>Registry JSON root must be an object</source>
+            <translation>注册表 JSON 根节点必须是对象</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_marketplace/src/core/RegistryManager.cpp" line="145" />
+            <source>Registry JSON missing "extensions" array</source>
+            <translation>注册表 JSON 缺少“extensions”数组</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_marketplace/src/core/RegistryManager.cpp" line="154" />
+            <source>Each entry in "extensions" must be a JSON object</source>
+            <translation>“extensions”中的每个条目都必须是 JSON 对象</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_marketplace/src/core/RegistryManager.cpp" line="223" />
+            <source>Registry resolution error: %1</source>
+            <translation>注册表解析错误：%1</translation>
+        </message>
+    </context>
+    <context>
+        <name>pj::scene3d::MeshDiagnostics</name>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_import.h" line="92" />
+            <source>mesh import threw: %1</source>
+            <translation>网格导入时发生异常：%1</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_import.h" line="95" />
+            <source>mesh import threw an unknown exception</source>
+            <translation>网格导入时发生未知异常</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="327" />
+            <source>assimp returned no scene for %1</source>
+            <translation>Assimp 未返回 %1 的场景</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="345" />
+            <source>model exceeds structure limits in %1 (%2 materials, %3 nodes, depth %4)</source>
+            <translation>%1 中的模型超过结构限制（%2 个材质、%3 个节点、深度 %4）</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="355" />
+            <source>model has an invalid or over-limit node graph in %1</source>
+            <translation>%1 中的模型节点图无效或超过限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="366" />
+            <source>model has an invalid mesh reference in %1</source>
+            <translation>%1 中的模型包含无效的网格引用</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="372" />
+            <source>model vertex count overflow in %1</source>
+            <translation>%1 中的模型顶点数量溢出</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="381" />
+            <source>model index count overflow in %1</source>
+            <translation>%1 中的模型索引数量溢出</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="394" />
+            <source>model exceeds geometry limits in %1 (%2 vertices, %3 indices, %4 submeshes)</source>
+            <translation>%1 中的模型超过几何体限制（%2 个顶点、%3 个索引、%4 个子网格）</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="413" />
+            <source>model exceeds the embedded-texture limit in %1</source>
+            <translation>%1 中的模型超过内嵌纹理限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="421" />
+            <source>no renderable geometry in %1</source>
+            <translation>%1 中没有可渲染的几何体</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="430" />
+            <source>model would retain more than %1 MiB</source>
+            <translation>模型保留的数据将超过 %1 MiB</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="462" />
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="497" />
+            <source>model source exceeds the %1 MiB limit</source>
+            <translation>模型源数据超出 %1 MiB 上限</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="472" />
+            <source>assimp failed to import %1</source>
+            <translation>Assimp 无法导入 %1</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="479" />
+            <source>mesh import of %1 threw: %2</source>
+            <translation>导入网格 %1 时发生异常：%2</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="485" />
+            <source>mesh import of %1 threw an unknown exception</source>
+            <translation>导入网格 %1 时发生未知异常</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="510" />
+            <source>assimp failed to import %1 buffer</source>
+            <translation>Assimp 无法导入 %1 缓冲区</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="519" />
+            <source>mesh import of %1 buffer threw: %2</source>
+            <translation>导入 %1 缓冲区中的网格时发生异常：%2</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/mesh_loader.cpp" line="524" />
+            <source>mesh import of %1 buffer threw an unknown exception</source>
+            <translation>导入 %1 缓冲区中的网格时发生未知异常</translation>
+        </message>
+    </context>
+    <context>
+        <name>pj::scene3d::UrdfParser</name>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="110" />
+            <source>URDF mesh reference exceeds the browser string limit</source>
+            <translation>URDF 网格引用超过浏览器字符串长度限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="166" />
+            <source>URDF material reference exceeds the browser string limit</source>
+            <translation>URDF 材质引用超过浏览器字符串长度限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="239" />
+            <source>Unsupported format: xacro — run `xacro input.xacro &gt; output.urdf` and load the result.</source>
+            <translation>不支持 xacro 格式。请运行 `xacro input.xacro &gt; output.urdf`，然后加载生成的文件。</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="248" />
+            <source>robot_description too large (%1 MiB, limit 32 MiB)</source>
+            <translation>robot_description 过大（%1 MiB，上限为 32 MiB）</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="259" />
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="270" />
+            <source>Parse error: %1</source>
+            <translation>解析错误：%1</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="278" />
+            <source>Parse error: empty document</source>
+            <translation>解析错误：文档为空</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="284" />
+            <source>Format '%1' is not supported — only URDF</source>
+            <translation>不支持格式“%1”，仅支持 URDF</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="299" />
+            <source>URDF exceeds the browser material limit</source>
+            <translation>URDF 超过浏览器材质数量限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="307" />
+            <source>URDF material name exceeds the browser string limit</source>
+            <translation>URDF 材质名称超过浏览器字符串长度限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="326" />
+            <source>URDF exceeds the browser link limit</source>
+            <translation>URDF 超过浏览器连杆数量限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="334" />
+            <source>URDF link name exceeds the browser string limit</source>
+            <translation>URDF 连杆名称超过浏览器字符串长度限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="347" />
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="365" />
+            <source>URDF exceeds the browser geometry limit</source>
+            <translation>URDF 超过浏览器几何体数量限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="392" />
+            <source>URDF exceeds the browser joint limit</source>
+            <translation>URDF 超过浏览器关节数量限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="404" />
+            <source>URDF joint field exceeds the browser string limit</source>
+            <translation>URDF 关节字段超过浏览器字符串长度限制</translation>
+        </message>
+        <message>
+            <location filename="../workspace/scratch/62195a4c646d/generic-ui-20261114/pj_scene3D/widgets/src/urdf_parser.cpp" line="421" />
+            <source>Parse error: &lt;robot&gt; has no &lt;link&gt; elements</source>
+            <translation>解析错误：&lt;robot&gt; 中没有 &lt;link&gt; 元素</translation>
+        </message>
+    </context>
+    <context>
+        <name>ads::CAutoHideTab</name>
+        <message>
+            <location filename="../src/BundledAdsTranslationKeys.h" line="+1" />
+            <source>Detach</source>
+            <translation>分离</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Pin To...</source>
+            <translation>固定到…</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Top</source>
+            <translation>顶部</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Left</source>
+            <translation>左侧</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Right</source>
+            <translation>右侧</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Bottom</source>
+            <translation>底部</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Unpin (Dock)</source>
+            <translation>取消固定（停靠）</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close</source>
+            <translation>关闭</translation>
+        </message>
+    </context>
+    <context>
+        <name>ads::CDockAreaTitleBar</name>
+        <message>
+            <location line="+1" />
+            <source>Detach</source>
+            <translation>分离</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Detach Group</source>
+            <translation>分离分组</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Unpin (Dock)</source>
+            <translation>取消固定（停靠）</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Pin Group</source>
+            <translation>固定分组</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Pin Group To...</source>
+            <translation>将分组固定到…</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Top</source>
+            <translation>顶部</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Left</source>
+            <translation>左侧</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Right</source>
+            <translation>右侧</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Bottom</source>
+            <translation>底部</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Minimize</source>
+            <translation>最小化</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close</source>
+            <translation>关闭</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close Group</source>
+            <translation>关闭分组</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close Other Groups</source>
+            <translation>关闭其他分组</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Pin Active Tab (Press Ctrl to Pin Group)</source>
+            <translation>固定当前标签页（按 Ctrl 固定分组）</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close Active Tab</source>
+            <translation>关闭当前标签页</translation>
+        </message>
+    </context>
+    <context>
+        <name>ads::CDockManager</name>
+        <message>
+            <location line="+1" />
+            <source>Show View</source>
+            <translation>显示视图</translation>
+        </message>
+    </context>
+    <context>
+        <name>ads::CDockWidgetTab</name>
+        <message>
+            <location line="+1" />
+            <source>Detach</source>
+            <translation>分离</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Pin</source>
+            <translation>固定</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Pin To...</source>
+            <translation>固定到…</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Top</source>
+            <translation>顶部</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Left</source>
+            <translation>左侧</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Right</source>
+            <translation>右侧</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Bottom</source>
+            <translation>底部</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close</source>
+            <translation>关闭</translation>
+        </message>
+        <message>
+            <location line="+1" />
+            <source>Close Others</source>
+            <translation>关闭其他标签页</translation>
         </message>
     </context>
 </TS>

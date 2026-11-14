@@ -12,7 +12,8 @@ function(pj_add_app_language)
     endif()
     find_package(Qt6 REQUIRED COMPONENTS Core LinguistTools)
     get_filename_component(app_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
-    set(ts_file "${app_dir}/translations/plotjuggler4_zh_CN.ts")
+    set(ts_files "${app_dir}/translations/plotjuggler4_zh_CN.ts"
+        "${app_dir}/translations/plotjuggler4_zh_TW.ts")
     set(qm_dir "${CMAKE_CURRENT_BINARY_DIR}/translations")
 
     add_library(pj_app_language STATIC
@@ -37,16 +38,18 @@ function(pj_add_app_language)
     # Qt's merge helper otherwise prefixes even an absolute install directory.
     # Keep the override local to this function, including split-prefix Qt kits.
     set(QT_INTERNAL_ABSOLUTE_TRANSLATIONS_DIR "${qt_translations_dir}")
-    if(NOT EXISTS "${qt_translations_dir}/qtbase_zh_CN.qm")
-        message(FATAL_ERROR
-            "Simplified Chinese UI requires qtbase_zh_CN.qm in ${qt_translations_dir}. "
-            "Install the Qt translations component matching this Qt kit.")
-    endif()
+    foreach(language IN ITEMS zh_CN zh_TW)
+        if(NOT EXISTS "${qt_translations_dir}/qtbase_${language}.qm")
+            message(FATAL_ERROR
+                "Chinese UI requires qtbase_${language}.qm in ${qt_translations_dir}. "
+                "Install the Qt translations component matching this Qt kit.")
+        endif()
+    endforeach()
 
     # Qt6.9+ can merge Qt's own strings into the embedded catalog. There is no
     # runtime dependency on a developer machine's Qt translations directory.
     qt_add_lrelease(
-        TS_FILES "${ts_file}"
+        TS_FILES ${ts_files}
         LRELEASE_TARGET pj_app_lrelease
         QM_OUTPUT_DIRECTORY "${qm_dir}"
         QM_FILES_OUTPUT_VARIABLE qm_files
@@ -65,6 +68,9 @@ function(pj_add_app_language)
         add_custom_target(pj_app_lupdate
             COMMAND "${Python3_EXECUTABLE}" "${app_dir}/../tests/check_translations_4x.py"
                 --lupdate $<TARGET_FILE:Qt6::lupdate> --update-ts
+            COMMAND "${Python3_EXECUTABLE}" "${app_dir}/../tests/check_translations_4x.py"
+                --lupdate $<TARGET_FILE:Qt6::lupdate> --update-ts
+                --catalog "${app_dir}/translations/plotjuggler4_zh_TW.ts"
             WORKING_DIRECTORY "${app_dir}/.."
             VERBATIM)
     endif()
@@ -113,13 +119,17 @@ function(pj_add_app_language_test)
         add_test(NAME TranslationCatalog4x
             COMMAND "${Python3_EXECUTABLE}" "${app_dir}/../tests/check_translations_4x.py"
                 --lupdate $<TARGET_FILE:Qt6::lupdate>)
+        add_test(NAME TraditionalTranslationCatalog4x
+            COMMAND "${Python3_EXECUTABLE}" "${app_dir}/../tests/check_translations_4x.py"
+                --lupdate $<TARGET_FILE:Qt6::lupdate>
+                --catalog "${app_dir}/translations/plotjuggler4_zh_TW.ts")
         add_test(NAME TranslationValidator4x
             COMMAND "${Python3_EXECUTABLE}" "${app_dir}/../tests/test_check_translations_4x.py")
-        set_tests_properties(TranslationCatalog4x TranslationValidator4x PROPERTIES
+        set_tests_properties(TranslationCatalog4x TraditionalTranslationCatalog4x TranslationValidator4x PROPERTIES
             WORKING_DIRECTORY "${app_dir}/.."
             TIMEOUT 120)
         # A catalog that only lags the sources (strings shown in English) is a
         # warning, never a failure: a UI change must not need a translation.
-        set_tests_properties(TranslationCatalog4x PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(TranslationCatalog4x TraditionalTranslationCatalog4x PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endfunction()

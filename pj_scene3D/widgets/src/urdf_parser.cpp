@@ -3,6 +3,7 @@
 #include "urdf_parser.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDomDocument>
 #include <QDomElement>
 #include <QString>
@@ -105,7 +106,9 @@ bool parseGeometry(
     const QByteArray filename = mesh.attribute(u"filename"_s).toUtf8();
     if (limits != nullptr && limits->max_string_bytes != 0U &&
         static_cast<std::size_t>(filename.size()) > limits->max_string_bytes) {
-      error = "URDF mesh reference exceeds the browser string limit";
+      error =
+          QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF mesh reference exceeds the browser string limit")
+              .toStdString();
       return false;
     }
     m.filename = filename.toStdString();
@@ -160,7 +163,9 @@ void parseMaterial(
   const QByteArray name_bytes = mat.attribute(u"name"_s).toUtf8();
   if (limits != nullptr && limits->max_string_bytes != 0U &&
       static_cast<std::size_t>(name_bytes.size()) > limits->max_string_bytes) {
-    error = "URDF material reference exceeds the browser string limit";
+    error = QCoreApplication::translate(
+                "pj::scene3d::UrdfParser", "URDF material reference exceeds the browser string limit")
+                .toStdString();
     return;
   }
   const std::string name = name_bytes.toStdString();
@@ -230,13 +235,19 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
     const std::string& filename, const UrdfParseLimits* limits, const QMap<QString, QUrl>& package_url_roots,
     bool remote_only) {
   if (looksLikeXacro(xml, filename)) {
-    return {std::nullopt, "Unsupported format: xacro — run `xacro input.xacro > output.urdf` and load the result."};
+    return {
+        std::nullopt, QCoreApplication::translate(
+                          "pj::scene3d::UrdfParser",
+                          "Unsupported format: xacro — run `xacro input.xacro > output.urdf` and load the result.")
+                          .toStdString()};
   }
   if (xml.size() > kMaxUrdfBytes) {
     const double size_mib = static_cast<double>(xml.size()) / (1024.0 * 1024.0);
     return {
         std::nullopt,
-        "robot_description too large (" + std::to_string(static_cast<int>(size_mib + 0.5)) + " MiB, limit 32 MiB)"};
+        QCoreApplication::translate("pj::scene3d::UrdfParser", "robot_description too large (%1 MiB, limit 32 MiB)")
+            .arg(static_cast<int>(size_mib + 0.5))
+            .toStdString()};
   }
 
   QDomDocument doc;
@@ -244,25 +255,35 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
   const auto result = doc.setContent(bytes);
   if (!result) {
-    return {std::nullopt, "Parse error: " + result.errorMessage.toStdString()};
+    return {
+        std::nullopt, QCoreApplication::translate("pj::scene3d::UrdfParser", "Parse error: %1")
+                          .arg(result.errorMessage)
+                          .toStdString()};
   }
 #else
   QString error_msg;
   int error_line = 0;
   int error_col = 0;
   if (!doc.setContent(bytes, &error_msg, &error_line, &error_col)) {
-    return {std::nullopt, "Parse error: " + error_msg.toStdString()};
+    return {
+        std::nullopt,
+        QCoreApplication::translate("pj::scene3d::UrdfParser", "Parse error: %1").arg(error_msg).toStdString()};
   }
 #endif
 
   const QDomElement root = doc.documentElement();
   if (root.isNull()) {
-    return {std::nullopt, "Parse error: empty document"};
+    return {
+        std::nullopt,
+        QCoreApplication::translate("pj::scene3d::UrdfParser", "Parse error: empty document").toStdString()};
   }
   // Format inference from the root element.
   const QString root_tag = root.tagName();
   if (root_tag != "robot"_L1) {
-    return {std::nullopt, "Format '" + root_tag.toStdString() + "' is not supported — only URDF"};
+    return {
+        std::nullopt, QCoreApplication::translate("pj::scene3d::UrdfParser", "Format '%1' is not supported — only URDF")
+                          .arg(root_tag)
+                          .toStdString()};
   }
 
   RobotModel model;
@@ -273,12 +294,18 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   for (QDomElement mat = root.firstChildElement(u"material"_s); !mat.isNull();
        mat = mat.nextSiblingElement(u"material"_s)) {
     if (limits != nullptr && limits->max_materials != 0U && ++material_count > limits->max_materials) {
-      return {std::nullopt, "URDF exceeds the browser material limit"};
+      return {
+          std::nullopt,
+          QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF exceeds the browser material limit")
+              .toStdString()};
     }
     const QByteArray name_bytes = mat.attribute(u"name"_s).toUtf8();
     if (limits != nullptr && limits->max_string_bytes != 0U &&
         static_cast<std::size_t>(name_bytes.size()) > limits->max_string_bytes) {
-      return {std::nullopt, "URDF material name exceeds the browser string limit"};
+      return {
+          std::nullopt,
+          QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF material name exceeds the browser string limit")
+              .toStdString()};
     }
     const std::string name = name_bytes.toStdString();
     if (name.empty()) {
@@ -294,13 +321,18 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   for (QDomElement link_el = root.firstChildElement(u"link"_s); !link_el.isNull();
        link_el = link_el.nextSiblingElement(u"link"_s)) {
     if (limits != nullptr && limits->max_links != 0U && model.links.size() >= limits->max_links) {
-      return {std::nullopt, "URDF exceeds the browser link limit"};
+      return {
+          std::nullopt,
+          QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF exceeds the browser link limit").toStdString()};
     }
     RobotLink link;
     const QByteArray link_name = link_el.attribute(u"name"_s).toUtf8();
     if (limits != nullptr && limits->max_string_bytes != 0U &&
         static_cast<std::size_t>(link_name.size()) > limits->max_string_bytes) {
-      return {std::nullopt, "URDF link name exceeds the browser string limit"};
+      return {
+          std::nullopt,
+          QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF link name exceeds the browser string limit")
+              .toStdString()};
     }
     link.name = link_name.toStdString();
 
@@ -310,7 +342,10 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
       if (parseGeomElement(
               v, resolver, urdf_dir, source_is_url, package_url_roots, remote_only, limits, materials, g, error)) {
         if (limits != nullptr && limits->max_geometries != 0U && geometry_count >= limits->max_geometries) {
-          return {std::nullopt, "URDF exceeds the browser geometry limit"};
+          return {
+              std::nullopt,
+              QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF exceeds the browser geometry limit")
+                  .toStdString()};
         }
         ++geometry_count;
         link.visuals.push_back(std::move(g));
@@ -325,7 +360,10 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
       if (parseGeomElement(
               c, resolver, urdf_dir, source_is_url, package_url_roots, remote_only, limits, materials, g, error)) {
         if (limits != nullptr && limits->max_geometries != 0U && geometry_count >= limits->max_geometries) {
-          return {std::nullopt, "URDF exceeds the browser geometry limit"};
+          return {
+              std::nullopt,
+              QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF exceeds the browser geometry limit")
+                  .toStdString()};
         }
         ++geometry_count;
         link.collisions.push_back(std::move(g));
@@ -349,7 +387,9 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
        joint_el = joint_el.nextSiblingElement(u"joint"_s)) {
     ++joint_count;
     if (limits != nullptr && limits->max_joints != 0U && joint_count > limits->max_joints) {
-      return {std::nullopt, "URDF exceeds the browser joint limit"};
+      return {
+          std::nullopt,
+          QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF exceeds the browser joint limit").toStdString()};
     }
     RobotJoint joint;
     const QByteArray joint_name = joint_el.attribute(u"name"_s).toUtf8();
@@ -359,7 +399,10 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
         (static_cast<std::size_t>(joint_name.size()) > limits->max_string_bytes ||
          static_cast<std::size_t>(parent_name.size()) > limits->max_string_bytes ||
          static_cast<std::size_t>(child_name.size()) > limits->max_string_bytes)) {
-      return {std::nullopt, "URDF joint field exceeds the browser string limit"};
+      return {
+          std::nullopt,
+          QCoreApplication::translate("pj::scene3d::UrdfParser", "URDF joint field exceeds the browser string limit")
+              .toStdString()};
     }
     joint.name = joint_name.toStdString();
     joint.type = jointTypeFromString(joint_el.attribute(u"type"_s));
@@ -373,7 +416,10 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   }
 
   if (model.links.empty()) {
-    return {std::nullopt, "Parse error: <robot> has no <link> elements"};
+    return {
+        std::nullopt,
+        QCoreApplication::translate("pj::scene3d::UrdfParser", "Parse error: <robot> has no <link> elements")
+            .toStdString()};
   }
   return {std::move(model), std::string{}};
 }

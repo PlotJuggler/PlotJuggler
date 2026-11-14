@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <QCoreApplication>
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QObject>
@@ -88,9 +89,11 @@ class MeshImport {
     try {
       mesh = shared_ ? future_.result() : future_.takeResult();
     } catch (const std::exception& error) {
-      mesh.error = QObject::tr("mesh import threw: %1").arg(QString::fromUtf8(error.what()));
+      mesh.error = QCoreApplication::translate("pj::scene3d::MeshDiagnostics", "mesh import threw: %1")
+                       .arg(QString::fromUtf8(error.what()));
     } catch (...) {
-      mesh.error = QObject::tr("mesh import threw an unknown exception");
+      mesh.error =
+          QCoreApplication::translate("pj::scene3d::MeshDiagnostics", "mesh import threw an unknown exception");
     }
     return mesh;
   }

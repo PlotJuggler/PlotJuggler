@@ -32,6 +32,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/topic_storage.hpp"
+#include "pj_plotting/BuiltinFilterPresentation.h"
 #include "pj_plotting/FilteredCurveAdapter.h"
 #include "pj_plotting/ParameterForm.h"
 #include "pj_plotting/PlotWidget.h"
@@ -83,6 +84,9 @@ QString curveKey(DatasetId dataset_id, TopicId topic_id, std::size_t column) {
 // catalog key, so it lives only inside the preview PlotWidget.
 const QString kFilteredPreviewTitle = u"__filter_preview__"_s;
 
+// UI labels may be localized; generated topic names retain the catalog's name.
+constexpr int kCanonicalFilterNameRole = Qt::UserRole + 1;
+
 // Process-global "copied filter" (id + params JSON) — survives across panel
 // instances so a filter can be copied from one plot and pasted onto another.
 struct ClipboardFilter {
@@ -108,9 +112,6 @@ FilterEditorPanel::FilterEditorPanel(
   ui_->setupUi(this);
 
   populateSources();
-  populateTransforms();
-
-  connect(ui_->transform_list, &QListWidget::currentRowChanged, this, [this](int) { onTransformChanged(); });
 
   // Primary action: Apply (materialize + replace in place). "Generate time
   // series" (an additive new series) is deferred under the replace-in-place
@@ -134,6 +135,8 @@ FilterEditorPanel::FilterEditorPanel(
   if (filter_classes_.empty()) {  // the resource is embedded, so this is defensive
     ui_->status_label->setText(tr("Warning: built-in filter definitions failed to load"));
   }
+  populateTransforms();
+  connect(ui_->transform_list, &QListWidget::currentRowChanged, this, [this](int) { onTransformChanged(); });
   param_form_ = new ParameterForm(this);
   ui_->paramsLayout->insertWidget(0, param_form_);
   connect(param_form_, &ParameterForm::changed, this, [this]() { scheduleRefresh(); });
@@ -256,8 +259,20 @@ void FilterEditorPanel::populateTransforms() {
     if (id == "none") {
       continue;
     }
-    auto* item = new QListWidgetItem(QString::fromStdString(label), ui_->transform_list);
+    QString display_name = QString::fromStdString(label);
+    QString description;
+    for (const scripting::FilterClass& filter : filter_classes_) {
+      if (filter.id == id && filter.name == label) {
+        const auto display = builtinFilterPresentation(filter);
+        display_name = display.name;
+        description = display.description;
+        break;
+      }
+    }
+    auto* item = new QListWidgetItem(display_name, ui_->transform_list);
+    item->setToolTip(description);
     item->setData(Qt::UserRole, QString::fromStdString(id));
+    item->setData(kCanonicalFilterNameRole, QString::fromStdString(label));
   }
 
   // (The freeform "Lua Function" custom-function entry returns once it ships as a
@@ -315,8 +330,9 @@ void FilterEditorPanel::updateAlias() {
     primary = readableName(originalInputOf(sources_[0]));
   }
 
+  // Automatic aliases are persisted topic names, not translated UI labels.
   const QListWidgetItem* transform_item = ui_->transform_list->currentItem();
-  const QString label = transform_item ? transform_item->text() : QString();
+  const QString label = transform_item ? transform_item->data(kCanonicalFilterNameRole).toString() : QString();
   ui_->alias_edit->setText(primary + "[" + label + "]");
 }
 
@@ -510,14 +526,13 @@ void FilterEditorPanel::setWidgetsFromParams(const std::string& id, const std::s
   scheduleRefresh();
 }
 
-const std::vector<scripting::ParamSpec>& FilterEditorPanel::schemaForId(const std::string& id) const {
-  static const std::vector<scripting::ParamSpec> kEmpty;
+std::vector<scripting::ParamSpec> FilterEditorPanel::schemaForId(const std::string& id) const {
   for (const scripting::FilterClass& c : filter_classes_) {
     if (c.id == id) {
-      return c.parameters;
+      return builtinFilterPresentation(c).parameters;
     }
   }
-  return kEmpty;
+  return {};
 }
 
 void FilterEditorPanel::onCopy() {
@@ -662,7 +677,8 @@ void FilterEditorPanel::refreshPreview() {
   applyGhostPens();
 
   const QListWidgetItem* transform_item = ui_->transform_list->currentItem();
-  const QString transform_label = transform_item ? transform_item->text() : QString();
+  const QString transform_label =
+      transform_item ? transform_item->data(kCanonicalFilterNameRole).toString() : QString();
   const QString alias = ui_->alias_edit->text();
 
   for (PreviewSeries& entry : preview_series_) {

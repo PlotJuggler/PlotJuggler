@@ -243,8 +243,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->splashMode->setOptions(tr("memes"), tr("serious"));
   // Endonyms stay recognizable in either interface language. The selection is
   // the next launch's preference, even when --language overrides this session.
-  ui_->languageCombo->addItem(QLocale(u"zh_CN"_s).nativeLanguageName(), u"zh_CN"_s);
+  ui_->languageCombo->addItem(u"简体中文"_s, u"zh_CN"_s);
   ui_->languageCombo->addItem(u"English"_s, u"en_US"_s);
+  ui_->languageCombo->addItem(u"繁體中文"_s, u"zh_TW"_s);
   // Qt may cache the empty-model minimum hint while the page is assembled.
   // Respect both hints so the form cannot squeeze below either size contract.
   ui_->languageCombo->setMinimumWidth(

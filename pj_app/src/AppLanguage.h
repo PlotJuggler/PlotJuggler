@@ -17,7 +17,7 @@ class AppLanguage final {
  public:
   static inline const QString kPreferenceKey = QStringLiteral("Preferences::language");
 
-  // Accepts zh_CN/zh-CN; all other values safely use the English source text.
+  // Accepts zh_CN/zh-CN and zh_TW/zh-TW; all other values safely use the English source text.
   [[nodiscard]] static QString normalizedLanguage(const QString& language);
 
   // A fresh profile keeps the English UI, independent of the OS locale.

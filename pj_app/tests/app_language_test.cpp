@@ -22,6 +22,8 @@ class AppLanguageTest : public QObject {
     QTest::addColumn<QString>("expected");
     QTest::newRow("chinese") << u"zh_CN"_s << u"zh_CN"_s;
     QTest::newRow("bcp47-chinese") << u"zh-CN"_s << u"zh_CN"_s;
+    QTest::newRow("traditional") << u"zh_TW"_s << u"zh_TW"_s;
+    QTest::newRow("bcp47-traditional") << u"zh-TW"_s << u"zh_TW"_s;
     QTest::newRow("english") << u"en_US"_s << u"en_US"_s;
     QTest::newRow("bcp47-english") << u"en-US"_s << u"en_US"_s;
     QTest::newRow("unsupported") << u"fr_FR"_s << u"en_US"_s;
@@ -63,6 +65,13 @@ class AppLanguageTest : public QObject {
     settings.setValue(PJ::AppLanguage::kPreferenceKey, u"unsupported"_s);
     QCOMPARE(PJ::AppLanguage::preferredLanguage(settings), u"en_US"_s);
     QCOMPARE(settings.value(PJ::AppLanguage::kPreferenceKey).toString(), u"unsupported"_s);
+  }
+
+  void traditionalCatalogLoads() {
+    const PJ::AppLanguage language(*QCoreApplication::instance(), u"zh_TW"_s);
+    QVERIFY(language.catalogLoaded());
+    QVERIFY(QFile::exists(u":/i18n/plotjuggler4_zh_TW.qm"_s));
+    QCOMPARE(QCoreApplication::translate("PreferencesContent", "Language:"), u"語言："_s);
   }
 
   void shippedCatalogTranslatesWidgetsAndQtButtons() {
@@ -186,7 +195,7 @@ class AppLanguageTest : public QObject {
     QTest::newRow("mcp-browser-6") << QByteArray("PJ::McpServer") << QByteArray("AI agent (%1)")
                                    << u"AI 智能体（%1）"_s;
     QTest::newRow("mcp-browser-7") << QByteArray("PJ::McpServer") << QByteArray("An AI agent asked you to choose: ")
-                                   << u"AI 智能体请您选择："_s;
+                                   << u"AI 智能体请求选择： "_s;
     QTest::newRow("mcp-browser-8")
         << QByteArray("PreferencesContent")
         << QByteArray(

@@ -175,8 +175,8 @@ def check_translation(source: str, translated: str) -> list[str]:
 def validate(root: ET.Element) -> tuple[dict[MessageKey, ET.Element], list[str], list[str], dict[str, int]]:
     """Return (messages, errors, warnings, stats): errors break at runtime, unfinished entries only warn."""
     errors, warnings = [], []
-    if root.tag != 'TS' or root.get('language') != 'zh_CN' or root.get('sourcelanguage') != 'en_US':
-        errors.append('catalog must be a TS file with language=zh_CN and sourcelanguage=en_US')
+    if root.tag != 'TS' or root.get('language') not in {'zh_CN', 'zh_TW'} or root.get('sourcelanguage') != 'en_US':
+        errors.append('catalog must be a TS file with language=zh_CN or zh_TW and sourcelanguage=en_US')
     messages = catalog_messages(root)
     stats = {'active': len(messages), 'translated': 0, 'unfinished': 0, 'numerus': 0, 'identity': 0}
     for key, message in messages.items():
@@ -193,7 +193,7 @@ def validate(root: ET.Element) -> tuple[dict[MessageKey, ET.Element], list[str],
         if numerus:
             stats['numerus'] += 1
             if len(forms) != 1:
-                errors.append(f'{label}: zh_CN requires exactly one numerus form')
+                errors.append(f'{label}: Chinese requires exactly one numerus form')
             texts = [''.join(form.itertext()) for form in forms]
         else:
             if forms:
@@ -217,6 +217,7 @@ def main() -> int:
     parser.add_argument('--update-ts', action='store_true', help='refresh the shipped TS before checking it')
     parser.add_argument('--catalog-only', action='store_true',
                         help='check the TS only, explicitly skipping Qt source coverage (no Qt tools required)')
+    parser.add_argument('--catalog', type=Path, default=CATALOG, help='catalog to validate or refresh')
     args = parser.parse_args()
     if args.catalog_only and args.update_ts:
         parser.error('--catalog-only cannot be combined with --update-ts')
@@ -225,8 +226,8 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix='pj4-i18n-') as directory:
             scratch = Path(directory)
             if args.update_ts:
-                extract(lupdate, CATALOG, scratch)
-            root = ET.parse(CATALOG).getroot()
+                extract(lupdate, args.catalog, scratch)
+            root = ET.parse(args.catalog).getroot()
             messages, errors, warnings, stats = validate(root)
             expected, missing, stale = {}, set(), set()
             if not args.catalog_only:
@@ -240,7 +241,7 @@ def main() -> int:
                 missing, stale = compare_sources(messages, expected) if expected else (set(), set())
                 warnings.extend(f'missing source entry: {key[0]}: {key[1]!r}' for key in sorted(missing))
                 warnings.extend(f'stale active entry: {key[0]}: {key[1]!r}' for key in sorted(stale))
-        print(f"PJ4 zh_CN: {stats['translated']}/{stats['active']} active messages translated; "
+        print(f"PJ4 {root.get('language')}: {stats['translated']}/{stats['active']} active messages translated; "
               f"{stats['unfinished']} unfinished; {stats['numerus']} numerus; "
               f"{stats['identity']} unchanged identifiers/format strings.")
         if args.catalog_only:
