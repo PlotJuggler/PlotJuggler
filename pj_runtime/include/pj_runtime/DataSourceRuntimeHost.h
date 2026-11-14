@@ -419,6 +419,11 @@ class DataSourceRuntimeHost {
     Signature signature;
     sdk::BuiltinObjectType object_kind = sdk::BuiltinObjectType::kNone;
     std::optional<ObjectTopicId> object_topic_id;
+    // The parser declared this schema object-only (an object route and no scalar
+    // route, see ParserRouteSelection::scalar_winner_object_only). Its scalar
+    // parse failing is then expected and must not drop the object.
+    bool object_only = false;
+    bool object_only_logged = false;  // [worker thread] one trace per binding, not per message
     // Per-binding constants for lazy-fetch failure logs, shared by every lazy
     // closure this binding mints (one per object message) instead of copied
     // into each. Created on first use in cbPushMessage [worker thread].
