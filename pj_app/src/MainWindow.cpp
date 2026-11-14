@@ -2014,10 +2014,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   redo_action_ = new QAction(tr("Redo"), this);
   // The platform's standard redo set (Ctrl+Y and/or Ctrl+Shift+Z depending on
   // desktop-theme detection) plus both explicitly, so redo works the same
-  // everywhere regardless of how Qt resolves QKeySequence::Redo.
+  // everywhere regardless of how Qt resolves QKeySequence::Redo. Each key once:
+  // Qt calls a key bound twice to one action ambiguous and fires nothing.
   QList<QKeySequence> redo_shortcuts = QKeySequence::keyBindings(QKeySequence::Redo);
-  redo_shortcuts.append(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z));
-  redo_shortcuts.append(QKeySequence(Qt::CTRL | Qt::Key_Y));
+  for (const QKeySequence& key : {QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z), QKeySequence(Qt::CTRL | Qt::Key_Y)}) {
+    if (!redo_shortcuts.contains(key)) {
+      redo_shortcuts.append(key);
+    }
+  }
   redo_action_->setShortcuts(redo_shortcuts);
   connect(redo_action_, &QAction::triggered, this, &MainWindow::onRedo);
   addAction(redo_action_);

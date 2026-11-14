@@ -389,6 +389,34 @@ TEST_F(MainWindowHistoryFixture, PlaceholderChoiceUndoRedoRestoresChooserAndEmpt
   EXPECT_NE(dock->plotWidget(), nullptr);
 }
 
+TEST_F(MainWindowHistoryFixture, CtrlYAndCtrlShiftZRedoThroughTheKeyboard) {
+  PJ::MainWindow& window = mainWindow();
+  window.show();
+  window.activateWindow();
+  ASSERT_TRUE(QTest::qWaitForWindowActive(&window));
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  PJ::DockWidget* dock = tabbed->currentTab()->plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  dock->setPlaceholderWidget();
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  auto* plot_button = placeholder->findChild<QToolButton*>(u"buttonVizPlot"_s);
+  ASSERT_NE(plot_button, nullptr);
+  plot_button->click();
+
+  // Redo is keyboard-only: each of its keys must reach it, which a key bound twice to it does not (Qt calls the
+  // overload ambiguous and fires nothing).
+  for (const QKeyCombination redo_key : {Qt::CTRL | Qt::Key_Y, Qt::CTRL | Qt::SHIFT | Qt::Key_Z}) {
+    PJ::MainWindowHistoryTestPeer::undo(window);
+    ASSERT_EQ(tabbed->currentTab()->plotAt(0)->plotWidget(), nullptr);
+    QTest::keyClick(&window, redo_key.key(), redo_key.keyboardModifiers());
+    EXPECT_NE(tabbed->currentTab()->plotAt(0)->plotWidget(), nullptr)
+        << QKeySequence(redo_key).toString().toStdString() << " did not redo";
+  }
+}
+
 TEST_F(MainWindowHistoryFixture, AutomaticGlobalRebasePreservesAbsolutePlayheadAndReframesRange) {
   constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
   PJ::MainWindow& window = mainWindow();
