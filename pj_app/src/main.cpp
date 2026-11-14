@@ -29,6 +29,7 @@
 #include <emscripten/val.h>
 #endif
 #include <algorithm>
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #ifndef PJ_TARGET_WASM
@@ -310,6 +311,10 @@ int main(int argc, char* argv[]) {
   QSurfaceFormat::setDefaultFormat(core_format);
 #endif
   QApplication app(argc, argv);
+  // QApplication adopts the user's locale for the C library too. Luau and the plugins read and write numbers through
+  // strtod / printf and expect a decimal point, so a decimal-comma LC_NUMERIC would stop every script from compiling.
+  // What the user sees is formatted through QLocale, which this leaves alone.
+  std::setlocale(LC_NUMERIC, "C");
 #if defined(Q_OS_MACOS)
   // An app bundle carries the embedded CPython's stdlib at Contents/Resources/python
   // (packaging/macos); the prefix baked at build time is absent on the user's Mac.

@@ -125,6 +125,10 @@ Private (`src/`):
 - **`LuaSisoTransform` failure mode.** A script runtime error **fails the node** (sticky), never corrupting a stateful
   accumulator. `reset()` = construct-new-and-swap. Luau filters are numeric-scalar only: a string-valued input is
   coerced to `0.0` (`proc::detail::toDouble`), not rejected.
+- **Luau needs `LC_NUMERIC` = "C".** Its parser and `tonumber` read numbers with `strtod`, so under a decimal-comma
+  locale every literal like `0.5` is a "Malformed number" and no script compiles. A `Q(Core)Application` adopts the
+  user's locale for the C library, so `pj_app`'s `main()` resets `LC_NUMERIC` right after constructing it; any other
+  executable that runs scripts next to a Qt application must do the same.
 - **Filters are DATA.** `resources/filters/builtin_filters.luau` is ONE `.luau` resource returning a list of 12
   classes (none, absolute, scale, derivative, integral, moving_average, moving_rms, moving_variance, outlier_removal,
   samples_counter, binary_filter, time_since_previous). The app reads the QRC resource and hands the source string to
