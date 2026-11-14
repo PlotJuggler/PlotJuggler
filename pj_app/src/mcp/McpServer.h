@@ -133,8 +133,9 @@ class McpServer : public QObject {
     /// The public client's owner (`mcp::ownerFor` its name); "" for a plugin token, which never
     /// reaches what reads it (the app tools and agentContext).
     QString owner;
-    /// The client's connection (its socket, or the relay link that brought the request); gone
-    /// once it disconnected. Whether a call's work then stops is per tool (see serviceWaiters).
+    /// The client's connection (its socket, or the object McpBrowserLink gives the relay session
+    /// that brought the request); gone once it disconnected. Whether a call's work then stops is
+    /// per tool (see serviceWaiters).
     QPointer<QObject> connection;
     /// The call's JSON-RPC id: what a `notifications/cancelled` from the same owner names (the bridge
     /// sends ids unique across its sessions).

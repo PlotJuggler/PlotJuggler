@@ -24,6 +24,8 @@ namespace {
 /// The relay holds a poll up to 20 s; past this the poll is given up and sent again.
 constexpr int kPollTimeoutMs = 30'000;
 constexpr int kRequestTimeoutMs = 10'000;
+/// Polls in a row the relay must fail before its session counts as over.
+constexpr int kPollsBeforeSessionLost = 2;
 constexpr int kMaxBackoffMs = 10'000;
 
 int statusOf(const QNetworkReply& reply) {
@@ -68,6 +70,12 @@ void McpBrowserLink::retryLater(void (McpBrowserLink::*next)()) {
   QTimer::singleShot(backoff_ms_, this, next);
 }
 
+void McpBrowserLink::endSession() {
+  failed_polls_ = 0;
+  delete session_;
+  session_ = new QObject(this);
+}
+
 void McpBrowserLink::hello() {
   id_.clear();
 #ifdef PJ_TARGET_WASM
@@ -100,24 +108,33 @@ void McpBrowserLink::poll() {
     reply->deleteLater();
     const int status = statusOf(*reply);
     if (status == 404) {
-      hello();  // the relay restarted and forgot this page
+      endSession();  // the relay forgot this page: it restarted, or gave up on a page that stopped polling
+      hello();
       return;
     }
     if (reply->error() != QNetworkReply::NoError) {
+      // One failure may be a hiccup; a relay that stays silent is an agent session that ended.
+      if (++failed_polls_ >= kPollsBeforeSessionLost) {
+        endSession();
+      }
       retryLater(&McpBrowserLink::poll);
       return;
     }
     backoff_ms_ = 0;
+    failed_polls_ = 0;
     if (status == 200) {
       const json item = json::parse(reply->readAll().toStdString(), nullptr, false);
       if (item.is_object() && item.value("seq", json()).is_number_integer() && item.contains("message")) {
         const qint64 seq = item["seq"].get<qint64>();
         const QString client = QString::fromStdString(item.value("client", std::string()));
-        // The server's reply may come much later: by then this link may be gone (QPointer).
+        // The server's reply may come much later: by then this link, or the relay session the
+        // message came in, may be gone. An answer never crosses into a later session, whose
+        // numbering starts over.
         server_.handleRelayed(
-            QByteArray::fromStdString(item["message"].dump()), client, this,
-            [self = QPointer<McpBrowserLink>(this), seq](const QByteArray& response) {
-              if (self != nullptr) {
+            QByteArray::fromStdString(item["message"].dump()), client, session_,
+            [self = QPointer<McpBrowserLink>(this), session = QPointer<QObject>(session_),
+             seq](const QByteArray& response) {
+              if (self != nullptr && session != nullptr) {
                 self->reply(seq, response);
               }
             });

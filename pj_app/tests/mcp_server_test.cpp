@@ -2313,6 +2313,66 @@ TEST_F(McpServerTest, ALinkForgottenByARestartedRelayIntroducesItselfAgain) {
   EXPECT_EQ(relay.next("/link/next").http.path, "/link/next?id=new");
 }
 
+/// A page whose relay has relayed a call that is still waiting.
+class McpRelayLossTest : public McpServerTest {
+ protected:
+  /// Links the window to `relay` as page `id` and has it relay a call that waits for a threshold
+  /// the mock data never reaches; returns once that call's job runs.
+  void relayAWaitingCall(FakeRelay& relay, const char* id) {
+    ASSERT_NE(loadMock(), 0);
+    ASSERT_TRUE(window_->connectMcpRelay(relay.url()));
+    FakeRelay::answer(relay.next("/link/hello"), 200, {{"id", id}});
+    const json waiting = toolsCall(
+        "wait_for", {{"series", "mock/file_data/value"},
+                     {"comparison", ">"},
+                     {"threshold", 1e9},
+                     {"timeout_s", 600},
+                     {"wait_s", 60}});
+    FakeRelay::answer(relay.next("/link/next"), 200, {{"seq", 1}, {"client", "claude-code"}, {"message", waiting}});
+    ASSERT_TRUE(pumpUntil([&] { return PJ::McpTestPeer::jobs(*server()) == 1; })) << "the relayed call never started";
+  }
+};
+
+// One relay serves one agent session. A relay that forgot this page restarted: the calls its old
+// session relayed can never be answered, so what waited on them stops, as when a desktop client
+// hangs up.
+TEST_F(McpRelayLossTest, ARestartedRelayEndsTheCallsItsOldSessionRelayed) {
+  FakeRelay relay;
+  ASSERT_NO_FATAL_FAILURE(relayAWaitingCall(relay, "old"));
+
+  FakeRelay::answer(relay.next("/link/next"), 404);
+  FakeRelay::answer(relay.next("/link/hello"), 200, {{"id", "new"}});
+  EXPECT_TRUE(pumpUntil([&] { return PJ::McpTestPeer::jobs(*server()) == 0; }))
+      << "the old session's call went on with nobody to answer";
+}
+
+// One failed poll may be a hiccup: the relay answers the next one and still remembers this page,
+// so the calls it relayed go on.
+TEST_F(McpRelayLossTest, AFailedPollAloneKeepsTheSession) {
+  FakeRelay relay;
+  ASSERT_NO_FATAL_FAILURE(relayAWaitingCall(relay, "tab"));
+  // An error answer, not a dropped connection: Qt sends a GET again by itself when its connection
+  // closes before any answer, and the page never hears of that.
+  FakeRelay::answer(relay.next("/link/next"), 500);
+
+  const FakeRelay::Request retried = relay.next("/link/next");
+  EXPECT_EQ(retried.http.path, "/link/next?id=tab") << "the page introduced itself again";
+  FakeRelay::answer(retried, 204);
+  static_cast<void>(relay.next("/link/next"));  // the 204 was taken in: the page polls on
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 1U) << "one failed poll ended the session";
+}
+
+// A relay that stops answering is an agent session that ended.
+TEST_F(McpRelayLossTest, ARelayThatWentAwayEndsTheCallsItRelayed) {
+  auto relay = std::make_unique<FakeRelay>();
+  ASSERT_NO_FATAL_FAILURE(relayAWaitingCall(*relay, "tab"));
+  static_cast<void>(relay->next("/link/next"));  // the poll in flight dies with the relay
+
+  relay.reset();
+  EXPECT_TRUE(pumpUntil([&] { return PJ::McpTestPeer::jobs(*server()) == 0; }))
+      << "the call went on after its relay was gone";
+}
+
 TEST_F(McpServerTest, OnlyALoopbackHttpRelayIsLinked) {
   EXPECT_FALSE(window_->connectMcpRelay(QUrl(u"http://example.com:7381"_s)));
   EXPECT_FALSE(window_->connectMcpRelay(QUrl(u"https://127.0.0.1:7381"_s)));

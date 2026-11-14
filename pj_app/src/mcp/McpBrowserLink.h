@@ -52,6 +52,8 @@ class McpBrowserLink : public QObject {
  private:
   void hello();
   void poll();
+  /// Hangs up every call the current relay session relayed, and starts the next session.
+  void endSession();
   /// Answers message `seq` with `response` (empty: a notification, no answer).
   void reply(qint64 seq, const QByteArray& response);
   /// Runs `next` after the current backoff, then doubles it (up to 10 s).
@@ -71,6 +73,13 @@ class McpBrowserLink : public QObject {
   QNetworkAccessManager network_;
   QString id_;
   int backoff_ms_ = 0;
+  /// The connection of the calls the current relay session relayed (McpServer::handleRelayed). One
+  /// relay serves one agent session, so a relay that forgot this page or stopped answering has no
+  /// way left to deliver their answers: deleting this is that session's hang-up, as a closed socket
+  /// is a desktop client's.
+  QObject* session_ = new QObject(this);
+  /// Polls that failed in a row.
+  int failed_polls_ = 0;
 };
 
 }  // namespace PJ
