@@ -885,7 +885,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     }
 
     const uint32_t binding_id = self->next_binding_id_++;
-    self->parser_bindings_.emplace(
+    const auto inserted = self->parser_bindings_.emplace(
         binding_id, ParserBinding{
                         std::move(registry_builder),
                         std::move(write_host),
@@ -896,6 +896,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
                         object_kind,
                         object_topic_id,
                     });
+    inserted.first->second.object_only = object_topic_id.has_value() && selection.scalar_winner_object_only;
 
     *out = PJ_parser_binding_handle_t{binding_id};
     qCInfo(lcIngestBind) << "[parser-bind] encoding="
@@ -1010,7 +1011,19 @@ bool DataSourceRuntimeHost::cbPushMessage(
     }
 
     if (auto status = binding.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size)); !status) {
-      return self->fail(out_error, status.error().c_str());
+      // An object-only schema has no scalar route, so its parse() has nothing to
+      // write and reports the absent route as an error on every message. That is
+      // not a failed message: the object below is all there is to store. parse()
+      // is still called, because a parser may override it to validate or diagnose.
+      if (!binding.object_only) {
+        return self->fail(out_error, status.error().c_str());
+      }
+      if (!binding.object_only_logged) {
+        binding.object_only_logged = true;
+        qCInfo(lcIngestBind).noquote() << "[parser-bind] object-only schema on topic"
+                                       << QString::fromStdString(binding.topic_name)
+                                       << "— scalar parse skipped over:" << QString::fromStdString(status.error());
+      }
     }
 
     if (!is_object_topic) {

@@ -399,6 +399,54 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PureLazyFetcherReleaseRunsWhileDso
   EXPECT_FALSE(dso_mapped) << "the keepalive drops once the stored closure is destroyed";
 }
 
+// A parser may register an object route and no scalar route (parser_ros does
+// for robot_description). Its parse() then has nothing to write and reports
+// the absent route as an error. That is not a failed message: under every
+// policy that parses scalars at ingest, the object must still be stored.
+TEST_F(DataSourceRuntimeHostObjectIngestTest, ObjectOnlySchemaStoresTheObjectUnderEveryEagerScalarPolicy) {
+  for (const auto policy :
+       {PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars, PJ::sdk::ObjectIngestPolicy::kEager}) {
+    SCOPED_TRACE(static_cast<int>(policy));
+    const std::string topic = "/robot_description_" + std::to_string(static_cast<int>(policy));
+    host_->policyResolver().setForTopic(topic, policy);
+
+    auto binding = bindTopic(topic, "mock/object_only_image");
+    ASSERT_TRUE(binding.has_value()) << binding.error();
+
+    const std::vector<uint8_t> payload{0x3c, 0x72, 0x6f, 0x62};
+    auto status = runtime().pushMessage(*binding, 123, [payload]() -> std::vector<uint8_t> { return payload; });
+    EXPECT_TRUE(status.has_value()) << status.error();
+
+    host_->flushAll();
+    auto object_topic = object_store_.findTopic(dataset_id_, topic);
+    ASSERT_TRUE(object_topic.has_value());
+    EXPECT_EQ(object_store_.entryCount(*object_topic), 1U);
+    auto entry = object_store_.latestAt(*object_topic, 123);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(std::vector<uint8_t>(entry->payload.bytes.begin(), entry->payload.bytes.end()), payload);
+  }
+  EXPECT_EQ(totalRowCount(), 0U) << "an object-only schema writes no scalar row";
+}
+
+// The tolerance above is for an ABSENT scalar route only. A parser that has a
+// scalar route and fails on a message still fails that push, and the object
+// is not stored.
+TEST_F(DataSourceRuntimeHostObjectIngestTest, FailingScalarRouteStillFailsThePush) {
+  host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
+
+  auto binding = bindTopic("/camera/corrupt", "mock/failing_scalar_image");
+  ASSERT_TRUE(binding.has_value()) << binding.error();
+
+  auto status = runtime().pushMessage(*binding, 123, []() -> std::vector<uint8_t> { return {1, 2, 3}; });
+  ASSERT_FALSE(status.has_value());
+  EXPECT_NE(status.error().find("scalar decode failed"), std::string::npos) << status.error();
+
+  host_->flushAll();
+  auto object_topic = object_store_.findTopic(dataset_id_, "/camera/corrupt");
+  ASSERT_TRUE(object_topic.has_value());
+  EXPECT_EQ(object_store_.entryCount(*object_topic), 0U);
+}
+
 TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageKeepsScalarOnlyTopicsEagerUnderLazyPolicy) {
   host_->policyResolver().setForTopic("/scalar/topic", PJ::sdk::ObjectIngestPolicy::kPureLazy);
 

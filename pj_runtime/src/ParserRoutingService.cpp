@@ -271,6 +271,17 @@ ParserRoutingService::PreparedInstance ParserRoutingService::prepareInstance(
   return prepared;
 }
 
+bool ParserRoutingService::declaresObjectOnly(
+    const MessageParserHandle& handle, std::string_view type_name, Span<const uint8_t> schema) {
+  // Legacy classify_schema speaks for the object route only, so without the
+  // extension nothing is known about the scalar route.
+  if (handle.getPluginExtension(PJ_PARSER_ROUTE_CLAIMS_EXTENSION_V1) == nullptr) {
+    return false;
+  }
+  const RouteClassification classification = classifyPreparedInstance(handle, type_name, schema);
+  return classification.valid && classification.object_claimed && !classification.scalar_exact;
+}
+
 ParserRouteSelection ParserRoutingService::resolveLegacy(
     std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema,
     std::string_view parser_config_json) const {
@@ -301,6 +312,7 @@ ParserRouteSelection ParserRoutingService::resolveLegacy(
     selection.scalar_failure = "object decoder: " + object.diagnostic;
     return selection;
   }
+  selection.scalar_winner_object_only = declaresObjectOnly(scalar.handle, type_name, schema);
   selection.scalar = ParserRouteWinner{.provider_id = provider->id, .parser = std::move(scalar.handle)};
   selection.object =
       ParserRouteWinner{.provider_id = provider->id, .parser = std::move(object.handle), .object_type = kind};
@@ -581,6 +593,10 @@ ParserRouteSelection ParserRoutingService::resolveParserRoutes(
 
   RouteOutcome object = resolveOneRoute(*context, ParserRoute::kObject);
   selection.object = std::move(object.winner);
+  if (selection.scalar && selection.object) {
+    selection.scalar_winner_object_only =
+        declaresObjectOnly(selection.scalar->parser, context->normalized_type_name, context->schema);
+  }
   if (!selection.object && !object.no_candidates) {
     report(
         DiagnosticLevel::kInfo, {},

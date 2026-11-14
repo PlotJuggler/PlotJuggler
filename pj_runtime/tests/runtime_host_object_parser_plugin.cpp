@@ -49,12 +49,42 @@ PJ::sdk::SchemaHandler makeEmbeddedTimestampHandler(PJ::sdk::BuiltinObjectType o
   };
 }
 
+// The object route these two handlers register is never invoked by the ingest
+// tests: the host stores the raw payload and decodes on pull.
+PJ::Expected<PJ::sdk::ObjectRecord> undecodedObject(PJ::Timestamp /*timestamp_ns*/, PJ::sdk::PayloadView /*payload*/) {
+  return PJ::unexpected(std::string("object decoding is not exercised here"));
+}
+
+// Object-only, like parser_ros's robot_description: an object route and no
+// scalar route. parse() has nothing to write, and the SDK base reports the
+// absent route as "registered handler has no parse_scalars".
+PJ::sdk::SchemaHandler makeObjectOnlyHandler() {
+  return PJ::sdk::SchemaHandler{
+      .object_type = PJ::sdk::BuiltinObjectType::kImage,
+      .parse_scalars = {},
+      .parse_object = undecodedObject,
+  };
+}
+
+// Both routes, with a scalar route that fails on every message: a genuine
+// per-message failure, unlike the absent route above.
+PJ::sdk::SchemaHandler makeFailingScalarHandler() {
+  return PJ::sdk::SchemaHandler{
+      .object_type = PJ::sdk::BuiltinObjectType::kImage,
+      .parse_scalars = [](PJ::Timestamp /*timestamp_ns*/, PJ::Span<const uint8_t> /*payload*/)
+          -> PJ::Expected<PJ::sdk::ScalarRecord> { return PJ::unexpected(std::string("scalar decode failed")); },
+      .parse_object = undecodedObject,
+  };
+}
+
 class RuntimeHostObjectParser : public PJ::MessageParserPluginBase {
  public:
   RuntimeHostObjectParser() {
     registerSchemaHandler("mock/image", makeByteCountHandler(PJ::sdk::BuiltinObjectType::kImage));
     registerSchemaHandler("mock/scalar", makeByteCountHandler(PJ::sdk::BuiltinObjectType::kNone));
     registerSchemaHandler("mock/embedded_ts_image", makeEmbeddedTimestampHandler(PJ::sdk::BuiltinObjectType::kImage));
+    registerSchemaHandler("mock/object_only_image", makeObjectOnlyHandler());
+    registerSchemaHandler("mock/failing_scalar_image", makeFailingScalarHandler());
   }
 
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
