@@ -166,7 +166,13 @@ a worker thread per session writing through the runtime host) and the secondary
 tail buffers used while paused. Those buffers can hold rows of a stream that has
 already ended (they merge at the resume), and the merge moves nothing when one
 topic has no destination: whoever erases a dataset also drops its secondary copy
-(`StreamingSourceManager::removeSecondaryDataset`). `TopicDemandController` is thin glue from
+(`StreamingSourceManager::removeSecondaryDataset`). An interactive start
+(`startSession`) never waits for the source's dialog: a browser cannot run a
+nested event loop, and one path for every platform lets the desktop tests cover
+what the browser runs. The start is held as pending while its modal dialog is
+open, launches or cleans up when the user answers, and is withdrawn (its dialog
+closed, its dataset discarded) by whatever stops every stream or destroys the
+manager. `TopicDemandController` is thin glue from
 displayed widgets to `TopicDemandTracker`; `PendingDisplayBinder` stages a curve
 or scene layer until its topic materializes. On the first real demand for a
 previewed topic, `TopicDemandController` invalidates the matching XY and

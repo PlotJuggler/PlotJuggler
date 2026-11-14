@@ -89,6 +89,11 @@ struct StreamingSourceManager::StreamingSession {
   explicit StreamingSession(DataSourceHandle&& h) : handle(std::move(h)) {}
 };
 
+struct StreamingSourceManager::PendingStart {
+  std::unique_ptr<StreamingSession> session;  ///< the dialog borrows its handle
+  dialog_presenter::DialogCancelFn cancel;    ///< closes the dialog as a rejection
+};
+
 StreamingSourceManager::StreamingSourceManager(
     SessionManager& session, ExtensionCatalogService& extensions, CatalogModel& catalog,
     TopicDemandTracker& topic_demand_tracker, QWidget* dialog_parent, QObject* parent)
@@ -107,6 +112,7 @@ StreamingSourceManager::StreamingSourceManager(
 }
 
 StreamingSourceManager::~StreamingSourceManager() {
+  cancelPendingStarts();  // their dialogs borrow session handles that die with this object
   // Cooperative stop + join for every live session. We can't go through
   // onWorkerFinished here because the UI event loop won't run again.
   for (auto& [dataset_id, sess] : sessions_) {
@@ -183,6 +189,7 @@ bool StreamingSourceManager::requestStopDataset(DatasetId dataset_id, const QStr
 }
 
 void StreamingSourceManager::stopAllAndWait(const QString& reason) {
+  cancelPendingStarts();  // a start still at its dialog has a dataset too
   std::vector<DatasetId> dataset_ids;
   dataset_ids.reserve(sessions_.size());
   for (const auto& [dataset_id, _sess] : sessions_) {
@@ -485,50 +492,60 @@ void StreamingSourceManager::discardDataset(DatasetId dataset_id) {
 
 void StreamingSourceManager::startSession(
     const QString& plugin_id, const QString& dialog_title_prefix, const std::function<bool()>& still_allowed,
-    const dialog_presenter::DialogWatch& on_dialog) {
+    const dialog_presenter::DialogWatch& on_dialog, StartDone done) {
+  const auto refuse = [this, &done](const QString& error) {
+    emit setupError(error);
+    if (done) {
+      done(0, error);
+    }
+  };
   const LoadedDataSource* source_ptr = findDataSourceByIdentity(extensions_.streamSources(), {}, plugin_id);
   if (source_ptr == nullptr) {
     qCWarning(lcStream) << "Stream plugin not found:" << plugin_id;
-    emit setupError(tr("Stream plugin '%1' not found.").arg(plugin_id));
+    refuse(tr("Stream plugin '%1' not found.").arg(plugin_id));
     return;
   }
   const LoadedDataSource& source = *source_ptr;
   QString error;
   std::unique_ptr<StreamingSession> session = createSession(source, QString::fromStdString(source.name), error);
   if (session == nullptr) {
-    emit setupError(error);
+    refuse(error);
     return;
   }
-  const DatasetId dataset_id = session->dataset_id;
+  auto pending = std::make_shared<PendingStart>();
+  pending->session = std::move(session);
+  pending_starts_.push_back(pending);
+  configureAndLaunch(source, pending, dialog_title_prefix, still_allowed, on_dialog, std::move(done));
+}
 
-  if (!configureAndLaunch(source, session, dialog_title_prefix, still_allowed, on_dialog, error)) {
-    // createSession made the dataset before the dialog opened, so any exit that
-    // does not launch must take it back, or an empty dataset lingers and counts in
-    // the catalog's duplicate-label ordinals. The session goes first (as in
-    // startFromLayout) and the dataset is gone before the failure is reported.
-    session.reset();
-    discardDataset(dataset_id);
-    if (!error.isEmpty()) {
-      emit streamError(dataset_id, error);
+bool StreamingSourceManager::hasPendingStart() const {
+  return !pending_starts_.empty();
+}
+
+void StreamingSourceManager::cancelPendingStarts() {
+  // A copy: each cancel runs its start's completion, which takes it off the list.
+  const std::vector<std::shared_ptr<PendingStart>> pending = pending_starts_;
+  for (const std::shared_ptr<PendingStart>& start : pending) {
+    if (start->cancel) {
+      start->cancel();
     }
   }
 }
 
-bool StreamingSourceManager::configureAndLaunch(
-    const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session,
+void StreamingSourceManager::configureAndLaunch(
+    const RuntimeDataSourcePlugin& source, const std::shared_ptr<PendingStart>& pending,
     const QString& dialog_title_prefix, const std::function<bool()>& still_allowed,
-    const dialog_presenter::DialogWatch& on_dialog, QString& error) {
-  error.clear();
+    const dialog_presenter::DialogWatch& on_dialog, StartDone done) {
+  StreamingSession& session = *pending->session;
   const QString source_name = QString::fromStdString(source.name);
-  QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source.name);
-  std::string config = persisted_settings.value(config_key, QString()).toString().toStdString();
+  const std::string config = QSettings().value(config_key, QString()).toString().toStdString();
   // Always invoke loadConfig — even on a first run with empty config. Stream
   // plugins use this hook to wire the runtime host into their dialog (e.g.
   // populating the available-encodings combo via list_available_encodings).
   // Skipping it leaves the dialog with "(no parsers available)" and the OK
   // button disabled.
-  if (auto status = session->handle.loadConfig(config); !status) {
+  if (auto status = session.handle.loadConfig(config); !status) {
     qCInfo(lcStream) << "loadConfig failed; proceeding with plugin defaults:" << QString::fromStdString(status.error());
   }
 
@@ -542,53 +559,78 @@ bool StreamingSourceManager::configureAndLaunch(
     }
   }
 
-  const auto dlg = dialog_presenter::showDataSourceDialog({
-      .source = source,
-      .handle = session->handle,
-      .catalog = extensions_,
-      .parent = dialog_parent_,
-      .initial_parser_config = initial_parser_config,
-      .section_band_metrics =
-          chrome_metrics_provider_ ? std::optional<ChromeMetrics>(chrome_metrics_provider_()) : std::nullopt,
-      .title_prefix = dialog_title_prefix,
-      .on_dialog = on_dialog,
-  });
-  if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
-    error = tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
-                .arg(QString::fromStdString(dlg.error));
-    return false;
-  }
-  if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
-    qCInfo(lcStream) << "User cancelled stream dialog for" << source_name;
-    return false;
-  }
-  if (still_allowed && !still_allowed()) {
-    qCInfo(lcStream) << "Stream start no longer allowed after its dialog:" << source_name;
-    return false;
-  }
-  if (dlg.payload.has_value()) {
-    config = dlg.payload->saved_config;
-    // Embed the parser sub-dialog config (e.g. JSON embedded-timestamp
-    // settings) into the main plugin config under "_parser_config" so the
-    // stream plugin forwards it to ensureParserBinding when each topic's
-    // parser binding is created in the worker loop.
-    if (!dlg.payload->parser_config.empty()) {
-      auto cfg = nlohmann::json::parse(config, nullptr, false);
-      if (!cfg.is_discarded()) {
-        cfg["_parser_config"] = dlg.payload->parser_config;
-        config = cfg.dump();
+  // The rest of the start, once the dialog is answered (at once for a source that has none). It
+  // owns the cleanup: createSession made the dataset before the dialog opened, so any exit that
+  // does not launch takes it back, or an empty dataset lingers and counts in the catalog's
+  // duplicate-label ordinals. The session goes first (as in startFromLayout) and the dataset is
+  // gone before the failure is reported.
+  auto finish = [this, pending, source_name, config_key, config, still_allowed,
+                 done = std::move(done)](const dialog_presenter::DataSourceResult& dlg) {
+    std::erase(pending_starts_, pending);
+    const DatasetId dataset_id = pending->session->dataset_id;
+    QString error;
+    bool launched = false;
+    if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
+      error = tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
+                  .arg(QString::fromStdString(dlg.error));
+    } else if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
+      qCInfo(lcStream) << "User cancelled stream dialog for" << source_name;
+    } else if (still_allowed && !still_allowed()) {
+      qCInfo(lcStream) << "Stream start no longer allowed after its dialog:" << source_name;
+    } else {
+      std::string chosen = config;
+      bool configured = true;
+      if (dlg.payload.has_value()) {
+        chosen = dlg.payload->saved_config;
+        // Embed the parser sub-dialog config (e.g. JSON embedded-timestamp
+        // settings) into the main plugin config under "_parser_config" so the
+        // stream plugin forwards it to ensureParserBinding when each topic's
+        // parser binding is created in the worker loop.
+        if (!dlg.payload->parser_config.empty()) {
+          auto cfg = nlohmann::json::parse(chosen, nullptr, false);
+          if (!cfg.is_discarded()) {
+            cfg["_parser_config"] = dlg.payload->parser_config;
+            chosen = cfg.dump();
+          }
+        }
+        if (auto status = pending->session->handle.loadConfig(chosen); !status) {
+          error = tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                      .arg(source_name, QString::fromStdString(status.error()));
+          configured = false;
+        }
+      }
+      if (configured) {
+        QSettings().setValue(config_key, QString::fromStdString(chosen));
+        pending->session->config_template = QString::fromStdString(chosen);
+        launched = launchSession(std::move(pending->session), error);
       }
     }
-    if (auto status = session->handle.loadConfig(config); !status) {
-      error = tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
-                  .arg(source_name, QString::fromStdString(status.error()));
-      return false;
+    if (!launched) {
+      pending->session.reset();
+      discardDataset(dataset_id);
+      if (!error.isEmpty()) {
+        emit streamError(dataset_id, error);
+      }
     }
-  }
-  persisted_settings.setValue(config_key, QString::fromStdString(config));
-  session->config_template = QString::fromStdString(config);
-
-  return launchSession(std::move(session), error);
+    if (done) {
+      done(launched ? dataset_id : 0, error);
+    }
+  };
+  // Never the blocking presenter: a browser cannot run a nested event loop, and one path for every
+  // platform keeps the desktop tests covering what the browser runs. The dialog is still modal.
+  pending->cancel = dialog_presenter::showDataSourceDialogAsync(
+      {
+          .source = source,
+          .handle = session.handle,
+          .catalog = extensions_,
+          .parent = dialog_parent_,
+          .initial_parser_config = initial_parser_config,
+          .section_band_metrics =
+              chrome_metrics_provider_ ? std::optional<ChromeMetrics>(chrome_metrics_provider_()) : std::nullopt,
+          .title_prefix = dialog_title_prefix,
+          .on_dialog = on_dialog,
+      },
+      std::move(finish));
 }
 
 DatasetId StreamingSourceManager::startFromLayout(
