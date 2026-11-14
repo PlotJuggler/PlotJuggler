@@ -584,6 +584,22 @@ TEST(SessionManagerRangeTest, DatasetDisplayRangeUnionsScalarAndObjectBoundsInDi
   EXPECT_DOUBLE_EQ(range->max.value, 900.0e-9);
 }
 
+// At epoch scale a double does not hold every nanosecond. The range start must convert back to the first
+// sample or later: the engine clamps a seek into the range, so a start that comes back before the first
+// sample makes a seek to the start show nothing.
+TEST(SessionManagerRangeTest, ARangeStartAtEpochScaleSeeksBackToTheFirstSample) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  // The nearest double to this instant converts back 37 ns earlier.
+  constexpr PJ::Timestamp kFirst = 1'700'000'000'000'000'037LL;
+  writeScalarSamples(session, *dataset, "/imu/x", {kFirst, kFirst + 1'000'000'000LL});
+
+  const auto range = session.datasetDisplayRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_GE(PJ::displaySecondsToRaw(range->min, session.displayOffset(*dataset)), kFirst);
+}
+
 TEST(SessionManagerRangeTest, DatasetDisplayRangeAppliesDatasetDisplayOffset) {
   PJ::SessionManager session;
   // A dataset on a time domain shifted by +2 s (display_time = raw - 2e9).

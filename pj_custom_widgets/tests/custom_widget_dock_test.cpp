@@ -230,6 +230,31 @@ TEST_F(CustomWidgetDockTest, TextAndNumberWiresArriveInOneCall) {
   EXPECT_DOUBLE_EQ(g.last_values[1].time, 2.5);
 }
 
+// A widget's code can spin an event loop (a modal dialog) inside on_update, and the user may rewire the panel
+// meanwhile. The values the widget is still reading must stay valid: their text and labels are not freed or
+// moved under the call. The text and the label are longer than the small-string buffer, so a freed one is
+// overwritten (glibc puts its free-list pointers in the first bytes).
+TEST_F(CustomWidgetDockTest, RewiringDuringOnUpdateKeepsTheValuesTheWidgetIsReading) {
+  const std::string long_text = "SYSTEM ARMED AND READY FOR TAKEOFF";
+  const QString status = pj_cw_test::addTextTopic(*app_, dataset_, "/flight_controller/status", {{1.0, long_text}});
+  auto dock = makeBound();
+  ASSERT_TRUE(dock->setBinding(u"status"_s, 0, status));
+  bool rewired = false;
+  g.on_update = [&]() {
+    if (!rewired) {
+      rewired = true;
+      ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));
+      dock->removeBinding(u"status"_s, 0);  // frees the wire the value's label came from
+    }
+  };
+  dock->onTrackerTime(2.0);
+  ASSERT_TRUE(rewired);
+  ASSERT_EQ(g.values_after_hook.size(), 1U);
+  EXPECT_EQ(g.values_after_hook[0].text, long_text);
+  EXPECT_EQ(g.values_after_hook[0].label, g.last_values[0].label);
+  g.on_update = nullptr;
+}
+
 TEST_F(CustomWidgetDockTest, OnlyTheOffsetOfAWiredDatasetReachesTheWidget) {
   // A display offset lives on a time domain, and the default domain carries none.
   const auto datasetWithOwnDomain = [&](const char* name) -> DatasetId {
@@ -394,6 +419,34 @@ TEST_F(CustomWidgetDockTest, SeekingToTheLastSampleOfAnEpochRangeShowsThatSample
   QCoreApplication::processEvents();  // a widget's seek reaches the widgets once its code returned
   ASSERT_FALSE(g.last_values.empty());
   EXPECT_EQ(g.last_values.back().bytes, (std::vector<uint8_t>{2})) << "the seek to the last sample showed another";
+}
+
+TEST_F(CustomWidgetDockTest, SeekingToTheStartOfAnEpochRangeShowsTheFirstSample) {
+  // An epoch-scale stamp whose nearest display double converts back to an instant before it: the range
+  // starts there, and a seek to the range start (a rewind, playback starting) must still show it.
+  int64_t first_ns = 1'731'234'567'000'000'005;
+  while (displaySecondsToRaw(rawToDisplaySeconds(first_ns, DisplayOffset{}), DisplayOffset{}) >= first_ns) {
+    ++first_ns;
+  }
+  const DatasetId epoch = pj_cw_test::createDataset(*app_, "epoch.mcap");
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto topic =
+      objects.registerTopic(ObjectTopicDescriptor{.dataset_id = epoch, .topic_name = "/epoch", .metadata_json = {}});
+  ASSERT_TRUE(topic.has_value());
+  for (uint8_t k = 0; k < 3; ++k) {
+    ASSERT_TRUE(objects.pushOwned(*topic, first_ns + k * 1'000'003, {k}).has_value());
+  }
+  PlaybackEngine& engine = app_->playbackEngine();
+  ASSERT_TRUE(app_->focusPlaybackOnDatasets({epoch}));  // the range a file load sets
+  auto dock = makeBound(u"viewer"_s);
+  QObject::connect(&engine, &PlaybackEngine::currentTimeChanged, dock.get(), &CustomWidgetDockWidget::onTrackerTime);
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(*topic, sdk::BuiltinObjectType::kImage, u"/epoch"_s));
+
+  ASSERT_TRUE(g.playback.seek(engine.rangeMin().value).has_value());
+  QCoreApplication::processEvents();  // a widget's seek reaches the widgets once its code returned
+  ASSERT_FALSE(g.last_values.empty());
+  EXPECT_EQ(g.last_values.back().kind, PJ_WIDGET_VALUE_OBJECT) << "the range start came back before the first sample";
+  EXPECT_EQ(g.last_values.back().bytes, (std::vector<uint8_t>{0}));
 }
 
 TEST_F(CustomWidgetDockTest, ASeekFromInsideOnUpdateIsDeliveredAfterTheCallReturns) {

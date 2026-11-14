@@ -712,6 +712,45 @@ TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockS
   EXPECT_EQ(dock_->objectWidget()->widget(), custom) << "the panel took the topic in place";
 }
 
+TEST_F(CustomWidgetShellFlowTest, ALogDroppedWithAScalarOnACustomWidgetWiresBoth) {
+  PJ::AppSession& app = Peer::session(*window_);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
+  auto topic = app.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+  app.catalogModel().rebuildFromDatastore();
+  QString log_key;
+  QString scalar_key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      log_key = item.key;
+    } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
+      scalar_key = item.key;
+    }
+  }
+  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(scalar_key.isEmpty());
+
+  clickIcon("buttonVizCustomWidget");
+  auto* list = picker_->findChild<QListWidget*>(u"listCustomWidgets"_s);
+  emit list->itemClicked(itemNamed(list, u"Viewer"_s));
+  ASSERT_NE(dock_->objectWidget(), nullptr);
+  auto* custom = qobject_cast<PJ::CustomWidgetDockWidget*>(dock_->objectWidget()->widget());
+  ASSERT_NE(custom, nullptr);
+  ASSERT_TRUE(custom->applySettings(u"{\"with_value\":true}"_s));
+
+  // The order a curve-list drag delivers: the object row sorts ahead of the scalar field.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock_, "onCatalogItemsDropped", Qt::DirectConnection,
+          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
+  ASSERT_EQ(custom->bindings().size(), 2U) << "the scalar of a drop led by a log topic was not offered";
+  EXPECT_EQ(custom->bindings()[0].label, "/rosout");
+  EXPECT_EQ(custom->bindings()[1].input, u"value"_s);
+}
+
 TEST_F(CustomWidgetShellFlowTest, ALogTopicDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
   PJ::AppSession& app = Peer::session(*window_);
   const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");

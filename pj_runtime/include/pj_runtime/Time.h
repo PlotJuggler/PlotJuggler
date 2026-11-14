@@ -158,8 +158,9 @@ using DisplayRange = PJ::Range<DisplaySeconds>;
 /// Far from the display origin a double does not hold every nanosecond (near 1.7e9 s it steps ~238 ns),
 /// and the nearest one can convert back to an instant before `raw_ns`: a seek to that time would show
 /// the sample before. Used for every time a seek may come back with: a sample handed to a Widget plugin,
-/// pj.playback.v1's to_display_time, and the end of a playback range (the engine clamps a seek into the
-/// range, so a nearest-rounded end would clamp a seek to the last sample onto the one before it).
+/// pj.playback.v1's to_display_time, and both ends of a playback range (the engine clamps a seek into the
+/// range, so a nearest-rounded end would clamp a seek to the last sample onto the one before it, and a
+/// nearest-rounded start would put a seek to the range start before the first sample).
 [[nodiscard]] inline DisplaySeconds rawToDisplaySecondsAtOrAfter(Timestamp raw_ns, DisplayOffset offset) noexcept {
   DisplaySeconds seconds = rawToDisplaySeconds(raw_ns, offset);
   // Within a millisecond of the int64 limits (an "end of time" sentinel) a raised double no longer converts

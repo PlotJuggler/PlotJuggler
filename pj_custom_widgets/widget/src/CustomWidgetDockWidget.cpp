@@ -717,6 +717,10 @@ void CustomWidgetDockWidget::pushValues(double time, bool force) {
   // when its row moved); an object only resolves its entry id, so a tick that changed nothing never
   // touches a lazy payload.
   targets_.clear();
+  if (samples_stale_) {
+    samples_.clear();
+    samples_stale_ = false;
+  }
   samples_.resize(wires.size());
   std::uint64_t key = fnv1aMix(kFnv1aOffsetBasis, wires.size());
   for (std::size_t i = 0; i < wires.size(); ++i) {
@@ -735,14 +739,16 @@ void CustomWidgetDockWidget::pushValues(double time, bool force) {
   last_render_key_ = key;
 
   values_.clear();
+  labels_.resize(wires.size());
   object_content_ = wiredObjectContent();
   for (std::size_t i = 0; i < wires.size(); ++i) {
     if (targets_[i]) {
       fetchObjectPayload(objects, *targets_[i], object_encoder_, samples_[i]);
     }
+    labels_[i] = wires[i].label;
     values_.push_back(makeWidgetValue(
         static_cast<std::uint32_t>(wires[i].input_index), wires[i].slot, targets_[i] ? *targets_[i] : kNoTarget,
-        samples_[i], wires[i].label));
+        samples_[i], labels_[i]));
   }
   update_wanted_ = false;
   callOrDisable([&]() { handle_->onUpdate(Span<const PJ_widget_value_t>(values_.data(), values_.size()), time); });

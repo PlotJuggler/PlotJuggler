@@ -7,8 +7,8 @@
 // "gauge" (value + status), "table" (one `multiple` number input), "viewer" (one object input).
 // Config tokens switch behaviours: "dynamic" (inputs value, extra), "grow_on_update" (announces a
 // new input from inside on_update), "reject" (load_config fails), "history" (queries history),
-// "throw_on_update" (onUpdate throws; the SDK trampoline contains it), "fail_inputs" (inputs()
-// throws, so the host receives a failed inputs call), "own_state" (save_config returns its own
+// "throw_on_update" (onUpdate throws; the SDK trampoline contains it), "with_value" (a viewer also takes a number),
+// "fail_inputs" (inputs() throws, so the host receives a failed inputs call), "own_state" (save_config returns its own
 // state, whose `unit` collides with the setting of that name). `g.null_widget` makes
 // createWidget return null. A second vtable claims another Qt minor, to exercise the admission
 // refusal; a third ("faulty_widgets") hands the host a string whose length no std::string can hold
@@ -81,18 +81,19 @@ struct PluginStats {
   bool history_ok = false;
   std::string last_config;
   std::vector<ValueCopy> last_values;
-  std::vector<ValueCopy> history_values;   ///< what the last history read delivered
-  bool null_widget = false;                ///< createWidget returns null
-  bool corrupt_inputs = false;             ///< "faulty_widgets" reports an impossible input name
-  bool corrupt_saved_config = false;       ///< "faulty_widgets" reports an impossible save_config length
-  std::function<void()> on_create_widget;  ///< runs at the start of createWidget
-  std::function<void()> on_update;         ///< runs inside onUpdate, after the values are copied
-  std::function<void()> on_save_config;    ///< runs inside saveConfig
-  int update_depth = 0;                    ///< onUpdate calls currently on the stack
-  int max_update_depth = 0;                ///< deepest onUpdate nesting seen (1 = never re-entered)
-  bool values_changed_under_call = false;  ///< the host's value span changed while onUpdate ran
-  bool offered_playback = false;           ///< bind found pj.playback.v1
-  sdk::PlaybackHostView playback;          ///< the live instance's pj.playback.v1; invalid once it is destroyed
+  std::vector<ValueCopy> values_after_hook;  ///< the host's value span read again after on_update's hook
+  std::vector<ValueCopy> history_values;     ///< what the last history read delivered
+  bool null_widget = false;                  ///< createWidget returns null
+  bool corrupt_inputs = false;               ///< "faulty_widgets" reports an impossible input name
+  bool corrupt_saved_config = false;         ///< "faulty_widgets" reports an impossible save_config length
+  std::function<void()> on_create_widget;    ///< runs at the start of createWidget
+  std::function<void()> on_update;           ///< runs inside onUpdate, after the values are copied
+  std::function<void()> on_save_config;      ///< runs inside saveConfig
+  int update_depth = 0;                      ///< onUpdate calls currently on the stack
+  int max_update_depth = 0;                  ///< deepest onUpdate nesting seen (1 = never re-entered)
+  bool values_changed_under_call = false;    ///< the host's value span changed while onUpdate ran
+  bool offered_playback = false;             ///< bind found pj.playback.v1
+  sdk::PlaybackHostView playback;            ///< the live instance's pj.playback.v1; invalid once it is destroyed
 };
 inline PluginStats g;
 
@@ -149,6 +150,9 @@ class TestPlugin : public WidgetPluginBase {
       result.emplace_back("rows", "Rows", "", WidgetInputKind::kNumber, true);
     } else if (type_ == "viewer") {
       result.emplace_back("frame", "Frame", "", WidgetInputKind::kObject);
+      if (has("with_value")) {
+        result.emplace_back("value", "Value", "V");
+      }
     } else if (has("dynamic")) {
       result.emplace_back("value", "Value", "V");
       result.emplace_back("extra", "Extra");
@@ -192,6 +196,10 @@ class TestPlugin : public WidgetPluginBase {
     }
     if (g.on_update) {
       g.on_update();
+      g.values_after_hook.clear();
+      for (const PJ_widget_value_t& v : values) {
+        g.values_after_hook.push_back(copyValue(v));
+      }
     }
     // Read after the hook: a nested on_update would have refilled the host's span under this call.
     for (std::size_t i = 0; i < values.size() && i < times.size(); ++i) {
