@@ -24,6 +24,7 @@
 #include <map>
 #include <optional>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -60,6 +61,18 @@ constexpr int kResumeIntervalMs = 50;
 /// The socket property naming the token its request was accepted with, so a revoke can close it.
 constexpr char kTokenProperty[] = "pj_mcp_token";
 #endif
+/// At most this many running jobs per owner (the next call is refused), and this many ended ones
+/// kept for job_wait, each for kJobExpiry after it ended.
+constexpr int kMaxRunningJobs = 8;
+constexpr int kMaxEndedJobs = 32;
+/// A job handed out as an MCP task advertised how long its result is kept (ttlMs), so the count above
+/// does not evict it; only this many of a client's are kept, a bound no well-behaved client meets.
+constexpr int kMaxEndedTasks = 256;
+constexpr auto kJobExpiry = std::chrono::minutes(10);
+/// Seconds job_kill waits for a stop to take effect (a load winding down) before it answers.
+constexpr double kKillWaitS = 20.0;
+/// A job's summary in jobs_list: its tool and arguments, cut here.
+constexpr std::size_t kSummaryChars = 120;
 /// loadedSummary's caps: topics listed, numeric field names per topic, and bytes (where the topics stop).
 constexpr int kSummaryTopics = 60;
 constexpr std::size_t kSummaryFields = 40;
@@ -87,8 +100,9 @@ agent_tools::ToolContext contextFrom(PJ_service_registry_t registry, const DataE
     }
     return sdk::MaterializedSeriesView(std::move(schema), std::move(array));
   };
-  context.scan_values = [&engine](sdk::FieldHandle field, const agent_tools::ValueBlockSink& on_block) {
-    return scanSeriesValues(engine, field, on_block);
+  context.scan_values = [&engine](
+                            sdk::FieldHandle field, std::int64_t first, const agent_tools::ValueBlockSink& on_block) {
+    return scanSeriesValues(engine, field, on_block, first);
   };
   context.host = services.get<sdk::ToolboxHostService>().value_or(sdk::ToolboxHostView{});
   context.dp = services.get<sdk::DataProcessorsHostService>().value_or(sdk::DataProcessorsHostView{});
@@ -100,6 +114,20 @@ agent_tools::ToolContext contextFrom(PJ_service_registry_t registry, const DataE
     context.notify_data_changed = [runtime = *runtime]() { runtime.notifyDataChanged(); };
   }
   return context;
+}
+
+/// Whether a job of `tool` answers its call before it ends (McpServer::answerCall): a stream's call is
+/// answered when the stream runs, and the job then lives as long as the stream. Such a job is never
+/// handed out as an MCP task, whose result must be the call's own.
+bool answersBeforeItEnds(const std::string& tool) {
+  return tool == "start_stream";
+}
+
+/// Whether a job of `tool` dies with the call that started it: an agent tool's does (nothing would
+/// read its evaluation), and so does a question whose answer would delete data for a client that
+/// left; other app work (an import, a stream, an export) carries on for its client to find.
+bool diesWithItsCall(const std::string& tool) {
+  return mcp::agentTools().find(tool) != nullptr || tool == "unload_file";
 }
 
 }  // namespace
@@ -157,9 +185,10 @@ McpServer::~McpServer() {
     delete socket;
   }
 #endif
-  // A pending evaluation releases itself through the session's services: drop it first.
+  // A pending evaluation releases itself through the session's services: drop it first. A load's
+  // receiver dies with this object, so its terminal reaches nothing.
   resume_tick_.stop();
-  deferred_.clear();
+  jobs_.clear();
   agent_sessions_.clear();
 }
 
@@ -228,15 +257,50 @@ void McpServer::revoke(const QByteArray& token) {
 }
 
 std::function<bool()> McpServer::stillAuthorized(const Caller& caller) {
-  return [self = QPointer<McpServer>(this), caller] { return self != nullptr && self->authorized(caller); };
+  return [self = QPointer<McpServer>(this), caller] {
+    if (self == nullptr || !self->authorized(caller)) {
+      return false;
+    }
+    if (caller.job == 0) {
+      return true;
+    }
+    const auto job = self->jobs_.find(caller.job);
+    if (job == self->jobs_.end() || ended(job->second) || job->second.killing) {
+      return false;
+    }
+    // A job that dies with its call is not wanted from the moment that call hung up, before the next
+    // tick has noticed.
+    const std::vector<Waiter>& waiters = job->second.waiters;
+    return !diesWithItsCall(job->second.tool) || std::none_of(waiters.begin(), waiters.end(), [](const Waiter& w) {
+      return w.kind == Waiter::Kind::kCall && w.connection == nullptr;
+    });
+  };
 }
 
 void McpServer::dropCallsOf(const QByteArray& token) {
-  // Each queued result releases itself through the token's services, which may die right after this.
-  std::erase_if(deferred_, [&token](const Deferred& item) { return item.caller.token == token; });
-  if (deferred_.empty()) {
-    resume_tick_.stop();
+  std::vector<quint64> ids;
+  for (const auto& [id, job] : jobs_) {
+    if (job.caller.token == token) {
+      ids.push_back(id);
+    }
   }
+  // One at a time, each looked up again: a stop may revoke another token, which drops its jobs too.
+  for (const quint64 id : ids) {
+    const auto it = jobs_.find(id);
+    if (it == jobs_.end()) {
+      continue;
+    }
+    if (it->second.kill || it->second.close_dialog) {
+      // App work (a load, a question to the user) stops; its terminal still ends its job, which points
+      // into no services.
+      killJob(id, /*keep_partial=*/true);
+    } else {
+      // Its waiters go unanswered, and its continuation releases its evaluation through the token's
+      // services, which may die right after this.
+      dropJob(id);
+    }
+  }
+  updateTick();
 #ifndef PJ_TARGET_WASM
   for (QTcpSocket* socket : server_.findChildren<QTcpSocket*>()) {
     if (socket->property(kTokenProperty).toByteArray() == token) {
@@ -323,23 +387,21 @@ void McpServer::handleRelayed(
     respond(200, QByteArray::fromStdString(mcp::errorResponse(message.id, -32001, "MCP access is closed").dump()));
     return;
   }
-  dispatch({.token = public_token_, .owner = {}, .connection = connection}, body, client, respond);
+  dispatch(
+      {.token = public_token_, .owner = {}, .connection = connection, .request_id = {}, .job = 0, .tasks = false}, body,
+      client, respond);
 }
 
 void McpServer::dispatch(
     Caller caller, const QByteArray& body, const QString& header_client,
     std::function<void(int status, QByteArray body)> respond) {
   const auto send = [respond](const json& response) {
-    respond(200, QByteArray::fromStdString(response.dump(-1, ' ', false, json::error_handler_t::replace)));
+    respond(200, QByteArray::fromStdString(mcp::dumpJson(response)));
   };
   const mcp::RpcMessage message = mcp::parseRpcMessage(body.toStdString());
   try {
     if (message.error) {
       send(*message.error);
-      return;
-    }
-    if (message.notification) {
-      respond(202, {});
       return;
     }
     const mcp::ToolSet tool_set = isPublic(caller) ? mcp::ToolSet::kFull : mcp::ToolSet::kAgentOnly;
@@ -350,11 +412,20 @@ void McpServer::dispatch(
       if (client.isEmpty()) {
         client = QString::fromStdString(mcp::printableClientName(mcp::clientName(message.params)));
       }
-      if (message.method != "ping") {
+      if (message.method != "ping" && !message.notification) {
         noteClient(client);
       }
       caller.owner = QString::fromStdString(mcp::ownerFor(client.toStdString()));
     }
+    if (message.notification) {
+      if (message.method == "notifications/cancelled") {
+        cancelRequest(caller, message.params.value("requestId", json()));
+      }
+      respond(202, {});
+      return;
+    }
+    caller.request_id = message.id;
+    caller.tasks = mcp::declaresTasks(message.params);
     const auto result = [send, id = message.id](const json& value) {
       send({{"jsonrpc", "2.0"}, {"id", id}, {"result", value}});
     };
@@ -367,6 +438,8 @@ void McpServer::dispatch(
       result(*lifecycle);
     } else if (message.method == "tools/list") {
       result({{"tools", mcp::toolList(tool_set)}});
+    } else if (mcp::isTasksMethod(message.method)) {
+      send(taskRequest(message, caller));
     } else if (message.method == "tools/call") {
       const auto name = params.find("name");
       const json args = params.value("arguments", json::object());
@@ -377,9 +450,16 @@ void McpServer::dispatch(
       const std::string tool = name->get<std::string>();
       QElapsedTimer timer;
       timer.start();
-      callTool(tool, args, caller, [result, tool, timer](json r) {
-        qCDebug(mcp::lcMcp).noquote() << QString::fromStdString(tool) << "answered in" << timer.elapsed() << "ms";
-        result(r);
+      // From the event loop, not from inside the connection's own signal: a tool may run a modal loop (a
+      // prompt for the user), during which that connection can close and be deleted.
+      QTimer::singleShot(0, this, [this, tool, args, caller, result, timer] {
+        if (caller.connection == nullptr) {
+          return;
+        }
+        callTool(tool, args, caller, [result, tool, timer](json r) {
+          qCDebug(mcp::lcMcp).noquote() << QString::fromStdString(tool) << "answered in" << timer.elapsed() << "ms";
+          result(r);
+        });
       });
     } else {
       send(mcp::errorResponse(message.id, -32601, "method not found: " + message.method));
@@ -410,32 +490,71 @@ json McpServer::userDialogOpen(const QWidget& modal) {
 }
 
 void McpServer::callTool(const std::string& name, const json& args, const Caller& caller, Reply reply) {
+  quint64 job = 0;  // the job this call became, which then owns its reply
   try {
-    // A modal dialog belongs to the user: acting under it would change state they are editing.
+    // A modal dialog belongs to the user: acting under it would change state they are editing. Stopping
+    // an agent's own work does not.
     const QWidget* modal = QApplication::activeModalWidget();
-    const bool read_only = mcp::isReadOnlyTool(name) || (name == "screenshot" && !args.contains("tab"));
-    if (modal != nullptr && !read_only) {
+    if (modal != nullptr && !mcp::runsUnderUsersDialog(name, args)) {
       reply(userDialogOpen(*modal));
       return;
     }
-    if (mcp::agentTools().find(name) != nullptr) {
-      std::optional<agent_tools::ToolContext> context = contextFor(caller);
-      if (!context) {
-        reply(mcp::textResult(mcp::kNoServicesError, true));
-        return;
-      }
-      runAgentTool(name, caller, mcp::agentTools().execute(name, args, *context), std::move(reply));
+    static const std::unordered_map<std::string, AppTool> job_tools = {
+        {"jobs_list", &McpServer::jobsList}, {"job_wait", &McpServer::jobWait}, {"job_kill", &McpServer::jobKill}};
+    if (const auto tool = job_tools.find(name); tool != job_tools.end()) {
+      // `reply` is copied, not moved: when the tool throws on a wrongly typed argument (which it reads
+      // before it answers), the handler below still has it to answer with.
+      (this->*tool->second)(args, caller, reply);
       return;
     }
-    const auto tool = isPublic(caller) ? appTools().find(name) : appTools().end();
-    if (tool == appTools().end()) {
+    const bool agent_tool = mcp::agentTools().find(name) != nullptr;
+    const auto app_tool = !agent_tool && isPublic(caller) ? appTools().find(name) : appTools().end();
+    if (!agent_tool && app_tool == appTools().end()) {
       reply(mcp::textResult("unknown tool " + name, true));
       return;
     }
-    (this->*tool->second)(args, caller, reply);
+    std::optional<agent_tools::ToolContext> context = agent_tool ? contextFor(caller) : std::nullopt;
+    if (agent_tool && !context) {
+      reply(mcp::textResult(mcp::kNoServicesError, true));
+      return;
+    }
+    if (!mcp::isJobCapableTool(name)) {
+      if (!agent_tool) {
+        (this->*app_tool->second)(args, caller, reply);
+        return;
+      }
+      const agent_tools::ToolResult result = mcp::agentTools().execute(name, args, *context);
+      // Only a job can be resumed: a tool that defers belongs in mcp::isJobCapableTool.
+      reply(
+          result.resume ? mcp::textResult(name + " deferred its result but is not job-capable", true)
+                        : mcp::textResult(result.content, !result.ok));
+      return;
+    }
+    // The job comes first, so a call over the limit is refused before its work starts.
+    job = openJob(name, args, caller, std::move(reply));
+    if (job == 0) {
+      return;
+    }
+    if (agent_tool) {
+      continueJob(job, mcp::agentTools().execute(name, args, *context));
+      return;
+    }
+    Caller as_job = caller;
+    as_job.job = job;
+    // Guarded: the tool may answer from a dialog that outlives this server.
+    (this->*app_tool->second)(args, as_job, [self = QPointer<McpServer>(this), job](json result) {
+      if (self != nullptr) {
+        self->finishJob(job, std::move(result));
+      }
+    });
   } catch (const std::exception& e) {
     // A wrongly typed argument throws out of nlohmann; escaping a Qt slot would abort the app.
-    reply(mcp::textResult("bad arguments for " + name + ": " + e.what(), true));
+    json failure = mcp::textResult("bad arguments for " + name + ": " + e.what(), true);
+    if (job != 0) {
+      finishJob(job, std::move(failure));
+    } else {
+      reply(std::move(failure));
+    }
   }
 }
 
@@ -565,22 +684,385 @@ std::optional<agent_tools::ToolContext> McpServer::contextFor(const Caller& call
   return context;
 }
 
-void McpServer::runAgentTool(
-    const std::string& tool, const Caller& caller, agent_tools::ToolResult result, Reply reply) {
-  if (!authorized(caller)) {
-    return;  // revoked while it ran: a follow-up would point into services that may die next
+int McpServer::runningJobs(const Caller& caller) const {
+  return static_cast<int>(std::count_if(jobs_.begin(), jobs_.end(), [&](const auto& entry) {
+    return sameClient(entry.second.caller, caller) && !ended(entry.second);
+  }));
+}
+
+quint64 McpServer::openJob(const std::string& tool, const json& args, const Caller& caller, Reply reply) {
+  if (runningJobs(caller) >= kMaxRunningJobs) {
+    reply(
+        mcp::textResult(
+            "you already have " + std::to_string(kMaxRunningJobs) +
+                " jobs running: jobs_list shows them; job_wait for one to end, or job_kill one",
+            true));
+    return 0;
   }
-  if (result.resume) {
-    deferred_.push_back(
-        {.tool = tool,
-         .caller = caller,
-         .resume = std::move(result.resume),
-         .reply = std::move(reply),
-         .round = resume_round_});
-    resume_tick_.start();
+  Job job;
+  job.id = ++last_job_id_;
+  job.caller = caller;
+  job.client = isPublic(caller) ? caller.owner : plugin_tokens_.value(caller.token).owner;
+  job.tool = tool;
+  // The tool and its arguments, each cut short: a script argument may run to a megabyte.
+  job.summary = tool;
+  for (const auto& [key, value] : args.items()) {
+    if (key == "wait_s" || job.summary.size() > kSummaryChars) {
+      continue;
+    }
+    const std::string text = value.is_string() ? value.get<std::string>() : mcp::dumpJson(value);
+    job.summary += " " + key + "=" + text.substr(0, kSummaryChars);
+  }
+  if (job.summary.size() > kSummaryChars) {
+    job.summary.resize(kSummaryChars);
+    job.summary += "...";
+  }
+  job.started = Clock::now();
+  job.created = QDateTime::currentDateTimeUtc();
+  job.round = resume_round_;
+  addWaiter(job, Waiter::Kind::kCall, caller, std::move(reply), mcp::waitSeconds(args));
+  const quint64 id = job.id;
+  jobs_.emplace(id, std::move(job));
+  updateTick();
+  emit jobsChanged();
+  return id;
+}
+
+void McpServer::addWaiter(Job& job, Waiter::Kind kind, const Caller& caller, Reply reply, double seconds) {
+  job.waiters.push_back(
+      {.kind = kind,
+       .reply = std::move(reply),
+       .connection = caller.connection,
+       .deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds))});
+}
+
+McpServer::Job* McpServer::liveJob(quint64 id) {
+  const auto it = jobs_.find(id);
+  return it != jobs_.end() && !ended(it->second) ? &it->second : nullptr;
+}
+
+void McpServer::continueJob(quint64 id, agent_tools::ToolResult result) {
+  Job* job = liveJob(id);
+  if (job == nullptr) {
+    return;  // killed or revoked while it ran: a follow-up dies here, unqueued
+  }
+  if (!authorized(job->caller)) {
+    dropJob(id);  // a follow-up would point into services that may die next
     return;
   }
-  reply(mcp::textResult(result.content, !result.ok));
+  if (!result.resume) {
+    finishJob(id, mcp::textResult(result.content, !result.ok));
+    return;
+  }
+  job->resume = std::move(result.resume);
+  job->round = resume_round_;
+  updateTick();
+}
+
+void McpServer::finishJob(quint64 id, json result) {
+  const auto it = jobs_.find(id);
+  if (it == jobs_.end() || ended(it->second)) {
+    return;
+  }
+  Job& job = it->second;
+  // What happened decides, not what was asked: a load that completed before its stop arrived is completed.
+  const bool failed = result.value("isError", false);
+  job.state = !failed ? JobState::kCompleted : job.killing ? JobState::kKilled : JobState::kFailed;
+  job.ended_at = Clock::now();
+  job.result = std::move(result);
+  // The table is settled before anything of the job runs or dies: an ended record keeps no hook
+  // (they point into services), and a waiter is out of it before its reply runs.
+  struct {
+    std::function<agent_tools::ToolResult(agent_tools::ToolContext&)> resume;
+    std::function<void(bool)> kill;
+    std::function<void()> close_dialog;
+    std::function<json()> progress;
+  } hooks{
+      std::exchange(job.resume, nullptr), std::exchange(job.kill, nullptr), std::exchange(job.close_dialog, nullptr),
+      std::exchange(job.progress, nullptr)};
+  std::vector<Waiter> waiters = std::exchange(job.waiters, {});
+  const auto any = [&waiters](Waiter::Kind kind, bool connected) {
+    return std::any_of(waiters.begin(), waiters.end(), [&](const Waiter& w) {
+      return w.kind == kind && (w.connection != nullptr) == connected;
+    });
+  };
+  // An import whose call hung up since the last tick is kept for its client, as serviceWaiters would have.
+  job.retained = job.retained || (any(Waiter::Kind::kCall, false) && !diesWithItsCall(job.tool));
+  const json killed = any(Waiter::Kind::kKill, true) ? killReply(job) : json();
+  const json final_result = job.result;
+  // Nobody knows this job's id, or its token is revoked: nobody would read the record.
+  if (!job.retained || !authorized(job.caller)) {
+    jobs_.erase(it);
+  }
+  pruneJobs();
+  updateTick();
+  emit jobsChanged();
+  hooks = {};  // destroying the continuation releases its evaluation, which stops the work
+  for (Waiter& waiter : waiters) {
+    if (waiter.connection != nullptr) {
+      waiter.reply(waiter.kind == Waiter::Kind::kKill ? killed : final_result);
+    }
+  }
+}
+
+void McpServer::dropJob(quint64 id) {
+  if (const auto it = jobs_.find(id); it != jobs_.end()) {
+    const Job dropped = std::move(it->second);
+    jobs_.erase(it);
+    emit jobsChanged();
+  }
+}
+
+std::vector<McpServer::JobInfo> McpServer::unfinishedJobs() const {
+  std::vector<JobInfo> jobs;
+  for (const auto& [id, job] : jobs_) {
+    if (!ended(job)) {
+      jobs.push_back(
+          {.id = id,
+           .client = job.client,
+           .summary = QString::fromStdString(job.summary),
+           .state = QString::fromLatin1(stateName(job)),
+           .elapsed_s = elapsedSeconds(job)});
+    }
+  }
+  return jobs;
+}
+
+void McpServer::stopJob(quint64 id) {
+  killJob(id, /*keep_partial=*/true);
+}
+
+void McpServer::killJob(quint64 id, bool keep_partial) {
+  const auto it = jobs_.find(id);
+  if (it == jobs_.end() || ended(it->second) || it->second.killing) {
+    return;  // the first stop decides keep_partial; its outcome is on its way
+  }
+  it->second.killing = true;
+  const std::function<void()> close_dialog = it->second.close_dialog;
+  const std::function<void(bool)> kill = it->second.kill;
+  if (!close_dialog && !kill) {
+    // A continuation dies with its record; one running right now finds the job ended when it returns. App
+    // work that has not started asks stillAuthorized first.
+    finishJob(id, mcp::textResult("killed", true));
+    return;
+  }
+  // The terminal result arrives through the tool's reply: the dialog's rejection, a load's loadFinished.
+  if (close_dialog) {
+    // From the event loop, as the user's click comes: the rejection resumes whatever waits on the dialog,
+    // and is the work's whole stop (a load at its dialog is not also cancelled).
+    QTimer::singleShot(0, this, close_dialog);
+  } else {
+    kill(keep_partial);
+  }
+}
+
+dialog_presenter::DialogWatch McpServer::dialogWatch(quint64 id) {
+  return [self = QPointer<McpServer>(this), id](dialog_presenter::DialogCancelFn close) {
+    Job* job = self != nullptr ? self->liveJob(id) : nullptr;
+    if (job == nullptr) {
+      return;
+    }
+    job->close_dialog = std::move(close);
+    if (job->killing && job->close_dialog) {
+      QTimer::singleShot(0, self, job->close_dialog);  // stopped while its dialog was opening
+    }
+  };
+}
+
+void McpServer::answerCall(quint64 id, const json& result) {
+  Job* live = liveJob(id);
+  if (live == nullptr) {
+    return;
+  }
+  Job& job = *live;
+  job.retained = true;  // whoever asked knows the id from here on, or finds it in jobs_list
+  std::vector<Waiter> calls;
+  for (auto waiter = job.waiters.begin(); waiter != job.waiters.end();) {
+    if (waiter->kind == Waiter::Kind::kCall) {
+      calls.push_back(std::move(*waiter));
+      waiter = job.waiters.erase(waiter);
+    } else {
+      ++waiter;
+    }
+  }
+  updateTick();
+  for (Waiter& call : calls) {
+    if (call.connection != nullptr) {
+      call.reply(result);
+    }
+  }
+}
+
+McpServer::Job* McpServer::ownedJob(const Caller& caller, const json& id) {
+  pruneJobs();
+  if (!id.is_number_integer()) {
+    return nullptr;
+  }
+  const auto it = jobs_.find(id.get<quint64>());
+  // Another client's job reads as missing: its id says nothing about it.
+  return it != jobs_.end() && sameClient(it->second.caller, caller) ? &it->second : nullptr;
+}
+
+const char* McpServer::stateName(const Job& job) {
+  switch (job.state) {
+    case JobState::kRunning:
+      return job.close_dialog ? "waiting_for_user" : "running";  // its own dialog is up
+    case JobState::kWaitingForUser:
+      return "waiting_for_user";
+    case JobState::kCompleted:
+      return "completed";
+    case JobState::kFailed:
+      return "failed";
+    case JobState::kKilled:
+      return "killed";
+  }
+  return "";
+}
+
+double McpServer::elapsedSeconds(const Job& job) {
+  const Clock::time_point until = ended(job) ? job.ended_at : Clock::now();
+  return std::round(std::chrono::duration<double>(until - job.started).count() * 10.0) / 10.0;
+}
+
+json McpServer::jobStatus(const Job& job) {
+  json status = {
+      {"job_id", job.id},
+      {"tool", job.tool},
+      {"summary", job.summary},
+      {"state", stateName(job)},
+      {"elapsed_s", elapsedSeconds(job)}};
+  if (job.progress) {
+    status["progress"] = job.progress();
+  }
+  if (job.killing && !ended(job)) {
+    status["stopping"] = true;  // asked to stop, still winding down
+  }
+  return status;
+}
+
+json McpServer::killReply(const Job& job) {
+  json status = jobStatus(job);
+  const json content = job.result.value("content", json::array());
+  if (!content.empty() && content[0].contains("text")) {
+    status["result"] = content[0]["text"];
+  }
+  return mcp::jsonResult(status);
+}
+
+void McpServer::pruneJobs() {
+  const Clock::time_point now = Clock::now();
+  std::vector<std::pair<Clock::time_point, quint64>> ended_jobs;
+  for (const auto& [id, job] : jobs_) {
+    if (ended(job)) {
+      ended_jobs.emplace_back(job.ended_at, id);
+    }
+  }
+  // The latest to end first, so each client keeps its most recent results: kMaxEndedJobs of them, and
+  // apart from those the tasks, whose expiry was promised.
+  std::sort(ended_jobs.rbegin(), ended_jobs.rend());
+  std::map<std::tuple<QByteArray, QString, bool>, int> kept;
+  for (const auto& [ended_at, id] : ended_jobs) {
+    const Job& job = jobs_.at(id);
+    const bool task = !job.task_id.empty();
+    if (now - ended_at > kJobExpiry ||
+        ++kept[{job.caller.token, job.caller.owner, task}] > (task ? kMaxEndedTasks : kMaxEndedJobs)) {
+      jobs_.erase(id);
+    }
+  }
+}
+
+void McpServer::updateTick() {
+  const bool needed = std::any_of(jobs_.begin(), jobs_.end(), [](const auto& entry) {
+    return entry.second.resume || !entry.second.waiters.empty();
+  });
+  if (!needed) {
+    resume_tick_.stop();
+  } else if (!resume_tick_.isActive()) {
+    resume_tick_.start();
+  }
+}
+
+void McpServer::cancelRequest(const Caller& caller, const json& request_id) {
+  if (!request_id.is_string() && !request_id.is_number_integer()) {
+    return;
+  }
+  // A client may name itself on its calls and not on its notifications: an unnamed cancel is matched
+  // on the token alone.
+  const bool unnamed = caller.owner.toStdString() == mcp::ownerFor({});
+  std::vector<quint64> matching;
+  for (const auto& [id, job] : jobs_) {
+    const bool foreground = std::any_of(
+        job.waiters.begin(), job.waiters.end(), [](const Waiter& w) { return w.kind == Waiter::Kind::kCall; });
+    const bool theirs = unnamed ? job.caller.token == caller.token : sameClient(job.caller, caller);
+    if (foreground && !ended(job) && theirs && job.caller.request_id == request_id) {
+      matching.push_back(id);
+    }
+  }
+  // Two sessions of one client may reuse an id: stopping both would stop someone else's call.
+  if (matching.size() == 1) {
+    killJob(matching.front(), /*keep_partial=*/true);
+  }
+}
+
+json McpServer::taskOf(Job& job) {
+  if (job.task_id.empty()) {
+    job.task_id = randomToken().toStdString();
+  }
+  const auto ms = [](Clock::duration time) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(time).count();
+  };
+  // A running job's progress moves all the time: what it reports is as of now.
+  const QDateTime updated =
+      ended(job) ? job.created.addMSecs(ms(job.ended_at - job.started)) : QDateTime::currentDateTimeUtc();
+  json task = {
+      {"taskId", job.task_id},
+      // A tool error is a completed task whose result says isError: "failed" is for protocol errors only.
+      {"status", !ended(job)                      ? "working"
+                 : job.state == JobState::kKilled ? "cancelled"
+                                                  : "completed"},
+      {"createdAt", job.created.toString(Qt::ISODateWithMs).toStdString()},
+      {"lastUpdatedAt", updated.toString(Qt::ISODateWithMs).toStdString()},
+      // Kept while it runs, then until its result expires.
+      {"ttlMs", ended(job) ? json(ms(job.ended_at - job.started + kJobExpiry)) : json()},
+      {"pollIntervalMs", 1000}};
+  if (!ended(job)) {
+    if (job.close_dialog || job.state == JobState::kWaitingForUser) {
+      task["statusMessage"] = "waiting for the user to answer in PlotJuggler";
+    } else if (job.progress) {
+      task["statusMessage"] = mcp::dumpJson(job.progress());
+    }
+  }
+  return task;
+}
+
+json McpServer::taskRequest(const mcp::RpcMessage& request, const Caller& caller) {
+  if (!caller.tasks) {
+    return mcp::errorResponse(
+        request.id, mcp::kMissingClientCapability,
+        request.method + " needs the client capability " + mcp::kTasksExtension,
+        {{"requiredCapabilities", {{"extensions", {{mcp::kTasksExtension, json::object()}}}}}});
+  }
+  pruneJobs();
+  const json task_id = request.params.value("taskId", json());
+  const auto it = std::find_if(jobs_.begin(), jobs_.end(), [&](const auto& entry) {
+    const Job& job = entry.second;
+    return !job.task_id.empty() && task_id.is_string() && job.task_id == task_id.get<std::string>() &&
+           sameClient(job.caller, caller);
+  });
+  if (it == jobs_.end()) {
+    // Another client's task reads as missing, like an expired one.
+    return mcp::errorResponse(request.id, -32602, "Failed to retrieve task: Task not found");
+  }
+  json result = {{"resultType", "complete"}};
+  if (request.method == "tasks/cancel") {
+    killJob(it->first, /*keep_partial=*/true);  // cooperative: tasks/get says when it took effect
+  } else if (request.method == "tasks/get") {
+    result.update(taskOf(it->second));
+    if (ended(it->second) && it->second.state != JobState::kKilled) {
+      result["result"] = it->second.result;
+    }
+  }  // tasks/update: a job never asks its client for input, so nothing is outstanding to answer
+  return {{"jsonrpc", "2.0"}, {"id", request.id}, {"result", std::move(result)}};
 }
 
 void McpServer::resumeDeferred() {
@@ -588,42 +1070,153 @@ void McpServer::resumeDeferred() {
     return;  // a reply or continuation re-entered: the outer loop and the next tick get its items
   }
   const QScopedValueRollback<bool> draining(draining_, true);
+  serviceWaiters();
   const quint64 round = ++resume_round_;
   for (;;) {
-    // One at a time, the rest left in deferred_ for a revocation this one causes to drop.
-    const auto due =
-        std::find_if(deferred_.begin(), deferred_.end(), [round](const Deferred& item) { return item.round != round; });
-    if (due == deferred_.end()) {
+    // One continuation at a time, the other jobs left in jobs_ for a revocation this one causes to drop.
+    const auto due = std::find_if(jobs_.begin(), jobs_.end(), [round](const auto& entry) {
+      return entry.second.resume && entry.second.round != round;
+    });
+    if (due == jobs_.end()) {
       break;
     }
-    Deferred item = std::move(*due);
-    deferred_.erase(due);
-    if (item.caller.connection == nullptr || !authorized(item.caller)) {
-      continue;  // nobody would read the result
-    }
-    if (QApplication::activeModalWidget() != nullptr && !mcp::isReadOnlyTool(item.tool)) {
-      item.round = round;
-      deferred_.push_back(std::move(item));  // the user's dialog first; this waits, it does not fail
+    const quint64 id = due->first;
+    Job& job = due->second;
+    job.round = round;
+    if (!authorized(job.caller)) {
+      dropJob(id);  // nobody would read the result
       continue;
     }
-    std::optional<agent_tools::ToolContext> context = contextFor(item.caller);
+    if (QApplication::activeModalWidget() != nullptr && !mcp::isReadOnlyTool(job.tool)) {
+      job.state = JobState::kWaitingForUser;  // the user's dialog first; this waits, it does not fail
+      continue;
+    }
+    job.state = JobState::kRunning;
+    std::optional<agent_tools::ToolContext> context = contextFor(job.caller);
     if (!context) {
-      item.reply(mcp::textResult(mcp::kNoServicesError, true));
+      finishJob(id, mcp::textResult(mcp::kNoServicesError, true));
       continue;
     }
+    const auto running = jobs_.find(id);  // looked up again: building a context may reach back in here
+    if (running == jobs_.end() || !running->second.resume) {
+      continue;
+    }
+    auto resume = std::exchange(running->second.resume, nullptr);
     agent_tools::ToolResult next;
     try {
-      // The continuation dies right after it ran, while the services it may release into live.
-      next = std::exchange(item.resume, nullptr)(*context);
+      next = resume(*context);
     } catch (const std::exception& e) {
-      item.reply(mcp::textResult(std::string("tool failed: ") + e.what(), true));
+      next = agent_tools::ToolResult::failure(std::string("tool failed: ") + e.what());
+    }
+    resume = nullptr;  // dies right after it ran, while the services it may release into live
+    continueJob(id, std::move(next));
+  }
+  updateTick();
+}
+
+void McpServer::serviceWaiters() {
+  const Clock::time_point now = Clock::now();
+  std::vector<quint64> ids;
+  for (const auto& [id, job] : jobs_) {
+    if (!job.waiters.empty()) {
+      ids.push_back(id);
+    }
+  }
+  for (const quint64 id : ids) {
+    const auto it = jobs_.find(id);
+    // A revoked token's job only awaits its terminal: its client is not handed a job id it cannot use.
+    if (it == jobs_.end() || !authorized(it->second.caller)) {
       continue;
     }
-    runAgentTool(item.tool, item.caller, std::move(next), std::move(item.reply));
+    Job& job = it->second;
+    const bool dies_with_call = diesWithItsCall(job.tool);
+    std::vector<std::pair<Reply, json>> due;
+    bool abandoned = false;
+    for (auto waiter = job.waiters.begin(); waiter != job.waiters.end();) {
+      const bool call = waiter->kind == Waiter::Kind::kCall;
+      if (waiter->connection == nullptr) {
+        // Such a job dies with its call; any other carries on, kept for its client to find.
+        abandoned = abandoned || (call && dies_with_call);
+        job.retained = job.retained || (call && !dies_with_call);
+        waiter = job.waiters.erase(waiter);
+      } else if (now >= waiter->deadline) {
+        job.retained = job.retained || call;
+        json status = jobStatus(job);
+        if (call) {
+          status["note"] =
+              "still running in the background: job_wait with this job_id gets its result, job_kill stops it";
+        } else if (waiter->kind == Waiter::Kind::kKill) {
+          status["note"] = "the stop has not taken effect yet: job_wait with this job_id returns when it has";
+        }
+        json answer = mcp::jsonResult(status);
+        if (call && job.caller.tasks && !answersBeforeItEnds(job.tool)) {
+          // A client that speaks MCP Tasks gets the handle of this job as a task instead.
+          answer = taskOf(job);
+          answer["resultType"] = "task";
+        }
+        due.emplace_back(std::move(waiter->reply), std::move(answer));
+        waiter = job.waiters.erase(waiter);
+      } else {
+        ++waiter;
+      }
+    }
+    for (auto& [reply, status] : due) {
+      reply(status);
+    }
+    if (abandoned) {
+      killJob(id, /*keep_partial=*/true);  // which also answers another session still waiting on it
+    }
   }
-  if (deferred_.empty()) {
-    resume_tick_.stop();
+}
+
+void McpServer::jobsList(const json&, const Caller& caller, Reply reply) {
+  pruneJobs();
+  json jobs = json::array();
+  for (auto& [id, job] : jobs_) {
+    if (sameClient(job.caller, caller)) {
+      job.retained = true;  // its id is known now: its result must be there to ask for
+      jobs.push_back(jobStatus(job));
+    }
   }
+  reply(mcp::jsonResult(jobs));
+}
+
+void McpServer::jobWait(const json& args, const Caller& caller, Reply reply) {
+  Job* job = ownedJob(caller, args.value("job_id", json()));
+  if (job == nullptr) {
+    reply(mcp::textResult("no such job (jobs_list shows yours; an ended job's result expires after a while)", true));
+    return;
+  }
+  if (ended(*job)) {
+    reply(job->result);
+    return;
+  }
+  const double timeout = mcp::waitSeconds(args, "timeout_s", mcp::kMaxJobWaitS);
+  if (!(timeout > 0.0)) {
+    reply(mcp::jsonResult(jobStatus(*job)));
+    return;
+  }
+  addWaiter(*job, Waiter::Kind::kWait, caller, std::move(reply), timeout);
+  updateTick();
+}
+
+void McpServer::jobKill(const json& args, const Caller& caller, Reply reply) {
+  // Read before `reply` joins the job's waiters: a wrongly typed argument throws, and callTool then
+  // answers itself.
+  const bool keep_partial = args.value("keep_partial", true);
+  Job* job = ownedJob(caller, args.value("job_id", json()));
+  if (job == nullptr) {
+    reply(mcp::textResult("no such job (jobs_list shows yours)", true));
+    return;
+  }
+  if (ended(*job)) {
+    reply(killReply(*job));
+    return;
+  }
+  const quint64 id = job->id;
+  addWaiter(*job, Waiter::Kind::kKill, caller, std::move(reply), kKillWaitS);
+  updateTick();
+  killJob(id, keep_partial);
 }
 
 void McpServer::grabScreenshot(int max_width, std::function<void(const QByteArray&)> done) {

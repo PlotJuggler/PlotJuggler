@@ -18,6 +18,7 @@
 #include <optional>
 #include <unordered_map>
 
+#include "DialogWatch.h"
 #include "LoadInput.h"
 #ifdef PJ_TARGET_WASM
 #include "FileSelectionService.h"
@@ -120,6 +121,8 @@ struct LoadHints {
   // cancels the load (kCancelled, no legacy signals) before anything is applied. For a caller
   // whose right to load can lapse while it waits (an MCP agent's revoked token).
   std::function<bool()> still_allowed{};
+  // Told when this load's plugin dialog opens and when it is gone; closing it cancels the load.
+  dialog_presenter::DialogWatch on_dialog{};
 };
 
 // Ticket naming one ACCEPTED load request, minted at enqueue time by
@@ -359,6 +362,8 @@ class FileLoader : public QObject {
   void ingestStarted(const QString& title, int file_index, int file_total, bool determinate);
   // Progress of the current load (maximum 0 => busy). Marshalled to the GUI thread.
   void ingestProgress(int current, int maximum);
+  // The same progress, unnarrowed and naming the request it belongs to (total 0 => unknown).
+  void loadProgress(quint64 ticket, std::uint64_t current, std::uint64_t total);
   // The active load and the queue are both empty.
   void queueDrained();
   // A queued load took over as the current generation (emitted before its

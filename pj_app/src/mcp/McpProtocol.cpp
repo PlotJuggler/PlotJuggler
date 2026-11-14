@@ -7,7 +7,9 @@
 #include <QDir>
 #include <QFile>
 #include <QStandardPaths>
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <map>
 #include <set>
 
@@ -35,7 +37,9 @@ constexpr auto kAgentToolInstructions =
     "create_derived_series, create_derived_object and create_markers install live results the user sees and "
     "keeps in their layout. Draw only in your own tabs (plot_tab, scene_view); you cannot see or change the "
     "user's. playback moves the shared time cursor. If a tool says the user has a dialog open, wait and try "
-    "again.";
+    "again. A long call (a file import, an export, an object evaluation, a question to the user) that outlasts "
+    "its wait_s returns a job_id and carries on: job_wait for its result, job_kill to stop it, jobs_list for "
+    "yours; meanwhile other calls work.";
 #undef PJ_MCP_WHERE
 /// What a client with the app's own tools is told after kAgentToolInstructions.
 #ifdef PJ_TARGET_WASM
@@ -76,11 +80,53 @@ json textResult(const std::string& text, bool is_error) {
   return result;
 }
 
+std::string dumpJson(const json& value) {
+  return value.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+json jsonResult(const json& payload) {
+  return textResult(dumpJson(payload));
+}
+
 bool isReadOnlyTool(const std::string& name) {
-  static const std::set<std::string> read_only = {"get_status",  "about",          "list_instances",
-                                                  "list_topics", "describe_topic", "read_series",
-                                                  "evaluate",    "list_created",   "report_status"};
+  static const std::set<std::string> read_only = {"get_status",     "about",         "list_instances", "list_topics",
+                                                  "describe_topic", "read_series",   "evaluate",       "wait_for",
+                                                  "list_created",   "report_status", "jobs_list",      "job_wait"};
   return read_only.contains(name);
+}
+
+bool runsUnderUsersDialog(const std::string& name, const json& args) {
+  return isReadOnlyTool(name) || name == "job_kill" || (name == "screenshot" && !args.contains("tab"));
+}
+
+bool isJobCapableTool(const std::string& name) {
+  static const std::set<std::string> job_capable = {"evaluate",     "create_derived_object", "wait_for",
+                                                    "open_file",    "reload_file",           "unload_file",
+                                                    "start_stream", "export_series"};
+  return job_capable.contains(name);
+}
+
+bool isTasksMethod(const std::string& method) {
+  return method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel";
+}
+
+bool declaresTasks(const json& params) {
+  const auto meta = params.find("_meta");
+  if (meta == params.end() || !meta->is_object()) {
+    return false;
+  }
+  const auto capabilities = meta->find("io.modelcontextprotocol/clientCapabilities");
+  if (capabilities == meta->end() || !capabilities->is_object()) {
+    return false;
+  }
+  const auto extensions = capabilities->find("extensions");
+  return extensions != capabilities->end() && extensions->is_object() && extensions->contains(kTasksExtension);
+}
+
+double waitSeconds(const json& args, const char* key, double max) {
+  const auto it = args.find(key);
+  const double wait = it != args.end() && it->is_number() ? it->get<double>() : kDefaultWaitS;
+  return std::isfinite(wait) ? std::clamp(wait, 0.0, max) : kDefaultWaitS;
 }
 
 namespace {
@@ -119,11 +165,11 @@ json appToolEntries() {
 #endif
       tool(
           "open_file",
-          "Load a data file (MCAP, CSV, ULog, Parquet...). Returns when the import has finished (a client tool "
-          "timeout does not stop it: get_status shows the dataset once it lands). By default the loader's own "
-          "defaults apply (e.g. every topic). ask_user=true opens PlotJuggler's loader dialog so the user picks "
-          "topics/options; the call returns when they finish or cancel. config: loader settings JSON (get_status "
-          "shows the config each loaded dataset used, as a template).",
+          "Load a data file (MCAP, CSV, ULog, Parquet...). Returns when the import has finished, or after wait_s "
+          "with a job_id while a large file still loads: its topics are readable as they arrive, job_wait returns "
+          "the outcome and job_kill stops the import. By default the loader's own defaults apply (e.g. every "
+          "topic). ask_user=true opens PlotJuggler's loader dialog so the user picks topics/options. config: "
+          "loader settings JSON (get_status shows the config each loaded dataset used, as a template).",
           schema(
               {{"path", {{"type", "string"}, {"description", "absolute path"}}},
                {"ask_user", {{"type", "boolean"}}},
@@ -132,7 +178,8 @@ json appToolEntries() {
       tool(
           "unload_file",
           "Remove a loaded dataset and its data. If derived series depend on it, the user is asked to confirm in "
-          "PlotJuggler and the call returns their answer.",
+          "PlotJuggler and the call returns their answer (or a job_id after wait_s while they decide; job_kill "
+          "withdraws the question).",
           schema({{"dataset", dataset}}, {"dataset"})),
       tool(
           "reload_file", "Reload a dataset from its file with the same loader settings (e.g. after it changed).",
@@ -142,8 +189,9 @@ json appToolEntries() {
           "Start a live streaming source (get_status lists stream_sources" PJ_MCP_ABOUT_SOURCES "). By "
           "default it uses the settings the user last confirmed in that source's dialog; config passes your own "
           "(get_status shows a live stream's config, as a template); ask_user=true opens the source's dialog so "
-          "the user sets it up, and the call returns when they finish or cancel. Topics appear as the source "
-          "advertises them.",
+          "the user sets it up. Returns dataset_id once the stream runs, with the job_id of the job that lives "
+          "as long as the stream: job_kill (or stop_stream) stops it, job_wait returns when it ends. Topics "
+          "appear as the source advertises them.",
           schema(
               {{"source", {{"type", "string"}, {"description", "stream source name, from stream_sources"}}},
                {"ask_user", {{"type", "boolean"}}},
@@ -219,12 +267,70 @@ json appToolEntries() {
 
 #undef PJ_MCP_ABOUT_SOURCES
 
+namespace {
+
+/// `seconds` as the whole number a tool description quotes.
+std::string whole(double seconds) {
+  return std::to_string(static_cast<int>(seconds));
+}
+
+/// The job tools, which every token serves (McpServer's job table).
+json jobToolEntries() {
+  const json job_id = {{"type", "integer"}, {"description", "a job_id a long call returned"}};
+  return json::array({
+      toolEntry(
+          "jobs_list",
+          "Your calls still running in the background, and those that ended in the last minutes: job_id, tool, "
+          "summary, state (running, waiting_for_user, completed, failed, killed), elapsed_s, progress.",
+          schema(json::object()), true),
+      toolEntry(
+          "job_wait",
+          "Wait for a background job: returns its result once it ends (again on every call, until it expires "
+          "minutes later), or its job_id, state and progress if it is still running after timeout_s (default " +
+              whole(kDefaultWaitS) + ", at most " + whole(kMaxJobWaitS) + "; 0 only looks).",
+          schema({{"job_id", job_id}, {"timeout_s", {{"type", "number"}}}}, {"job_id"}), true),
+      toolEntry(
+          "job_kill",
+          "Stop a background job: an evaluation stops computing, a file import stops (keep_partial, default true, "
+          "keeps the rows loaded so far; false removes them; a stopped reload always restores the data it was "
+          "replacing), a stream stops (its data stays), an export writes "
+          "nothing, and a dialog the job opened for the user closes. Returns its final state: killed, or "
+          "completed/failed if it ended first; when the stop takes longer to act, its state with stopping=true "
+          "(job_wait then returns when it has ended).",
+          schema({{"job_id", job_id}, {"keep_partial", {{"type", "boolean"}}}}, {"job_id"}), false),
+  });
+}
+
+/// Adds the wait_s argument to the schema of `entry`, a job-capable tool.
+void addWaitS(json& entry) {
+  json& input = entry["inputSchema"];
+  if (!input.is_object()) {
+    input = schema(json::object());
+  }
+  input["properties"]["wait_s"] = {
+      {"type", "number"},
+      {"description",
+       "seconds to wait for the result (default " + whole(kDefaultWaitS) + ", at most " + whole(kMaxWaitS) +
+           "). A call still running then returns {job_id, state, progress} and carries on in the background: "
+           "job_wait gets its result, job_kill stops it. 0 returns the job_id at once."}};
+}
+
+}  // namespace
+
 json toolList(ToolSet set) {
   json tools = set == ToolSet::kFull ? appToolEntries() : json::array();
   for (const json& entry : agentTools().toMcpToolsList()) {
     const std::string name = entry.value("name", "");
     tools.push_back(
         toolEntry(name, entry.value("description", ""), entry.value("inputSchema", json()), isReadOnlyTool(name)));
+  }
+  for (json& entry : tools) {
+    if (isJobCapableTool(entry.value("name", ""))) {
+      addWaitS(entry);
+    }
+  }
+  for (json& entry : jobToolEntries()) {
+    tools.push_back(std::move(entry));
   }
   return tools;
 }
@@ -253,7 +359,11 @@ std::optional<json> lifecycleResult(const std::string& method, const json& param
     return describe({{"protocolVersion", echo ? asked->get<std::string>() : std::string("2025-06-18")}});
   }
   if (method == "server/discover") {
-    return describe({{"supportedVersions", {"2026-07-28", "2025-11-25", "2025-06-18"}}});
+    json result = describe({{"supportedVersions", {"2026-07-28", "2025-11-25", "2025-06-18"}}});
+    // Offered where a client can take it up: it declares extensions per request, which only the
+    // stateless protocol has (nothing here remembers an initialize).
+    result["capabilities"]["extensions"] = {{kTasksExtension, json::object()}};
+    return result;
   }
   if (method == "ping") {
     return json::object();
@@ -353,8 +463,12 @@ RpcMessage parseRpcMessage(const std::string& text) {
   return out;
 }
 
-json errorResponse(const json& id, int code, const std::string& message) {
-  return {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
+json errorResponse(const json& id, int code, const std::string& message, const json& data) {
+  json response = {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
+  if (!data.is_null()) {
+    response["error"]["data"] = data;
+  }
+  return response;
 }
 
 int parseHttpRequest(const QByteArray& buffer, HttpRequest& out) {

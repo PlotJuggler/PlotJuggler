@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "DialogWatch.h"
 #include "FileLoader.h"  // DialogPolicy, LoadRequestId
 #include "LayoutXml.h"
 #include "LoadInput.h"
@@ -88,6 +89,7 @@ class DiagnosticHistory;
 class DiagnosticsDialog;
 class DockWidget;
 class FileLoader;
+class McpJobsDialog;
 class McpServer;
 class IngestProgressController;
 class IDataWidget;
@@ -395,10 +397,12 @@ class MainWindow : public QMainWindow {
   // anything is removed: false abandons the whole delete (it reports why itself).
   // `cancelled`, when given, runs instead of `proceed` when the delete is abandoned
   // (the user cancelled, `still_allowed` refused, or removing the processors failed),
-  // so an asynchronous caller always hears exactly one outcome.
+  // so an asynchronous caller always hears exactly one outcome. `on_dialog`, when given,
+  // is told when the prompt opens and when it is gone.
   void confirmAndRemoveDependentTransforms(
       const std::vector<TopicId>& removed_topics, std::function<void()> proceed,
-      std::function<bool()> still_allowed = {}, std::function<void()> cancelled = {});
+      std::function<bool()> still_allowed = {}, std::function<void()> cancelled = {},
+      dialog_presenter::DialogWatch on_dialog = {});
 
   // Erases `dataset_ids` with no prompt (the caller has confirmed, and has already
   // removed the derived series depending on them), then re-seeds playback (unless a
@@ -1653,8 +1657,18 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<McpServer> mcp_server_;
   // A failed listen was reported and no start has succeeded since.
   bool mcp_listen_failure_reported_ = false;
-  // Status-bar indicator naming the active MCP client; created on first use.
-  QLabel* mcp_client_label_ = nullptr;
+  // Status-bar indicator of AI agent activity: names the active MCP client and counts the jobs
+  // agents have running, and opens mcp_jobs_dialog_. Created on first use; shown while a client is
+  // active or a job runs.
+  QToolButton* mcp_agent_button_ = nullptr;
+  QString mcp_active_client_;
+  // The user's view of running agent jobs (Stop per job); created on first use, a child of this.
+  McpJobsDialog* mcp_jobs_dialog_ = nullptr;
+  // Refreshes mcp_jobs_dialog_ once a second while it is open; a child of it.
+  QTimer* mcp_jobs_refresh_ = nullptr;
+  // Brings mcp_agent_button_ and an open mcp_jobs_dialog_ in line with the server's state.
+  void refreshMcpIndicator();
+  void showMcpJobs();
   // The relay link connectMcpRelay made (a child of mcp_server_, so it goes with it; its destructor
   // touches nothing of the server); null for none. While set the browser skips its welcome dialog.
   QPointer<QObject> mcp_relay_link_;

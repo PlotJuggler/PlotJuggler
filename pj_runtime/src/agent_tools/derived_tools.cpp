@@ -1142,8 +1142,8 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
     series = lookup.resolved->host_path;
   }
   const std::string comparison = args.value("comparison", std::string(">"));
-  if (comparison != ">" && comparison != "<" && comparison != ">=" && comparison != "<=") {
-    return ToolResult::failure("'comparison' must be one of >, <, >=, <=");
+  if (!isComparison(comparison)) {
+    return ToolResult::failure(kComparisonError);
   }
   if (!args.contains("threshold") || !args["threshold"].is_number()) {
     return ToolResult::failure("create_markers requires a numeric 'threshold'");

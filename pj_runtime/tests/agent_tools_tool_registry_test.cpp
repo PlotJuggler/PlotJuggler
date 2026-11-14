@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -70,8 +72,8 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, F
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 14u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 14u);
+  EXPECT_EQ(reg.tools().size(), 15u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 15u);
   EXPECT_NE(reg.find("evaluate"), nullptr);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
   EXPECT_NE(reg.find("create_derived_object"), nullptr);
@@ -328,6 +330,131 @@ TEST(ToolRegistry, ReadSeriesStats) {
   // The spacing facts ride along in the same report, self-described by key.
   EXPECT_TRUE(j["stats"].contains("max_gap_s"));
   EXPECT_TRUE(j["stats"].contains("max_gap_at_s"));
+}
+
+// One look of a wait_for continuation: it looks at the series a few times a second, however
+// often it is resumed, so a resume counts only once that interval has passed.
+PJ::agent_tools::ToolResult lookAgain(PJ::agent_tools::ToolResult waiting, ToolContext& ctx) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(220));
+  return waiting.resume(ctx);
+}
+
+// wait_for ends with the first sample that arrives AFTER the call and satisfies the
+// comparison: what was loaded at the call does not count, however well it matches.
+TEST(ToolRegistry, WaitForEndsWithTheFirstNewSampleThatSatisfiesTheComparison) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);  // /imu/x already holds 0..4
+  auto ctx = makeCtx(store, nullptr);
+  auto r =
+      reg.execute("wait_for", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}, {"timeout_s", 60}}, ctx);
+  ASSERT_TRUE(r.resume) << "3 and 4 were there before the call: " << r.content;
+  // Nothing new yet, then new samples that do not qualify.
+  r = r.resume(ctx);
+  ASSERT_TRUE(r.resume) << r.content;
+  store.extendField("x", {5 * kSec, 6 * kSec}, {1.0, std::nan("")});
+  r = lookAgain(std::move(r), ctx);
+  ASSERT_TRUE(r.resume) << r.content;
+  store.extendField("x", {7 * kSec, 8 * kSec}, {9.0, 10.0});
+  // Resumed at once: it does not look again yet.
+  r = r.resume(ctx);
+  ASSERT_TRUE(r.resume) << "it read the series on every resume";
+  r = lookAgain(std::move(r), ctx);
+  ASSERT_FALSE(r.resume);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json found = json::parse(r.content);
+  EXPECT_EQ(found["series"], "/imu/x");
+  EXPECT_DOUBLE_EQ(found["value"].get<double>(), 9.0) << "the first qualifying sample, not the latest";
+}
+
+// With the host's scan (as PlotJuggler wires it) a null arrives as NaN and never matches, a block
+// may hold one value for all its samples, and only samples past the cursor are asked for.
+TEST(ToolRegistry, WaitForThroughTheHostsScanSkipsNullsAndAsksOnlyForWhatIsNew) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);  // /imu/x holds 0..4 at 0..4 s: the catalog and the latest stamp at the call
+  auto ctx = makeCtx(store, nullptr);
+  std::vector<std::int64_t> stamps;  // what arrived since
+  std::vector<double> values;
+  std::vector<std::int64_t> asked_from;
+  ctx.scan_values = [&](PJ::sdk::FieldHandle, std::int64_t first, const PJ::agent_tools::ValueBlockSink& on_block) {
+    asked_from.push_back(first);
+    for (std::size_t i = 0; i < stamps.size(); ++i) {
+      if (stamps[i] >= first) {
+        on_block(std::span(&stamps[i], 1), std::span(&values[i], 1));
+      }
+    }
+    return PJ::okStatus();
+  };
+  auto r =
+      reg.execute("wait_for", {{"series", "/imu/x"}, {"comparison", "<"}, {"threshold", 1}, {"timeout_s", 60}}, ctx);
+  ASSERT_TRUE(r.resume) << "0 was there before the call: " << r.content;
+  // A null (NaN here; 0 through the Arrow read) must not read as a value below 1.
+  stamps = {5 * kSec};
+  values = {std::nan("")};
+  r = r.resume(ctx);
+  ASSERT_TRUE(r.resume) << "a null ended the wait: " << r.content;
+  EXPECT_EQ(asked_from, std::vector<std::int64_t>{4 * kSec + 1}) << "it asked for samples it had seen";
+  // A constant block: three samples, one value.
+  stamps = {5 * kSec, 6 * kSec, 7 * kSec, 8 * kSec};
+  values = {std::nan(""), 0.5, 0.5, 0.5};
+  ctx.scan_values = [&](PJ::sdk::FieldHandle, std::int64_t first, const PJ::agent_tools::ValueBlockSink& on_block) {
+    asked_from.push_back(first);
+    on_block(std::span(&stamps[1], 3), std::span(&values[1], 1));
+    return PJ::okStatus();
+  };
+  r = lookAgain(std::move(r), ctx);
+  ASSERT_FALSE(r.resume);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_DOUBLE_EQ(json::parse(r.content)["value"].get<double>(), 0.5);
+  EXPECT_EQ(asked_from.back(), 5 * kSec + 1);
+}
+
+TEST(ToolRegistry, WaitForFailsAtItsTimeoutNamingTheLatestValue) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r =
+      reg.execute("wait_for", {{"series", "/imu/x"}, {"comparison", "<="}, {"threshold", -1.0}, {"timeout_s", 0}}, ctx);
+  ASSERT_TRUE(r.resume) << r.content;
+  store.extendField("x", {5 * kSec}, {7.0});
+  r = r.resume(ctx);
+  ASSERT_FALSE(r.resume);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("the latest was 7"), std::string::npos) << r.content;
+}
+
+// The look that notices the timeout still counts what it finds: the agent gets the event it
+// waited for rather than a timeout a moment after it happened.
+TEST(ToolRegistry, WaitForCountsAMatchFoundByTheLookThatNoticesTheTimeout) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r =
+      reg.execute("wait_for", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 6}, {"timeout_s", 0}}, ctx);
+  ASSERT_TRUE(r.resume) << r.content;
+  store.extendField("x", {5 * kSec}, {7.0});
+  r = r.resume(ctx);
+  ASSERT_FALSE(r.resume);
+  EXPECT_TRUE(r.ok) << r.content;
+}
+
+TEST(ToolRegistry, WaitForRefusesBadArgumentsBeforeItWaits) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  for (const json& args :
+       {json{{"series", "/imu/nope"}, {"comparison", ">"}, {"threshold", 1}},
+        json{{"series", "/imu/x"}, {"comparison", "=="}, {"threshold", 1}},
+        json{{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", "high"}},
+        json{{"comparison", ">"}, {"threshold", 1}}}) {
+    const auto r = reg.execute("wait_for", args, ctx);
+    EXPECT_FALSE(r.resume) << args.dump();
+    EXPECT_FALSE(r.ok) << args.dump();
+  }
 }
 
 // A NaN sample must not silently poison min/max/mean/stddev: the tool reports
@@ -3259,7 +3386,8 @@ void addWindowHooks(ToolContext& ctx, int& calls) {
     return window_host.readSeries(window_host.catalogSnapshot()->fields()[0].handle);
   };
   ctx.scan_values = [host = ctx.host, &calls](
-                        PJ::sdk::FieldHandle field, const PJ::agent_tools::ValueBlockSink& on_block) -> PJ::Status {
+                        PJ::sdk::FieldHandle field, std::int64_t /*first: the whole series here*/,
+                        const PJ::agent_tools::ValueBlockSink& on_block) -> PJ::Status {
     ++calls;
     auto whole = host.readSeries(field);
     if (!whole) {

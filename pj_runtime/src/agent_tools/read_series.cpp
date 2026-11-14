@@ -8,6 +8,7 @@
 // This file: read_series.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -15,6 +16,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -140,16 +142,23 @@ constexpr std::size_t kMaxRawBatchPaths = 4;
 // back to the topic-scoped one when the host does not offer the former.
 // Empty when neither is bound or neither succeeds — never guessed.
 std::optional<double> toDisplaySeconds(
-    ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r, std::int64_t absolute_ns) {
-  if (auto handle = dataSourceHandleFor(catalog, r.dataset)) {
-    if (auto display_s = ctx.playback.toDisplayTimeForSource(*handle, absolute_ns)) {
+    ToolContext& ctx, const std::optional<PJ::sdk::DataSourceHandle>& source, const std::string& topic,
+    std::int64_t absolute_ns) {
+  if (source) {
+    if (auto display_s = ctx.playback.toDisplayTimeForSource(*source, absolute_ns)) {
       return *display_s;
     }
   }
-  if (auto display_s = ctx.playback.toDisplayTime(r.topic, absolute_ns)) {
+  if (auto display_s = ctx.playback.toDisplayTime(topic, absolute_ns)) {
     return *display_s;
   }
   return std::nullopt;
+}
+
+// The same for a series just resolved against `catalog`.
+std::optional<double> toDisplaySeconds(
+    ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r, std::int64_t absolute_ns) {
+  return toDisplaySeconds(ctx, dataSourceHandleFor(catalog, r.dataset), r.topic, absolute_ns);
 }
 
 // The display window [t_start_s, t_end_s] (playback's axis, plot_tab zoom's, stats' own t_start_display_s) as raw-ns
@@ -999,7 +1008,7 @@ SeriesRead readOneWindowed(
   }
   FlatRunAccumulator runs;
   const auto scanned = ctx.scan_values(
-      *handle,
+      *handle, std::numeric_limits<std::int64_t>::min(),
       [&runs](std::span<const std::int64_t> ts, std::span<const double> values) { runs.addBlock(ts, values); });
   if (!scanned) {
     r.error = "read failed for '" + want + "': " + scanned.error();
@@ -1226,6 +1235,180 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     return ToolResult::success(out.dump());
   }
   return ToolResult::failure("unknown mode '" + mode + "' (use 'stats', 'buckets' or 'raw')");
+}
+
+namespace {
+
+// wait_for between two resumes: the series it watches and how far it has looked.
+// Resolved once, at the call: a fresh catalog snapshot on every resume would copy
+// the whole catalog many times a second. The handle stays valid while its dataset
+// is loaded; once it is not, the read fails and so does the wait.
+//
+// "New" is by timestamp: a sample counts when it is later than the latest one seen,
+// so one that arrives late with an older or equal stamp is not looked at, and one a
+// stream's retention drops between two looks is missed.
+struct SeriesWatch : std::enable_shared_from_this<SeriesWatch> {
+  // The caller resumes far more often (its tick) than a threshold needs watching.
+  static constexpr std::chrono::milliseconds kLookEvery{200};
+  static constexpr std::int64_t kLast = std::numeric_limits<std::int64_t>::max();
+
+  PJ::sdk::FieldHandle field;
+  std::optional<PJ::sdk::DataSourceHandle> source;
+  std::string path;
+  std::string topic;
+  std::string comparison;
+  double threshold = 0.0;
+  double timeout_s = 0.0;
+  std::chrono::steady_clock::time_point started;
+  std::chrono::steady_clock::time_point next_look;
+  // The stamp of the newest sample already looked at: only later ones can end the wait.
+  std::optional<std::int64_t> seen_ns;
+  std::optional<double> last_value;
+
+  [[nodiscard]] bool holds(double value) const {
+    if (comparison == ">") {
+      return value > threshold;
+    }
+    if (comparison == "<") {
+      return value < threshold;
+    }
+    return comparison == ">=" ? value >= threshold : value <= threshold;
+  }
+
+  // The samples after seen_ns, oldest first, a null as NaN where the host can tell (scan_values).
+  PJ::Status readNew(ToolContext& ctx, std::vector<std::int64_t>& ts, std::vector<double>& vals) const {
+    constexpr std::int64_t kFirst = std::numeric_limits<std::int64_t>::min();
+    if (seen_ns == kLast) {
+      return PJ::okStatus();  // nothing can be later
+    }
+    const std::int64_t first = seen_ns ? *seen_ns + 1 : kFirst;
+    if (ctx.scan_values) {
+      return ctx.scan_values(field, first, [&](std::span<const std::int64_t> stamps, std::span<const double> values) {
+        ts.insert(ts.end(), stamps.begin(), stamps.end());
+        if (values.size() == stamps.size()) {
+          vals.insert(vals.end(), values.begin(), values.end());
+        } else if (!values.empty()) {
+          vals.insert(vals.end(), stamps.size(), values.front());  // one value every sample of the block holds
+        }
+      });
+    }
+    auto view = ctx.read_window && seen_ns ? ctx.read_window(field, first, kLast) : ctx.host.readSeries(field);
+    if (!view) {
+      return PJ::unexpected(view.error());
+    }
+    if (view->rowCount() > 0 && !readSeriesDoubles(*view, ts, vals)) {
+      return PJ::unexpected(std::string("it is not a numeric time series"));
+    }
+    // A windowed read also returns the sample before the window, and a whole read everything.
+    const auto fresh = seen_ns ? std::upper_bound(ts.begin(), ts.end(), *seen_ns) - ts.begin() : 0;
+    ts.erase(ts.begin(), ts.begin() + fresh);
+    vals.erase(vals.begin(), vals.begin() + fresh);
+    return PJ::okStatus();
+  }
+
+  ToolResult poll(ToolContext& ctx) {
+    const auto again = [this] {
+      return ToolResult::deferred([self = shared_from_this()](ToolContext& current) { return self->poll(current); });
+    };
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_look) {
+      return again();
+    }
+    next_look = now + kLookEvery;
+    std::vector<std::int64_t> ts;
+    std::vector<double> vals;
+    if (auto read = readNew(ctx, ts, vals); !read) {
+      return ToolResult::failure("series '" + path + "' can no longer be read: " + read.error());
+    }
+    const double waited_s = std::chrono::duration<double>(now - started).count();
+    for (std::size_t i = 0; i < ts.size() && i < vals.size(); ++i) {
+      if (!holds(vals[i])) {  // false for a NaN, so for a null, whatever the comparison
+        continue;
+      }
+      json out = {{"series", path}, {"value", vals[i]}, {"waited_s", std::round(waited_s * 10.0) / 10.0}};
+      if (const auto display_s = toDisplaySeconds(ctx, source, topic, ts[i])) {
+        out["time_s"] = *display_s;  // the display axis, as playback and read_series windows take it
+      }
+      return ToolResult::success(out.dump());
+    }
+    if (!ts.empty()) {
+      seen_ns = ts.back();
+    }
+    if (!vals.empty()) {
+      last_value = vals.back();
+    }
+    // After the look, not before it: a sample found by the look that notices the timeout still counts.
+    if (waited_s >= timeout_s) {
+      std::ostringstream why;
+      why << "no new sample of '" << path << "' was " << comparison << " " << threshold << " within " << timeout_s
+          << " s";
+      if (last_value) {
+        why << " (the latest was " << *last_value << ")";
+      } else {
+        why << " (no new sample arrived)";
+      }
+      return ToolResult::failure(why.str());
+    }
+    return again();
+  }
+};
+
+}  // namespace
+
+ToolResult waitForTool(const json& args, ToolContext& ctx) {
+  const std::vector<std::string> paths = requestedPaths(args, {"series"});
+  if (paths.size() != 1) {
+    return ToolResult::failure("'series' must be one topic/field path");
+  }
+  auto watch = std::make_shared<SeriesWatch>();
+  watch->comparison = args.value("comparison", std::string());
+  if (!isComparison(watch->comparison)) {
+    return ToolResult::failure(kComparisonError);
+  }
+  const auto threshold = args.find("threshold");
+  if (threshold == args.end() || !threshold->is_number()) {
+    return ToolResult::failure("'threshold' must be a number");
+  }
+  watch->threshold = threshold->get<double>();
+  constexpr double kDefaultTimeoutS = 60.0;
+  constexpr double kMaxTimeoutS = 3600.0;
+  const auto timeout = args.find("timeout_s");
+  const double asked = timeout != args.end() && timeout->is_number() ? timeout->get<double>() : kDefaultTimeoutS;
+  watch->timeout_s = std::isfinite(asked) ? std::clamp(asked, 0.0, kMaxTimeoutS) : kDefaultTimeoutS;
+
+  auto catalog = ctx.host.catalogSnapshot();
+  if (!catalog) {
+    return ToolResult::failure("catalog unavailable: " + catalog.error());
+  }
+  SeriesRead resolved;
+  const auto field = resolveInto(resolved, *catalog, paths.front(), datasetByTopicIndex(*catalog));
+  if (!field) {
+    return ToolResult::failure(resolved.error);
+  }
+  // A field with no numbers would be watched for nothing until the timeout.
+  for (const PJ_field_info_t& info : catalog->fields()) {
+    if (info.handle.topic.id == field->topic.id && info.handle.id == field->id &&
+        !isSignalField(PJ::sdk::fromAbiType(info.type), PJ::sdk::toStringView(info.name))) {
+      return ToolResult::failure("series '" + resolved.path + "' is not a numeric time series");
+    }
+  }
+  watch->field = *field;
+  watch->source = dataSourceHandleFor(*catalog, resolved.dataset);
+  watch->path = resolved.path;
+  watch->topic = resolved.topic;
+  watch->started = std::chrono::steady_clock::now();
+  watch->next_look = watch->started;
+  // What is there now does not count: the wait is for a sample that arrives after the call. A window
+  // at the end of time holds nothing but "the sample before it", the latest, without decoding the rest.
+  constexpr std::int64_t kLast = SeriesWatch::kLast;
+  auto latest = ctx.read_window ? ctx.read_window(watch->field, kLast, kLast) : ctx.host.readSeries(watch->field);
+  if (!latest) {
+    return ToolResult::failure("read failed for '" + watch->path + "': " + latest.error());
+  }
+  if (const auto stamps = latest->timestamps(); !stamps.empty()) {
+    watch->seen_ns = stamps.back();
+  }
+  return ToolResult::deferred([watch](ToolContext& current) { return watch->poll(current); });
 }
 
 }  // namespace PJ::agent_tools::detail

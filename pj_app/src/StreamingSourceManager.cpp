@@ -140,12 +140,7 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
   }
 
   StreamingSession* sess = it->second.get();
-  if (sess->runtime_host != nullptr) {
-    // Flag-only: a requested stop is orderly, not a failure, so it records no
-    // reason — `reason` belongs to the log.
-    qCInfo(lcStream) << "stopping stream" << dataset_id << ":" << reason;
-    sess->runtime_host->requestStop();
-  }
+  requestStopDataset(dataset_id, reason);
   if (sess->worker != nullptr) {
     sess->worker->wait();
   }
@@ -172,6 +167,18 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
   topic_demand_tracker_.clearDataset(dataset_id);
   catalog_.clearAdvertisedTopics(dataset_id);
   emit streamStopped(dataset_id, stopped_reason);
+  return true;
+}
+
+bool StreamingSourceManager::requestStopDataset(DatasetId dataset_id, const QString& reason) {
+  const auto it = sessions_.find(dataset_id);
+  if (it == sessions_.end() || it->second->runtime_host == nullptr) {
+    return false;
+  }
+  // Flag-only: a requested stop is orderly, not a failure, so it records no reason (`reason` belongs
+  // to the log). Whoever does not join the worker hears of the end through onWorkerFinished.
+  qCInfo(lcStream) << "stopping stream" << dataset_id << ":" << reason;
+  it->second->runtime_host->requestStop();
   return true;
 }
 
@@ -477,7 +484,8 @@ void StreamingSourceManager::discardDataset(DatasetId dataset_id) {
 }
 
 void StreamingSourceManager::startSession(
-    const QString& plugin_id, const QString& dialog_title_prefix, const std::function<bool()>& still_allowed) {
+    const QString& plugin_id, const QString& dialog_title_prefix, const std::function<bool()>& still_allowed,
+    const dialog_presenter::DialogWatch& on_dialog) {
   const LoadedDataSource* source_ptr = findDataSourceByIdentity(extensions_.streamSources(), {}, plugin_id);
   if (source_ptr == nullptr) {
     qCWarning(lcStream) << "Stream plugin not found:" << plugin_id;
@@ -493,7 +501,7 @@ void StreamingSourceManager::startSession(
   }
   const DatasetId dataset_id = session->dataset_id;
 
-  if (!configureAndLaunch(source, session, dialog_title_prefix, still_allowed, error)) {
+  if (!configureAndLaunch(source, session, dialog_title_prefix, still_allowed, on_dialog, error)) {
     // createSession made the dataset before the dialog opened, so any exit that
     // does not launch must take it back, or an empty dataset lingers and counts in
     // the catalog's duplicate-label ordinals. The session goes first (as in
@@ -508,7 +516,8 @@ void StreamingSourceManager::startSession(
 
 bool StreamingSourceManager::configureAndLaunch(
     const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session,
-    const QString& dialog_title_prefix, const std::function<bool()>& still_allowed, QString& error) {
+    const QString& dialog_title_prefix, const std::function<bool()>& still_allowed,
+    const dialog_presenter::DialogWatch& on_dialog, QString& error) {
   error.clear();
   const QString source_name = QString::fromStdString(source.name);
   QSettings persisted_settings;
@@ -542,6 +551,7 @@ bool StreamingSourceManager::configureAndLaunch(
       .section_band_metrics =
           chrome_metrics_provider_ ? std::optional<ChromeMetrics>(chrome_metrics_provider_()) : std::nullopt,
       .title_prefix = dialog_title_prefix,
+      .on_dialog = on_dialog,
   });
   if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
     error = tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")

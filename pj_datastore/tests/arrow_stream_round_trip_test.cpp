@@ -736,6 +736,21 @@ TEST(ScanSeriesValuesTest, AConstantChunkIsOneValue) {
   }
 }
 
+// From a timestamp on: only what is stamped at or after it, whichever chunk it falls in.
+TEST(ScanSeriesValuesTest, FromATimestampOnlyLaterSamplesAreHanded) {
+  DataEngine engine;
+  const auto field = writeBatches(engine, {{0, 9}, {10, 19}}, [](int t) { return NumericValue(double(t)); });
+  std::vector<Timestamp> seen;
+  const auto collect = [&seen](Span<const Timestamp> ts, Span<const double>) {
+    seen.insert(seen.end(), ts.begin(), ts.end());
+  };
+  ASSERT_TRUE(scanSeriesValues(engine, field, collect, 7).has_value());
+  EXPECT_EQ(seen, stamps(7, 19));
+  seen.clear();
+  ASSERT_TRUE(scanSeriesValues(engine, field, collect, 20).has_value());
+  EXPECT_TRUE(seen.empty()) << "nothing is stamped that late";
+}
+
 TEST(ScanSeriesValuesTest, NullsAreNaN) {
   DataEngine engine;
   const auto scanned = scan(engine, writeNullableMetric(engine));

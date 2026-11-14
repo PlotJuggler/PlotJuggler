@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QDateTime>
 #include <QHash>
 #include <QObject>
 #include <QPointer>
@@ -9,7 +10,9 @@
 #include <QTcpServer>
 #endif
 #include <QTimer>
+#include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -20,6 +23,7 @@
 #ifdef PJ_TARGET_WASM
 #include "BrowserFileStore.h"
 #endif
+#include "DialogWatch.h"
 #include "mcp/McpProtocol.h"
 #include "pj_base/plugin_data_api.h"
 #include "pj_runtime/agent_tools/tool_context.hpp"
@@ -98,7 +102,23 @@ class McpServer : public QObject {
   void handleRelayed(
       const QByteArray& body, const QString& client, QObject* connection, std::function<void(QByteArray)> send);
 
+  /// One unfinished job, for the user's view of agent activity (every client's, unlike jobs_list).
+  struct JobInfo {
+    quint64 id = 0;
+    /// Who runs it: the public client's owner, or the plugin's id.
+    QString client;
+    QString summary;
+    QString state;
+    double elapsed_s = 0.0;
+  };
+  /// Every client's jobs that have not ended, oldest first.
+  [[nodiscard]] std::vector<JobInfo> unfinishedJobs() const;
+  /// The user's Stop: as that job's own client's job_kill, keeping what an import already loaded.
+  void stopJob(quint64 id);
+
  signals:
+  /// A job started or ended (unfinishedJobs changed).
+  void jobsChanged();
   /// The public client that made the latest request (its printable name), or "" once none has
   /// made one for a while or public access closed. Drives the status-bar indicator.
   void activeClientChanged(const QString& client);
@@ -113,20 +133,74 @@ class McpServer : public QObject {
     /// reaches what reads it (the app tools and agentContext).
     QString owner;
     /// The client's connection (its socket, or the relay link that brought the request); gone
-    /// once it disconnected, and its deferred result with it.
+    /// once it disconnected. Whether a call's work then stops is per tool (see serviceWaiters).
     QPointer<QObject> connection;
+    /// The call's JSON-RPC id: what a `notifications/cancelled` from the same owner names (the bridge
+    /// sends ids unique across its sessions).
+    nlohmann::json request_id;
+    /// The job this call runs as (an app tool registers its kill hook there); 0 for none.
+    quint64 job = 0;
+    /// The request declared the MCP Tasks extension (mcp::declaresTasks): its call may be answered
+    /// with a task handle.
+    bool tasks = false;
   };
   /// An app tool: answers through `reply`, now or later, exactly once. Work it leaves for later
   /// (a timer, a queued load, the user's answer to a dialog) asks stillAuthorized(caller) first.
   using AppTool = void (McpServer::*)(const nlohmann::json& args, const Caller& caller, Reply reply);
-  /// An agent tool's result still in progress (an object evaluation), resumed on resume_tick_.
-  struct Deferred {
-    std::string tool;
-    Caller caller;
-    std::function<agent_tools::ToolResult(agent_tools::ToolContext&)> resume;
+
+  using Clock = std::chrono::steady_clock;
+  enum class JobState { kRunning, kWaitingForUser, kCompleted, kFailed, kKilled };
+  /// Someone waiting on a job: the call that started it (until `deadline`, when it gets the job id
+  /// and the job goes on in the background), a job_wait, or a job_kill.
+  struct Waiter {
+    enum class Kind { kCall, kWait, kKill } kind = Kind::kCall;
     Reply reply;
-    /// The resumeDeferred round that queued it, which does not resume it again.
+    /// The waiting request's connection: once gone, nobody reads the reply.
+    QPointer<QObject> connection;
+    Clock::time_point deadline;
+  };
+  /// A job-capable call (mcp::isJobCapableTool): an agent tool's continuation (an object
+  /// evaluation) resumed on resume_tick_, or an app tool's work (a file load) that reports through
+  /// finishJob and stops through `kill`. While its call still waits on it (a kCall waiter), it is
+  /// in the foreground. Once its id is known (`retained`) its result is kept for job_wait until it
+  /// expires (pruneJobs).
+  struct Job {
+    quint64 id = 0;
+    /// Who started it, and so who may see and stop it (sameClient).
+    Caller caller;
+    /// The caller as the user's view names it (JobInfo::client).
+    QString client;
+    /// Its MCP task id, once its call was answered with a task handle: unguessable, unlike `id`.
+    std::string task_id;
+    /// When it started, on the wall clock (a task's createdAt).
+    QDateTime created;
+    std::string tool;
+    std::string summary;
+    JobState state = JobState::kRunning;
+    Clock::time_point started;
+    Clock::time_point ended_at;
+    /// A stop was asked for: whatever result comes next ends the job as killed.
+    bool killing = false;
+    /// Its id is known to its client (its call got it at wait_s, was answered early or hung up
+    /// on work that carries on, or jobs_list showed it), so its result is kept when it ends;
+    /// else it is forgotten then.
+    bool retained = false;
+    /// The agent continuation (empty while it runs and once ended). Destroying it releases its
+    /// evaluation, which stops the work, so it must die while its token's services live.
+    std::function<agent_tools::ToolResult(agent_tools::ToolContext&)> resume;
+    /// The resumeDeferred round that last resumed or queued it, which does not resume it again.
     quint64 round = 0;
+    /// An app tool's stop (e.g. FileLoader::cancelLoad): it only asks, and the work's own end then
+    /// finishes the job (finishJob). Never blocks nor spins an event loop.
+    std::function<void(bool keep_partial)> kill;
+    /// Closes the dialog this job's work has open for the user, as their Cancel would; set while
+    /// it is up (dialogWatch), when the job reads waiting_for_user.
+    std::function<void()> close_dialog;
+    /// What the job has done so far, cheap; unset when nothing is known.
+    std::function<nlohmann::json()> progress;
+    /// The tool's result, once ended.
+    nlohmann::json result;
+    std::vector<Waiter> waiters;
   };
 
 #ifndef PJ_TARGET_WASM
@@ -142,9 +216,11 @@ class McpServer : public QObject {
   [[nodiscard]] bool authorized(const Caller& caller) const {
     return isPublic(caller) || plugin_tokens_.contains(caller.token);
   }
-  /// Asks authorized(caller) later; false once this server is gone too.
+  /// Asks later whether `caller` may still act: its token is accepted, this server lives, and the
+  /// job the call runs as (if any) has neither ended nor been asked to stop.
   [[nodiscard]] std::function<bool()> stillAuthorized(const Caller& caller);
-  /// Drops `token`'s queued results (they point into its services) and closes its open connections.
+  /// Kills and forgets `token`'s jobs (their continuations point into its services), and closes its
+  /// open connections.
   void dropCallsOf(const QByteArray& token);
   /// Answers one JSON-RPC message from `caller`, whose transport accepted it. `header_client` is the
   /// client name its transport carried ("" for none). `respond(status, body)` runs once: 200 with
@@ -178,23 +254,102 @@ class McpServer : public QObject {
   /// initialize and server/discover instructions; empty when nothing is loaded. Capped, since a client repeats it in
   /// every request. Runs on the GUI thread, over one catalog snapshot.
   [[nodiscard]] std::string loadedSummary(const Caller& caller);
-  /// Replies with `result`, or queues it on resume_tick_ while it is deferred. Drops it once
-  /// `caller`'s token is revoked (a continuation's follow-up included).
-  void runAgentTool(const std::string& tool, const Caller& caller, agent_tools::ToolResult result, Reply reply);
-  /// One resume of every deferred result queued before this round, each taken out of deferred_
-  /// only while it runs, so a revocation it causes (a session torn down) still drops the others
-  /// before their services die. One whose client left or whose token was revoked is dropped; a
-  /// mutating tool waits while the user has a modal dialog. A call made while one is running does
-  /// nothing.
+  /// One tick: first the waiters (serviceWaiters), then one resume of every continuation queued
+  /// before this round. A continuation runs taken out of its job, so a revocation it causes (a
+  /// session torn down) still drops the other jobs before their services die. A mutating tool
+  /// waits while the user has a modal dialog. A call made while one is running does nothing.
   void resumeDeferred();
+  /// Answers the waiters past their deadline (a call gets the job id, or a task handle, and its job
+  /// goes on in the background) and drops those whose client left. A job whose call left dies with
+  /// it when nothing would read its result or act on its question (an agent tool's, unload_file's
+  /// prompt); other app work (an import, a stream, an export) carries on for its client to find.
+  void serviceWaiters();
+
+  /// Whether two callers are the same client, which shares its jobs: the same token (a plugin's is
+  /// its own) and, on the public token, the same owner.
+  [[nodiscard]] static bool sameClient(const Caller& a, const Caller& b) {
+    return a.token == b.token && a.owner == b.owner;
+  }
+  [[nodiscard]] static bool ended(const Job& job) {
+    return job.state != JobState::kRunning && job.state != JobState::kWaitingForUser;
+  }
+  /// How many jobs of `caller`'s client have not ended (stopping ones included).
+  [[nodiscard]] int runningJobs(const Caller& caller) const;
+  /// Registers a job for `caller`'s call of `tool`, its `reply` waiting the call's wait_s on it; 0
+  /// (and `reply` refused) when the client already runs kMaxRunningJobs.
+  quint64 openJob(const std::string& tool, const nlohmann::json& args, const Caller& caller, Reply reply);
+  /// Adds a waiter of `kind` on `job` for `seconds`, answered on `caller`'s connection.
+  static void addWaiter(Job& job, Waiter::Kind kind, const Caller& caller, Reply reply, double seconds);
+  /// Job `id` while it has not ended; null for an unknown or ended one.
+  [[nodiscard]] Job* liveJob(quint64 id);
+  /// What an agent tool returned for job `id`: a continuation to resume on the next tick, or the
+  /// result that ends it. Dropped when the job was killed or its token revoked meanwhile.
+  void continueJob(quint64 id, agent_tools::ToolResult result);
+  /// Ends job `id` with tool result `result` (completed, or failed, or killed when it failed after
+  /// a stop was asked for) and answers its waiters; a job whose id nobody knows is forgotten. No-op
+  /// for an ended or unknown job (a load's terminal after a revocation).
+  void finishJob(quint64 id, nlohmann::json result);
+  /// Stops job `id`: closes the dialog it has open and calls its kill hook, whose terminal result
+  /// then ends it; with neither, ends it at once (destroying its continuation, which releases its
+  /// evaluation).
+  void killJob(quint64 id, bool keep_partial);
+  /// For work of job `id` that may ask the user: keeps the closer of its dialog while it is up
+  /// (and closes it at once when the job was stopped meanwhile). Safe after this server is gone.
+  [[nodiscard]] dialog_presenter::DialogWatch dialogWatch(quint64 id);
+  /// Answers the call still waiting on job `id` with `result` while the job carries on (a stream
+  /// that started); nothing when the call already got its job id or left.
+  void answerCall(quint64 id, const nlohmann::json& result);
+  /// Forgets job `id`, answering nobody: taken out of the table before it (and its continuation)
+  /// is destroyed.
+  void dropJob(quint64 id);
+  /// Job `id` if it is one of `caller`'s client.
+  [[nodiscard]] Job* ownedJob(const Caller& caller, const nlohmann::json& id);
+  /// How `job` reads to an agent: running, waiting_for_user (its own dialog is up, or the user's
+  /// holds it back), completed, failed, killed.
+  [[nodiscard]] static const char* stateName(const Job& job);
+  /// Seconds `job` has run, or ran, to a tenth.
+  [[nodiscard]] static double elapsedSeconds(const Job& job);
+  /// {job_id, tool, summary, state, elapsed_s} of `job`, with its progress when it reports any and
+  /// `stopping` while a stop it was asked for has not taken effect.
+  [[nodiscard]] static nlohmann::json jobStatus(const Job& job);
+  /// What job_kill answers: `job`'s status with its result's text once ended.
+  [[nodiscard]] static nlohmann::json killReply(const Job& job);
+  /// Forgets ended jobs past their expiry, and all but the newest ended ones of each client.
+  void pruneJobs();
+  /// Runs resume_tick_ while a continuation or a waiter needs it.
+  void updateTick();
+  /// `notifications/cancelled`: kills the one foreground call of `caller`'s client with id
+  /// `request_id`; nothing when none or several match.
+  void cancelRequest(const Caller& caller, const nlohmann::json& request_id);
+
+  /// `job` as an MCP Task: taskId, status (working, completed, cancelled; a tool error is a
+  /// completed task, as the extension has it), statusMessage, createdAt, lastUpdatedAt, ttlMs,
+  /// pollIntervalMs. Gives the job its task id on first use.
+  [[nodiscard]] static nlohmann::json taskOf(Job& job);
+  /// The whole JSON-RPC response to `request`, one of the MCP Tasks methods (mcp::isTasksMethod),
+  /// from `caller`: an error when it did not declare the extension, or when the task is not one of
+  /// its client's.
+  [[nodiscard]] nlohmann::json taskRequest(const mcp::RpcMessage& request, const Caller& caller);
+
+  // The job tools, served to every token.
+  void jobsList(const nlohmann::json& args, const Caller& caller, Reply reply);
+  void jobWait(const nlohmann::json& args, const Caller& caller, Reply reply);
+  void jobKill(const nlohmann::json& args, const Caller& caller, Reply reply);
   /// PNG of the main window with every visible QRhiWidget's next presented frame composited in, and
   /// any open modal dialog drawn over a dimmed window. Asynchronous; `done` never runs after this
   /// server is gone.
   void grabScreenshot(int max_width, std::function<void(const QByteArray& png)> done);
   /// Queues `input` for loading and holds `reply` until it settles (open_file's second half).
-  void startLoad(LoadInput input, LoadHints hints, Reply reply);
-  /// Holds `reply` until load `ticket` settles; `on_loaded` words the success.
-  void awaitLoad(quint64 ticket, Reply reply, std::function<nlohmann::json(quint32 dataset)> on_loaded);
+  void startLoad(LoadInput input, LoadHints hints, quint64 job, Reply reply);
+  /// Holds `reply` until load `ticket` settles; `on_loaded` words the success. Gives job `job` its
+  /// kill (cancelling the load) and its progress. A `reload` replaces data the user already has, so
+  /// its kill always discards: keep_partial would leave half of the replacement in its place.
+  void awaitLoad(
+      quint64 ticket, quint64 job, Reply reply, std::function<nlohmann::json(quint32 dataset)> on_loaded,
+      bool reload = false);
+  /// Ties job `job` to the stream into dataset `id` it started: the job stops the stream when
+  /// killed, and ends when the stream does (stopped by anyone, ended on its own, or failed).
+  void followStream(quint64 job, quint32 id);
 
   // The app tools, one per tools/list entry (McpServerTools.cpp).
   void getStatus(const nlohmann::json& args, const Caller& caller, Reply reply);
@@ -231,11 +386,13 @@ class McpServer : public QObject {
   /// Clears the indicator when no client has called for a while.
   QTimer idle_;
   QString active_client_;
-  /// One toolbox service assembly per public agent owner. Declared before deferred_, whose
+  /// One toolbox service assembly per public agent owner. Declared before jobs_, whose
   /// continuations point into it, so it is destroyed after them.
   QHash<QString, std::shared_ptr<ToolboxPanelSession>> agent_sessions_;
-  std::vector<Deferred> deferred_;
-  /// Numbers resumeDeferred's rounds (Deferred::round).
+  /// Every job by id; ids are never reused within a run.
+  std::map<quint64, Job> jobs_;
+  quint64 last_job_id_ = 0;
+  /// Numbers resumeDeferred's rounds (Job::round).
   quint64 resume_round_ = 0;
   /// Whether resumeDeferred is running. A nested call (a reply or continuation that spins an event
   /// loop) would advance resume_round_ under the outer loop, which would then treat the follow-ups

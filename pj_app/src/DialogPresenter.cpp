@@ -159,14 +159,28 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
     return std::move(prologue.immediate);
   }
 
-  DialogEngine engine(std::move(prologue.prepared->handle), std::move(prologue.prepared->config));
-  if (engine.showDialog(req.parent) == DialogResult::kRejected) {
+  // Shared only so the closer handed to on_dialog can outlive this call: whoever kept a copy (a
+  // queued call) then finds the engine gone instead of a dead stack frame.
+  const auto engine =
+      std::make_shared<DialogEngine>(std::move(prologue.prepared->handle), std::move(prologue.prepared->config));
+  if (req.on_dialog) {
+    req.on_dialog([weak = std::weak_ptr<DialogEngine>(engine)] {
+      if (const std::shared_ptr<DialogEngine> alive = weak.lock()) {
+        alive->cancelActiveDialog();  // a no-op until showDialog opened it, and once it completed
+      }
+    });
+  }
+  const DialogResult shown = engine->showDialog(req.parent);
+  if (req.on_dialog) {
+    req.on_dialog({});
+  }
+  if (shown == DialogResult::kRejected) {
     return {.outcome = Outcome::kRejected};
   }
 
   return {
       .outcome = Outcome::kAccepted,
-      .payload = AcceptedPayload{.saved_config = engine.savedConfig(), .parser_config = engine.parserConfig()},
+      .payload = AcceptedPayload{.saved_config = engine->savedConfig(), .parser_config = engine->parserConfig()},
   };
 }
 
@@ -182,24 +196,36 @@ DialogCancelFn showDataSourceDialogAsync(const DataSourceRequest& req, DataSourc
 
   auto engine =
       std::make_shared<DialogEngine>(std::move(prologue.prepared->handle), std::move(prologue.prepared->config));
-  engine->openDialog(req.parent, [engine, completion = std::move(completion)](DialogResult result) mutable {
-    if (result == DialogResult::kRejected) {
-      completion({.outcome = Outcome::kRejected});
-      return;
-    }
-    completion({
-        .outcome = Outcome::kAccepted,
-        .payload =
-            AcceptedPayload{
-                .saved_config = engine->savedConfig(),
-                .parser_config = engine->parserConfig(),
-            },
-    });
-  });
+  // Set once the dialog completed, which openDialog may do before it returns.
+  const auto completed = std::make_shared<bool>(false);
+  engine->openDialog(
+      req.parent,
+      [engine, completed, on_dialog = req.on_dialog, completion = std::move(completion)](DialogResult result) mutable {
+        *completed = true;
+        if (on_dialog) {
+          on_dialog({});
+        }
+        if (result == DialogResult::kRejected) {
+          completion({.outcome = Outcome::kRejected});
+          return;
+        }
+        completion({
+            .outcome = Outcome::kAccepted,
+            .payload =
+                AcceptedPayload{
+                    .saved_config = engine->savedConfig(),
+                    .parser_config = engine->parserConfig(),
+                },
+        });
+      });
   // The canceler co-owns the engine so a shutdown-time cancel finds it alive
   // even after the completion (and its engine reference) is gone; cancelling a
   // completed dialog is a documented no-op.
-  return [engine]() { engine->cancelActiveDialog(); };
+  DialogCancelFn cancel = [engine]() { engine->cancelActiveDialog(); };
+  if (req.on_dialog && !*completed) {
+    req.on_dialog(cancel);
+  }
+  return cancel;
 }
 
 }  // namespace PJ::dialog_presenter

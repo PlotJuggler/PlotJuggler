@@ -15,6 +15,7 @@
 #include <pj_base/type_tree.hpp>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "pj_runtime/agent_tools/derived_recipes.hpp"
@@ -99,6 +100,12 @@ SeriesRead readOne(
 json withCoarsenedBuckets(
     json base, std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points);
 
+// The comparisons a threshold argument takes (create_markers' template, wait_for).
+[[nodiscard]] inline bool isComparison(std::string_view op) {
+  return op == ">" || op == "<" || op == ">=" || op == "<=";
+}
+inline constexpr const char* kComparisonError = "'comparison' must be one of >, <, >=, <=";
+
 // --- tool executors (registered by tool_registry.cpp) -----------------------
 //
 // Each is a pure function of (args, host views) and reports every failure as
@@ -107,6 +114,9 @@ json withCoarsenedBuckets(
 
 // read_series.cpp
 ToolResult readSeriesTool(const json& args, ToolContext& ctx);
+// Deferred: its continuation ends with the first sample of one series, arriving
+// after the call, that satisfies a comparison, or fails at its timeout.
+ToolResult waitForTool(const json& args, ToolContext& ctx);
 
 // view_tools.cpp
 ToolResult listTopics(const json& args, ToolContext& ctx);

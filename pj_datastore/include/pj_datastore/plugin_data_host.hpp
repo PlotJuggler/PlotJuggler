@@ -7,6 +7,7 @@
 // flushPending() seals+commits. See docs/OBJECT_STORE_DESIGN.md (ABI bridge).
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string_view>
 
@@ -227,12 +228,14 @@ class DatastoreToolboxHost {
 /// null, or a single value every one of them holds.
 using SampleBlockCallback = std::function<void(Span<const Timestamp> timestamps, Span<const double> values)>;
 
-/// Walks the whole numeric series of `field` (the samples `read_series_arrow` returns) in time order, a block of one
-/// chunk at a time, without building an Arrow array: the cheap pass for a whole-series fact a windowed read still
-/// owes. A constant-encoded chunk is one block of a single value. A non-numeric field has no blocks. Same
-/// derived-series wait as readSeriesArrowWindow; `on_block` runs under the engine lock, must not call the engine, and
-/// sees spans valid only during the call.
+/// Walks the numeric series of `field` (the samples `read_series_arrow` returns) stamped at or after `first`, in time
+/// order, a block of one chunk at a time, without building an Arrow array: the cheap pass for a whole-series fact a
+/// windowed read still owes, and for a caller that only wants what came after a sample it has seen. A
+/// constant-encoded chunk is one block of a single value. A non-numeric field has no blocks. Same derived-series wait
+/// as readSeriesArrowWindow; `on_block` runs under the engine lock, must not call the engine, and sees spans valid
+/// only during the call.
 [[nodiscard]] Status scanSeriesValues(
-    const DataEngine& engine, PJ_field_handle_t field, const SampleBlockCallback& on_block);
+    const DataEngine& engine, PJ_field_handle_t field, const SampleBlockCallback& on_block,
+    Timestamp first = std::numeric_limits<Timestamp>::min());
 
 }  // namespace PJ

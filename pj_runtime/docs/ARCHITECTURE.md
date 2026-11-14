@@ -716,14 +716,24 @@ of the module: its files keep their own SPDX and copyright lines.
   zoom uses the context's `zoom_tab` hook when the host sets it (one tab), else
   `pj.viewport.v1` (every tab the caller owns). A windowed `read_series` (and `pj_app`'s
   `export_series`) decodes only the window when the host sets `read_window`; `read_series`
-  also needs `scan_values`, a whole-series value walk, for the flat facts it reports for
-  the whole series (`FlatRunAccumulator`, `series_stats.hpp`). Unset, they read the whole
+  also needs `scan_values`, a value walk from a timestamp on (the whole series from the
+  int64 minimum), for the flat facts it reports for the whole series (`FlatRunAccumulator`,
+  `series_stats.hpp`). Unset, they read the whole
   series and cut it, with the same answer.
 - **Errors are data.** Every failure is a `ToolResult` with `ok=false`;
   `ToolRegistry::execute` turns a throw from a wrongly typed, model-supplied argument
   into one.
 - **Deferred results.** A result with `resume` set is not terminal: the caller invokes
   `resume` again on later ticks, with a fresh context, until it returns a terminal result.
+  Destroying the continuation is how the caller stops the work (an evaluation's handle is
+  released). Two kinds defer: an object evaluation polling the host (`submitAndPoll`), and
+  `wait_for`, which watches one series for a sample newer than the latest at the call that
+  satisfies a comparison. It resolves the series once, then looks a few times a second,
+  however often it is resumed, at the samples past its cursor only: through the host's
+  `scan_values` from that cursor when set (a null is a NaN there, and never matches), else
+  through `read_window` or the whole read, where a null reads as 0. "Newer" is by timestamp, so a
+  sample that arrives late with an older stamp, or one a stream's retention drops between
+  two looks, is not seen.
 - `derived_recipes.hpp` also serves `pj_app`'s own MCP tools: series path resolution
   (`resolveSeriesPath`: dataset qualifiers, ambiguity, near-miss candidates), the
   generated Luau chunks and the display↔raw time conversion.

@@ -8,10 +8,13 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QLocale>
+#include <QPointer>
+#include <QSaveFile>
 #include <QSettings>
 #include <QTemporaryFile>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cctype>
 #include <charconv>
@@ -20,6 +23,7 @@
 #include <cstdio>
 #include <iterator>
 #include <limits>
+#include <memory>
 
 #include "FileLoader.h"
 #include "LoadInput.h"
@@ -30,6 +34,7 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/EnginePool.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/FeatureCatalogHost.h"
 #include "pj_runtime/PlaybackEngine.h"
@@ -52,9 +57,12 @@ namespace {
 
 /// export_series refuses more rows than this instead of writing a file nobody can load.
 constexpr std::size_t kMaxExportRows = 10'000'000;
+/// The ends of time, in raw or display ns: an unbounded window.
+constexpr int64_t kMinNs = std::numeric_limits<int64_t>::min();
+constexpr int64_t kMaxNs = std::numeric_limits<int64_t>::max();
 
 json ok(const json& payload) {
-  return mcp::textResult(payload.dump(-1, ' ', false, json::error_handler_t::replace));
+  return mcp::jsonResult(payload);
 }
 
 json fail(const std::string& message) {
@@ -240,6 +248,220 @@ std::string npyHeader(const json& names, std::size_t rows) {
   return out + dict;
 }
 
+/// One export_series call: what the GUI thread staged for the worker, and what the worker did with it.
+struct ExportRun {
+  /// Each series' samples inside the window, stamped in raw ns, and the offset to its display time.
+  std::vector<Column> columns;
+  std::vector<int64_t> offsets_ns;
+  bool npy = false;
+  /// Rows on a uniform grid at this rate (Hz); 0 for every sample time of any series.
+  double rate = 0.0;
+  /// The window, in display ns.
+  int64_t t0_ns = 0;
+  int64_t t1_ns = 0;
+  /// "" for a new temporary file.
+  QString requested_path;
+
+  /// Rows the file will hold (0 until the grid is built) and rows written so far; read from the GUI thread.
+  std::atomic<std::size_t> rows{0};
+  std::atomic<std::size_t> rows_done{0};
+  /// Set by the worker before it returns, read by the GUI thread after it: the file is complete at
+  /// `path` with `names` as columns, or `error` says why not ("" when it was stopped).
+  bool written = false;
+  QString path;
+  json names = json::array();
+  std::string error;
+};
+
+/// Builds the rows of `run` and writes its file, off the GUI thread. A stop (`stop`) or a failure
+/// leaves nothing behind: a named destination is replaced only once complete, a temporary file is
+/// removed.
+void writeExport(ExportRun& run, const EnginePool::CancelToken& stop) {
+  /// How many rows or samples pass between two looks at `stop`.
+  constexpr std::size_t kStopCheckEvery = 1U << 16;
+  // Times stay integer display nanoseconds (each column's stamps, shifted in place), so rows a few ns apart stay apart
+  // and print exactly: as double seconds, an epoch-sized display time resolves only ~0.2 us.
+  for (std::size_t c = 0; c < run.columns.size(); ++c) {
+    for (int64_t& stamp : run.columns[c].stamps) {
+      stamp = checkedTimelineDifference(stamp, run.offsets_ns[c]).value_or(stamp < 0 ? kMinNs : kMaxNs);
+    }
+    if (stop.cancelled()) {
+      return;
+    }
+  }
+  const double rate = run.rate;
+  // Rows: a uniform grid at rate_hz, else every sample time of any series, inside [t0, t1].
+  std::vector<int64_t> stamps_grid;
+  int64_t lo = kMaxNs;
+  std::size_t rows = 0;
+  if (rate > 0) {
+    int64_t hi = kMinNs;
+    for (const Column& column : run.columns) {
+      if (!column.stamps.empty()) {
+        lo = std::min(lo, column.stamps.front());
+        hi = std::max(hi, column.stamps.back());
+      }
+    }
+    lo = std::max(lo, run.t0_ns);
+    hi = std::min(hi, run.t1_ns);
+    const double span = (static_cast<double>(hi) - static_cast<double>(lo)) * 1e-9 * rate;
+    rows = hi >= lo
+               ? (span < static_cast<double>(kMaxExportRows) ? static_cast<std::size_t>(span) + 1 : kMaxExportRows + 1)
+               : 0;
+  } else {
+    // Each series is in time order, so a merge builds the grid; a sort of every stamp costs ~20x as much.
+    std::vector<int64_t> merged;
+    for (const Column& column : run.columns) {
+      const auto first = std::lower_bound(column.stamps.begin(), column.stamps.end(), run.t0_ns);
+      const auto last = std::upper_bound(first, column.stamps.end(), run.t1_ns);
+      merged.clear();
+      merged.reserve(stamps_grid.size() + static_cast<std::size_t>(last - first));
+      std::set_union(stamps_grid.begin(), stamps_grid.end(), first, last, std::back_inserter(merged));
+      merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+      stamps_grid.swap(merged);
+      if (stamps_grid.size() > kMaxExportRows) {
+        break;  // the grid only grows: refused below, without merging the rest
+      }
+      if (stop.cancelled()) {
+        return;
+      }
+    }
+    rows = stamps_grid.size();
+  }
+  if (rows > kMaxExportRows) {
+    run.error = "the export would have more than " + std::to_string(kMaxExportRows) +
+                " rows: narrow t0/t1, lower rate_hz, or export fewer series";
+    return;
+  }
+  run.rows = rows;
+  // The default file is created new, owner-only and randomly named, so no one can plant it first; it goes
+  // away again unless the export completes. A named one is written beside its destination and replaces it
+  // only once complete, so a stopped export never truncates a file that was there.
+  QTemporaryFile temporary(
+      QDir::temp().filePath(run.npy ? u"plotjuggler_export_XXXXXX.npy"_s : u"plotjuggler_export_XXXXXX.csv"_s));
+  QSaveFile named(run.requested_path);
+  QFileDevice* file = nullptr;
+  if (run.requested_path.isEmpty()) {
+    file = temporary.open() ? &temporary : nullptr;
+  } else {
+    // An agent often names a folder that does not exist yet.
+    QDir().mkpath(QFileInfo(run.requested_path).absolutePath());
+    file = named.open(QIODevice::WriteOnly) ? &named : nullptr;
+  }
+  if (file == nullptr) {
+    run.error = "cannot create " + (run.requested_path.isEmpty() ? QDir::tempPath() : run.requested_path).toStdString();
+    return;
+  }
+  bool intact = true;  // no write has failed so far
+  for (const Column& column : run.columns) {
+    run.names.push_back(column.path);
+  }
+  std::string out = run.npy ? npyHeader(run.names, rows) : "time";
+  for (const Column& column : run.columns) {
+    out += run.npy ? std::string() : ',' + csvField(column.path);
+  }
+  out += run.npy ? "" : "\n";
+  const auto flush = [&] {
+    intact = intact && file->write(out.data(), static_cast<qint64>(out.size())) == static_cast<qint64>(out.size());
+    out.clear();
+  };
+  // Each value as the shortest text that reads back to the same double, in the C locale whatever the process's (a
+  // decimal comma would split a column). std::to_chars is ~2.5x faster than QByteArray::number, but Apple's libc++ has
+  // its floating-point overloads only from macOS 13.3, above Qt's 13.0 floor, and does not advertise them.
+  std::array<char, 32> digits{};
+  const auto append_value = [&](double value) {
+    if (std::isnan(value)) {
+      out += "nan";  // one spelling: to_chars writes a computed NaN as "-nan", or "-nan(ind)" with MSVC
+      return;
+    }
+#if defined(__cpp_lib_to_chars)
+    out.append(digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), value).ptr);
+#else
+    const QByteArray text = QByteArray::number(value, 'g', QLocale::FloatingPointShortest);
+    out.append(text.constData(), static_cast<std::size_t>(text.size()));
+#endif
+  };
+  // The time column: exact display seconds, to the nanosecond.
+  const auto append_time = [&out, &digits](int64_t ns) {
+    const uint64_t magnitude = ns < 0 ? 0 - static_cast<uint64_t>(ns) : static_cast<uint64_t>(ns);
+    if (ns < 0) {
+      out += '-';
+    }
+    out.append(
+        digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), magnitude / 1'000'000'000).ptr);
+    std::array<char, 10> fraction{'.', '0', '0', '0', '0', '0', '0', '0', '0', '0'};
+    for (uint64_t rest = magnitude % 1'000'000'000, i = 9; rest > 0; rest /= 10, --i) {
+      fraction[i] = static_cast<char>('0' + rest % 10);
+    }
+    out.append(fraction.data(), fraction.size());
+  };
+  static_assert(std::endian::native == std::endian::little, "npy records are written as little-endian <f8");
+  const auto append_raw = [&out](double value) { out.append(reinterpret_cast<const char*>(&value), sizeof value); };
+  // Sample-and-hold: each row holds every series' last value at or before its time (empty, or NaN in a .npy, before
+  // the first).
+  // Locals for the row loop: through `run` they would be re-read after every write into `out`.
+  const bool npy = run.npy;
+  const std::vector<Column>& columns = run.columns;
+  std::vector<std::size_t> cursor(columns.size(), 0);
+  for (std::size_t row = 0; row < rows && intact; ++row) {
+    if (row % kStopCheckEvery == 0) {
+      run.rows_done = row;
+      if (stop.cancelled()) {
+        return;
+      }
+    }
+    const int64_t t = rate > 0 ? lo + std::llround(static_cast<double>(row) * 1e9 / rate) : stamps_grid[row];
+    if (npy) {
+      // Whole seconds and the rest apart, so the sum rounds once, to the double nearest the exact time.
+      append_raw(static_cast<double>(t / 1'000'000'000) + static_cast<double>(t % 1'000'000'000) * 1e-9);
+    } else {
+      append_time(t);
+    }
+    for (std::size_t c = 0; c < columns.size(); ++c) {
+      const Column& column = columns[c];
+      while (cursor[c] < column.stamps.size() && column.stamps[cursor[c]] <= t) {
+        ++cursor[c];
+      }
+      const bool held = cursor[c] > 0;
+      if (npy) {
+        append_raw(held ? column.values[cursor[c] - 1] : std::numeric_limits<double>::quiet_NaN());
+        continue;
+      }
+      out += ',';
+      if (held) {
+        append_value(column.values[cursor[c] - 1]);
+      }
+    }
+    if (!npy) {
+      out += '\n';
+    }
+    if (out.size() > (1U << 22)) {
+      flush();
+    }
+  }
+  flush();
+  intact = intact && file->flush() && file->error() == QFileDevice::NoError;
+  if (!intact) {
+    run.error = "writing " + file->fileName().toStdString() + " failed: " + file->errorString().toStdString();
+    return;
+  }
+  if (stop.cancelled()) {
+    return;  // a stop that came before the file is in place: it never appears
+  }
+  if (run.requested_path.isEmpty()) {
+    temporary.setAutoRemove(false);
+    temporary.close();
+    run.path = temporary.fileName();
+  } else if (named.commit()) {
+    run.path = run.requested_path;
+  } else {
+    run.error = "writing " + run.requested_path.toStdString() + " failed: " + named.errorString().toStdString();
+    return;
+  }
+  run.rows_done = rows;
+  run.written = true;
+}
+
 }  // namespace
 
 const std::unordered_map<std::string, McpServer::AppTool>& McpServer::appTools() {
@@ -264,24 +486,47 @@ const std::unordered_map<std::string, McpServer::AppTool>& McpServer::appTools()
   return tools;
 }
 
-void McpServer::awaitLoad(quint64 ticket, Reply reply, std::function<json(quint32)> on_loaded) {
+void McpServer::awaitLoad(
+    quint64 ticket, quint64 job, Reply reply, std::function<json(quint32)> on_loaded, bool reload) {
+  FileLoader& loader = window_.fileLoader();
   auto* receiver = new QObject(this);
   connect(
-      &window_.fileLoader(), &FileLoader::loadFinished, receiver,
-      [receiver, ticket, reply, on_loaded](
+      &loader, &FileLoader::loadFinished, receiver,
+      [receiver, ticket, reply, on_loaded, reload](
           quint64 settled, LoadOutcome outcome, const QString& reason, DatasetId id, const QVector<DatasetId>&) {
         if (settled != ticket) {
           return;
         }
         receiver->deleteLater();
-        if (outcome == LoadOutcome::kCancelled) {
-          reply(fail("the load was cancelled (the user closed the dialog or stopped the import)"));
+        if (outcome == LoadOutcome::kCancelled && id != 0) {
+          reply(fail("the load was stopped; the rows loaded so far stay as dataset " + std::to_string(id)));
+        } else if (outcome == LoadOutcome::kCancelled && reload) {
+          reply(fail("the reload was cancelled; the dataset keeps the data it had"));
+        } else if (outcome == LoadOutcome::kCancelled) {
+          reply(fail("the load was cancelled (job_kill, or the user closed the dialog or stopped the import)"));
         } else if (outcome != LoadOutcome::kLoaded) {
           reply(fail("load failed: " + reason.toStdString()));
         } else {
           reply(on_loaded(id));
         }
       });
+  Job* running = liveJob(job);
+  if (running == nullptr) {
+    return;  // killed while the loader ran its prologue: still_allowed stops the load
+  }
+  // The producer's own units (rows, bytes, messages...); a total of 0 means it does not know.
+  auto progress = std::make_shared<json>();
+  connect(
+      &loader, &FileLoader::loadProgress, receiver,
+      [ticket, progress](quint64 at, std::uint64_t current, std::uint64_t total) {
+        if (at == ticket) {
+          *progress = {{"done", current}, {"total", total}};
+        }
+      });
+  running->progress = [&loader, ticket, progress] {
+    return progress->is_null() ? json{{"queued", loader.currentLoadTicket() != ticket}} : *progress;
+  };
+  running->kill = [&loader, ticket, reload](bool keep_partial) { loader.cancelLoad(ticket, keep_partial && !reload); };
 }
 
 void McpServer::getStatus(const json&, const Caller& caller, Reply reply) {
@@ -342,11 +587,13 @@ void McpServer::about(const json&, const Caller&, Reply reply) {
 
 void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
   LoadHints hints;
-  hints.still_allowed = stillAuthorized(caller);  // the load may wait in the queue, then for the user
+  // The load may wait in the queue, then for the user; meanwhile the agent may lose access or kill it.
+  hints.still_allowed = stillAuthorized(caller);
   const bool ask_user = args.value("ask_user", false);
   hints.dialog_policy = ask_user ? DialogPolicy::kInteractive : DialogPolicy::kNever;
   if (ask_user) {
     hints.dialog_title_prefix = agentDialogTitlePrefix();
+    hints.on_dialog = dialogWatch(caller.job);
   } else if (const auto config = args.find("config"); config != args.end() && config->is_object()) {
     hints.preset_config_json = QString::fromStdString(config->dump());
   }
@@ -365,7 +612,7 @@ void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
     return;
   }
   const QString staged_path = staged.input->backing_path;
-  browserFetchToFile(
+  const quint32 fetch = browserFetchToFile(
       url, staged_path, kMaxPresetDataBytes, std::chrono::seconds(60),
       [self = QPointer<McpServer>(this), caller, hints = std::move(hints), reply,
        input = std::move(*staged.input)](BrowserFetchResult file) mutable {
@@ -378,26 +625,33 @@ void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
           return;
         }
         input.content_sha256 = std::move(file.sha256);
-        self->startLoad(std::move(input), std::move(hints), std::move(reply));
+        self->startLoad(std::move(input), std::move(hints), caller.job, std::move(reply));
       });
+  // Until the load is queued, a kill stops the download, whose `done` then never runs.
+  if (Job* job = liveJob(caller.job)) {
+    job->kill = [this, fetch, id = caller.job](bool) {
+      cancelBrowserFetch(fetch);
+      finishJob(id, fail("killed while downloading the file from the relay"));
+    };
+  }
 #else
   const QFileInfo info(qs(args, "path"));
   if (!info.isAbsolute() || !info.isFile()) {
     reply(fail("path must be an absolute path to an existing file"));
     return;
   }
-  startLoad(LoadInput::fromNativePath(info.absoluteFilePath()), std::move(hints), std::move(reply));
+  startLoad(LoadInput::fromNativePath(info.absoluteFilePath()), std::move(hints), caller.job, std::move(reply));
 #endif
 }
 
-void McpServer::startLoad(LoadInput input, LoadHints hints, Reply reply) {
+void McpServer::startLoad(LoadInput input, LoadHints hints, quint64 job, Reply reply) {
   const LoadRequestId ticket = window_.fileLoader().loadFileTicketed(std::move(input), nullptr, hints);
   if (ticket == 0) {
     reply(fail("load rejected (no plugin for this file type?)"));
     return;
   }
   // What was actually loaded (the user's dialog choices included), so the agent need not guess.
-  awaitLoad(ticket, reply, [this](DatasetId id) {
+  awaitLoad(ticket, job, reply, [this](DatasetId id) {
     const SessionManager& manager = window_.appSession().sessionManager();
     json result = {{"loaded", true}, {"dataset_id", id}};
     if (const auto source = loadedConfig(manager, manager.datasetSourcePath(id))) {
@@ -414,7 +668,9 @@ void McpServer::reloadFile(const json& args, const Caller& caller, Reply reply) 
     reply(fail("no file-backed dataset matches (see get_status)"));
     return;
   }
-  awaitLoad(ticket, reply, [](DatasetId reloaded) { return ok({{"reloaded", true}, {"dataset_id", reloaded}}); });
+  awaitLoad(
+      ticket, caller.job, reply, [](DatasetId reloaded) { return ok({{"reloaded", true}, {"dataset_id", reloaded}}); },
+      /*reload=*/true);
 }
 
 void McpServer::unloadFile(const json& args, const Caller& caller, Reply reply) {
@@ -431,7 +687,8 @@ void McpServer::unloadFile(const json& args, const Caller& caller, Reply reply) 
         reply(ok({{"unloaded", id}}));
       },
       stillAuthorized(caller),
-      [reply] { reply(fail("not unloaded: the user kept the derived series that depend on this dataset")); });
+      [reply] { reply(fail("not unloaded: the derived series that depend on this dataset were kept")); },
+      dialogWatch(caller.job));
 }
 
 void McpServer::startStream(const json& args, const Caller& caller, Reply reply) {
@@ -443,34 +700,45 @@ void McpServer::startStream(const json& args, const Caller& caller, Reply reply)
     reply(fail("unknown stream source '" + source.toStdString() + "' (get_status lists stream_sources)"));
     return;
   }
+  // Once the stream runs the call is answered, and its job lives as long as the stream does.
+  const auto started = [this, job = caller.job](DatasetId id, json answer) {
+    answer["dataset_id"] = id;
+    answer["job_id"] = job;
+    answer["note"] =
+        "topics appear as the source advertises them: list_topics. job_kill with this job_id (or "
+        "stop_stream) stops the stream; job_wait returns when it ends";
+    followStream(job, id);
+    answerCall(job, ok(answer));
+  };
   if (args.value("ask_user", false)) {
     // The source's dialog is modal: open it once this request has returned, and only if no other
     // dialog (another agent's request queued alongside, or the user's own) came up meanwhile and
     // the caller may still act.
-    QTimer::singleShot(0, this, [this, source, reply, allowed = stillAuthorized(caller)] {
-      if (!allowed()) {
-        return;
-      }
-      if (const QWidget* modal = QApplication::activeModalWidget()) {
-        reply(userDialogOpen(*modal));
-        return;
-      }
-      StreamingSourceManager& streams = window_.streamingSources();
-      DatasetId started = 0;
-      QString failure;
-      QObject guard;
-      connect(&streams, &StreamingSourceManager::streamStarted, &guard, [&started](DatasetId id) { started = id; });
-      connect(&streams, &StreamingSourceManager::setupError, &guard, [&failure](const QString& m) { failure = m; });
-      connect(&streams, &StreamingSourceManager::streamError, &guard, [&failure](DatasetId, const QString& m) {
-        failure = m;
-      });
-      streams.startSession(source, agentDialogTitlePrefix(), allowed);
-      if (started != 0) {
-        reply(ok({{"dataset_id", started}, {"note", "topics appear as the source advertises them: list_topics"}}));
-      } else {
-        reply(fail(failure.isEmpty() ? "the user cancelled the stream dialog" : failure.toStdString()));
-      }
-    });
+    QTimer::singleShot(
+        0, this, [this, source, reply, started, allowed = stillAuthorized(caller), watch = dialogWatch(caller.job)] {
+          if (!allowed()) {
+            return;
+          }
+          if (const QWidget* modal = QApplication::activeModalWidget()) {
+            reply(userDialogOpen(*modal));
+            return;
+          }
+          StreamingSourceManager& streams = window_.streamingSources();
+          DatasetId id = 0;
+          QString failure;
+          QObject guard;
+          connect(&streams, &StreamingSourceManager::streamStarted, &guard, [&id](DatasetId stream) { id = stream; });
+          connect(&streams, &StreamingSourceManager::setupError, &guard, [&failure](const QString& m) { failure = m; });
+          connect(&streams, &StreamingSourceManager::streamError, &guard, [&failure](DatasetId, const QString& m) {
+            failure = m;
+          });
+          streams.startSession(source, agentDialogTitlePrefix(), allowed, watch);
+          if (id != 0) {
+            started(id, json::object());
+          } else {
+            reply(fail(failure.isEmpty() ? "the stream dialog was cancelled" : failure.toStdString()));
+          }
+        });
     return;
   }
   // No dialog: the agent's config, else what the user last confirmed in this source's dialog.
@@ -488,10 +756,45 @@ void McpServer::startStream(const json& args, const Caller& caller, Reply reply)
     reply(fail(error.toStdString()));
     return;
   }
-  reply(
-      ok({{"dataset_id", id},
-          {"config", parseOrNull(config)},
-          {"note", "topics appear as the source advertises them: list_topics"}}));
+  started(id, {{"config", parseOrNull(config)}});
+}
+
+void McpServer::followStream(quint64 job, DatasetId id) {
+  StreamingSourceManager& streams = window_.streamingSources();
+  Job* running = liveJob(job);
+  if (running == nullptr) {
+    // Stopped while the stream was starting: nothing would ever stop it.
+    streams.requestStopDataset(id, u"its job was stopped"_s);
+    return;
+  }
+  if (streams.layoutSourceId(id).isEmpty()) {
+    // Already over (something stopped it as it started): its streamStopped will not come again.
+    finishJob(job, ok({{"stopped", id}, {"note", "the stream ended; its data stays loaded"}}));
+    return;
+  }
+  running->progress = [id] { return json{{"dataset_id", id}}; };
+  // What a kill leaves behind tells the stream's end from an end of its own.
+  const auto killed = std::make_shared<bool>(false);
+  running->kill = [&streams, id, killed](bool) {
+    *killed = true;
+    streams.requestStopDataset(id, u"stopped by the agent"_s);  // not waited for: streamStopped ends the job
+  };
+  auto* receiver = new QObject(this);
+  connect(
+      &streams, &StreamingSourceManager::streamStopped, receiver,
+      [this, receiver, job, id, killed](DatasetId stopped, const QString& failure) {
+        if (stopped != id) {
+          return;
+        }
+        receiver->deleteLater();
+        if (!failure.isEmpty()) {
+          finishJob(job, fail("the stream failed: " + failure.toStdString()));
+        } else if (*killed) {
+          finishJob(job, fail("the stream was stopped; its data stays loaded"));
+        } else {
+          finishJob(job, ok({{"stopped", id}, {"note", "the stream ended; its data stays loaded"}}));
+        }
+      });
 }
 
 void McpServer::stopStream(const json& args, const Caller&, Reply reply) {
@@ -514,23 +817,22 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     reply(fail("format: csv or npy"));
     return;
   }
-  const bool npy = format == "npy";
-  const QString requested_path = qs(args, "path");
-  if (!requested_path.isEmpty() && !QFileInfo(requested_path).isAbsolute()) {
+  auto run = std::make_shared<ExportRun>();
+  run->npy = format == "npy";
+  run->requested_path = qs(args, "path");
+  if (!run->requested_path.isEmpty() && !QFileInfo(run->requested_path).isAbsolute()) {
     reply(fail("path must be absolute"));
     return;
   }
-  constexpr int64_t kMinNs = std::numeric_limits<int64_t>::min();
-  constexpr int64_t kMaxNs = std::numeric_limits<int64_t>::max();
   const double t0 = args.value("t0", -std::numeric_limits<double>::infinity());
   const double t1 = args.value("t1", std::numeric_limits<double>::infinity());
-  const double rate = args.value("rate_hz", 0.0);
+  run->rate = args.value("rate_hz", 0.0);
   std::optional<agent_tools::ToolContext> context = agentContext(caller.owner);
   if (!context) {
     reply(fail(mcp::kNoServicesError));
     return;
   }
-  const SessionManager& manager = window_.appSession().sessionManager();
+  SessionManager& manager = window_.appSession().sessionManager();
   // Display seconds, as playback and read_series windows take them: one offset per dataset.
   const auto offsetOf = [&manager](DatasetId dataset) {
     return manager.displayTimeForSource(dataset, 0).has_value() ? manager.displayOffset(dataset) : DisplayOffset{};
@@ -549,6 +851,8 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     }
     return displaySecondsToRaw(DisplaySeconds(seconds), offset);
   };
+  // Staged here, on the GUI thread, which the datastore's readers belong to; the worker then
+  // touches only this copy.
   auto columns = readColumns(*context, *paths, [&](DatasetId dataset) {
     const DisplayOffset offset = offsetOf(dataset);
     return std::pair{toRaw(t0, offset, kMinNs), toRaw(t1, offset, kMaxNs)};
@@ -557,176 +861,46 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
     reply(fail(columns.error()));
     return;
   }
-  // Times stay integer display nanoseconds (each column's stamps, shifted in place), so rows a few ns apart stay apart
-  // and print exactly: as double seconds, an epoch-sized display time resolves only ~0.2 us.
-  for (Column& column : *columns) {
-    const int64_t offset_ns = offsetOf(column.dataset).value.count();
-    for (int64_t& stamp : column.stamps) {
-      stamp = checkedTimelineDifference(stamp, offset_ns).value_or(stamp < 0 ? kMinNs : kMaxNs);
-    }
+  run->columns = std::move(*columns);
+  for (const Column& column : run->columns) {
+    run->offsets_ns.push_back(offsetOf(column.dataset).value.count());
   }
-  const int64_t t0_ns = toRaw(t0, DisplayOffset{}, kMinNs);
-  const int64_t t1_ns = toRaw(t1, DisplayOffset{}, kMaxNs);
-  // Rows: a uniform grid at rate_hz, else every sample time of any series, inside [t0, t1].
-  std::vector<int64_t> stamps_grid;
-  int64_t lo = kMaxNs;
-  std::size_t rows = 0;
-  if (rate > 0) {
-    int64_t hi = kMinNs;
-    for (const Column& column : *columns) {
-      if (!column.stamps.empty()) {
-        lo = std::min(lo, column.stamps.front());
-        hi = std::max(hi, column.stamps.back());
-      }
-    }
-    lo = std::max(lo, t0_ns);
-    hi = std::min(hi, t1_ns);
-    const double span = (static_cast<double>(hi) - static_cast<double>(lo)) * 1e-9 * rate;
-    rows = hi >= lo
-               ? (span < static_cast<double>(kMaxExportRows) ? static_cast<std::size_t>(span) + 1 : kMaxExportRows + 1)
-               : 0;
-  } else {
-    // Each series is in time order, so a merge builds the grid; a sort of every stamp costs ~20x as much.
-    std::vector<int64_t> merged;
-    for (const Column& column : *columns) {
-      const auto first = std::lower_bound(column.stamps.begin(), column.stamps.end(), t0_ns);
-      const auto last = std::upper_bound(first, column.stamps.end(), t1_ns);
-      merged.clear();
-      merged.reserve(stamps_grid.size() + static_cast<std::size_t>(last - first));
-      std::set_union(stamps_grid.begin(), stamps_grid.end(), first, last, std::back_inserter(merged));
-      merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
-      stamps_grid.swap(merged);
-      if (stamps_grid.size() > kMaxExportRows) {
-        break;  // the grid only grows: refused below, without merging the rest
-      }
-    }
-    rows = stamps_grid.size();
+  run->t0_ns = toRaw(t0, DisplayOffset{}, kMinNs);
+  run->t1_ns = toRaw(t1, DisplayOffset{}, kMaxNs);
+
+  const EnginePool::CancelToken token = manager.enginePool().submit(
+      {.compute = [run](const EnginePool::CancelToken& stop) { writeExport(*run, stop); },
+       .publish =
+           [self = QPointer<McpServer>(this), run, reply](const EnginePool::Outcome& outcome) {
+             if (self == nullptr) {
+               return;
+             }
+             // What was written decides, not what was asked: a stop that came after the file was complete changes
+             // nothing.
+             if (run->written) {
+               reply(ok(
+                   {{"path", run->path.toStdString()},
+                    {"rows", run->rows.load()},
+                    {"columns", run->names},
+                    {"format", run->npy ? "npy" : "csv"},
+                    {"note",
+                     run->npy ? "numpy.load(path) is a structured array: d['time'] in display seconds (as playback), "
+                                "d[<column>] for each series, sample-and-hold, NaN before a series starts; "
+                                "pandas.DataFrame(d) makes a table"
+                              : "time in display seconds (as playback); values sample-and-hold, empty before a series "
+                                "starts"}}));
+             } else if (outcome.status == EnginePool::Outcome::Status::kFailed) {
+               reply(fail("the export failed: " + outcome.error));
+             } else if (outcome.status == EnginePool::Outcome::Status::kCancelled) {
+               reply(fail("the export was stopped; nothing was written"));
+             } else {
+               reply(fail(run->error));
+             }
+           }});
+  if (Job* job = liveJob(caller.job)) {
+    job->kill = [token](bool) { token.cancel(); };
+    job->progress = [run] { return json{{"done", run->rows_done.load()}, {"total", run->rows.load()}}; };
   }
-  if (rows > kMaxExportRows) {
-    reply(fail(
-        "the export would have more than " + std::to_string(kMaxExportRows) +
-        " rows: narrow t0/t1, lower rate_hz, or export fewer series"));
-    return;
-  }
-  // The default file is created new, owner-only and randomly named, so no one can plant it first.
-  std::unique_ptr<QFile> file;
-  if (requested_path.isEmpty()) {
-    auto temp = std::make_unique<QTemporaryFile>(
-        QDir::temp().filePath(npy ? u"plotjuggler_export_XXXXXX.npy"_s : u"plotjuggler_export_XXXXXX.csv"_s));
-    temp->setAutoRemove(false);
-    if (temp->open()) {
-      file = std::move(temp);
-    }
-  } else {
-    // An agent often names a folder that does not exist yet.
-    QDir().mkpath(QFileInfo(requested_path).absolutePath());
-    auto named = std::make_unique<QFile>(requested_path);
-    if (named->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-      file = std::move(named);
-    }
-  }
-  if (file == nullptr) {
-    reply(fail("cannot create " + (requested_path.isEmpty() ? QDir::tempPath() : requested_path).toStdString()));
-    return;
-  }
-  const QString path = file->fileName();
-  bool written = true;
-  json names = json::array();
-  for (const Column& column : *columns) {
-    names.push_back(column.path);
-  }
-  std::string out = npy ? npyHeader(names, rows) : "time";
-  for (const Column& column : *columns) {
-    out += npy ? std::string() : ',' + csvField(column.path);
-  }
-  out += npy ? "" : "\n";
-  const auto flush = [&] {
-    written = written && file->write(out.data(), static_cast<qint64>(out.size())) == static_cast<qint64>(out.size());
-    out.clear();
-  };
-  // Each value as the shortest text that reads back to the same double, in the C locale whatever the process's (a
-  // decimal comma would split a column). std::to_chars is ~2.5x faster than QByteArray::number, but Apple's libc++ has
-  // its floating-point overloads only from macOS 13.3, above Qt's 13.0 floor, and does not advertise them.
-  std::array<char, 32> digits{};
-  const auto append_value = [&](double value) {
-    if (std::isnan(value)) {
-      out += "nan";  // one spelling: to_chars writes a computed NaN as "-nan", or "-nan(ind)" with MSVC
-      return;
-    }
-#if defined(__cpp_lib_to_chars)
-    out.append(digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), value).ptr);
-#else
-    const QByteArray text = QByteArray::number(value, 'g', QLocale::FloatingPointShortest);
-    out.append(text.constData(), static_cast<std::size_t>(text.size()));
-#endif
-  };
-  // The time column: exact display seconds, to the nanosecond.
-  const auto append_time = [&out, &digits](int64_t ns) {
-    const uint64_t magnitude = ns < 0 ? 0 - static_cast<uint64_t>(ns) : static_cast<uint64_t>(ns);
-    if (ns < 0) {
-      out += '-';
-    }
-    out.append(
-        digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), magnitude / 1'000'000'000).ptr);
-    std::array<char, 10> fraction{'.', '0', '0', '0', '0', '0', '0', '0', '0', '0'};
-    for (uint64_t rest = magnitude % 1'000'000'000, i = 9; rest > 0; rest /= 10, --i) {
-      fraction[i] = static_cast<char>('0' + rest % 10);
-    }
-    out.append(fraction.data(), fraction.size());
-  };
-  static_assert(std::endian::native == std::endian::little, "npy records are written as little-endian <f8");
-  const auto append_raw = [&out](double value) { out.append(reinterpret_cast<const char*>(&value), sizeof value); };
-  // Sample-and-hold: each row holds every series' last value at or before its time (empty, or NaN in a .npy, before
-  // the first).
-  std::vector<std::size_t> cursor(columns->size(), 0);
-  for (std::size_t row = 0; row < rows && written; ++row) {
-    const int64_t t = rate > 0 ? lo + std::llround(static_cast<double>(row) * 1e9 / rate) : stamps_grid[row];
-    if (npy) {
-      // Whole seconds and the rest apart, so the sum rounds once, to the double nearest the exact time.
-      append_raw(static_cast<double>(t / 1'000'000'000) + static_cast<double>(t % 1'000'000'000) * 1e-9);
-    } else {
-      append_time(t);
-    }
-    for (std::size_t c = 0; c < columns->size(); ++c) {
-      const Column& column = (*columns)[c];
-      while (cursor[c] < column.stamps.size() && column.stamps[cursor[c]] <= t) {
-        ++cursor[c];
-      }
-      const bool held = cursor[c] > 0;
-      if (npy) {
-        append_raw(held ? column.values[cursor[c] - 1] : std::numeric_limits<double>::quiet_NaN());
-        continue;
-      }
-      out += ',';
-      if (held) {
-        append_value(column.values[cursor[c] - 1]);
-      }
-    }
-    if (!npy) {
-      out += '\n';
-    }
-    if (out.size() > (1U << 22)) {
-      flush();
-    }
-  }
-  flush();
-  written = written && file->flush();
-  file->close();
-  written = written && file->error() == QFileDevice::NoError;
-  if (!written) {
-    const std::string why = file->errorString().toStdString();
-    file->remove();
-    reply(fail("writing " + path.toStdString() + " failed: " + why));
-    return;
-  }
-  reply(ok(
-      {{"path", path.toStdString()},
-       {"rows", rows},
-       {"columns", names},
-       {"format", format},
-       {"note", npy ? "numpy.load(path) is a structured array: d['time'] in display seconds (as playback), d[<column>] "
-                      "for each series, sample-and-hold, NaN before a series starts; pandas.DataFrame(d) makes a table"
-                    : "time in display seconds (as playback); values sample-and-hold, empty before a series starts"}}));
 }
 
 void McpServer::addScriptSeries(const json& args, const Caller& caller, Reply reply) {

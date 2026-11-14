@@ -16,15 +16,20 @@
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QPointer>
+#include <QPushButton>
 #include <QRectF>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolButton>
 #include <QtEndian>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <clocale>
 #include <cstdio>
 #include <cstring>
@@ -34,7 +39,9 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <ostream>
+#include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -46,6 +53,7 @@
 #include "mcp/McpBrowserLink.h"
 #include "mcp/McpProtocol.h"
 #include "mcp/McpServer.h"
+#include "pj_base/sdk/data_source_plugin_base.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -55,11 +63,14 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "support/loader_test_support.h"
+#include "ui/McpJobsDialog.h"
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
 using pj_app_test::pumpUntil;
@@ -90,17 +101,51 @@ class McpTestPeer {
   [[nodiscard]] static QString discoveryPath(const McpServer& server) {
     return server.discovery_path_;
   }
+  /// Agent continuations still queued (jobs with a pending resume).
   [[nodiscard]] static std::size_t deferred(const McpServer& server) {
-    return server.deferred_.size();
+    return static_cast<std::size_t>(std::count_if(
+        server.jobs_.begin(), server.jobs_.end(), [](const auto& entry) { return bool(entry.second.resume); }));
   }
-  /// Queues `resume` as a deferred "evaluate" result of the caller holding `token` on `socket`;
-  /// `reply` gets its terminal result.
+  /// Queues `resume` as the deferred result of agent tool `tool`, called by the holder of `token` on
+  /// `socket` with `args` (its wait_s); `reply` gets its terminal result, or the job id once the
+  /// call outlasts its wait_s.
   static void defer(
       McpServer& server, const QByteArray& token, QTcpSocket* socket,
-      std::function<agent_tools::ToolResult(agent_tools::ToolContext&)> resume, McpServer::Reply reply) {
-    server.runAgentTool(
-        "evaluate", callerOf(server, token, socket), agent_tools::ToolResult::deferred(std::move(resume)),
-        std::move(reply));
+      std::function<agent_tools::ToolResult(agent_tools::ToolContext&)> resume, McpServer::Reply reply,
+      const json& args = json::object(), const json& request_id = {}, const std::string& tool = "evaluate",
+      bool declares_tasks = false) {
+    McpServer::Caller caller = callerOf(server, token, socket);
+    caller.request_id = request_id;
+    caller.tasks = declares_tasks;
+    if (const quint64 job = server.openJob(tool, args, caller, std::move(reply)); job != 0) {
+      server.continueJob(job, agent_tools::ToolResult::deferred(std::move(resume)));
+    }
+  }
+  /// Opens a job as app tool open_file does for its load: stopped through `kill`, ended by endJob.
+  static quint64 openAppJob(
+      McpServer& server, const QByteArray& token, QTcpSocket* socket, const json& args, McpServer::Reply reply,
+      std::function<void(bool)> kill) {
+    const quint64 job = server.openJob("open_file", args, callerOf(server, token, socket), std::move(reply));
+    if (job != 0) {
+      server.jobs_.at(job).kill = std::move(kill);
+    }
+    return job;
+  }
+  /// The terminal result of an app tool's work, as its reply delivers it.
+  static void endJob(McpServer& server, quint64 job, json result) {
+    server.finishJob(job, std::move(result));
+  }
+  /// Every job the server holds, running or ended.
+  [[nodiscard]] static std::size_t jobs(const McpServer& server) {
+    return server.jobs_.size();
+  }
+  /// Moves every ended job's end `age` into the past, as if that much time went by.
+  static void ageEndedJobs(McpServer& server, std::chrono::steady_clock::duration age) {
+    for (auto& [id, job] : server.jobs_) {
+      if (McpServer::ended(job)) {
+        job.ended_at -= age;
+      }
+    }
   }
   /// Queues, for `token` and `socket`, a deferred result that never finishes; `resumes` counts
   /// its resumes. Its reply must never run.
@@ -131,7 +176,13 @@ class McpTestPeer {
 
  private:
   static McpServer::Caller callerOf(const McpServer& server, const QByteArray& token, QTcpSocket* socket) {
-    return {.token = token, .owner = token == server.public_token_ ? u"agent-test"_s : QString(), .connection = socket};
+    return {
+        .token = token,
+        .owner = token == server.public_token_ ? u"agent-test"_s : QString(),
+        .connection = socket,
+        .request_id = {},
+        .job = 0,
+        .tasks = false};
   }
 };
 
@@ -297,6 +348,15 @@ class McpServerTest : public ::testing::Test {
     return dataset;
   }
 
+  /// Opens a prompt of the user's own, modal like every desktop question, from the event loop.
+  void openUsersDialog() {
+    QTimer::singleShot(0, window_.get(), [this] {
+      PJ::MessageBox::questionAsync(
+          window_.get(), QStringLiteral("Hold on"), QStringLiteral("The user is deciding."),
+          {{QStringLiteral("OK"), PJ::MessageBox::kPrimaryRole}}, {});
+    });
+  }
+
   /// Clicks `label` on the visible message box, once.
   static std::function<void()> clicker(const QString& label, bool& clicked) {
     return [label, &clicked] {
@@ -374,11 +434,7 @@ TEST_F(McpServerTest, UnderTheUsersDialogOnlyReadsRun) {
   });
   probe.start(50);
   // The user's own prompt, modal like every desktop question.
-  QTimer::singleShot(0, window_.get(), [this] {
-    PJ::MessageBox::questionAsync(
-        window_.get(), QStringLiteral("Hold on"), QStringLiteral("The user is deciding."),
-        {{QStringLiteral("OK"), PJ::MessageBox::kPrimaryRole}}, {});
-  });
+  openUsersDialog();
   ASSERT_TRUE(pumpUntil([&] { return change.has_value() && visible<PJ::MessageBox>().empty(); }));
   const auto [status_text, status_error] = result(*status);
   ASSERT_FALSE(status_error) << status_text;
@@ -786,6 +842,50 @@ TEST_F(McpServerTest, ExportWritesNumbersExactlyWhateverTheLocale) {
   EXPECT_GT(rows, 0);
 }
 
+TEST_F(McpServerTest, AKilledExportLeavesNothingBehindNorTouchesTheFileThatWasThere) {
+  ASSERT_NE(loadMock(), 0);  // samples at 100, 200 and 300 ns
+  QTemporaryDir out;
+  ASSERT_TRUE(out.isValid());
+  const QString destination = out.filePath(u"keep.csv"_s);
+  {
+    QFile existing(destination);
+    ASSERT_TRUE(existing.open(QIODevice::WriteOnly));
+    existing.write("the user's file");
+  }
+  // Close to the row limit, so the writer is still at it when the stop arrives.
+  const json started = json::parse(
+      result(call(
+                 "export_series", {{"paths", {"mock/file_data/value"}},
+                                   {"path", destination.toStdString()},
+                                   {"rate_hz", 4.9e13},
+                                   {"wait_s", 0}}))
+          .first,
+      nullptr, false);
+  ASSERT_TRUE(started.contains("job_id")) << started.dump();
+  const auto [killed, kill_error] = result(call("job_kill", {{"job_id", started["job_id"]}}));
+  EXPECT_FALSE(kill_error) << killed;
+  ASSERT_EQ(json::parse(killed, nullptr, false).value("state", ""), "killed") << killed;
+  QFile kept(destination);
+  ASSERT_TRUE(kept.open(QIODevice::ReadOnly));
+  EXPECT_EQ(kept.readAll(), "the user's file");
+  EXPECT_EQ(QDir(out.path()).entryList(QDir::Files).size(), 1) << "the stopped export left a partial file";
+}
+
+TEST_F(McpServerTest, AnExportThatOutlastsItsWaitIsAJobWhoseResultIsTheFile) {
+  ASSERT_NE(loadMock(), 0);
+  const json started = json::parse(
+      result(call("export_series", {{"paths", {"mock/file_data/value"}}, {"rate_hz", 1e13}, {"wait_s", 0}})).first,
+      nullptr, false);
+  ASSERT_TRUE(started.contains("job_id")) << started.dump();
+  const auto [text, error] = result(call("job_wait", {{"job_id", started["job_id"]}, {"timeout_s", 60}}));
+  ASSERT_FALSE(error) << text;
+  const json done = json::parse(text, nullptr, false);
+  EXPECT_EQ(done.value("rows", 0), 2000001);
+  const QString path = QString::fromStdString(done.value("path", ""));
+  EXPECT_TRUE(QFile::exists(path)) << text;
+  QFile::remove(path);
+}
+
 // An agent's removal never takes the user's work with it: with a series of the user's built on each of the agent's,
 // both remove tools refuse, naming it and its owner, and remove nothing.
 TEST_F(McpServerTest, AnAgentsRemovalRefusesToTakeTheUsersSeriesWithIt) {
@@ -853,6 +953,903 @@ TEST_F(McpServerTest, ClosingPublicAccessWithAnEvaluationInFlightDropsIt) {
   EXPECT_EQ(PJ::McpTestPeer::deferred(*server()), 0U);
   EXPECT_EQ(exchange(*socket).responses, 0);  // the connection closes with no reply
   EXPECT_EQ(callAs(token_, "get_status", json::object()).status, 401);
+}
+
+/// The JSON a tool result's text holds.
+json parsedText(const std::pair<std::string, bool>& text) {
+  return json::parse(text.first, nullptr, false);
+}
+
+/// The JSON in the text of `reply`, a tool result as a Reply gets it.
+json textOf(const json& reply) {
+  return json::parse(reply["content"][0].value("text", ""), nullptr, false);
+}
+
+/// An object evaluation at an instant: deferred for a tick or two, then answered.
+json instantEvaluation() {
+  return {{"inputs", {"mock/file_data/value"}}, {"at_s", 0.0}, {"body", "return { y = 1 }"}, {"outputs", {"y:number"}}};
+}
+
+/// A continuation that never finishes; `alive`, when given, dies with its last copy, and `resumes`
+/// counts how often it ran.
+struct Endless {
+  std::shared_ptr<int> alive = {};
+  int* resumes = nullptr;
+  PJ::agent_tools::ToolResult operator()(PJ::agent_tools::ToolContext&) const {
+    if (resumes != nullptr) {
+      ++*resumes;
+    }
+    return PJ::agent_tools::ToolResult::deferred(*this);
+  }
+};
+
+/// Calls made without HTTP as the public client "test" (owner agent-test, as the HTTP helpers'
+/// default client), so a case can hold a call open and act around it.
+class McpJobTest : public McpServerTest {
+ protected:
+  /// A call of `client_` to agent tool `tool` whose result is `resume`, made with `args` (its wait_s);
+  /// replies land in replies_.
+  void startCall(
+      std::function<PJ::agent_tools::ToolResult(PJ::agent_tools::ToolContext&)> resume, const json& args,
+      const json& request_id = {}, const std::string& tool = "evaluate", bool declares_tasks = false) {
+    PJ::McpTestPeer::defer(
+        *server(), QByteArray::fromStdString(token_), client_.get(), std::move(resume),
+        [this](json reply) { replies_.push_back(std::move(reply)); }, args, request_id, tool, declares_tasks);
+  }
+
+  /// A call of `client_` standing for an import: `kills` counts its stop requests, and it ends only
+  /// through McpTestPeer::endJob. Returns its job.
+  quint64 startImport(const json& args, int& kills) {
+    return PJ::McpTestPeer::openAppJob(
+        *server(), QByteArray::fromStdString(token_), client_.get(), args,
+        [this](json reply) { replies_.push_back(std::move(reply)); }, [&kills](bool) { ++kills; });
+  }
+
+  /// A call of `client_` that never ends.
+  void startEndless(const json& args, const json& request_id = {}, std::shared_ptr<int> alive = {}) {
+    startCall(Endless{std::move(alive)}, args, request_id);
+  }
+
+  /// Starts an endless call that goes to the background at once; returns its job id.
+  json startBackgroundJob(std::shared_ptr<int> alive = {}) {
+    const std::size_t before = replies_.size();
+    startEndless({{"wait_s", 0}}, {}, std::move(alive));
+    PJ::McpTestPeer::resumeDeferred(*server());
+    EXPECT_EQ(replies_.size(), before + 1) << "the call did not get its job id";
+    return replies_.size() > before ? textOf(replies_.back()).value("job_id", json()) : json();
+  }
+
+  std::unique_ptr<QTcpSocket> client_ = std::make_unique<QTcpSocket>();  // the caller's live connection
+  std::vector<json> replies_;
+};
+
+TEST_F(McpServerTest, TheJobCapableToolsTakeWaitSAndEveryClientGetsTheJobTools) {
+  const Answer listed = rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}}, "test");
+  std::map<std::string, json> tools;
+  for (const json& tool : listed.body["result"]["tools"]) {
+    tools[tool.value("name", "")] = tool;
+  }
+  for (const char* name : {"evaluate", "create_derived_object", "open_file", "reload_file"}) {
+    EXPECT_TRUE(tools[name]["inputSchema"]["properties"].contains("wait_s")) << name;
+  }
+  EXPECT_FALSE(tools["read_series"]["inputSchema"]["properties"].contains("wait_s"));
+  EXPECT_TRUE(tools["jobs_list"]["annotations"].value("readOnlyHint", false));
+  EXPECT_TRUE(tools["job_wait"]["annotations"].value("readOnlyHint", false));
+  EXPECT_FALSE(tools["job_kill"]["annotations"].value("readOnlyHint", true)) << "a kill changes state";
+}
+
+TEST_F(McpJobTest, ACallThatEndsWithinItsWaitRepliesAsBefore) {
+  ASSERT_NE(loadMock(), 0);
+  const auto [text, error] = result(call("evaluate", instantEvaluation()));
+  ASSERT_FALSE(error) << text;
+  EXPECT_EQ(text.find("job_id"), std::string::npos) << text;
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 0U) << "a call that ended in the foreground left a job";
+}
+
+TEST_F(McpJobTest, ACallPastItsWaitBecomesAJobThatJobWaitAndJobKillReach) {
+  const json id = startBackgroundJob();
+  ASSERT_TRUE(id.is_number_integer());
+  EXPECT_EQ(textOf(replies_[0]).value("state", ""), "running");
+
+  const json listed = parsedText(result(call("jobs_list", json::object())));
+  ASSERT_EQ(listed.size(), 1U) << listed.dump();
+  EXPECT_EQ(listed[0]["job_id"], id);
+  EXPECT_EQ(listed[0].value("tool", ""), "evaluate");
+  EXPECT_EQ(parsedText(result(call("job_wait", {{"job_id", id}, {"timeout_s", 0}}))).value("state", ""), "running");
+  // A wait that times out says the job still runs, without ending it.
+  EXPECT_EQ(parsedText(result(call("job_wait", {{"job_id", id}, {"timeout_s", 0.1}}))).value("state", ""), "running");
+
+  const auto killed = result(call("job_kill", {{"job_id", id}}));
+  EXPECT_FALSE(killed.second) << killed.first;
+  EXPECT_EQ(parsedText(killed).value("state", ""), "killed") << killed.first;
+  // The result stays readable, again and again, until it expires.
+  for (int i = 0; i < 2; ++i) {
+    const auto [text, error] = result(call("job_wait", {{"job_id", id}}));
+    EXPECT_TRUE(error);
+    EXPECT_NE(text.find("killed"), std::string::npos) << text;
+  }
+  EXPECT_EQ(parsedText(result(call("job_kill", {{"job_id", id}}))).value("state", ""), "killed") << "a repeated kill";
+  EXPECT_EQ(replies_.size(), 1U) << "the call that got its job id was answered again";
+  PJ::McpTestPeer::ageEndedJobs(*server(), std::chrono::minutes(11));
+  const auto [expired, expired_error] = result(call("job_wait", {{"job_id", id}}));
+  EXPECT_TRUE(expired_error);
+  EXPECT_NE(expired.find("no such job"), std::string::npos) << expired;
+}
+
+TEST_F(McpJobTest, WronglyTypedJobArgumentsAreToolErrorsThatStopNothing) {
+  const json id = startBackgroundJob();
+  ASSERT_TRUE(id.is_number_integer());
+  for (const json& args : {json{{"job_id", id}, {"keep_partial", "yes"}}, json{{"job_id", "one"}}, json::object()}) {
+    const auto [text, error] = result(call("job_kill", args));
+    EXPECT_TRUE(error) << args.dump() << ": " << text;
+  }
+  EXPECT_TRUE(result(call("job_wait", {{"job_id", "one"}})).second);
+  // A timeout that is no number falls back to the default wait; the job is untouched either way.
+  const std::unique_ptr<QTcpSocket> waiting = post("job_wait", {{"job_id", id}, {"timeout_s", "soon"}});
+  static_cast<void>(pumpUntil([] { return false; }, 150));
+  EXPECT_FALSE(waiting->readAll().contains("HTTP/1.1"));
+  EXPECT_EQ(parsedText(result(call("jobs_list", json::object())))[0].value("state", ""), "running");
+}
+
+TEST_F(McpJobTest, AJobWaitGetsTheResultWhenTheJobEnds) {
+  bool may_finish = false;
+  struct Pending {
+    const bool* may_finish;
+    PJ::agent_tools::ToolResult operator()(PJ::agent_tools::ToolContext&) const {
+      return *may_finish ? PJ::agent_tools::ToolResult::success("finished")
+                         : PJ::agent_tools::ToolResult::deferred(*this);
+    }
+  };
+  startCall(Pending{&may_finish}, {{"wait_s", 0}});
+  PJ::McpTestPeer::resumeDeferred(*server());
+  ASSERT_EQ(replies_.size(), 1U);
+  const json id = textOf(replies_[0])["job_id"];
+  // The agent's client times out and drops the request: a background job does not care.
+  client_.reset();
+  const std::unique_ptr<QTcpSocket> waiting = post("job_wait", {{"job_id", id}, {"timeout_s", 30}});
+  static_cast<void>(pumpUntil([] { return false; }, 150));
+  EXPECT_FALSE(waiting->readAll().contains("HTTP/1.1")) << "job_wait answered while the job ran";
+  may_finish = true;
+  const auto [text, error] = result(exchange(*waiting));
+  EXPECT_FALSE(error) << text;
+  EXPECT_EQ(text, "finished");
+  EXPECT_EQ(result(call("job_wait", {{"job_id", id}})).first, "finished") << "the result is repeatable";
+  EXPECT_EQ(replies_.size(), 1U) << "the call's reply was sent twice";
+}
+
+TEST_F(McpJobTest, AnotherOwnersJobReadsAsNoSuchJob) {
+  const json id = startBackgroundJob();
+  ASSERT_TRUE(id.is_number_integer());
+  for (const char* tool : {"job_wait", "job_kill"}) {
+    const auto [text, error] = result(callAs(token_, tool, {{"job_id", id}}, "other"));
+    EXPECT_TRUE(error) << tool;
+    EXPECT_NE(text.find("no such job"), std::string::npos) << text;
+  }
+  EXPECT_EQ(parsedText(result(callAs(token_, "jobs_list", json::object(), "other"))), json::array());
+  const json mine = parsedText(result(call("jobs_list", json::object())));
+  ASSERT_EQ(mine.size(), 1U);
+  EXPECT_EQ(mine[0].value("state", ""), "running") << "the other owner stopped it";
+}
+
+TEST_F(McpJobTest, KillingAJobReleasesItsContinuationAtOnce) {
+  bool released = false;
+  const json id = startBackgroundJob(lifetimeToken([&released] { released = true; }));
+  ASSERT_TRUE(id.is_number_integer());
+  EXPECT_FALSE(released);
+  PJ::McpTestPeer::callTool(
+      *server(), QByteArray::fromStdString(token_), client_.get(), "job_kill", {{"job_id", id}},
+      [this](json reply) { replies_.push_back(std::move(reply)); });
+  EXPECT_TRUE(released) << "the kill kept the continuation (and its evaluation) alive";
+  ASSERT_EQ(replies_.size(), 2U) << "job_kill answers once the stop took effect";
+  EXPECT_EQ(textOf(replies_[1]).value("state", ""), "killed") << replies_[1].dump();
+}
+
+TEST_F(McpJobTest, AForegroundCallDiesWithItsConnection) {
+  bool released = false;
+  startEndless({{"wait_s", 60}}, {}, lifetimeToken([&released] { released = true; }));
+  PJ::McpTestPeer::resumeDeferred(*server());
+  ASSERT_EQ(PJ::McpTestPeer::deferred(*server()), 1U);
+  client_.reset();
+  PJ::McpTestPeer::resumeDeferred(*server());
+  EXPECT_TRUE(released);
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 0U);
+  EXPECT_TRUE(replies_.empty());
+}
+
+TEST_F(McpJobTest, AHangUpAnswersAnotherSessionWaitingOnTheJob) {
+  startEndless({{"wait_s", 60}});
+  // A second session of the same client learns the id and waits on it; then the first hangs up.
+  const json id = parsedText(result(call("jobs_list", json::object())))[0]["job_id"];
+  const std::unique_ptr<QTcpSocket> waiting = post("job_wait", {{"job_id", id}, {"timeout_s", 30}});
+  static_cast<void>(pumpUntil([] { return false; }, 150));
+  ASSERT_FALSE(waiting->readAll().contains("HTTP/1.1"));
+  client_.reset();
+  const auto [text, error] = result(exchange(*waiting));
+  EXPECT_TRUE(error);
+  EXPECT_NE(text.find("killed"), std::string::npos) << text;
+  EXPECT_EQ(parsedText(result(call("jobs_list", json::object())))[0].value("state", ""), "killed");
+  EXPECT_TRUE(replies_.empty());
+}
+
+TEST_F(McpJobTest, AnOwnerRunsAtMostEightJobs) {
+  ASSERT_NE(loadMock(), 0);
+  for (int i = 0; i < 8; ++i) {
+    startEndless({{"wait_s", 0}});
+  }
+  EXPECT_FALSE(result(call("get_status", json::object())).second) << "a call that is no job still runs";
+  const json evaluate = instantEvaluation();
+  const auto [text, error] = result(call("evaluate", evaluate));
+  EXPECT_TRUE(error);
+  EXPECT_NE(text.find("jobs_list"), std::string::npos) << text;
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 8U);
+  const auto [refused, refused_error] =
+      result(call("open_file", {{"path", pj_app_test::makeMockFile(data_, "b.mock").toStdString()}}));
+  EXPECT_TRUE(refused_error) << refused;
+  // Another client of the same server has its own allowance.
+  const auto [other, other_error] = result(callAs(token_, "evaluate", evaluate, "other"));
+  EXPECT_FALSE(other_error) << other;
+}
+
+TEST_F(McpJobTest, OnlyTheLatestEndedJobsOfAnOwnerAreKept) {
+  std::vector<json> ids;
+  for (int i = 0; i < 34; ++i) {
+    ids.push_back(startBackgroundJob());
+    ASSERT_FALSE(result(call("job_kill", {{"job_id", ids.back()}})).second);
+  }
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 32U);
+  EXPECT_TRUE(result(call("job_wait", {{"job_id", ids.front()}})).second) << "the oldest result was kept";
+  EXPECT_NE(result(call("job_wait", {{"job_id", ids.back()}})).first.find("killed"), std::string::npos);
+}
+
+TEST_F(McpJobTest, TheResultsKeptAreTheLatestToEnd) {
+  const json first = startBackgroundJob();  // started first, ended last
+  for (int i = 0; i < 32; ++i) {
+    ASSERT_FALSE(result(call("job_kill", {{"job_id", startBackgroundJob()}})).second);
+  }
+  ASSERT_FALSE(result(call("job_kill", {{"job_id", first}})).second);
+  EXPECT_NE(result(call("job_wait", {{"job_id", first}})).first.find("killed"), std::string::npos)
+      << "the job that just ended lost its result to older ones";
+}
+
+TEST_F(McpJobTest, AStopThatCameTooLateLeavesTheJobCompleted) {
+  int kills = 0;
+  const quint64 job = startImport({{"wait_s", 0}}, kills);
+  PJ::McpTestPeer::resumeDeferred(*server());
+  ASSERT_EQ(replies_.size(), 1U);
+  // The import had already finished when the stop arrived: its terminal is on its way.
+  const std::unique_ptr<QTcpSocket> killing = post("job_kill", {{"job_id", job}, {"keep_partial", false}});
+  ASSERT_TRUE(pumpUntil([&] { return kills == 1; }));
+  EXPECT_TRUE(parsedText(result(call("jobs_list", json::object())))[0].value("stopping", false));
+  PJ::McpTestPeer::endJob(*server(), job, PJ::mcp::textResult("loaded"));
+  EXPECT_EQ(parsedText(result(exchange(*killing))).value("state", ""), "completed");
+  const auto [text, error] = result(call("job_wait", {{"job_id", job}}));
+  EXPECT_FALSE(error);
+  EXPECT_EQ(text, "loaded");
+  // A second terminal (the load's own, after a stop already ended the job) changes nothing.
+  PJ::McpTestPeer::endJob(*server(), job, PJ::mcp::textResult("again", true));
+  EXPECT_EQ(result(call("job_wait", {{"job_id", job}})).first, "loaded");
+  EXPECT_EQ(kills, 1);
+}
+
+TEST_F(McpJobTest, AnImportWhoseCallHungUpKeepsItsResult) {
+  int kills = 0;
+  // Before and after the tick that notices the hang-up: the client finds the outcome either way.
+  for (const bool ticked : {false, true}) {
+    client_ = std::make_unique<QTcpSocket>();
+    const quint64 job = startImport({{"wait_s", 60}}, kills);
+    client_.reset();
+    if (ticked) {
+      PJ::McpTestPeer::resumeDeferred(*server());
+    }
+    PJ::McpTestPeer::endJob(*server(), job, PJ::mcp::textResult("loaded"));
+    EXPECT_EQ(result(call("job_wait", {{"job_id", job}})).first, "loaded") << ticked;
+  }
+  EXPECT_EQ(kills, 0) << "an import was stopped because its client left";
+  EXPECT_TRUE(replies_.empty());
+}
+
+TEST_F(McpJobTest, AForegroundJobSeenInJobsListKeepsItsResult) {
+  int kills = 0;
+  const quint64 job = startImport({{"wait_s", 60}}, kills);
+  // Another session of the same client learns the id while the call still waits.
+  ASSERT_EQ(parsedText(result(call("jobs_list", json::object())))[0].value("job_id", 0U), job);
+  PJ::McpTestPeer::endJob(*server(), job, PJ::mcp::textResult("loaded"));
+  ASSERT_EQ(replies_.size(), 1U) << "the waiting call was not answered";
+  EXPECT_EQ(replies_[0]["content"][0].value("text", ""), "loaded");
+  EXPECT_EQ(result(call("job_wait", {{"job_id", job}})).first, "loaded");
+}
+
+TEST_F(McpJobTest, AMutatingJobWaitsWhileTheUserHasADialogOpen) {
+  int resumes = 0;
+  startCall(Endless{.alive = {}, .resumes = &resumes}, {{"wait_s", 0}}, {}, "create_derived_object");
+  ASSERT_TRUE(pumpUntil([&] { return resumes >= 2; }));
+  std::optional<json> listed;
+  int resumes_under_dialog = -1;
+  QTimer probe;
+  QObject::connect(&probe, &QTimer::timeout, [&] {
+    const std::vector<PJ::MessageBox*> boxes = visible<PJ::MessageBox>();
+    if (listed.has_value() || boxes.empty()) {
+      return;
+    }
+    const int before = resumes;
+    static_cast<void>(pumpUntil([] { return false; }, 200));  // a few resume ticks
+    resumes_under_dialog = resumes - before;
+    listed = parsedText(result(call("jobs_list", json::object())));
+    boxes.front()->reject();
+  });
+  probe.start(50);
+  openUsersDialog();
+  ASSERT_TRUE(pumpUntil([&] { return listed.has_value() && visible<PJ::MessageBox>().empty(); }));
+  EXPECT_EQ(resumes_under_dialog, 0) << "a mutating continuation ran under the user's dialog";
+  EXPECT_EQ((*listed)[0].value("state", ""), "waiting_for_user") << listed->dump();
+  const int after = resumes;
+  ASSERT_TRUE(pumpUntil([&] { return resumes > after; })) << "the job did not carry on once the dialog closed";
+  EXPECT_EQ(parsedText(result(call("jobs_list", json::object())))[0].value("state", ""), "running");
+}
+
+TEST_F(McpJobTest, TheUserSeesRunningJobsAndStopsOne) {
+  bool released = false;
+  const json id = startBackgroundJob(lifetimeToken([&released] { released = true; }));
+  ASSERT_TRUE(id.is_number_integer());
+  // The status bar says something runs, even though no client has called for a while.
+  auto* indicator = window_->findChild<QToolButton*>(u"mcpAgentButton"_s);
+  ASSERT_NE(indicator, nullptr);
+  EXPECT_TRUE(indicator->isVisibleTo(window_.get()));
+  EXPECT_NE(indicator->text().indexOf(u"1 running"_s), -1) << indicator->text().toStdString();
+
+  indicator->click();
+  const std::vector<PJ::McpJobsDialog*> dialogs = visible<PJ::McpJobsDialog>();
+  ASSERT_EQ(dialogs.size(), 1U);
+  EXPECT_EQ(QApplication::activeModalWidget(), nullptr) << "the user's view must not hold the agents up";
+  auto* stop = dialogs.front()->findChild<QPushButton*>(u"stopJob%1"_s.arg(id.get<quint64>()));
+  ASSERT_NE(stop, nullptr);
+  stop->click();
+  EXPECT_TRUE(released) << "Stop left the job's work running";
+  EXPECT_NE(result(call("job_wait", {{"job_id", id}})).first.find("killed"), std::string::npos);
+  // The row is gone from view (its widgets are deleted when the event loop next runs).
+  const QList<QPushButton*> buttons = dialogs.front()->findChildren<QPushButton*>(QRegularExpression(u"^stopJob"_s));
+  EXPECT_TRUE(std::none_of(buttons.begin(), buttons.end(), [&](const QPushButton* button) {
+    return button->isVisibleTo(dialogs.front());
+  }));
+  EXPECT_EQ(indicator->text().indexOf(u"running"_s), -1) << indicator->text().toStdString();
+}
+
+/// A request's params declaring the MCP Tasks extension, as a 2026-07-28 client sends them.
+json declaringTasks(json params = json::object()) {
+  params["_meta"]["io.modelcontextprotocol/clientCapabilities"]["extensions"][PJ::mcp::kTasksExtension] =
+      json::object();
+  return params;
+}
+
+TEST_F(McpJobTest, AClientThatDeclaresTasksGetsATaskHandleAndReachesItsJobThroughTasksMethods) {
+  bool may_finish = false;
+  struct Pending {
+    const bool* may_finish;
+    PJ::agent_tools::ToolResult operator()(PJ::agent_tools::ToolContext&) const {
+      // A tool error, which the extension reports as a completed task.
+      return *may_finish ? PJ::agent_tools::ToolResult::failure("the tool says no")
+                         : PJ::agent_tools::ToolResult::deferred(*this);
+    }
+  };
+  startCall(Pending{&may_finish}, {{"wait_s", 0}}, {}, "evaluate", /*declares_tasks=*/true);
+  PJ::McpTestPeer::resumeDeferred(*server());
+  ASSERT_EQ(replies_.size(), 1U);
+  const json handle = replies_[0];
+  EXPECT_EQ(handle.value("resultType", ""), "task") << handle.dump();
+  EXPECT_EQ(handle.value("status", ""), "working");
+  EXPECT_FALSE(handle.contains("content")) << "a task handle is not a tool result";
+  const std::string task_id = handle.value("taskId", "");
+  EXPECT_EQ(task_id.size(), 64U) << "a task id must not be guessable";
+  EXPECT_TRUE(handle["ttlMs"].is_null());
+  EXPECT_FALSE(handle.value("createdAt", "").empty());
+
+  const auto rpc = [&](const char* method, const json& params, const std::string& client = "test") {
+    return rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 5}, {"method", method}, {"params", params}}, client).body;
+  };
+  const json get = declaringTasks({{"taskId", task_id}});
+  EXPECT_EQ(rpc("tasks/get", get)["result"].value("status", ""), "working");
+  EXPECT_EQ(rpc("tasks/get", get)["result"].value("resultType", ""), "complete");
+  // Without the capability, and for anyone else's client, there is no such method or task.
+  const json undeclared = rpc("tasks/get", {{"taskId", task_id}});
+  EXPECT_EQ(undeclared["error"].value("code", 0), PJ::mcp::kMissingClientCapability) << undeclared.dump();
+  EXPECT_TRUE(undeclared["error"]["data"]["requiredCapabilities"]["extensions"].contains(PJ::mcp::kTasksExtension));
+  EXPECT_EQ(rpc("tasks/get", get, "other")["error"].value("code", 0), -32602);
+  EXPECT_EQ(rpc("tasks/get", declaringTasks({{"taskId", "nope"}}))["error"].value("code", 0), -32602);
+  EXPECT_EQ(
+      rpc("tasks/update", declaringTasks({{"taskId", task_id}, {"inputResponses", json::object()}}))["result"],
+      json({{"resultType", "complete"}}));
+  // The job tools see the same job.
+  EXPECT_EQ(parsedText(result(call("jobs_list", json::object()))).size(), 1U);
+
+  may_finish = true;
+  PJ::McpTestPeer::resumeDeferred(*server());
+  const json done = rpc("tasks/get", get)["result"];
+  EXPECT_EQ(done.value("status", ""), "completed") << done.dump();
+  EXPECT_TRUE(done["result"].value("isError", false)) << done.dump();
+  EXPECT_EQ(done["result"]["content"][0].value("text", ""), "the tool says no");
+  EXPECT_TRUE(done["ttlMs"].is_number_integer()) << done.dump();
+  EXPECT_EQ(replies_.size(), 1U) << "the call that got its task handle was answered again";
+}
+
+TEST_F(McpJobTest, TasksCancelStopsTheJobAndAClientThatDoesNotDeclareTasksGetsTheJobText) {
+  bool released = false;
+  startCall(
+      Endless{lifetimeToken([&released] { released = true; })}, {{"wait_s", 0}}, {}, "evaluate",
+      /*declares_tasks=*/true);
+  startEndless({{"wait_s", 0}});  // the same client without the capability on this call
+  PJ::McpTestPeer::resumeDeferred(*server());
+  ASSERT_EQ(replies_.size(), 2U);
+  ASSERT_EQ(replies_[0].value("resultType", ""), "task");
+  EXPECT_TRUE(textOf(replies_[1]).contains("job_id")) << "a task handle went to a client that did not ask for one";
+
+  const json cancel = declaringTasks({{"taskId", replies_[0].value("taskId", "")}});
+  const json ack =
+      rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 6}, {"method", "tasks/cancel"}, {"params", cancel}}, "test").body;
+  EXPECT_EQ(ack["result"], json({{"resultType", "complete"}})) << ack.dump();
+  EXPECT_TRUE(released) << "tasks/cancel left the work running";
+  const json after =
+      rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 7}, {"method", "tasks/get"}, {"params", cancel}}, "test").body;
+  EXPECT_EQ(after["result"].value("status", ""), "cancelled") << after.dump();
+  EXPECT_FALSE(after["result"].contains("result"));
+}
+
+TEST_F(McpJobTest, ATaskIsNotEvictedByLaterJobsBeforeItsPromisedExpiry) {
+  startCall(Endless{}, {{"wait_s", 0}}, {}, "evaluate", /*declares_tasks=*/true);
+  PJ::McpTestPeer::resumeDeferred(*server());
+  ASSERT_EQ(replies_.size(), 1U);
+  const json task = declaringTasks({{"taskId", replies_[0].value("taskId", "")}});
+  const auto get = [&] {
+    return rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 5}, {"method", "tasks/get"}, {"params", task}}, "test").body;
+  };
+  ASSERT_TRUE(rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 6}, {"method", "tasks/cancel"}, {"params", task}}, "test")
+                  .body.contains("result"));
+  ASSERT_TRUE(get()["result"]["ttlMs"].is_number_integer());
+  // More ended jobs than the plain results a client keeps.
+  for (int i = 0; i < 34; ++i) {
+    ASSERT_FALSE(result(call("job_kill", {{"job_id", startBackgroundJob()}})).second);
+  }
+  EXPECT_EQ(get()["result"].value("status", ""), "cancelled") << "the task went before the expiry it advertised";
+  PJ::McpTestPeer::ageEndedJobs(*server(), std::chrono::minutes(11));
+  EXPECT_EQ(get()["error"].value("code", 0), -32602);
+}
+
+TEST_F(McpJobTest, ClosingPublicAccessKillsABackgroundJob) {
+  bool released = false;
+  const json id = startBackgroundJob(lifetimeToken([&released] { released = true; }));
+  ASSERT_TRUE(id.is_number_integer());
+  ASSERT_EQ(PJ::McpTestPeer::deferred(*server()), 1U) << "the job did not survive its call";
+  window_->closeMcpPublicAccess();
+  EXPECT_TRUE(released);
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 0U);
+}
+
+TEST_F(McpJobTest, ACancelledNotificationStopsThatForegroundCall) {
+  bool released = false;
+  startEndless({{"wait_s", 60}}, "call-7", lifetimeToken([&released] { released = true; }));
+  const json cancel = {
+      {"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", "call-7"}}}};
+  // Another client's cancel of its own call with that id stops nothing of this one, nor does another id.
+  EXPECT_EQ(rpcAs(token_, cancel, "other").status, 202);
+  json other_id = cancel;
+  other_id["params"]["requestId"] = 7;
+  EXPECT_EQ(rpcAs(token_, other_id, "test").status, 202);
+  EXPECT_FALSE(released);
+  EXPECT_EQ(rpcAs(token_, cancel, "test").status, 202);
+  EXPECT_TRUE(released);
+  ASSERT_EQ(replies_.size(), 1U);
+  EXPECT_TRUE(replies_[0].value("isError", false));
+  EXPECT_NE(replies_[0].dump().find("killed"), std::string::npos) << replies_[0].dump();
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 0U);
+}
+
+// A direct client may name itself on its calls only: its cancel then carries no name to match.
+TEST_F(McpJobTest, ACancelThatNamesNoClientStopsTheCallWithThatId) {
+  bool released = false;
+  startEndless({{"wait_s", 60}}, "call-9", lifetimeToken([&released] { released = true; }));
+  const json cancel = {
+      {"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", "call-9"}}}};
+  EXPECT_EQ(rpcAs(token_, cancel, "").status, 202);
+  EXPECT_TRUE(released);
+}
+
+TEST_F(McpJobTest, ACancelNamingTwoCallsOrABackgroundJobStopsNothing) {
+  startEndless({{"wait_s", 60}}, 7);
+  startEndless({{"wait_s", 60}}, 7);
+  startEndless({{"wait_s", 0}}, 8);
+  PJ::McpTestPeer::resumeDeferred(*server());  // the third call goes to the background
+  for (const int id : {7, 8}) {
+    EXPECT_EQ(
+        rpcAs(
+            token_, {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", id}}}},
+            "test")
+            .status,
+        202);
+  }
+  EXPECT_EQ(PJ::McpTestPeer::deferred(*server()), 3U);
+}
+
+TEST_F(McpJobTest, UnderTheUsersDialogTheJobToolsRun) {
+  const json id = startBackgroundJob();
+  ASSERT_TRUE(id.is_number_integer());
+  std::optional<Answer> listed;
+  std::optional<Answer> killed;
+  std::optional<Answer> change;
+  bool busy = false;
+  QTimer probe;
+  QObject::connect(&probe, &QTimer::timeout, [&] {
+    const std::vector<PJ::MessageBox*> boxes = visible<PJ::MessageBox>();
+    if (busy || boxes.empty()) {
+      return;
+    }
+    busy = true;
+    change = call("remove_markers", json::object());
+    listed = call("jobs_list", json::object());
+    killed = call("job_kill", {{"job_id", id}});
+    boxes.front()->reject();
+  });
+  probe.start(50);
+  openUsersDialog();
+  ASSERT_TRUE(pumpUntil([&] { return killed.has_value() && visible<PJ::MessageBox>().empty(); }));
+  EXPECT_NE(result(*change).first.find("'Hold on' open"), std::string::npos) << "the dialog gated nothing";
+  EXPECT_EQ(parsedText(result(*listed)).size(), 1U) << result(*listed).first;
+  EXPECT_EQ(parsedText(result(*killed)).value("state", ""), "killed") << result(*killed).first;
+}
+
+/// Streams and the dialogs an agent's call opens, as jobs over real HTTP.
+class McpStreamAndDialogJobTest : public McpServerTest {
+ protected:
+  /// Starts the mock stream with no dialog; returns what start_stream answered.
+  json startStream() {
+    const auto [text, error] =
+        result(call("start_stream", {{"source", "Mock Layout Stream"}, {"config", {{"topic", "live"}}}}));
+    EXPECT_FALSE(error) << text;
+    json started = json::parse(text, nullptr, false);
+    // The dataset is listed with its first sample: a stream stopped before one leaves nothing to find.
+    EXPECT_TRUE(pumpUntil([&] { return started.contains("dataset_id") && loaded(started["dataset_id"]); }));
+    return started;
+  }
+
+  [[nodiscard]] bool streaming(const json& dataset) const {
+    return !window_->streamingSources().layoutSourceId(dataset.get<PJ::DatasetId>()).isEmpty();
+  }
+
+  [[nodiscard]] bool loaded(const json& dataset) const {
+    const auto datasets = window_->appSession().catalogModel().datasets();
+    return std::any_of(datasets.begin(), datasets.end(), [&](const auto& entry) {
+      return entry.first == dataset.get<PJ::DatasetId>();
+    });
+  }
+
+  /// Runs while a call waits: once a dialog of type T is up, records how the caller's one job
+  /// reads, then sends its kill. The dialog is never touched: only the kill may close it. The
+  /// kill's answer is read later (killAnswer): the dialog's own modal loop, which this runs in,
+  /// must unwind first.
+  template <typename T>
+  std::function<void()> killOnceShown() {
+    return [this] {
+      if (kill_ != nullptr || visible<T>().empty() || busy_) {
+        return;
+      }
+      busy_ = true;
+      const json jobs = json::parse(result(call("jobs_list", json::object())).first, nullptr, false);
+      if (jobs.size() == 1) {
+        state_under_dialog_ = jobs[0].value("state", "");
+        kill_ = post("job_kill", {{"job_id", jobs[0]["job_id"]}});
+      }
+      busy_ = false;
+    };
+  }
+
+  /// What the kill sent by killOnceShown answered.
+  json killAnswer() const {
+    return json::parse(result(exchange(*kill_)).first, nullptr, false);
+  }
+
+  std::unique_ptr<QTcpSocket> kill_;
+  std::string state_under_dialog_;
+  bool busy_ = false;
+};
+
+TEST_F(McpStreamAndDialogJobTest, AStreamIsAJobThatJobKillStops) {
+  const json started = startStream();
+  ASSERT_TRUE(started.value("dataset_id", 0) != 0 && started.contains("job_id")) << started.dump();
+  ASSERT_TRUE(streaming(started["dataset_id"]));
+  const json jobs = json::parse(result(call("jobs_list", json::object())).first, nullptr, false);
+  ASSERT_EQ(jobs.size(), 1U) << jobs.dump();
+  EXPECT_EQ(jobs[0].value("state", ""), "running");
+  EXPECT_EQ(jobs[0]["progress"]["dataset_id"], started["dataset_id"]);
+
+  const auto [killed, kill_error] = result(call("job_kill", {{"job_id", started["job_id"]}}));
+  EXPECT_FALSE(kill_error) << killed;
+  EXPECT_EQ(json::parse(killed, nullptr, false).value("state", ""), "killed") << killed;
+  EXPECT_FALSE(streaming(started["dataset_id"]));
+  EXPECT_TRUE(loaded(started["dataset_id"])) << "stopping the stream removed its data";
+}
+
+TEST_F(McpStreamAndDialogJobTest, WaitForEndsWithASampleThatArrivesOnTheLiveStream) {
+  // The mock stream keeps appending samples of value 5 to live/value.
+  const auto [stream, stream_error] =
+      result(call("start_stream", {{"source", "Mock Layout Stream"}, {"config", {{"topic", "live"}, {"value", 5}}}}));
+  ASSERT_FALSE(stream_error) << stream;
+  ASSERT_TRUE(pumpUntil([&] { return !result(call("describe_topic", {{"topic", "live"}})).second; }));
+  const auto [found, found_error] =
+      result(call("wait_for", {{"series", "live/value"}, {"comparison", ">"}, {"threshold", 4}, {"timeout_s", 30}}));
+  ASSERT_FALSE(found_error) << found;
+  const json sample = json::parse(found, nullptr, false);
+  EXPECT_EQ(sample.value("value", 0.0), 5.0) << found;
+  EXPECT_TRUE(sample.contains("time_s")) << found;
+  // A value the stream never reaches: the wait gives up, naming what it last saw.
+  const auto [missed, missed_error] =
+      result(call("wait_for", {{"series", "live/value"}, {"comparison", ">"}, {"threshold", 6}, {"timeout_s", 0.3}}));
+  EXPECT_TRUE(missed_error);
+  EXPECT_NE(missed.find("the latest was 5"), std::string::npos) << missed;
+  // And it is a job like the others: in the background past wait_s, stopped by job_kill.
+  const json waiting = json::parse(
+      result(call(
+                 "wait_for",
+                 {{"series", "live/value"}, {"comparison", "<"}, {"threshold", 0}, {"timeout_s", 600}, {"wait_s", 0}}))
+          .first,
+      nullptr, false);
+  ASSERT_TRUE(waiting.contains("job_id")) << waiting.dump();
+  EXPECT_EQ(
+      json::parse(result(call("job_kill", {{"job_id", waiting["job_id"]}})).first, nullptr, false).value("state", ""),
+      "killed");
+}
+
+/// A tools/call whose client declares the MCP Tasks extension on it, as a 2026-07-28 client does.
+json declaringToolsCall(const std::string& tool, const json& args) {
+  return {
+      {"jsonrpc", "2.0"},
+      {"id", 9},
+      {"method", "tools/call"},
+      {"params", declaringTasks({{"name", tool}, {"arguments", args}})}};
+}
+
+TEST_F(McpStreamAndDialogJobTest, ADeclaringCallThatOutlastsItsWaitIsATaskOverTheWire) {
+  ASSERT_FALSE(
+      result(call("start_stream", {{"source", "Mock Layout Stream"}, {"config", {{"topic", "live"}, {"value", 5}}}}))
+          .second);
+  ASSERT_TRUE(pumpUntil([&] { return !result(call("describe_topic", {{"topic", "live"}})).second; }));
+  // The stream never goes below 0: the wait is still on when its call is handed off.
+  const json never = {
+      {"series", "live/value"}, {"comparison", "<"}, {"threshold", 0}, {"timeout_s", 600}, {"wait_s", 0}};
+  const json handle = rpcAs(token_, declaringToolsCall("wait_for", never), "test").body["result"];
+  ASSERT_EQ(handle.value("resultType", ""), "task") << handle.dump();
+  const json task = declaringTasks({{"taskId", handle.value("taskId", "")}});
+  const auto rpc = [&](const char* method) {
+    return rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 5}, {"method", method}, {"params", task}}, "test").body;
+  };
+  EXPECT_EQ(rpc("tasks/get")["result"].value("status", ""), "working");
+  EXPECT_EQ(rpc("tasks/cancel")["result"], json({{"resultType", "complete"}}));
+  EXPECT_EQ(rpc("tasks/get")["result"].value("status", ""), "cancelled");
+  // The same call without the declaration is the job text, and one that ends in time is its own result.
+  const json plain = rpcAs(token_, toolsCall("wait_for", never), "test").body["result"];
+  EXPECT_TRUE(plain.contains("content")) << plain.dump();
+  EXPECT_FALSE(plain.contains("resultType"));
+  json soon = never;
+  soon["comparison"] = ">";
+  soon["wait_s"] = 30;
+  const json direct = rpcAs(token_, declaringToolsCall("wait_for", soon), "test").body["result"];
+  EXPECT_TRUE(direct.contains("content")) << "a call that ended within its wait became a task: " << direct.dump();
+}
+
+TEST_F(McpStreamAndDialogJobTest, AStreamIsNeverATaskEvenForAClientThatDeclaresThem) {
+  // Handed off while the user is at the dialog: a task would end with the stream's stop, not its start.
+  const std::unique_ptr<QTcpSocket> starting = request(
+      declaringToolsCall("start_stream", {{"source", "Mock Layout Stream"}, {"ask_user", true}, {"wait_s", 0}}), token_,
+      "test");
+  QByteArray received;
+  bool rejected = false;
+  QTimer user;
+  QObject::connect(&user, &QTimer::timeout, [&] {
+    received += starting->readAll();
+    if (!rejected && received.contains("\r\n\r\n") && !visible<PJ::Dialog>().empty()) {
+      rejected = true;
+      visible<PJ::Dialog>().front()->reject();
+    }
+  });
+  user.start(20);
+  ASSERT_TRUE(pumpUntil([&] { return rejected && visible<PJ::Dialog>().empty(); }));
+  user.stop();
+  const json answer = json::parse(received.mid(received.indexOf("\r\n\r\n") + 4).toStdString(), nullptr, false);
+  EXPECT_FALSE(answer["result"].contains("resultType")) << answer.dump();
+  EXPECT_NE(answer["result"]["content"][0].value("text", "").find("job_id"), std::string::npos) << answer.dump();
+}
+
+TEST_F(McpStreamAndDialogJobTest, AStreamThatSomeoneElseStopsEndsItsJobCompleted) {
+  const json started = startStream();
+  ASSERT_TRUE(started.contains("job_id")) << started.dump();
+  const std::unique_ptr<QTcpSocket> waiting = post("job_wait", {{"job_id", started["job_id"]}, {"timeout_s", 30}});
+  static_cast<void>(pumpUntil([] { return false; }, 150));
+  ASSERT_FALSE(waiting->readAll().contains("HTTP/1.1")) << "job_wait answered while the stream ran";
+  ASSERT_FALSE(result(call("stop_stream", {{"dataset", started["dataset_id"]}})).second);
+  const auto [text, error] = result(exchange(*waiting));
+  EXPECT_FALSE(error) << text;
+  EXPECT_EQ(json::parse(text, nullptr, false)["stopped"], started["dataset_id"]) << text;
+}
+
+TEST_F(McpStreamAndDialogJobTest, ClosingPublicAccessStopsTheStreamsItsAgentsStarted) {
+  const json started = startStream();
+  ASSERT_TRUE(streaming(started["dataset_id"]));
+  window_->closeMcpPublicAccess();
+  EXPECT_TRUE(pumpUntil([&] { return !streaming(started["dataset_id"]); }));
+  EXPECT_TRUE(loaded(started["dataset_id"]));
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 0U);
+}
+
+TEST_F(McpStreamAndDialogJobTest, JobKillClosesTheLoaderDialogTheAgentOpened) {
+  QFile probe_file(data_.filePath("x.dlgprobe"));
+  ASSERT_TRUE(probe_file.open(QIODevice::WriteOnly));
+  probe_file.close();
+  const auto [text, error] = result(call(
+      "open_file", {{"path", probe_file.fileName().toStdString()}, {"ask_user", true}}, killOnceShown<PJ::Dialog>()));
+  ASSERT_NE(kill_, nullptr) << "the agent's dialog never showed";
+  EXPECT_EQ(state_under_dialog_, "waiting_for_user");
+  EXPECT_TRUE(error);
+  EXPECT_NE(text.find("cancelled"), std::string::npos) << text;
+  EXPECT_EQ(killAnswer().value("state", ""), "killed");
+  EXPECT_TRUE(visible<PJ::Dialog>().empty()) << "the dialog outlived its job";
+  EXPECT_TRUE(window_->appSession().catalogModel().datasets().empty());
+}
+
+TEST_F(McpStreamAndDialogJobTest, ALoadAfterAKillAtTheLoaderDialogStillLoads) {
+  QFile probe_file(data_.filePath("x.dlgprobe"));
+  ASSERT_TRUE(probe_file.open(QIODevice::WriteOnly));
+  probe_file.close();
+  ASSERT_TRUE(result(call(
+                         "open_file", {{"path", probe_file.fileName().toStdString()}, {"ask_user", true}},
+                         killOnceShown<PJ::Dialog>()))
+                  .second);
+  ASSERT_NE(kill_, nullptr);
+  EXPECT_EQ(killAnswer().value("state", ""), "killed");
+  EXPECT_NE(loadMock(), 0) << "the stop of one load cancelled the next";
+}
+
+TEST_F(McpStreamAndDialogJobTest, ClosingPublicAccessClosesTheDialogsItsAgentsOpened) {
+  // The stream's dialog, then the unload prompt: revoked while up, never touched by the test.
+  const int dataset = loadWithDependentSeries();
+  ASSERT_NE(dataset, 0);
+  for (const auto& [tool, args] : std::vector<std::pair<std::string, json>>{
+           {"start_stream", {{"source", "Mock Layout Stream"}, {"ask_user", true}}},
+           {"unload_file", {{"dataset", dataset}}}}) {
+    if (!server()->publicAccess()) {
+      ASSERT_NO_FATAL_FAILURE(openPublic());
+    }
+    bool revoked = false;
+    const Answer answer = call(tool, args, [&] {
+      if (!revoked && (!visible<PJ::Dialog>().empty() || !visible<PJ::MessageBox>().empty())) {
+        revoked = true;
+        window_->closeMcpPublicAccess();
+      }
+    });
+    EXPECT_TRUE(revoked) << tool << ": the dialog never showed";
+    EXPECT_EQ(answer.responses, 0) << tool;
+    EXPECT_TRUE(visible<PJ::Dialog>().empty() && visible<PJ::MessageBox>().empty())
+        << tool << ": the dialog of a revoked agent stayed up";
+  }
+  EXPECT_TRUE(loaded(dataset));
+  EXPECT_FALSE(window_->streamingSources().hasActiveSession());
+}
+
+TEST_F(McpStreamAndDialogJobTest, AStreamAcceptedAfterItsCallWasAnsweredRunsAsThatJob) {
+  // wait_s 0: the call gets its job id while the user is still at the dialog.
+  const std::unique_ptr<QTcpSocket> starting =
+      post("start_stream", {{"source", "Mock Layout Stream"}, {"ask_user", true}, {"wait_s", 0}});
+  QByteArray received;
+  bool accepted = false;
+  QTimer user;
+  QObject::connect(&user, &QTimer::timeout, [&] {
+    received += starting->readAll();
+    if (!accepted && received.contains("job_id") && !visible<PJ::Dialog>().empty()) {
+      accepted = true;
+      visible<PJ::Dialog>().front()->accept();
+    }
+  });
+  user.start(20);
+  ASSERT_TRUE(pumpUntil([&] { return accepted && window_->streamingSources().hasActiveSession(); }));
+  user.stop();
+  EXPECT_EQ(received.count("HTTP/1.1 "), 1) << "the call was answered twice";
+  const json jobs = json::parse(result(call("jobs_list", json::object())).first, nullptr, false);
+  ASSERT_EQ(jobs.size(), 1U) << jobs.dump();
+  EXPECT_EQ(jobs[0].value("state", ""), "running");
+  ASSERT_TRUE(jobs[0]["progress"].contains("dataset_id")) << "the stream's dataset is nowhere to be found";
+  EXPECT_TRUE(streaming(jobs[0]["progress"]["dataset_id"]));
+  const auto [killed, kill_error] = result(call("job_kill", {{"job_id", jobs[0]["job_id"]}}));
+  EXPECT_EQ(json::parse(killed, nullptr, false).value("state", ""), "killed") << killed;
+  EXPECT_FALSE(window_->streamingSources().hasActiveSession());
+}
+
+TEST_F(McpStreamAndDialogJobTest, JobKillClosesTheStreamDialogTheAgentOpened) {
+  const auto [text, error] =
+      result(call("start_stream", {{"source", "Mock Layout Stream"}, {"ask_user", true}}, killOnceShown<PJ::Dialog>()));
+  ASSERT_NE(kill_, nullptr) << "the agent's dialog never showed";
+  EXPECT_EQ(state_under_dialog_, "waiting_for_user");
+  EXPECT_TRUE(error);
+  EXPECT_NE(text.find("cancelled"), std::string::npos) << text;
+  EXPECT_EQ(killAnswer().value("state", ""), "killed");
+  EXPECT_TRUE(visible<PJ::Dialog>().empty());
+  EXPECT_FALSE(window_->streamingSources().hasActiveSession());
+  EXPECT_TRUE(window_->appSession().catalogModel().datasets().empty()) << "the abandoned stream left a dataset";
+}
+
+TEST_F(McpStreamAndDialogJobTest, JobKillClosesTheUnloadPromptAndUnloadsNothing) {
+  const int dataset = loadWithDependentSeries();
+  ASSERT_NE(dataset, 0);
+  const auto [text, error] = result(call("unload_file", {{"dataset", dataset}}, killOnceShown<PJ::MessageBox>()));
+  ASSERT_NE(kill_, nullptr) << "the user was never asked";
+  EXPECT_EQ(state_under_dialog_, "waiting_for_user");
+  EXPECT_TRUE(error);
+  EXPECT_NE(text.find("not unloaded"), std::string::npos) << text;
+  EXPECT_EQ(killAnswer().value("state", ""), "killed");
+  EXPECT_TRUE(visible<PJ::MessageBox>().empty());
+  EXPECT_TRUE(loaded(dataset));
+}
+
+TEST_F(McpStreamAndDialogJobTest, AClientThatDisconnectsWhileTheUserIsAskedIsHandledSafely) {
+  // Over real HTTP: the prompt's modal loop runs while the request's own socket goes away under it.
+  const int dataset = loadWithDependentSeries();
+  ASSERT_NE(dataset, 0);
+  std::unique_ptr<QTcpSocket> client = post("unload_file", {{"dataset", dataset}});
+  bool asked = false;
+  QTimer leaver;
+  QObject::connect(&leaver, &QTimer::timeout, [&] {
+    if (!asked && !visible<PJ::MessageBox>().empty()) {
+      asked = true;
+      client->abort();
+    }
+  });
+  leaver.start(20);
+  ASSERT_TRUE(pumpUntil([&] { return asked && visible<PJ::MessageBox>().empty(); }))
+      << "the question stayed up for a client that left";
+  EXPECT_TRUE(loaded(dataset));
+  EXPECT_FALSE(result(call("get_status", json::object())).second) << "the server no longer answers";
+}
+
+TEST_F(McpStreamAndDialogJobTest, ADeleteClickedRightAfterTheCallerHungUpDeletesNothing) {
+  const int dataset = loadWithDependentSeries();
+  ASSERT_NE(dataset, 0);
+  auto client = std::make_unique<QTcpSocket>();
+  bool clicked = false;
+  QTimer user;
+  QObject::connect(&user, &QTimer::timeout, [&] {
+    for (PJ::MessageBox* box : visible<PJ::MessageBox>()) {
+      for (QAbstractButton* button : box->findChildren<QAbstractButton*>()) {
+        if (!clicked && button->text() == u"Delete"_s) {
+          clicked = true;
+          client.reset();   // the client leaves...
+          button->click();  // ...and the user confirms before the server's next tick notices
+        }
+      }
+    }
+  });
+  user.start(20);
+  PJ::McpTestPeer::callTool(
+      *server(), QByteArray::fromStdString(token_), client.get(), "unload_file", {{"dataset", dataset}},
+      [](const json&) { ADD_FAILURE() << "a client that left was answered"; });
+  EXPECT_TRUE(clicked);
+  EXPECT_TRUE(loaded(dataset)) << "a client that left still had its dataset deleted";
+}
+
+TEST_F(McpStreamAndDialogJobTest, TheUnloadPromptGoesWhenItsCallerHangsUp) {
+  const int dataset = loadWithDependentSeries();
+  ASSERT_NE(dataset, 0);
+  auto client = std::make_unique<QTcpSocket>();
+  bool asked = false;
+  QTimer leaver;
+  QObject::connect(&leaver, &QTimer::timeout, [&] {
+    if (!visible<PJ::MessageBox>().empty()) {
+      asked = true;
+      client.reset();  // the agent's client gives up while the user is being asked
+    }
+  });
+  leaver.start(20);
+  // Blocks in the prompt's modal loop until the hang-up withdraws the question.
+  PJ::McpTestPeer::callTool(
+      *server(), QByteArray::fromStdString(token_), client.get(), "unload_file", {{"dataset", dataset}},
+      [](const json&) { ADD_FAILURE() << "a client that left was answered"; });
+  EXPECT_TRUE(asked);
+  EXPECT_TRUE(visible<PJ::MessageBox>().empty());
+  EXPECT_TRUE(loaded(dataset)) << "a client that left still had its dataset deleted";
 }
 
 TEST_F(McpServerTest, TurningMcpOffInPreferencesClosesPublicAccessAndItsDiscoveryFile) {
@@ -960,7 +1957,8 @@ TEST_F(McpQueuedLoadTest, ClosingPublicAccessCancelsAnOpenFileWaitingInTheQueue)
                       {blocker, {PJ::LoadOutcome::kLoaded}},
                       {agent, {PJ::LoadOutcome::kCancelled}},
                       {unrelated, {PJ::LoadOutcome::kLoaded}}}));
-  EXPECT_EQ(started_, (std::vector<quint64>{blocker, agent, unrelated}));
+  // Revoking the token kills its jobs: the agent's load leaves the queue before it starts.
+  EXPECT_EQ(started_, (std::vector<quint64>{blocker, unrelated}));
   EXPECT_EQ(loaded_, (std::vector<std::string>{"blocker.mock", "next.mock"}));
   EXPECT_TRUE(failed_.empty());
   EXPECT_EQ(engineDatasets().size(), 2U) << "the agent's file was loaded";
@@ -991,7 +1989,7 @@ TEST_F(McpQueuedLoadTest, ClosingPublicAccessCancelsAReloadFileWaitingInTheQueue
                       {blocker, {PJ::LoadOutcome::kLoaded}},
                       {agent, {PJ::LoadOutcome::kCancelled}},
                       {unrelated, {PJ::LoadOutcome::kLoaded}}}));
-  EXPECT_EQ(started_, (std::vector<quint64>{blocker, agent, unrelated}));
+  EXPECT_EQ(started_, (std::vector<quint64>{blocker, unrelated}));
   EXPECT_EQ(loaded_, (std::vector<std::string>{"blocker.mock", "next.mock"})) << "the reload ran";
   EXPECT_TRUE(failed_.empty());
   // The loaded dataset is untouched; the user's two loads came on top of it.
@@ -1005,6 +2003,212 @@ TEST_F(McpQueuedLoadTest, ClosingPublicAccessCancelsAReloadFileWaitingInTheQueue
           window_->appSession().sessionManager().createReader(), static_cast<PJ::DatasetId>(dataset)),
       values_before);
   ASSERT_NO_FATAL_FAILURE(expectOneCancelledReply());
+}
+
+TEST_F(McpQueuedLoadTest, JobKillTakesAnOpenFileOutOfTheQueue) {
+  const quint64 blocker = userLoad(u"blocker.mock"_s);
+  agentCall("open_file", {{"path", pj_app_test::makeMockFile(data_, "agent.mock").toStdString()}, {"wait_s", 0}});
+  const quint64 agent = blocker + 1;
+  PJ::McpTestPeer::resumeDeferred(*server());  // the call is past its wait_s: it gets the job id
+  ASSERT_EQ(replies_.size(), 1U);
+  const json status = textOf(replies_[0]);
+  ASSERT_TRUE(status.contains("job_id")) << status.dump();
+  EXPECT_TRUE(status["progress"].value("queued", false)) << status.dump();
+
+  agentCall("job_kill", {{"job_id", status["job_id"]}});
+  ASSERT_TRUE(pumpUntil([&] { return replies_.size() == 2 && terminals_.count(blocker) != 0; }));
+  EXPECT_EQ(textOf(replies_[1]).value("state", ""), "killed") << replies_[1].dump();
+  EXPECT_EQ(terminals_[agent], Terminals{PJ::LoadOutcome::kCancelled});
+  EXPECT_EQ(started_, std::vector<quint64>{blocker}) << "the killed load started";
+  EXPECT_EQ(loaded_, std::vector<std::string>{"blocker.mock"});
+}
+
+/// Released by the test (or after 30 s) to let GateSource's import end.
+std::atomic<bool> g_gate_released{false};
+
+/// A file import held active until the test releases it: it writes one row, then polls the host's
+/// progress callback, which is how a real import notices a stop, until it is released or stopped.
+class GateSource final : public PJ::DataSourcePluginBase {
+ public:
+  [[nodiscard]] uint64_t capabilities() const override {
+    return PJ::kCapabilityFiniteImport | PJ::kCapabilityDirectIngest;
+  }
+  [[nodiscard]] std::string saveConfig() const override {
+    return "{}";
+  }
+  PJ::Status loadConfig(std::string_view) override {
+    return PJ::okStatus();
+  }
+  PJ::Status start() override {
+    const auto fail = [this](std::string reason) -> PJ::Status {
+      runtimeHost().progressFinish();
+      state_ = PJ::DataSourceState::kFailed;
+      runtimeHost().notifyState(state_);
+      return PJ::unexpected(std::move(reason));
+    };
+    state_ = PJ::DataSourceState::kStarting;
+    runtimeHost().notifyState(state_);
+    if (auto status = runtimeHost().progressStart("gate", 2, true); !status) {
+      return fail(status.error());
+    }
+    auto topic = writeHost().ensureTopic("gate/value");
+    if (!topic) {
+      return fail(topic.error());
+    }
+    const auto append = [&](int64_t t, double v) {
+      return writeHost().appendRecord(*topic, PJ::Timestamp{t}, {{.name = "value", .value = v}});
+    };
+    if (auto status = append(100, 1.0); !status) {
+      return fail(status.error());
+    }
+    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!g_gate_released) {
+      if (!runtimeHost().progressUpdate(1)) {
+        return fail("cancelled via progress");
+      }
+      if (std::chrono::steady_clock::now() > give_up) {
+        return fail("the test never released the gate");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (auto status = append(200, 2.0); !status) {
+      return fail(status.error());
+    }
+    runtimeHost().progressFinish();
+    state_ = PJ::DataSourceState::kStopped;
+    runtimeHost().notifyState(state_);
+    runtimeHost().requestStop(PJ::DataSourceState::kStopped, "import complete");
+    return PJ::okStatus();
+  }
+  void stop() override {
+    state_ = PJ::DataSourceState::kStopped;
+  }
+  [[nodiscard]] PJ::DataSourceState currentState() const override {
+    return state_;
+  }
+
+ private:
+  PJ::DataSourceState state_ = PJ::DataSourceState::kIdle;
+};
+
+const PJ_data_source_vtable_t* gateSourceVtable() {
+  // registerStaticDataSource keeps this pointer for the catalog's lifetime.
+  static const PJ_data_source_vtable_t* vtable = PJ::DataSourcePluginBase::vtableWithCreate(
+      []() noexcept -> void* {
+        try {
+          return new GateSource();
+        } catch (...) {
+          return nullptr;
+        }
+      },
+      R"({"id":"gate-source","name":"Gate Source","version":"1.0.0","file_extensions":[".gate"]})");
+  return vtable;
+}
+
+/// An agent's import held active by GateSource, then killed.
+class McpActiveLoadTest : public McpQueuedLoadTest {
+ protected:
+  void SetUp() override {
+    McpQueuedLoadTest::SetUp();
+    ASSERT_NE(window_, nullptr);
+    g_gate_released = false;
+    ASSERT_TRUE(window_->appSession().extensionCatalog().pluginCatalog().registerStaticDataSource(gateSourceVtable()));
+    QObject::connect(
+        &window_->fileLoader(), &PJ::FileLoader::loadProgress, window_.get(),
+        [this](quint64, std::uint64_t current, std::uint64_t) { progressed_ = progressed_ || current >= 1; });
+  }
+  void TearDown() override {
+    g_gate_released = true;
+    McpQueuedLoadTest::TearDown();
+  }
+
+  /// Starts an agent import of a .gate file in the background and returns its job id once it has
+  /// ingested a row.
+  json startHeldImport() {
+    QFile file(data_.filePath(u"held.gate"_s));
+    EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("gate");
+    file.close();
+    agentCall("open_file", {{"path", file.fileName().toStdString()}, {"wait_s", 0}});
+    EXPECT_TRUE(pumpUntil([&] { return progressed_ && !replies_.empty(); }));
+    if (replies_.empty()) {
+      return {};
+    }
+    const json status = textOf(replies_[0]);
+    EXPECT_EQ(status.value("state", ""), "running") << status.dump();
+    return status.value("job_id", json());
+  }
+
+  bool progressed_ = false;
+};
+
+TEST_F(McpActiveLoadTest, JobKillStopsAnActiveImportKeepingItsRows) {
+  const json id = startHeldImport();
+  ASSERT_TRUE(id.is_number_integer());
+  const json listed = [&] {
+    agentCall("jobs_list", json::object());
+    return textOf(replies_.back());
+  }();
+  ASSERT_EQ(listed.size(), 1U) << listed.dump();
+  EXPECT_GE(listed[0]["progress"].value("done", 0), 1) << listed.dump();
+
+  agentCall("job_kill", {{"job_id", id}});
+  ASSERT_TRUE(pumpUntil([&] { return replies_.size() == 3; }));
+  const json killed = textOf(replies_[2]);
+  EXPECT_EQ(killed.value("state", ""), "killed") << killed.dump();
+  EXPECT_NE(killed.value("result", "").find("stay as dataset"), std::string::npos) << killed.dump();
+  ASSERT_EQ(engineDatasets().size(), 1U);
+  EXPECT_EQ(
+      pj_app_test::singleTopicValues(window_->appSession().sessionManager().createReader(), engineDatasets().front()),
+      std::vector<double>{1.0});
+}
+
+TEST_F(McpActiveLoadTest, JobKillWithoutKeepPartialRemovesTheImportsRows) {
+  const json id = startHeldImport();
+  ASSERT_TRUE(id.is_number_integer());
+  agentCall("job_kill", {{"job_id", id}, {"keep_partial", false}});
+  ASSERT_TRUE(pumpUntil([&] { return replies_.size() == 2; }));
+  EXPECT_EQ(textOf(replies_[1]).value("state", ""), "killed") << replies_[1].dump();
+  EXPECT_TRUE(engineDatasets().empty()) << "the discarded import's dataset is still loaded";
+}
+
+// Half of a replacement is never what a stop means: whatever stops a reload (here a job_kill left at
+// its keep_partial default, as a client's cancel or a revoked token would) restores the data it replaced.
+TEST_F(McpActiveLoadTest, AStoppedReloadRestoresTheDataItWasReplacing) {
+  ASSERT_TRUE(startHeldImport().is_number_integer());
+  g_gate_released = true;
+  ASSERT_TRUE(pumpUntil([&] { return !terminals_.empty(); }));
+  ASSERT_EQ(engineDatasets().size(), 1U);
+  const PJ::DatasetId dataset = engineDatasets().front();
+  const auto values = [&] {
+    return pj_app_test::singleTopicValues(window_->appSession().sessionManager().createReader(), dataset);
+  };
+  ASSERT_EQ(values(), (std::vector<double>{1.0, 2.0}));
+
+  g_gate_released = false;
+  progressed_ = false;
+  agentCall("reload_file", {{"dataset", static_cast<int>(dataset)}, {"wait_s", 0}});
+  ASSERT_TRUE(pumpUntil([&] { return progressed_ && replies_.size() == 2; }));
+  const json reload = textOf(replies_[1]);
+  ASSERT_EQ(reload.value("state", ""), "running") << reload.dump();
+
+  agentCall("job_kill", {{"job_id", reload["job_id"]}});
+  ASSERT_TRUE(pumpUntil([&] { return replies_.size() == 3; }));
+  const json killed = textOf(replies_[2]);
+  EXPECT_EQ(killed.value("state", ""), "killed") << killed.dump();
+  EXPECT_NE(killed.value("result", "").find("keeps the data it had"), std::string::npos) << killed.dump();
+  EXPECT_EQ(values(), (std::vector<double>{1.0, 2.0})) << "the stopped reload left its partial rows in place";
+}
+
+TEST_F(McpActiveLoadTest, ClosingPublicAccessStopsAnActiveImport) {
+  const json id = startHeldImport();
+  ASSERT_TRUE(id.is_number_integer());
+  window_->closeMcpPublicAccess();
+  ASSERT_TRUE(pumpUntil([&] { return !terminals_.empty(); }));
+  EXPECT_EQ(terminals_.begin()->second, Terminals{PJ::LoadOutcome::kCancelled});
+  static_cast<void>(pumpUntil([] { return false; }, 100));
+  EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 0U) << "a revoked token's job was kept";
+  EXPECT_EQ(replies_.size(), 1U) << "the revoked client was handed something after its job id";
 }
 
 /// A toolbox plugin's endpoint, with public access closed unless a case opens it.
@@ -1194,9 +2398,12 @@ TEST_F(McpEndpointTest, APluginTokenServesTheAgentToolsOnly) {
   ASSERT_FALSE(plugin.token.empty());
   const Answer listed = rpcAs(plugin.token, {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}});
   const json tools = listed.body["result"]["tools"];
-  ASSERT_EQ(tools.size(), PJ::mcp::agentTools().toMcpToolsList().size()) << listed.body.dump();
+  // The agent tools, and the job tools that stop or wait on the plugin's own long calls.
+  const std::set<std::string> job_tools = {"jobs_list", "job_wait", "job_kill"};
+  ASSERT_EQ(tools.size(), PJ::mcp::agentTools().toMcpToolsList().size() + job_tools.size()) << listed.body.dump();
   for (const json& tool : tools) {
-    EXPECT_NE(PJ::mcp::agentTools().find(tool.value("name", "")), nullptr) << tool.value("name", "");
+    const std::string name = tool.value("name", "");
+    EXPECT_TRUE(PJ::mcp::agentTools().find(name) != nullptr || job_tools.contains(name)) << name;
   }
   const auto [text, error] = result(callAs(plugin.token, "get_status", json::object()));
   EXPECT_TRUE(error);
@@ -1431,6 +2638,34 @@ TEST_F(McpEndpointTest, AFollowUpOfARevokedTokenIsNotQueued) {
   EXPECT_EQ(PJ::McpTestPeer::deferred(mcp), 0U);
   static_cast<void>(pumpUntil([] { return false; }, 200));  // a few more resume ticks
   EXPECT_EQ(follow_up_resumes, 0);
+}
+
+TEST_F(McpEndpointTest, APluginSeesAndStopsOnlyItsOwnJobs) {
+  ASSERT_NO_FATAL_FAILURE(openPublic());
+  const Plugin a = launch(u"toolbox-mcp-a"_s);
+  const Plugin b = launch(u"toolbox-mcp-b"_s);
+  ASSERT_FALSE(a.token.empty());
+  ASSERT_FALSE(b.token.empty());
+  QTcpSocket client;
+  int resumes = 0;
+  PJ::McpTestPeer::deferForever(*server(), QByteArray::fromStdString(a.token), &client, resumes);
+  const json mine = json::parse(result(callAs(a.token, "jobs_list", json::object())).first, nullptr, false);
+  ASSERT_EQ(mine.size(), 1U) << mine.dump();
+  const json id = mine[0]["job_id"];
+  for (const std::string& other : {b.token, token_}) {
+    EXPECT_EQ(result(callAs(other, "jobs_list", json::object())).first, "[]");
+    for (const char* tool : {"job_wait", "job_kill"}) {
+      const auto [text, error] = result(callAs(other, tool, {{"job_id", id}}));
+      EXPECT_TRUE(error) << tool;
+      EXPECT_NE(text.find("no such job"), std::string::npos) << text;
+    }
+    // Nor does another client's cancellation reach it.
+    EXPECT_EQ(
+        rpcAs(other, {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 1}}}})
+            .status,
+        202);
+  }
+  EXPECT_EQ(PJ::McpTestPeer::deferred(*server()), 1U) << "another client stopped the plugin's job";
 }
 
 TEST_F(McpEndpointTest, AnEndpointWhoseServerIsGoneReleasesSafely) {
