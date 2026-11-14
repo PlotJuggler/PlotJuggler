@@ -26,6 +26,9 @@
 #endif
 #include "DialogWatch.h"
 #include "mcp/McpProtocol.h"
+#ifndef PJ_TARGET_WASM
+#include "mcp/McpUiTools.h"
+#endif
 #include "pj_base/plugin_data_api.h"
 #include "pj_runtime/agent_tools/tool_context.hpp"
 
@@ -405,6 +408,10 @@ class McpServer : public QObject {
   /// the nested call queued as due, again and again; so it returns at once.
   bool draining_ = false;
   QTimer resume_tick_;
+#ifndef PJ_TARGET_WASM
+  /// The UI tools' state (their refs); used only when mcp::uiToolsEnabled().
+  mcp::UiDriver ui_driver_;
+#endif
 #ifdef PJ_TARGET_WASM
   /// Downloads `url`, a file the agent's relay serves (the page cannot read the agent's disk), into
   /// a staged file and loads it with `hints`. Until the load is queued the job's kill stops the

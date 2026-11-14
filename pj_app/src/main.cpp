@@ -56,6 +56,7 @@
 #include "WidgetTuner.h"
 #ifndef PJ_TARGET_WASM
 #include "mcp/McpProtocol.h"
+#include "mcp/McpUiTools.h"
 #endif
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/processor_detail.hpp"
@@ -473,6 +474,11 @@ int main(int argc, char* argv[]) {
       u"Let AI agents control this window for this run (MCP server on a free 127.0.0.1 port; see --mcp-bridge), "
       "whatever the Preferences setting."_s);
   parser.addOption(mcp_option);
+  const QCommandLineOption mcp_ui_tools_option(
+      u"mcp-ui-tools"_s,
+      u"With the MCP server on (implies --mcp): also give agents tools that read the widget tree and click and type "
+      "like the user, under the user's dialogs too. For automated QA runs, best in a virtual display."_s);
+  parser.addOption(mcp_ui_tools_option);
   const QCommandLineOption mcp_relay_option(
       u"mcp-relay"_s,
       u"Link this window to an AI agent through the relay at <url>, its secret in the url's key (pj_mcp_relay.py, "
@@ -633,7 +639,9 @@ int main(int argc, char* argv[]) {
   }
   // On by default for an attended run; tests and headless runs open it only with --mcp, so they
   // never show up as an instance an agent could pick.
-  if (parser.isSet(mcp_option) || (attended && QSettings().value(PJ::MainWindow::kMcpServerKey, true).toBool())) {
+  PJ::mcp::setUiToolsEnabled(parser.isSet(mcp_ui_tools_option));
+  if (parser.isSet(mcp_option) || parser.isSet(mcp_ui_tools_option) ||
+      (attended && QSettings().value(PJ::MainWindow::kMcpServerKey, true).toBool())) {
     window.openMcpPublicAccess();
   }
   if (parser.isSet(mcp_relay_option)) {

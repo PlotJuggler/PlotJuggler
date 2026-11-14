@@ -57,6 +57,8 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
   `add_filter`, `screenshot`.
 - **Job tools** (`McpServer`, served to every token): `jobs_list`, `job_wait`, `job_kill` (see [Jobs](#jobs)).
 - **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`.
+- **UI tools** (`McpUiTools.cpp`, public token only, and only in a run started with `--mcp-ui-tools`): `ui_tree`,
+  `ui_click`, `ui_drag`, `ui_wheel`, `ui_key`, `ui_type`. See [UI tools](#ui-tools-qa).
 
 `ToolSet::kFull` serves the agent, app and job tools. `ToolSet::kAgentOnly` is used for plugin tokens: `tools/list`
 and the `initialize` instructions leave the app tools out, and calling one gets the unknown-tool error.
@@ -418,9 +420,32 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
 - **Context.** The catalog digest (`catalog_digest.cpp`) summarises the loaded topics into the system prompt. It is
   rebuilt every turn and re-sent only when its hash changes. The tools themselves all come from the host.
 
+## UI tools (QA)
+
+They let an agent use PlotJuggler as a user does, to find what unit tests and the data-level tools cannot reach:
+menu and dialog wiring, focus, undo across widgets, odd click orders. They exist for automated exploratory QA, so a
+run turns them on with `--mcp-ui-tools` (which implies `--mcp`), never a setting, and they are not listed otherwise.
+Desktop only: the browser build has no command line to ask for them, so it does not compile them.
+
+- `ui_tree` prints the visible windows as one indented line per widget, `[ref] Class#objectName "text" (flags) WxH`,
+  the open popup and the modal dialog first; a window the modal dialog blocks gets one line. Unnamed, textless Qt containers are left out and their children listed
+  in their place. Menu actions, tabs and the rows visible in item views are items with refs of their own. A ref
+  stays valid while its object lives (a `QPointer` or `QPersistentModelIndex` in `UiDriver`); the other tools also
+  take a widget's `objectName`, which is stable (root `CLAUDE.md`) and so suits a repro script.
+- Input goes through `QWindowSystemInterface`, the path a real mouse and keyboard take, so popups, implicit grabs,
+  focus on click, shortcuts and double-click synthesis behave as for a user. It is queued (`AsynchronousDelivery`):
+  a click that opens a modal dialog does not block its call inside the dialog's `exec()`. The server answers after
+  `wait_ms` (`UiDriver::settleMs`), from a timer, which also fires inside such a dialog's loop.
+- They act as the user, so they run under the user's modal dialogs (closing one is often the point).
+- Limits: drag-and-drop between widgets enters the platform drag loop, which synthetic input may not finish. Keys go
+  to the target's window after activating it, since window shortcuts need the active window: run QA sessions in a
+  virtual display (`xvfb-run`, or `QT_QPA_PLATFORM=offscreen`), not on the user's desktop. On macOS the platform
+  delivers shortcuts outside `QWindowSystemInterface::handleKeyEvent`, so `ui_key` shortcuts are untested there.
+
 ## The user comes first
 
 - While a modal dialog is open, only read-only tools run (and `screenshot` without `tab`); the rest are told to wait.
+  The UI tools are the exception: they are the user, in a run that asked for them.
 - `unload_file` with dependent derived series waits for the user's answer to the prompt (the `cancelled` hook of
   `confirmAndRemoveDependentTransforms`), as a job: past `wait_s` the agent gets its job id.
 - A dialog opened because an agent passed `ask_user` is titled "An AI agent asked you to choose: ...". The prefix
@@ -467,6 +492,8 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
     discovery file, release and teardown revocation, disconnects, distinct tokens per plugin, and the same endpoint
     on a repeated acquire. Also a session torn down from inside another's resume, and a revoked token's follow-up.
   - Revocation of public access before or under an agent's queued dialog: nothing is applied.
+  - `UiToolsClick…`: the UI tools are hidden and refused unless the run asked for them; once on, `ui_tree` lists the
+    user's modal dialog first and `ui_click` closes it through the window system.
   - `ARelayedCall…`, `ALinkForgotten…`, `OnlyALoopbackHttpRelay…`: the browser link against a fake relay.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
   test answers by hand (a cancellation forwarded while its call is in flight).
