@@ -411,7 +411,7 @@ constexpr int kIngestProgressResolution = 1000;
 // many Files are retained (the two lists are independent).
 constexpr int kMaxRecentEntries = 8;
 constexpr auto kRecentLayoutsKey = "Layout/recent";
-constexpr auto kLayoutFilter = "PlotJuggler 4 Layout (*.pj4.xml)";
+constexpr auto kLayoutFilter = QT_TRANSLATE_NOOP("PJ::MainWindow", "PlotJuggler 4 Layout (*.pj4.xml)");
 // Extension itself is the single source of truth in LayoutXml::kLayoutExtension.
 constexpr int kMaxUndoStates = 100;
 constexpr qint64 kUndoCoalesceMs = 100;
@@ -6019,8 +6019,8 @@ void MainWindow::beginBrowserSourceReplay(
         }
         if (ambiguous || matching_identity.isEmpty()) {
           showBrowserLayoutWarning(
-              self, self->tr("Load source-bound layout"),
-              self->tr("The currently open browser data does not uniquely match every saved source."));
+              self, MainWindow::tr("Load source-bound layout"),
+              MainWindow::tr("The currently open browser data does not uniquely match every saved source."));
           const QString layout_name = active.layout_name;
           self->finishBrowserLayoutLoad(layout_name, false, u"current-source-shape"_s);
           return;
@@ -9511,12 +9511,12 @@ void MainWindow::buildGlobalToolbar() {
   // and wires a slot that updates the matching member flag, persists to
   // QSettings, and calls forEachPlot. applying_state_ no-ops the slot
   // during bulk reload (xmlLoadState / undo / redo).
-  button_link_ = add_button("buttonLink", ":/resources/svg/link.svg", "Link X axis");
-  button_zoom_out_ = add_button("buttonZoomOut", ":/resources/svg/zoom_max.svg", "Zoom Out All");
-  button_grid_ = add_button("buttonActivateGrid", ":/resources/svg/grid.svg", "Show/Hide the grid");
+  button_link_ = add_button("buttonLink", ":/resources/svg/link.svg", QT_TR_NOOP("Link X axis"));
+  button_zoom_out_ = add_button("buttonZoomOut", ":/resources/svg/zoom_max.svg", QT_TR_NOOP("Zoom Out All"));
+  button_grid_ = add_button("buttonActivateGrid", ":/resources/svg/grid.svg", QT_TR_NOOP("Show/Hide the grid"));
   button_time_tracker_ = add_button(
       "buttonTimeTracker", ":/resources/svg/line_tracker.svg",
-      "Cycle TimeTracker display: line only / line + value / line + value + name");
+      QT_TR_NOOP("Cycle TimeTracker display: line only / line + value / line + value + name"));
   updateTimeTrackerIcon();
   connect(button_time_tracker_, &QToolButton::clicked, this, &MainWindow::onTimeTrackerButtonClicked);
 
@@ -9536,8 +9536,9 @@ void MainWindow::buildGlobalToolbar() {
       legendCornerIcon(legend_status_ == LegendStatus::kHidden ? previous_legend_corner_ : legend_status_).toLatin1();
   button_legend_ = add_button(
       "buttonLegendPosition", initial_icon.constData(),
-      "Legend position — left-click walks TR → TL → BL → BR, then unchecks at TR before the next "
-      "cycle. Right-click toggles show/hide at the current corner.");
+      QT_TR_NOOP(
+          "Legend position — left-click walks TR → TL → BL → BR, then unchecks at TR before the next "
+          "cycle. Right-click toggles show/hide at the current corner."));
   button_legend_->setCheckable(true);
   button_legend_->setChecked(legend_status_ != LegendStatus::kHidden);
   connect(button_legend_, &QToolButton::clicked, this, &MainWindow::onLegendButtonClicked);
@@ -9554,12 +9555,15 @@ void MainWindow::buildGlobalToolbar() {
     }
   });
 
-  button_show_point_ = add_button("buttonShowpoint", ":/resources/svg/show_point.svg", "Show point in plot");
-  button_ratio_ = add_button("buttonRatio", ":/resources/svg/ratio.svg", "Keep aspect ratio of XY plots (1:1)");
-  button_dots_ = add_button("buttonDots", ":/resources/svg/scatter_plot.svg", "Show data point markers on curves");
+  button_show_point_ =
+      add_button("buttonShowpoint", ":/resources/svg/show_point.svg", QT_TR_NOOP("Show point in plot"));
+  button_ratio_ =
+      add_button("buttonRatio", ":/resources/svg/ratio.svg", QT_TR_NOOP("Keep aspect ratio of XY plots (1:1)"));
+  button_dots_ =
+      add_button("buttonDots", ":/resources/svg/scatter_plot.svg", QT_TR_NOOP("Show data point markers on curves"));
   button_reference_point_ = add_button(
       "buttonReferencePoint", ":/resources/svg/reference_line.svg",
-      "Drop a blue reference line at the playback position; values render as delta from there");
+      QT_TR_NOOP("Drop a blue reference line at the playback position; values render as delta from there"));
   auto make_checkable = [](QToolButton* btn, bool initial_checked) {
     btn->setCheckable(true);
     btn->setChecked(initial_checked);
@@ -9685,22 +9689,23 @@ void MainWindow::buildTimelineAlignRail() {
 
   QToolButton* align_left = add_button(
       "buttonAlignStarts", ":/resources/svg/align_horizontal_left.svg",
-      "Align sources: line every source's start up at the earliest start");
+      QT_TR_NOOP("Align sources: line every source's start up at the earliest start"));
 
   QToolButton* align_right = add_button(
       "buttonAlignEnds", ":/resources/svg/align_horizontal_right.svg",
-      "Align sources: line every source's end up at the latest end");
+      QT_TR_NOOP("Align sources: line every source's end up at the latest end"));
 
   // Zoom-out-horizontally: fit all source bars into the view (the timeline's
   // equivalent of the plot's "Zoom Out Horizontally", same icon). Replaces the
   // former align-centers action on the rail.
   QToolButton* zoom_fit =
-      add_button("buttonTimelineFit", ":/resources/svg/zoom_horizontal.svg", "Zoom out to fit all sources");
+      add_button("buttonTimelineFit", ":/resources/svg/zoom_horizontal.svg", QT_TR_NOOP("Zoom out to fit all sources"));
 
   // "Snap to" toggle — when on, a dragged bar's start/end snaps to a neighbour's
   // edge (with a guide line). Checkable; on by default.
   QToolButton* snap_toggle = add_button(
-      "buttonTimelineSnap", ":/resources/svg/transition_push.svg", "Snap to neighbouring dataset edges while dragging");
+      "buttonTimelineSnap", ":/resources/svg/transition_push.svg",
+      QT_TR_NOOP("Snap to neighbouring dataset edges while dragging"));
   snap_toggle->setCheckable(true);
   snap_toggle->setChecked(true);
 
@@ -9708,7 +9713,7 @@ void MainWindow::buildTimelineAlignRail() {
   // button below it sits at the BOTTOM of the rail.
   outer->addStretch(1);
   QToolButton* reset_all =
-      add_button("buttonTimelineReset", ":/resources/svg/restart_alt.svg", "Reset all timeline changes");
+      add_button("buttonTimelineReset", ":/resources/svg/restart_alt.svg", QT_TR_NOOP("Reset all timeline changes"));
 
   if (source_timeline_controller_ != nullptr) {
     connect(align_left, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::alignStarts);
@@ -9808,10 +9813,10 @@ void MainWindow::buildLocalToolbar() {
   curve_width_header_ = build_section(
       tr("Curve Width"), u"widgetLabelCurveWidth"_s,
       {
-          {"globalWidth1_0", ":/resources/svg/line_width_1_0.svg", "Line width 1.0", on_width(1.0)},
-          {"globalWidth1_5", ":/resources/svg/line_width_1_5.svg", "Line width 1.5", on_width(1.5)},
-          {"globalWidth2_0", ":/resources/svg/line_width_2_0.svg", "Line width 2.0", on_width(2.0)},
-          {"globalWidth3_0", ":/resources/svg/line_width_3_0.svg", "Line width 3.0", on_width(3.0)},
+          {"globalWidth1_0", ":/resources/svg/line_width_1_0.svg", QT_TR_NOOP("Line width 1.0"), on_width(1.0)},
+          {"globalWidth1_5", ":/resources/svg/line_width_1_5.svg", QT_TR_NOOP("Line width 1.5"), on_width(1.5)},
+          {"globalWidth2_0", ":/resources/svg/line_width_2_0.svg", QT_TR_NOOP("Line width 2.0"), on_width(2.0)},
+          {"globalWidth3_0", ":/resources/svg/line_width_3_0.svg", QT_TR_NOOP("Line width 3.0"), on_width(3.0)},
       });
 
   // Curve Width: same exclusive radio-group pattern as Curve Style.
@@ -9842,17 +9847,17 @@ void MainWindow::buildLocalToolbar() {
   curve_style_header_ = build_section(
       tr("Curve Style"), u"widgetLabelCurveStyle"_s,
       {
-          {"globalStyleLines", ":/resources/svg/style_lines.svg", "Lines",
+          {"globalStyleLines", ":/resources/svg/style_lines.svg", QT_TR_NOOP("Lines"),
            on_style(static_cast<int>(PlotWidgetBase::kLines))},
-          {"globalStyleDots", ":/resources/svg/style_dots.svg", "Dots",
+          {"globalStyleDots", ":/resources/svg/style_dots.svg", QT_TR_NOOP("Dots"),
            on_style(static_cast<int>(PlotWidgetBase::kDots))},
-          {"globalStyleLinesAndDots", ":/resources/svg/style_lines_and_dots.svg", "Lines and Dots",
+          {"globalStyleLinesAndDots", ":/resources/svg/style_lines_and_dots.svg", QT_TR_NOOP("Lines and Dots"),
            on_style(static_cast<int>(PlotWidgetBase::kLinesAndDots))},
-          {"globalStyleSticks", ":/resources/svg/style_sticks.svg", "Sticks",
+          {"globalStyleSticks", ":/resources/svg/style_sticks.svg", QT_TR_NOOP("Sticks"),
            on_style(static_cast<int>(PlotWidgetBase::kSticks))},
-          {"globalStyleSteps", ":/resources/svg/style_steps.svg", "Steps (pre)",
+          {"globalStyleSteps", ":/resources/svg/style_steps.svg", QT_TR_NOOP("Steps (pre)"),
            on_style(static_cast<int>(PlotWidgetBase::kSteps))},
-          {"globalStyleStepsInverted", ":/resources/svg/style_steps_inverted.svg", "Steps (post)",
+          {"globalStyleStepsInverted", ":/resources/svg/style_steps_inverted.svg", QT_TR_NOOP("Steps (post)"),
            on_style(static_cast<int>(PlotWidgetBase::kStepsInverted))},
       });
 

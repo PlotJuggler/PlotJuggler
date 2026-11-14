@@ -12,9 +12,9 @@
     {
       "id": "command_line_data",
       "name": "Command-line data loading",
-      "summary": "Open data with repeatable -d / --datafile options or positional file paths. Files finish loading before an optional layout; explicit files replace the sources saved in that layout.",
-      "entry_point": "Desktop command line: plotjuggler4 -d first.csv -d second.csv -l shared.pj4.xml; plotjuggler4 recording.csv",
-      "evidence": "pj_app/src/main.cpp#datafile_option; pj_app/src/MainWindow.cpp#void MainWindow::loadAtStartup",
+      "summary": "Open data with repeatable -d / --datafile options or positional file paths. Files finish loading before an optional layout; explicit files replace the sources saved in that layout. --language en_US, --language zh_CN or --language zh_TW overrides the interface language for this session without changing the saved preference.",
+      "entry_point": "Desktop command line: plotjuggler4 -d first.csv -d second.csv -l shared.pj4.xml; plotjuggler4 recording.csv; session language: plotjuggler4 --language zh_CN",
+      "evidence": "pj_app/src/main.cpp#datafile_option; pj_app/src/main.cpp#language_option; pj_app/src/MainWindow.cpp#void MainWindow::loadAtStartup",
       "verified": "MainWindowStartupTest: multi-file ordering, source replacement, failure settlement and data-only startup"
     },
     {
@@ -140,9 +140,9 @@
     {
       "id": "preferences",
       "name": "Preferences",
-      "summary": "Settings for the appearance, plotting, the 2D and 3D scenes, extra plugin folders and the Marketplace registry, and recording.",
-      "entry_point": "File → Preferences... (pages: Appearance, Plotting, Scene 2D, Scene 3D, Plugins, Recording)",
-      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Preferences...\"); pj_app/src/PreferencesDialog.cpp#tr(\"Appearance\")",
+      "summary": "Settings for the appearance, plotting, the 2D and 3D scenes, extra plugin folders and the Marketplace registry, and recording. Appearance offers English, Simplified Chinese and Traditional Chinese; the saved language takes effect only after restarting PlotJuggler.",
+      "entry_point": "File → Preferences... (pages: Appearance, Plotting, Scene 2D, Scene 3D, Plugins, Recording); interface language: Appearance → Language:",
+      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Preferences...\"); pj_app/src/PreferencesDialog.cpp#tr(\"Appearance\"); pj_app/src/PreferencesDialog.ui#Language changes take effect after restarting PlotJuggler.; pj_app/src/PreferencesDialog.cpp#AppLanguage::kPreferenceKey",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Preferences... and its six pages"
     },
     {

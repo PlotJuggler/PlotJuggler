@@ -34,6 +34,7 @@ const QT_MODULES = {
   qtbase: 'Core, Gui, Widgets, Network, OpenGL, OpenGLWidgets, PrintSupport, Xml, Concurrent and the plugins',
   qtsvg: 'Svg, SvgWidgets and their plugins',
   qttools: 'UiTools',
+  qttranslations: 'Translations (qtbase_zh_CN, merged into the embedded Chinese catalog)',
 };
 // SHA-256 of Qt's source archives per release: the .sha256 file beside each on download.qt.io.
 const QT_SHA256 = {
@@ -41,6 +42,7 @@ const QT_SHA256 = {
     qtbase: 'a951bd163c7b80fc6b8c88d7668fb56abf91c152373e13c10666763238131307',
     qtsvg: 'e4ab39534ec97987b1b9b60ef7f4d3253d5912a69f8c713a01753174a4029331',
     qttools: '8dab8f3611496486a470ad5f115ceea584f36bc22a2b8b6f6ebdbafbb8160693',
+    qttranslations: '85929c0c30d6f273f23bd879bb69803ea17b010ab73cab2f8abf95357f6f6bbb',
   },
 };
 
@@ -136,7 +138,7 @@ export async function planSourceOffer({ qtVersion } = {}) {
   const qt = qtVersion ?? await readVersion('PJ_QT_VERSION');
   const hashes = QT_SHA256[qt];
   if (!hashes) {
-    throw new Error(`no pinned SHA-256 for Qt ${qt}: add the .sha256 of its qtbase, qtsvg and qttools archives `
+    throw new Error(`no pinned SHA-256 for Qt ${qt}: add the .sha256 of its qtbase, qtsvg, qttools and qttranslations archives `
       + '(download.qt.io/official_releases/qt) to QT_SHA256');
   }
   const series = qt.split('.').slice(0, 2).join('.');

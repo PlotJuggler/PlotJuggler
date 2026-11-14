@@ -455,7 +455,7 @@ void MarkerRhiPass::admit(const PlaceFn& place) {
     const auto submitted_instances =
         markerSubmittedInstanceCount(logical_instances, cube_instances, layer->wireframe());
     if (!submitted_instances.has_value()) {
-      layer->noteRenderFailure(tr("Marker instance accounting overflowed the view limit"));
+      layer->noteRenderFailure(SceneText::tr("Marker instance accounting overflowed the view limit"));
       continue;
     }
     prepared.instances = *submitted_instances;
@@ -474,7 +474,7 @@ void MarkerRhiPass::admit(const PlaceFn& place) {
     }
     if (!markerLayerCountsFit(prepared.instances, prepared.stream_vertices, geometry.frames.size())) {
       layer->noteRenderFailure(
-          tr("Markers need %1 submitted instances and %2 streamed vertices; the layer limits are %3 and %4")
+          SceneText::tr("Markers need %1 submitted instances and %2 streamed vertices; the layer limits are %3 and %4")
               .arg(
                   QString::number(prepared.instances), QString::number(prepared.stream_vertices),
                   QString::number(kSceneLimits.max_marker_instances_per_layer),
@@ -483,7 +483,8 @@ void MarkerRhiPass::admit(const PlaceFn& place) {
     }
     if (prepared.instances > remaining_instances || prepared.stream_vertices > remaining_stream_vertices) {
       layer->noteRenderFailure(
-          tr("Markers need %1 instances and %2 streamed vertices; only %3 and %4 remain in this view's budget")
+          SceneText::tr(
+              "Markers need %1 instances and %2 streamed vertices; only %3 and %4 remain in this view's budget")
               .arg(
                   QString::number(prepared.instances), QString::number(prepared.stream_vertices),
                   QString::number(remaining_instances), QString::number(remaining_stream_vertices)));

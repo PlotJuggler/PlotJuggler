@@ -582,7 +582,7 @@ QWidget* GridMapLayer::createConfigWidget(QWidget* parent) {
 
   auto* colormap_combo = new PJ::ComboBox(container);
   for (int idx = 0; idx < PJ::kColormapCount; ++idx) {
-    colormap_combo->addItem(tr(PJ::colormapName(static_cast<PJ::Colormap>(idx))), idx);
+    colormap_combo->addItem(PJ::colormapDisplayName(static_cast<PJ::Colormap>(idx)), idx);
   }
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   form->addRow(tr("Colors:"), colormap_combo);

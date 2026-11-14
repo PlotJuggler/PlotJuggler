@@ -70,3 +70,11 @@ Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction
 - Runners (`pj_add_test_runner`): `pj_app_gui_tests` (links `pj_app_shell` + `pj_resources`), `pj_app_unit_tests` (Qt-only helpers), `pj_app_media_codec_tests` (the two codecs over `pj_scene2d_core`; run from the source root). Each case registers as `<runner>.<Suite>.<Case>` and runs in its own process (120 s timeout): `./test.sh -R '^pj_app_gui_tests\.'`.
 - Suites with their own ctest entry (QRhi display passes, layout-import suites, `file_loader_test`, `source_promotion_host_test`, `headless_descriptor_provider_session_test`, `layout_import_batch_test`, `splash_meme_pool_test`, `ExportedSymbolsGuard`): the reasons and what each guards are in `docs/ARCHITECTURE.md` "Tests". Their per-suite plugin-path definitions must not propagate to other sources.
 - A runner's shared GUI main owns its only `QApplication`; its cases do not define a `main()` or create another application.
+
+## Interface language
+
+`AppLanguage` owns the startup Qt translator and embedded catalog. English is
+the fresh-profile and invalid-value fallback. Preferences saves a next-launch
+selection; `--language` is session-only and does not alter numeric locale or
+serialized identifiers. See [`docs/LOCALIZATION.md`](../docs/LOCALIZATION.md)
+for catalog maintenance, scope, and focused tests.

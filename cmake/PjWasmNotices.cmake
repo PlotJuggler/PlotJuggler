@@ -89,7 +89,8 @@ set(_PJ_QT_NOTICE_PACKAGES
     BundledPcre2 BundledZLIB
     QWasmIntegrationPlugin QGifPlugin QICOPlugin QJpegPlugin QTlsBackendCertOnlyPlugin
     Svg SvgWidgets QSvgPlugin QSvgIconPlugin
-    UiTools)
+    UiTools
+    Translations)
 
 function(_pj_qt_notices output)
   get_filename_component(sbom_dir "${Qt6_DIR}/../../../sbom" ABSOLUTE)
@@ -101,7 +102,7 @@ function(_pj_qt_notices output)
       "follows the list, once.\n")
   set(license_refs "")
   set(license_ids "")
-  foreach(module IN ITEMS qtbase qtsvg qttools)
+  foreach(module IN ITEMS qtbase qtsvg qttools qttranslations)
     set(sbom "${sbom_dir}/${module}-${Qt6_VERSION}.spdx.json")
     if(NOT EXISTS "${sbom}")
       message(FATAL_ERROR "Third-party notices: the Qt kit has no SBOM ${sbom}")
@@ -196,6 +197,7 @@ function(pj_wasm_write_notices output python_notices)
       "${CMAKE_SOURCE_DIR}/3rdparty/Qt-Advanced-Docking/LICENSE")
   _pj_notice_section("${output}" "nanocdr" "Apache-2.0" "HEADER|${CMAKE_SOURCE_DIR}/3rdparty/nanocdr/include/nanocdr/nanocdr.hpp")
   _pj_notice_section("${output}" "Noto Sans (font)" "OFL-1.1" "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSans/OFL.txt")
+  _pj_notice_section("${output}" "Noto Sans SC (font, subset)" "OFL-1.1" "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSansSC/OFL.txt")
 
   # Fetched: the name is the FetchContent name, the files are in its source tree.
   pj_wasm_notice("${output}" plotjuggler_sdk "PlotJuggler SDK (pj_base, pj_plugins)" "Apache-2.0" LICENSE LICENSE-APACHE)

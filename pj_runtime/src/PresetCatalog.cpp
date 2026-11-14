@@ -19,9 +19,10 @@ namespace PJ {
 
 namespace {
 
-QString tr(const char* text) {
-  return QCoreApplication::translate("PresetCatalog", text);
-}
+// A declared tr() lets lupdate see the context, which a free helper would hide.
+struct PresetCatalogText {
+  Q_DECLARE_TR_FUNCTIONS(PresetCatalog)
+};
 
 // Reads an optional string member; false means it is present but not a string.
 bool readString(const QJsonObject& entry, const QString& key, QString* out) {
@@ -62,11 +63,11 @@ QList<PresetEntry> parsePresetCatalog(const QByteArray& json, const QUrl& index_
   QJsonParseError parse_error;
   const QJsonDocument document = QJsonDocument::fromJson(json, &parse_error);
   if (parse_error.error != QJsonParseError::NoError) {
-    return fail(tr("preset index is not valid JSON: %1").arg(parse_error.errorString()));
+    return fail(PresetCatalogText::tr("preset index is not valid JSON: %1").arg(parse_error.errorString()));
   }
   const QJsonValue presets = document.object().value(u"presets"_s);
   if (!presets.isArray()) {
-    return fail(tr("preset index has no \"presets\" array"));
+    return fail(PresetCatalogText::tr("preset index has no \"presets\" array"));
   }
 
   QList<PresetEntry> entries;
@@ -75,7 +76,7 @@ QList<PresetEntry> parsePresetCatalog(const QByteArray& json, const QUrl& index_
   for (const QJsonValue& item : presets.toArray()) {
     ++position;
     if (!item.isObject()) {
-      return fail(tr("preset #%1 is not an object").arg(position));
+      return fail(PresetCatalogText::tr("preset #%1 is not an object").arg(position));
     }
     const QJsonObject object = item.toObject();
     PresetEntry entry;
@@ -84,23 +85,23 @@ QList<PresetEntry> parsePresetCatalog(const QByteArray& json, const QUrl& index_
     if (!readString(object, u"id"_s, &entry.id) || !readString(object, u"title"_s, &entry.title) ||
         !readString(object, u"description"_s, &entry.description) || !readString(object, u"layout"_s, &layout) ||
         !readString(object, u"thumbnail"_s, &thumbnail)) {
-      return fail(tr("preset #%1 has a field that is not a string").arg(position));
+      return fail(PresetCatalogText::tr("preset #%1 has a field that is not a string").arg(position));
     }
     if (entry.id.isEmpty()) {
-      return fail(tr("preset #%1 has no id").arg(position));
+      return fail(PresetCatalogText::tr("preset #%1 has no id").arg(position));
     }
     if (seen_ids.contains(entry.id)) {
-      return fail(tr("duplicate preset id \"%1\"").arg(entry.id));
+      return fail(PresetCatalogText::tr("duplicate preset id \"%1\"").arg(entry.id));
     }
     seen_ids.insert(entry.id);
     if (entry.title.isEmpty()) {
       entry.title = entry.id;
     }
     if (layout.isEmpty() || !resolveReference(index_url, layout, &entry.layout_url)) {
-      return fail(tr("preset \"%1\" has no usable http(s) layout").arg(entry.id));
+      return fail(PresetCatalogText::tr("preset \"%1\" has no usable http(s) layout").arg(entry.id));
     }
     if (!thumbnail.isEmpty() && !resolveReference(index_url, thumbnail, &entry.thumbnail_url)) {
-      return fail(tr("preset \"%1\" has no usable http(s) thumbnail").arg(entry.id));
+      return fail(PresetCatalogText::tr("preset \"%1\" has no usable http(s) thumbnail").arg(entry.id));
     }
     entries.append(std::move(entry));
   }

@@ -500,7 +500,7 @@ struct DialogEngine::AsyncRunner {
         return true;
       };
       auto filter = view.filePickerFilter(widget_name).value_or("");
-      auto title = view.filePickerTitle(widget_name).value_or("Select File");
+      auto title = view.filePickerTitle(widget_name).value_or(QObject::tr("Select File").toStdString());
       if (config_.file_selector) {
         if (file_picker_active) {
           return;
@@ -573,7 +573,7 @@ struct DialogEngine::AsyncRunner {
       Q_UNUSED(target_memo)
       qWarning("DialogEngine: plugin folder pickers are unavailable on WebAssembly");
 #else
-      auto title = view.folderPickerTitle(widget_name).value_or("Select Folder");
+      auto title = view.folderPickerTitle(widget_name).value_or(QObject::tr("Select Folder").toStdString());
       QString path = PJ::FileDialog::getExistingDirectory(
           dialog, QString::fromStdString(title), filePickerStart(view, widget_name).dir);
       if (!path.isEmpty()) {
@@ -610,7 +610,7 @@ struct DialogEngine::AsyncRunner {
       qWarning("DialogEngine: path-returning plugin save pickers are unavailable on WebAssembly");
 #else
       auto filter = view.filePickerFilter(widget_name).value_or("");
-      auto title = view.filePickerTitle(widget_name).value_or("Save File");
+      auto title = view.filePickerTitle(widget_name).value_or(QObject::tr("Save File").toStdString());
       auto suffix = view.saveFilePickerDefaultSuffix(widget_name).value_or("");
       const FilePickerStart start = filePickerStart(view, widget_name);
       QString path = PJ::FileDialog::getSaveFileName(

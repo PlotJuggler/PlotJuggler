@@ -171,16 +171,15 @@ bool derivedGlyphPaints(int state) {
 
 // Status color for a derived-topic glyph dot (see kDerivedGlyphStateRole); only for a state that paints.
 QColor derivedGlyphColor(int state) {
-  using PJ::CurveTreeView;
-  switch (static_cast<CurveTreeView::DerivedGlyphState>(state)) {
-    case CurveTreeView::DerivedGlyphState::kPending:
+  switch (static_cast<PJ::CurveTreeView::DerivedGlyphState>(state)) {
+    case PJ::CurveTreeView::DerivedGlyphState::kPending:
       return theme::status(theme::Status::Info, theme::Theme::Dark);
-    case CurveTreeView::DerivedGlyphState::kMissingInput:
+    case PJ::CurveTreeView::DerivedGlyphState::kMissingInput:
       return theme::status(theme::Status::Warning, theme::Theme::Dark);
-    case CurveTreeView::DerivedGlyphState::kError:
+    case PJ::CurveTreeView::DerivedGlyphState::kError:
       return theme::status(theme::Status::Error, theme::Theme::Dark);
-    case CurveTreeView::DerivedGlyphState::kIdle:
-    case CurveTreeView::DerivedGlyphState::kReady:
+    case PJ::CurveTreeView::DerivedGlyphState::kIdle:
+    case PJ::CurveTreeView::DerivedGlyphState::kReady:
       break;
   }
   return QColor();

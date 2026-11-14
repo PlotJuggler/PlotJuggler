@@ -30,6 +30,8 @@ inline constexpr int kColormapCount = 4;
 /// the colormap selectors so every view lists the same names in the enum order.
 [[nodiscard]] const char* colormapName(Colormap colormap) noexcept;
 
+/// Localized presentation only; never use as a serialized colormap token.
+[[nodiscard]] QString colormapDisplayName(Colormap colormap);
 /// Persisted layout-XML spelling ("turbo", "viridis", "plasma", "grayscale"), the
 /// one mapping shared by every view that saves a colormap by name: colormapName()
 /// lowercased, so a renamed label changes the saved layouts too.

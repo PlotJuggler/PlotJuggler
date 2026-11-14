@@ -42,6 +42,7 @@
 #include <memory>
 #include <string>
 
+#include "AppLanguage.h"
 #include "BrowserPersistence.h"
 #include "DebugMode.h"
 #ifndef PJ_TARGET_WASM
@@ -371,6 +372,14 @@ int main(int argc, char* argv[]) {
   }
   QFont app_font = QApplication::font();
   app_font.setFamily(u"Noto Sans"_s);
+#ifdef PJ_TARGET_WASM
+  // The browser has no system font fallback, so Chinese text (the zh_CN UI,
+  // and Chinese series or file names) needs a bundled CJK fallback family.
+  if (QFontDatabase::addApplicationFont(u":/resources/fonts/NotoSansSC/NotoSansSC-Subset.otf"_s) < 0) {
+    qWarning("Failed to load bundled Noto Sans SC font");
+  }
+  app_font.setFamilies({u"Noto Sans"_s, u"Noto Sans SC"_s});
+#endif
   QApplication::setFont(app_font);
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
@@ -383,6 +392,11 @@ int main(int argc, char* argv[]) {
   parser.setApplicationDescription(u"PlotJuggler 4"_s);
   parser.addHelpOption();
   parser.addVersionOption();
+  const QCommandLineOption language_option(
+      u"language"_s,
+      QCoreApplication::translate("AppLanguage", "Interface language for this session (zh_CN, zh_TW or en_US)."),
+      u"language"_s);
+  parser.addOption(language_option);
   const QCommandLineOption test_data_option(
       u"test-data"_s, u"Populate the datastore with generated sin/cos samples and one image."_s);
   parser.addOption(test_data_option);
@@ -485,7 +499,24 @@ int main(int argc, char* argv[]) {
 #endif
   parser.process(app);
 
+  // The browser's settings boundary is already installed. Keep translators
+  // alive until every window is destroyed; a CLI override never changes the
+  // saved preference or the locale used to parse and format numeric data.
+  const QSettings language_settings;
+  if (parser.isSet(language_option) && parser.value(language_option) != "en_US"_L1 &&
+      PJ::AppLanguage::normalizedLanguage(parser.value(language_option)) == "en_US"_L1) {
+    qWarning(
+        "Unsupported --language '%s' (use zh_CN, zh_TW or en_US); using English",
+        qUtf8Printable(parser.value(language_option)));
+  }
+  const PJ::AppLanguage app_language(
+      app, parser.isSet(language_option) ? parser.value(language_option)
+                                         : PJ::AppLanguage::preferredLanguage(language_settings));
+
 #ifndef PJ_TARGET_WASM
+  // Qt-free plugins inherit only the canonical UI locale, before any DSO loads.
+  // English remains the fallback; neither data locale nor serialized keys change.
+  qputenv("PLOTJUGGLER_UI_LANGUAGE", app_language.language().toUtf8());
   if (parser.isSet(validate_plugins_option)) {
     return validatePlugins(parser.value(validate_plugins_option), parser.values(expect_plugin_option));
   }

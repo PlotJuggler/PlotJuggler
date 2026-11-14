@@ -6,6 +6,7 @@ else()
 endif()
 
 add_library(pj_plotting STATIC
+    src/BuiltinFilterPresentation.cpp
     src/CurveEditor.cpp
     src/CurveEditor.ui
     src/FilterEditorPanel.cpp
@@ -39,6 +40,7 @@ add_library(pj_plotting STATIC
     src/WidgetClipboard.cpp
     src/XYCurveDialog.cpp
     src/XYCurveDialog.ui
+    include/pj_plotting/BuiltinFilterPresentation.h
     include/pj_plotting/CurveEditor.h
     include/pj_plotting/PlotCurve.h
     include/pj_plotting/XYCurveDialog.h

@@ -183,7 +183,7 @@ class MarketplaceWindow : public Dialog {
   // an enqueue no longer hides what is currently installing. A sideload has no
   // active_install_id_ until its manifest is read, so it is named by its file
   // name instead — otherwise the whole download/extract window is silent.
-  void showInstallProgress(const QString& verb = QStringLiteral("Installing"));
+  void showInstallProgress(const QString& verb = tr("Installing"));
 
   // "  ·  N queued" for the combined depth of every queue (card clicks, local
   // ZIPs, the Update All batch), followed by "  ·  M failed" once this run has

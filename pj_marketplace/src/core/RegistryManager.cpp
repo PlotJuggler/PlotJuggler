@@ -101,7 +101,11 @@ bool RegistryManager::parseJson(const QByteArray& data) {
   // Reads a required string field; emits fetchError() and returns nullopt if missing.
   auto required_string = [this](const QJsonObject& obj, const QString& key) -> std::optional<QString> {
     if (!obj.contains(key) || !obj[key].isString() || obj[key].toString().isEmpty()) {
-      emit fetchError(QString("Registry parse error: missing or empty required string field \"%1\"").arg(key));
+      emit fetchError(
+          QString(
+              QCoreApplication::translate(
+                  "PJ::MarketplaceDiagnostics", "Registry parse error: missing or empty required string field \"%1\""))
+              .arg(key));
       return std::nullopt;
     }
     return obj[key].toString();
@@ -111,7 +115,10 @@ bool RegistryManager::parseJson(const QByteArray& data) {
       return QString{};
     }
     if (!obj[key].isString()) {
-      emit fetchError(QString("Registry parse error: field \"%1\" must be a string").arg(key));
+      emit fetchError(QString(
+                          QCoreApplication::translate(
+                              "PJ::MarketplaceDiagnostics", "Registry parse error: field \"%1\" must be a string"))
+                          .arg(key));
       return std::nullopt;
     }
     return obj[key].toString();
@@ -121,19 +128,21 @@ bool RegistryManager::parseJson(const QByteArray& data) {
   const QJsonDocument doc = QJsonDocument::fromJson(data, &parse_error);
 
   if (doc.isNull()) {
-    emit fetchError(QString("JSON parse error: %1").arg(parse_error.errorString()));
+    emit fetchError(QString(QCoreApplication::translate("PJ::MarketplaceDiagnostics", "JSON parse error: %1"))
+                        .arg(parse_error.errorString()));
     return false;
   }
 
   if (!doc.isObject()) {
-    emit fetchError("Registry JSON root must be an object");
+    emit fetchError(QCoreApplication::translate("PJ::MarketplaceDiagnostics", "Registry JSON root must be an object"));
     return false;
   }
 
   const QJsonObject root = doc.object();
 
   if (!root.contains("extensions") || !root["extensions"].isArray()) {
-    emit fetchError("Registry JSON missing \"extensions\" array");
+    emit fetchError(
+        QCoreApplication::translate("PJ::MarketplaceDiagnostics", "Registry JSON missing \"extensions\" array"));
     return false;
   }
 
@@ -141,7 +150,9 @@ bool RegistryManager::parseJson(const QByteArray& data) {
 
   for (const QJsonValue& value : root["extensions"].toArray()) {
     if (!value.isObject()) {
-      emit fetchError("Each entry in \"extensions\" must be a JSON object");
+      emit fetchError(
+          QCoreApplication::translate(
+              "PJ::MarketplaceDiagnostics", "Each entry in \"extensions\" must be a JSON object"));
       return false;
     }
 
@@ -209,7 +220,8 @@ bool RegistryManager::parseJson(const QByteArray& data) {
 
   auto resolved = resolveRegistryCandidates(parsed, {platform_, sdk_version_});
   if (!resolved) {
-    emit fetchError(QString("Registry resolution error: %1").arg(resolved.error()));
+    emit fetchError(QString(QCoreApplication::translate("PJ::MarketplaceDiagnostics", "Registry resolution error: %1"))
+                        .arg(resolved.error()));
     return false;
   }
   extensions_ = std::move(*resolved);

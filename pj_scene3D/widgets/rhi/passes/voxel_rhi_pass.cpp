@@ -231,7 +231,7 @@ bool VoxelRhiPass::ensureLayerGpu(QRhi* owner, VoxelGridLayer* layer, LayerGpu& 
   const quint32 rows = layer->rowCount();
   const quint32 slices = layer->sliceCount();
   if (!ensureUniformBuffer(owner, gpu.uniform_buffer, kVoxelUniformBytes)) {
-    layer->noteRenderFailure(tr("Could not create the voxel-grid uniform buffer"));
+    layer->noteRenderFailure(SceneText::tr("Could not create the voxel-grid uniform buffer"));
     releaseLayerGpu(gpu);
     return false;
   }
@@ -254,7 +254,7 @@ bool VoxelRhiPass::ensureLayerGpu(QRhi* owner, VoxelGridLayer* layer, LayerGpu& 
       gpu.rows = 0;
       gpu.slices = 0;
       gpu.value_kind = -1;
-      layer->noteRenderFailure(tr("Could not allocate the voxel-grid 3D texture"));
+      layer->noteRenderFailure(SceneText::tr("Could not allocate the voxel-grid 3D texture"));
       return false;
     }
     gpu.columns = columns;
@@ -267,7 +267,7 @@ bool VoxelRhiPass::ensureLayerGpu(QRhi* owner, VoxelGridLayer* layer, LayerGpu& 
   if (gpu.shader_resources == nullptr) {
     gpu.shader_resources = createLayerBindings(owner, gpu.uniform_buffer, gpu.texture);
     if (gpu.shader_resources == nullptr) {
-      layer->noteRenderFailure(tr("Could not create voxel-grid shader bindings"));
+      layer->noteRenderFailure(SceneText::tr("Could not create voxel-grid shader bindings"));
       releaseLayerGpu(gpu);
       return false;
     }
@@ -278,10 +278,10 @@ bool VoxelRhiPass::ensureLayerGpu(QRhi* owner, VoxelGridLayer* layer, LayerGpu& 
 
 QString VoxelRhiPass::gpuRejection(QRhi* owner, const VoxelGridLayer* layer) const {
   if (owner == nullptr || layer == nullptr) {
-    return tr("The voxel-grid renderer is not available");
+    return SceneText::tr("The voxel-grid renderer is not available");
   }
   if (!owner->isFeatureSupported(QRhi::ThreeDimensionalTextures)) {
-    return tr("This GPU does not support 3D textures");
+    return SceneText::tr("This GPU does not support 3D textures");
   }
   const int effective_limit = std::min(max_3d_texture_size_, owner->resourceLimit(QRhi::TextureSizeMax));
   const quint32 columns = layer->columnCount();
@@ -292,7 +292,7 @@ QString VoxelRhiPass::gpuRejection(QRhi* owner, const VoxelGridLayer* layer) con
       slices <= static_cast<quint32>(effective_limit)) {
     return {};
   }
-  return tr("Voxel grid is %1 x %2 x %3; this GPU supports 3D textures up to %4 per dimension")
+  return SceneText::tr("Voxel grid is %1 x %2 x %3; this GPU supports 3D textures up to %4 per dimension")
       .arg(QString::number(columns), QString::number(rows), QString::number(slices), QString::number(effective_limit));
 }
 
