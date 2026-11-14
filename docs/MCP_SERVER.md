@@ -359,7 +359,11 @@ desktop does the same with `--mcp-relay <url>`, the key copied from the relay's 
 - **Lifetime.** The link is a child of the server, deleted with it (in `~QObject`, after the server's members); its
   in-flight replies are deleted without emitting `finished`, so no callback reaches the server then, and replies the
   server still holds check the link through a `QPointer`. A relay that is down is retried, backing off to 10 s, while
-  the page lives; the relay forgets a page that has not polled for 120 s. In the browser a
+  the page lives; the relay forgets a page that has not polled for 120 s. One relay serves one agent session, so a
+  relay that forgot the page (404) or failed two polls in a row is a session that ended: the link deletes the object
+  it gave that session's calls as their connection, which the server treats as a desktop client hanging up (a job
+  that dies with its call is killed, the others carry on for their client to find), and no answer of the old
+  session is posted into the next one, whose message numbering starts over. In the browser a
   `QNetworkReply` never frees its body (`pj_runtime/docs/TECHNICAL_NOTES.md`): relay messages are small, so a session leaks
   kilobytes.
 

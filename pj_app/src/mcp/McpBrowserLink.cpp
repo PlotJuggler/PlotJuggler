@@ -24,6 +24,8 @@ namespace {
 /// The relay holds a poll up to 20 s; past this the poll is given up and sent again.
 constexpr int kPollTimeoutMs = 30'000;
 constexpr int kRequestTimeoutMs = 10'000;
+/// Polls in a row the relay must fail before its session counts as over.
+constexpr int kPollsBeforeSessionLost = 2;
 constexpr int kMaxBackoffMs = 10'000;
 
 int statusOf(const QNetworkReply& reply) {
@@ -68,8 +70,14 @@ void McpBrowserLink::retryLater(void (McpBrowserLink::*next)()) {
   QTimer::singleShot(backoff_ms_, this, next);
 }
 
+void McpBrowserLink::endSession() {
+  failed_polls_ = 0;
+  delete std::exchange(session_, nullptr);
+}
+
 void McpBrowserLink::hello() {
   id_.clear();
+  endSession();  // whatever a previous session relayed can no longer be answered
 #ifdef PJ_TARGET_WASM
   constexpr bool kBrowser = true;
 #else
@@ -88,6 +96,7 @@ void McpBrowserLink::hello() {
     }
     id_ = QString::fromStdString(answer["id"].get<std::string>());
     backoff_ms_ = 0;
+    session_ = new QObject(this);
     qCInfo(mcp::lcMcp).noquote() << "linked to the agent relay at"
                                  << relay_.toString(QUrl::RemoveQuery);  // not its secret
     poll();
@@ -104,20 +113,31 @@ void McpBrowserLink::poll() {
       return;
     }
     if (reply->error() != QNetworkReply::NoError) {
+      // One failure may be a hiccup; a relay that stays silent is an agent session that ended.
+      if (++failed_polls_ >= kPollsBeforeSessionLost) {
+        endSession();
+      }
       retryLater(&McpBrowserLink::poll);
       return;
     }
     backoff_ms_ = 0;
+    failed_polls_ = 0;
+    if (session_ == nullptr) {
+      session_ = new QObject(this);  // the relay answers again, with its memory of this page intact
+    }
     if (status == 200) {
       const json item = json::parse(reply->readAll().toStdString(), nullptr, false);
       if (item.is_object() && item.value("seq", json()).is_number_integer() && item.contains("message")) {
         const qint64 seq = item["seq"].get<qint64>();
         const QString client = QString::fromStdString(item.value("client", std::string()));
-        // The server's reply may come much later: by then this link may be gone (QPointer).
+        // The server's reply may come much later: by then this link, or the relay session the
+        // message came in, may be gone. An answer never crosses into a later session, whose
+        // numbering starts over.
         server_.handleRelayed(
-            QByteArray::fromStdString(item["message"].dump()), client, this,
-            [self = QPointer<McpBrowserLink>(this), seq](const QByteArray& response) {
-              if (self != nullptr) {
+            QByteArray::fromStdString(item["message"].dump()), client, session_,
+            [self = QPointer<McpBrowserLink>(this), session = QPointer<QObject>(session_),
+             seq](const QByteArray& response) {
+              if (self != nullptr && session != nullptr) {
                 self->reply(seq, response);
               }
             });

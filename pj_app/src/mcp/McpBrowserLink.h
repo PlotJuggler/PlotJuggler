@@ -31,7 +31,8 @@ class McpServer;
 /// (CORS preflight), which admits only its allowlisted origins.
 /// Messages are answered as a public client (McpServer::handleRelayed); one poll is in flight at a
 /// time, answers go out as they come. A relay that is down or restarting is retried, backing off to
-/// 10 s, for as long as this lives. GUI thread.
+/// 10 s, for as long as this lives; the calls it had relayed end then, as a hung-up client's do. GUI
+/// thread.
 class McpBrowserLink : public QObject {
   Q_OBJECT
  public:
@@ -52,6 +53,9 @@ class McpBrowserLink : public QObject {
  private:
   void hello();
   void poll();
+  /// Ends the current relay session: every call it relayed loses its connection, which the server
+  /// treats as a client that hung up.
+  void endSession();
   /// Answers message `seq` with `response` (empty: a notification, no answer).
   void reply(qint64 seq, const QByteArray& response);
   /// Runs `next` after the current backoff, then doubles it (up to 10 s).
@@ -71,6 +75,11 @@ class McpBrowserLink : public QObject {
   QNetworkAccessManager network_;
   QString id_;
   int backoff_ms_ = 0;
+  /// The connection of the calls the current relay session relayed (McpServer::handleRelayed). One
+  /// relay serves one agent session, so a relay that forgot this page or stopped answering has no
+  /// way left to deliver their answers: deleting this is that session's hang-up.
+  QObject* session_ = nullptr;
+  int failed_polls_ = 0;
 };
 
 }  // namespace PJ
