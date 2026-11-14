@@ -730,6 +730,11 @@ class SessionManager : public QObject {
   // on it.
   void samplesIngested(QVector<PJ::TopicId> ids, bool live);
 
+  // Emitted by every notifyIngest, ahead of samplesIngested and also when that one is
+  // suppressed (no scalar ids, not live): object entries may have landed with no
+  // scalar topic to name them. Consumers of object topics listen here.
+  void dataPublished();
+
   // Emitted by replaceDataset just before a reload swaps a dataset's chunks in
   // place. Bound plot adapters must synchronously drop cached chunk pointers; the
   // DatasetId/TopicIds stay valid (unlike catalog removal), only chunks change.

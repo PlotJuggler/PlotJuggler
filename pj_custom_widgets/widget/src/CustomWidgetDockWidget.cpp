@@ -76,11 +76,15 @@ std::uint64_t objectContent(const ObjectStore& objects, const std::optional<Wire
   return objects.contentIdentity(target->object_topic).content;
 }
 
+/// Calls into any widget's code in progress, all docks together (GUI thread only).
+int g_any_plugin_call_depth = 0;
+
 }  // namespace
 
 template <typename Call>
 std::optional<QString> CustomWidgetDockWidget::callPlugin(Call&& call) const {
   const QScopedValueRollback depth(plugin_call_depth_, plugin_call_depth_ + 1);
+  const QScopedValueRollback any_depth(g_any_plugin_call_depth, g_any_plugin_call_depth + 1);
   try {
     std::forward<Call>(call)();
     return std::nullopt;
@@ -149,15 +153,21 @@ CustomWidgetDockWidget::CustomWidgetDockWidget(
   if (playback_ != nullptr) {
     connect(playback_, &PlaybackEngine::playingChanged, this, [this]() { requestUpdate(); });
   }
-  // samplesIngested names scalar topics only: a load of object-only data, and derived objects, announce
-  // themselves through the ingest lifecycle and derivedEntriesPublished instead.
-  const auto on_entries_landed = [this]() {
+  // dataPublished covers every ingest publication, object-only ones included (samplesIngested names scalar
+  // topics only); a load's last entries land with its end, and derived objects announce themselves.
+  entries_landed_timer_.setSingleShot(true);
+  entries_landed_timer_.setInterval(kEntriesLandedInterval);
+  connect(&entries_landed_timer_, &QTimer::timeout, this, [this]() {
     if (wiredObjectContentChanged()) {
       requestUpdate();
     }
+  });
+  const auto on_entries_landed = [this]() {
+    if (!entries_landed_timer_.isActive()) {
+      entries_landed_timer_.start();
+    }
   };
-  connect(session_, &SessionManager::samplesIngested, this, on_entries_landed);
-  connect(session_, &SessionManager::ingestProgressed, this, on_entries_landed);
+  connect(session_, &SessionManager::dataPublished, this, on_entries_landed);
   connect(session_, &SessionManager::ingestEnded, this, on_entries_landed);
   connect(session_, &SessionManager::derivedEntriesPublished, this, on_entries_landed);
   // An object wire names its dataset by source path, which an asynchronous file load registers only at
@@ -677,6 +687,12 @@ void CustomWidgetDockWidget::showDropRejected(const std::vector<WidgetInputKind>
 
 void CustomWidgetDockWidget::onTrackerTime(double time) {
   last_time_ = time;
+  if (g_any_plugin_call_depth > plugin_call_depth_) {
+    // Another widget seeked from inside its own code, and the tracker reports it synchronously: this widget
+    // runs after that call, not nested in it (its own seek is held back by pushValues instead).
+    requestUpdate();
+    return;
+  }
   pushValues(time, /*force=*/false);
 }
 

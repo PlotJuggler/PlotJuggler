@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -438,6 +439,30 @@ TEST_F(WidgetRuntimeHostObjectHistoryTest, RangeBoundsAreInclusiveAndAnEmptyRang
   }
 }
 
+TEST_F(WidgetRuntimeHostObjectHistoryTest, ARangePastEveryInstantKeepsTheEntriesAtTheInt64Limits) {
+  auto topic = objects_.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/limits"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_TRUE(objects_.pushOwned(*topic, 0, {0}).has_value());
+  ASSERT_TRUE(objects_.pushOwned(*topic, std::numeric_limits<Timestamp>::max(), {1}).has_value());
+  WireTarget wire;
+  wire.kind = WidgetInputKind::kObject;
+  wire.object_topic = *topic;
+  wire.object_type = sdk::BuiltinObjectType::kLog;
+  wires_.push_back(wire);
+
+  std::vector<Sample> out;
+  uint32_t total = 0;
+  ASSERT_TRUE(query(0, 0, -1e300, 1e300, 0, out, nullptr, &total));
+  EXPECT_EQ(total, 2U);
+  EXPECT_EQ(indices(out), (std::vector<int>{0, 1}));
+
+  // A range starting past every instant holds nothing, not the entry at the last one.
+  out.clear();
+  ASSERT_TRUE(query(0, 0, 1e300, 1e301, 0, out, nullptr, &total));
+  EXPECT_EQ(total, 0U);
+  EXPECT_TRUE(out.empty());
+}
+
 TEST_F(WidgetRuntimeHostTest, AHistoryTimeConvertsBackToItsSampleFarFromTheOrigin) {
   // Near an epoch a double steps ~238 ns: the nearest one to a stamp may convert back before it.
   auto topic = objects_.registerTopic(ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/epoch"});
@@ -669,6 +694,31 @@ TEST_F(WidgetRuntimeHostCanonicalTest, AnEntryThatDoesNotDecodeIsSkippedButCount
   EXPECT_DOUBLE_EQ(out[0].time, 0.0);
   EXPECT_DOUBLE_EQ(out[1].time, 2.0);
   EXPECT_EQ(total, 3U) << "the range still holds three entries";
+}
+
+TEST_F(WidgetRuntimeHostCanonicalTest, ATimeShiftedMergeMovesTheLogStampOntoTheDatasetClock) {
+  // A source that pushed canonical log bytes: their own stamp is the time the store holds them at.
+  sdk::Log log;
+  log.timestamp_ns = kSecond;
+  log.message = "started";
+  const std::vector<uint8_t> bytes = serializeLog(log);
+  addObjectWire(sdk::BuiltinObjectType::kLog, {std::string(bytes.begin(), bytes.end())});
+  auto anchor = session_.dataEngine().createDataset(DatasetDescriptor{.source_name = "anchor.mcap"});
+  ASSERT_TRUE(anchor.has_value()) << anchor.error();
+  ASSERT_TRUE(session_.objectStore()
+                  .registerTopic(ObjectTopicDescriptor{.dataset_id = *anchor, .topic_name = "/a"})
+                  .has_value());
+  constexpr Timestamp kShift = 5 * kSecond;
+  ASSERT_TRUE(session_.objectStore()
+                  .mergeDatasets(*anchor, {DatasetMergeSource{.dataset_id = dataset_, .raw_shift_ns = kShift}})
+                  .has_value());
+
+  std::vector<Sample> out;
+  ASSERT_TRUE(query(-100.0, 100.0, out));
+  ASSERT_EQ(out.size(), 1U);
+  const auto delivered = deserializeLog(out[0].bytes.data(), out[0].bytes.size());
+  ASSERT_TRUE(delivered.has_value()) << delivered.error();
+  EXPECT_EQ(delivered->timestamp_ns, kSecond + kShift) << "the log's own stamp is on the clock its entry moved to";
 }
 
 TEST_F(WidgetRuntimeHostCanonicalTest, ATopicWithoutParserDeliversItsStoredBytes) {

@@ -8,7 +8,9 @@
 #include <QPointer>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QWidget>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -52,6 +54,9 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
       SessionManager* session, CatalogModel* catalog, ExtensionCatalogService* extensions, PlaybackEngine* playback,
       QWidget* parent = nullptr);
   ~CustomWidgetDockWidget() override;
+  /// Entries landing on a wired object topic bring at most one on_update per interval: a progressive load
+  /// commits many times a second, and a widget showing a whole topic reloads it on each.
+  static constexpr std::chrono::milliseconds kEntriesLandedInterval{250};
   /// The user-facing word for an input kind ("number", "text", "object"), shared with the config panel.
   static QString kindName(WidgetInputKind kind);
 
@@ -273,7 +278,8 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   std::uint64_t bind_generation_ = 0;  ///< bumped by every bind; a scheduled disable checks it
   bool reconcile_scheduled_ = false;
   bool update_scheduled_ = false;
-  bool update_wanted_ = false;  ///< a requestUpdate no on_update has answered yet
+  bool update_wanted_ = false;   ///< a requestUpdate no on_update has answered yet
+  QTimer entries_landed_timer_;  ///< single shot, kEntriesLandedInterval: coalesces ingest announcements
   /// Per wire, the content revision of its object topic at the last on_update (0 for other kinds).
   std::vector<std::uint64_t> object_content_;
   /// Identity of what the widget was last handed (see mixWireSample); unset = push unconditionally.

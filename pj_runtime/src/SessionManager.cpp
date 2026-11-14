@@ -1005,6 +1005,7 @@ void SessionManager::notifyIngest(QVector<TopicId> ids, bool live, std::optional
   // Object-only ingest legitimately carries no scalar TopicIds; recompute the
   // global origin before the empty/non-live samples signal is suppressed.
   notifyGlobalTimeReferenceIfChanged();
+  emit dataPublished();
   if (ids.isEmpty() && !live) {
     return;
   }

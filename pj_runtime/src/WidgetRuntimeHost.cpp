@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -37,13 +38,18 @@ Timestamp toRawSaturating(double seconds, DisplayOffset offset) {
   return saturatingAdd(*display_ns, offset.value.count());
 }
 
-/// The first stored instant whose delivered time (rawToDisplaySecondsAtOrAfter) is `seconds` or later. A
-/// widget queries back with the times it was handed, so a range is cut where those times change, not at the
-/// instant nearest the bound: near 1.7e9 s a double steps ~238 ns, and near 0 many doubles share a nanosecond.
-Timestamp firstDeliveredAtOrAfter(double seconds, DisplayOffset offset) {
+/// The first stored instant whose delivered time (rawToDisplaySecondsAtOrAfter) is `seconds` or later; nullopt
+/// when even the last instant is delivered before it. A widget queries back with the times it was handed, so a
+/// range is cut where those times change, not at the instant nearest the bound: near 1.7e9 s a double steps
+/// ~238 ns, and near 0 many doubles share a nanosecond.
+std::optional<Timestamp> firstDeliveredAtOrAfter(double seconds, DisplayOffset offset) {
   constexpr Timestamp kMax = std::numeric_limits<Timestamp>::max();
   constexpr Timestamp kMin = std::numeric_limits<Timestamp>::min();
+  const auto delivered = [offset](Timestamp raw) { return rawToDisplaySecondsAtOrAfter(raw, offset).value; };
   const Timestamp nearest = toRawSaturating(seconds, offset);
+  if (nearest == kMax && delivered(kMax) < seconds) {
+    return std::nullopt;  // saturated: no instant is that late
+  }
   if (!(std::abs(seconds) < 9e9)) {
     return nearest;  // past every representable instant: the range is everything or nothing
   }
@@ -53,7 +59,6 @@ Timestamp firstDeliveredAtOrAfter(double seconds, DisplayOffset offset) {
   if (nearest >= kMax - (2 * window) || nearest <= kMin + (2 * window)) {
     return nearest;
   }
-  const auto delivered = [offset](Timestamp raw) { return rawToDisplaySecondsAtOrAfter(raw, offset).value; };
   Timestamp before = nearest - window;  // delivered before `seconds`
   Timestamp at = nearest + window;      // delivered at `seconds` or later
   if (delivered(before) >= seconds || delivered(at) < seconds) {
@@ -68,10 +73,21 @@ Timestamp firstDeliveredAtOrAfter(double seconds, DisplayOffset offset) {
 
 /// The stored instants whose delivered times lie in [from, to], inclusive; empty when min > max.
 Range<Timestamp> deliveredRange(const WidgetHistoryQuery& query, DisplayOffset offset) {
-  const double after_to = std::nextafter(query.to, std::numeric_limits<double>::infinity());
-  const Timestamp last = std::isinf(after_to) ? std::numeric_limits<Timestamp>::max()
-                                              : saturatingSub(firstDeliveredAtOrAfter(after_to, offset), 1);
-  return Range<Timestamp>{.min = firstDeliveredAtOrAfter(query.from, offset), .max = last};
+  constexpr Range<Timestamp> kEmpty{.min = 1, .max = 0};
+  const std::optional<Timestamp> first = firstDeliveredAtOrAfter(query.from, offset);
+  if (!first) {
+    return kEmpty;
+  }
+  // The last instant is the one before the first delivered after `to`; none such means every later instant.
+  const std::optional<Timestamp> past =
+      firstDeliveredAtOrAfter(std::nextafter(query.to, std::numeric_limits<double>::infinity()), offset);
+  if (!past) {
+    return Range<Timestamp>{.min = *first, .max = std::numeric_limits<Timestamp>::max()};
+  }
+  if (*past == std::numeric_limits<Timestamp>::min()) {
+    return kEmpty;
+  }
+  return Range<Timestamp>{.min = *first, .max = *past - 1};
 }
 
 /// Samples one call may deliver: `max_samples`, 0 meaning the default.
@@ -310,8 +326,15 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
       }
     }
   } else {
+    // The picks ascend, so those sharing a stamp are adjacent: its entries are read once, not once per pick
+    // (all entries on one stamp would otherwise cost cap x total).
+    std::optional<Timestamp> read_stamp;
+    std::vector<OrderedEntries::TimeRangeEntry> at_stamp;
     for (const auto& [stamp, rank] : chosen) {
-      const auto at_stamp = objects_.rangeByTime(target.object_topic, saturatingSub(stamp, 1), stamp);
+      if (read_stamp != stamp) {
+        at_stamp = objects_.rangeByTime(target.object_topic, saturatingSub(stamp, 1), stamp);
+        read_stamp = stamp;
+      }
       if (rank < at_stamp.size() && !deliver(at_stamp[rank].uid)) {
         break;
       }

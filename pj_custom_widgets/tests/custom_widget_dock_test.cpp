@@ -6,13 +6,16 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QEventLoop>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QPointer>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -42,6 +45,13 @@ using pj_cw_test::otherQtVtable;
 using pj_cw_test::PluginStats;
 
 constexpr std::string_view kLogSchema = "test_log";
+
+/// Runs the event loop for `duration`, so timers due within it fire.
+void turnEventLoopFor(std::chrono::milliseconds duration) {
+  QEventLoop loop;
+  QTimer::singleShot(duration, &loop, &QEventLoop::quit);
+  loop.exec();
+}
 
 /// A parser whose wire message is plain text, decoded into a kLog of that message: the store holds
 /// what a ROS source would (the message, not the canonical object). "bad" does not decode.
@@ -406,6 +416,32 @@ TEST_F(CustomWidgetDockTest, ASeekFromInsideOnUpdateIsDeliveredAfterTheCallRetur
   EXPECT_DOUBLE_EQ(g.last_values.back().number, 20.0) << "the seek's time was delivered once the call returned";
 }
 
+TEST_F(CustomWidgetDockTest, ASeekFromOneWidgetDoesNotRunAnotherWidgetInsideItsCall) {
+  PlaybackEngine& engine = app_->playbackEngine();
+  engine.setRange(displayRange(0.0, 10.0));
+  auto first = makeBound();
+  auto second = makeBound();
+  for (CustomWidgetDockWidget* dock : {first.get(), second.get()}) {
+    QObject::connect(&engine, &PlaybackEngine::currentTimeChanged, dock, &CustomWidgetDockWidget::onTrackerTime);
+    ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));
+  }
+  QCoreApplication::processEvents();
+  bool seeked = false;
+  g.max_update_depth = 0;
+  g.on_update = [&]() {
+    if (!seeked) {
+      seeked = true;
+      ASSERT_TRUE(g.playback.seek(2.5).has_value());
+    }
+  };
+
+  first->onTrackerTime(1.5);  // the engine broadcasts the seek synchronously, to both docks
+  EXPECT_EQ(g.max_update_depth, 1) << "the other widget's on_update ran inside the seeking widget's";
+  QCoreApplication::processEvents();
+  ASSERT_FALSE(g.last_values.empty());
+  EXPECT_DOUBLE_EQ(g.last_values.back().number, 20.0) << "the seek's time was delivered once the call returned";
+}
+
 TEST_F(CustomWidgetDockTest, AnUpdateAskedForDuringANestedEventLoopWaitsWithoutSpinning) {
   // Counts the queued calls the dock receives (its deferred updates arrive as QEvent::MetaCall).
   class MetaCallCounter : public QObject {
@@ -501,13 +537,56 @@ TEST_F(CustomWidgetDockTest, EntriesFromAFileLoadOfOnlyObjectTopicsBringAnUpdate
   const IngestToken token = session.beginIngest(objects_only, u"load"_s, 2, /*cancellable=*/false, {});
   ASSERT_TRUE(objects.pushOwned(*topic, 5 * kSecond, {5}).has_value());
   session.updateIngest(token, 1, 2);
-  QCoreApplication::processEvents();
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
   EXPECT_EQ(g.updates, base + 1) << "entries committed by a load's progress tick reached no widget";
 
   ASSERT_TRUE(objects.pushOwned(*topic, 6 * kSecond, {6}).has_value());
   session.endIngest(token, IngestOutcome::kCompleted);
-  QCoreApplication::processEvents();
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
   EXPECT_EQ(g.updates, base + 2) << "entries committed at the end of a load reached no widget";
+}
+
+TEST_F(CustomWidgetDockTest, AProgressiveLoadBringsOneUpdatePerIntervalNotOnePerTick) {
+  const DatasetId objects_only = pj_cw_test::createDataset(*app_, "bag_of_logs.mcap");
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto topic = objects.registerTopic(
+      ObjectTopicDescriptor{.dataset_id = objects_only, .topic_name = "/rosout", .metadata_json = {}});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(objects.pushOwned(*topic, kSecond, {1}).has_value());
+  auto dock = makeBound(u"viewer"_s);
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(*topic, sdk::BuiltinObjectType::kImage, u"/rosout"_s));
+  dock->onTrackerTime(1.5);
+  const int base = g.updates;
+
+  // Ten progress ticks inside one interval, each in its own turn of the event loop.
+  SessionManager& session = app_->sessionManager();
+  const IngestToken token = session.beginIngest(objects_only, u"load"_s, 10, /*cancellable=*/false, {});
+  for (int tick = 1; tick <= 10; ++tick) {
+    ASSERT_TRUE(objects.pushOwned(*topic, (tick + 1) * kSecond, {static_cast<uint8_t>(tick)}).has_value());
+    session.updateIngest(token, static_cast<quint64>(tick), 10);
+    QCoreApplication::processEvents();
+  }
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
+  EXPECT_EQ(g.updates, base + 1) << "every tick of the load reloaded the widget";
+}
+
+TEST_F(CustomWidgetDockTest, ObjectEntriesPublishedWithoutAnIngestTokenBringAnUpdate) {
+  // A reload or a toolbox import publishes through notifyIngest with no live token and, object-only, no ids.
+  const DatasetId objects_only = pj_cw_test::createDataset(*app_, "bag_of_logs.mcap");
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto topic = objects.registerTopic(
+      ObjectTopicDescriptor{.dataset_id = objects_only, .topic_name = "/rosout", .metadata_json = {}});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(objects.pushOwned(*topic, kSecond, {1}).has_value());
+  auto dock = makeBound(u"viewer"_s);
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(*topic, sdk::BuiltinObjectType::kImage, u"/rosout"_s));
+  dock->onTrackerTime(1.5);
+  const int base = g.updates;
+
+  ASSERT_TRUE(objects.pushOwned(*topic, 5 * kSecond, {5}).has_value());
+  app_->sessionManager().notifyIngest({}, /*live=*/false);
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
+  EXPECT_EQ(g.updates, base + 1) << "entries published without a token reached no widget";
 }
 
 TEST_F(CustomWidgetDockTest, DerivedEntriesOnAWiredObjectTopicBringAnUpdate) {
@@ -524,7 +603,7 @@ TEST_F(CustomWidgetDockTest, DerivedEntriesOnAWiredObjectTopicBringAnUpdate) {
   // What a derived node's publication does: the entries are in the store before the signal.
   ASSERT_TRUE(objects.pushOwned(*topic, 5 * kSecond, {5}).has_value());
   emit app_->sessionManager().derivedEntriesPublished(u"node"_s, {*topic});
-  QCoreApplication::processEvents();
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
   EXPECT_EQ(g.updates, base + 1) << "entries published by a derived node reached no widget";
 }
 
@@ -543,12 +622,12 @@ TEST_F(CustomWidgetDockTest, NewEntriesOnAWiredObjectTopicBringOneUpdate) {
   SessionManager& session = app_->sessionManager();
 
   session.notifyIngest({}, /*live=*/true);
-  QCoreApplication::processEvents();
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
   EXPECT_EQ(g.updates, base) << "nothing new on the wired topic";
 
   ASSERT_TRUE(objects.pushOwned(*other, 2 * kSecond, {9}).has_value());
   session.notifyIngest({}, /*live=*/true);
-  QCoreApplication::processEvents();
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
   EXPECT_EQ(g.updates, base) << "an unwired topic grew";
 
   // After the tracker: the sample at the tracker is still entry 1, yet the widget hears of it.
@@ -557,11 +636,11 @@ TEST_F(CustomWidgetDockTest, NewEntriesOnAWiredObjectTopicBringOneUpdate) {
   session.notifyIngest({}, /*live=*/true);
   session.notifyIngest({}, /*live=*/true);
   EXPECT_EQ(g.updates, base);
-  QCoreApplication::processEvents();
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
   EXPECT_EQ(g.updates, base + 1);
   ASSERT_EQ(g.last_values.size(), 1U);
   EXPECT_EQ(g.last_values[0].bytes, (std::vector<uint8_t>{1}));
-  QCoreApplication::processEvents();
+  turnEventLoopFor(CustomWidgetDockWidget::kEntriesLandedInterval * 2);
   EXPECT_EQ(g.updates, base + 1);
 }
 
