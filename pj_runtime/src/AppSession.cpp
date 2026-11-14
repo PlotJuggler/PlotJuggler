@@ -346,7 +346,7 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
   std::optional<DisplaySeconds> new_max;
   forEachVisibleRawRange([&](DatasetId dataset_id, Timestamp raw_min, Timestamp raw_max) {
     const DisplayOffset offset = session_manager_->displayOffset(dataset_id);
-    const DisplaySeconds ds_min = rawToDisplaySeconds(raw_min, offset);
+    const DisplaySeconds ds_min = rawToDisplaySecondsAtOrAfter(raw_min, offset);
     const DisplaySeconds ds_max = rawToDisplaySecondsAtOrAfter(raw_max, offset);
     new_min = new_min ? std::min(*new_min, ds_min) : ds_min;
     new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
@@ -588,7 +588,7 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
       if (!metadata.has_value() || metadata->total_row_count == 0) {
         continue;
       }
-      const DisplaySeconds ds_min = rawToDisplaySeconds(metadata->time_range_min, offset);
+      const DisplaySeconds ds_min = rawToDisplaySecondsAtOrAfter(metadata->time_range_min, offset);
       const DisplaySeconds ds_max = rawToDisplaySecondsAtOrAfter(metadata->time_range_max, offset);
       scalar_min = scalar_min ? std::min(*scalar_min, ds_min) : ds_min;
       scalar_max = scalar_max ? std::max(*scalar_max, ds_max) : ds_max;
@@ -601,7 +601,7 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
         continue;
       }
       const auto [o_min, o_max] = object_store.timeRange(object_topic_id);
-      const DisplaySeconds ds_min = rawToDisplaySeconds(o_min, offset);
+      const DisplaySeconds ds_min = rawToDisplaySecondsAtOrAfter(o_min, offset);
       const DisplaySeconds ds_max = rawToDisplaySecondsAtOrAfter(o_max, offset);
       object_min = object_min ? std::min(*object_min, ds_min) : ds_min;
       object_max = object_max ? std::max(*object_max, ds_max) : ds_max;

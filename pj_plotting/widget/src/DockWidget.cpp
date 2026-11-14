@@ -657,8 +657,18 @@ void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
   // *into* it (Scene3DDockWidget consumes pointcloud / TF this way). On
   // success we don't replace the widget — only the topic list grows.
   if (object_widget_ != nullptr) {
-    if (offer_keys_to(object_widget_, /*start_index=*/0) > 0) {
-      if (object_widget_awaiting_first_topic_) {
+    const bool objects_taken = offer_keys_to(object_widget_, /*start_index=*/0) > 0;
+    // The scalar fields of the same drop go to the widget too (a Custom Widget with number inputs takes
+    // them), as a drop led by a scalar offers them all.
+    QStringList scalar_keys;
+    for (const QString& key : keys) {
+      if (const auto item = catalog_->itemDescriptor(key); item.has_value() && isScalarField(*item)) {
+        scalar_keys.append(key);
+      }
+    }
+    const bool scalars_taken = !scalar_keys.empty() && object_widget_->tryAcceptSeriesKeys(scalar_keys);
+    if (objects_taken || scalars_taken) {
+      if (objects_taken && object_widget_awaiting_first_topic_) {
         // First topic into an empty click-created dock: seed streaming playback,
         // which the placeholder→drop path otherwise does at creation. Fires once
         // per dock. The dock keeps its "..." name — dragging a topic does NOT

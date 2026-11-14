@@ -930,7 +930,8 @@ std::optional<DisplayRange> SessionManager::datasetDisplayRange(DatasetId datase
   // match) so a bare raw-ns range can never reach the playback axis.
   const DisplayOffset offset = displayOffset(dataset_id);
   return DisplayRange{
-      .min = rawToDisplaySeconds(bounds->first, offset), .max = rawToDisplaySecondsAtOrAfter(bounds->second, offset)};
+      .min = rawToDisplaySecondsAtOrAfter(bounds->first, offset),
+      .max = rawToDisplaySecondsAtOrAfter(bounds->second, offset)};
 }
 
 void SessionManager::setSeriesVisibleStart(DatasetId dataset_id, DisplaySeconds start) {

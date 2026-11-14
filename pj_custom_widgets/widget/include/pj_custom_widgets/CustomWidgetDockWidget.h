@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -227,11 +228,12 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   /// inputs. Opened with show(), never exec(), so the drop handler does not nest an event loop.
   void showDropRejected(const std::vector<WidgetInputKind>& dropped_kinds);
   void afterCatalogChange(bool changed);
-  /// The next push reaches the widget whatever it holds. Also forgets the samples kept from the
-  /// previous tick, which belong to the wires as they were.
+  /// The next push reaches the widget whatever it holds, and forgets the samples kept from the previous
+  /// tick, which belong to the wires as they were. Only marked here: the values of a call in progress
+  /// (a widget spinning an event loop in on_update) still point into those samples.
   void invalidateRenderKey() {
     last_render_key_.reset();
-    samples_.clear();
+    samples_stale_ = true;
   }
   /// The last tracker time, or the playhead before the first tick.
   [[nodiscard]] double currentPushTime() const;
@@ -280,6 +282,7 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   bool update_scheduled_ = false;
   bool update_wanted_ = false;           ///< a requestUpdate no on_update has answered yet
   bool tracker_push_scheduled_ = false;  ///< a tracker push deferred past a plugin's call (onTrackerTime)
+  bool samples_stale_ = false;           ///< samples_ belong to older wires; the next push clears them
   /// wiredObjectContent() at the last on_update; the entries-landed trigger requests an update when it moved.
   std::uint64_t object_content_ = 0;
   /// Identity of what the widget was last handed (see mixWireSample); unset = push unconditionally.
@@ -289,6 +292,9 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   // carries each wire's previous sample into the next tick (refreshWireSample).
   std::vector<std::optional<WireTarget>> targets_;
   std::vector<WireSample> samples_;
+  /// The wires' labels as last pushed: values_ point here, not into the wires, which an edit during a
+  /// call in progress may remove.
+  std::vector<std::string> labels_;
   std::vector<PJ_widget_value_t> values_;
   /// Entries landing on a wired object topic: an update at once, then at most one per kEntriesLandedInterval.
   CoalescingTrigger entries_landed_;
