@@ -143,6 +143,30 @@ TEST(McpJobs, StoppingAJobIsNotReadOnlyButRunsUnderTheUsersDialog) {
   EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("open_file", json::object()));
 }
 
+TEST(McpUiTools, ListedOnlyWhenTheRunAskedAndAlwaysAllowedUnderTheUsersDialog) {
+  using PJ::mcp::ToolSet;
+  const auto listed = [](ToolSet set) {
+    return PJ::mcp::toolList(set).dump().find("\"ui_click\"") != std::string::npos;
+  };
+  EXPECT_FALSE(listed(ToolSet::kFull));
+  PJ::mcp::setUiToolsEnabled(true);
+  EXPECT_TRUE(listed(ToolSet::kFull));
+  EXPECT_FALSE(listed(ToolSet::kAgentOnly));
+  PJ::mcp::setUiToolsEnabled(false);
+
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("ui_click", json::object()));
+  EXPECT_TRUE(PJ::mcp::isReadOnlyTool("ui_tree"));
+  EXPECT_FALSE(PJ::mcp::isReadOnlyTool("ui_click"));
+  EXPECT_FALSE(PJ::mcp::isUiTool("ui_other"));
+  EXPECT_EQ(PJ::mcp::uiSettleMs("ui_tree", {{"wait_ms", 500}}), 0);
+  EXPECT_EQ(PJ::mcp::uiSettleMs("ui_click", json::object()), PJ::mcp::kDefaultUiSettleMs);
+  EXPECT_EQ(PJ::mcp::uiSettleMs("ui_click", {{"wait_ms", 1e9}}), PJ::mcp::kMaxUiSettleMs);
+  // Read before the input is queued: a badly typed one falls back instead of failing after acting.
+  EXPECT_EQ(PJ::mcp::uiSettleMs("ui_click", {{"wait_ms", "x"}}), PJ::mcp::kDefaultUiSettleMs);
+  EXPECT_EQ(PJ::mcp::uiSettleMs("ui_click", {{"wait_ms", -3.5}}), 0);
+  EXPECT_EQ(PJ::mcp::uiSettleMs("ui_click", {{"wait_ms", 1e300}}), PJ::mcp::kMaxUiSettleMs);
+}
+
 TEST(McpTasks, TheExtensionIsOfferedOnDiscoverAndDeclaredPerRequest) {
   using PJ::mcp::ToolSet;
   const json discovered = *PJ::mcp::lifecycleResult("server/discover", json::object(), ToolSet::kFull);

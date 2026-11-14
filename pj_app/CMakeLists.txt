@@ -156,7 +156,10 @@ target_sources(pj_app_shell PRIVATE
     src/mcp/McpServer.h
     src/mcp/McpServerTools.cpp)
 if(NOT EMSCRIPTEN)
-    target_sources(pj_app_shell PRIVATE src/mcp/McpBridge.cpp)
+    # The UI tools are desktop only: only a command-line flag turns them on. Qt6::GuiPrivate:
+    # <qpa/qwindowsysteminterface.h>, their real input path.
+    target_sources(pj_app_shell PRIVATE src/mcp/McpBridge.cpp src/mcp/McpUiTools.cpp src/mcp/McpUiTools.h)
+    target_link_libraries(pj_app_shell PRIVATE Qt6::GuiPrivate)
 endif()
 target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
 
@@ -1072,6 +1075,15 @@ if(PJ_BUILD_TESTS)
     # preset_controller_test serves canned responses with pj_runtime's loopback test server.
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_custom_widgets/tests)
+    # The MCP UI tools again at scale 2: the input they queue must land on the same widgets at
+    # native pixels as at logical ones.
+    if(NOT EMSCRIPTEN)
+        gtest_discover_tests(pj_app_gui_tests
+            TEST_PREFIX "pj_app_gui_tests.dpr2."
+            TEST_FILTER "McpServerTest.UiTools*"
+            DISCOVERY_MODE PRE_TEST
+            PROPERTIES TIMEOUT 120 RESOURCE_LOCK pj_app_gui_tests ENVIRONMENT_MODIFICATION "QT_SCALE_FACTOR=set:2")
+    endif()
 
     # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,
     # floating-window close and DPR changes, plus the mixed-API negative case.

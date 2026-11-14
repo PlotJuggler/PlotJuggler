@@ -58,21 +58,37 @@ inline constexpr char kNoServicesError[] = "PlotJuggler could not build the serv
 /// token: the agent tools, without the app's own).
 enum class ToolSet { kFull, kAgentOnly };
 
-/// The tools of `set`, with JSON schemas and MCP annotations. Static, so the bridge can list tools
-/// while no PlotJuggler runs.
+/// Turns the UI tools (McpUiTools: ui_tree, ui_click, ...) on for this process: main, from
+/// `--mcp-ui-tools` (desktop only); tests. They act as the user, so they run under the user's
+/// dialogs, and only on the public token.
+void setUiToolsEnabled(bool enabled);
+[[nodiscard]] bool uiToolsEnabled();
+/// Whether `name` is one of the UI tools, whether or not they are enabled.
+[[nodiscard]] bool isUiTool(const std::string& name);
+inline constexpr int kDefaultUiSettleMs = 150;
+inline constexpr int kMaxUiSettleMs = 5000;
+/// ui_type refuses longer text: each character is two queued events and usually a textChanged.
+inline constexpr int kMaxUiTypedChars = 1000;
+/// The milliseconds a UI tool's call waits before answering, so the input it queued is handled: its
+/// `wait_ms`, clamped (the default when it is not a number); 0 for ui_tree, which queues none. Never
+/// throws, so the server reads it before the input is queued.
+[[nodiscard]] int uiSettleMs(const std::string& name, const nlohmann::json& args);
+
+/// The tools of `set`, with JSON schemas and MCP annotations; for kFull, the UI tools too while
+/// uiToolsEnabled(). Static, so the bridge can list tools while no PlotJuggler runs.
 [[nodiscard]] nlohmann::json toolList(ToolSet set);
 
 /// The agent tool layer (pj_runtime's `agent_tools`), one instance for listing and calls.
 [[nodiscard]] const agent_tools::ToolRegistry& agentTools();
 
 /// True for tools that never change the session: the only ones allowed while the user has a modal
-/// dialog open. `screenshot` is not one (its `tab` focuses a tab); the server lets it through
+/// dialog open (the UI tools aside). `screenshot` is not one (its `tab` focuses a tab); the server lets it through
 /// without `tab`.
 [[nodiscard]] bool isReadOnlyTool(const std::string& name);
 
 /// Whether a call of `name` with `args` may run while the user has a modal dialog open: the
-/// read-only tools, `screenshot` when it focuses no tab, and `job_kill`, which changes state but
-/// only stops the agent's own work.
+/// read-only tools, `screenshot` when it focuses no tab, `job_kill`, which changes state but only
+/// stops the agent's own work, and the UI tools, which act as the user.
 [[nodiscard]] bool runsUnderUsersDialog(const std::string& name, const nlohmann::json& args);
 
 /// How long a job-capable call holds its reply before it becomes a background job (its `wait_s`

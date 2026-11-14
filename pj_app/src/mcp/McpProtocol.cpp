@@ -89,14 +89,15 @@ json jsonResult(const json& payload) {
 }
 
 bool isReadOnlyTool(const std::string& name) {
-  static const std::set<std::string> read_only = {"get_status",     "about",         "list_instances", "list_topics",
-                                                  "describe_topic", "read_series",   "evaluate",       "wait_for",
-                                                  "list_created",   "report_status", "jobs_list",      "job_wait"};
+  static const std::set<std::string> read_only = {
+      "get_status", "about",        "list_instances", "list_topics", "describe_topic", "read_series", "evaluate",
+      "wait_for",   "list_created", "report_status",  "jobs_list",   "job_wait",       "ui_tree"};
   return read_only.contains(name);
 }
 
 bool runsUnderUsersDialog(const std::string& name, const json& args) {
-  return isReadOnlyTool(name) || name == "job_kill" || (name == "screenshot" && !args.contains("tab"));
+  return isReadOnlyTool(name) || name == "job_kill" || (name == "screenshot" && !args.contains("tab")) ||
+         isUiTool(name);
 }
 
 bool isJobCapableTool(const std::string& name) {
@@ -269,6 +270,81 @@ json appToolEntries() {
 
 namespace {
 
+bool g_ui_tools_enabled = false;
+
+/// The tools/list entries of the UI tools (McpUiTools).
+json uiToolEntries() {
+  const auto tool = [](const char* name, const std::string& desc, json input) {
+    return toolEntry(name, desc, std::move(input), isReadOnlyTool(name));
+  };
+  const json target = {
+      {"ref", {{"type", "string"}, {"description", "a ref from ui_tree, e.g. w12"}}},
+      {"name", {{"type", "string"}, {"description", "or the objectName of exactly one visible widget"}}}};
+  const json wait = {
+      {"type", "integer"},
+      {"description", "ms to let the app handle the input before answering (default " +
+                          std::to_string(kDefaultUiSettleMs) + ", at most " + std::to_string(kMaxUiSettleMs) + ")"}};
+  const json point = {{"type", "array"}, {"items", {{"type", "number"}}}, {"minItems", 2}, {"maxItems", 2}};
+  const json mods = {{"type", "string"}, {"description", "held modifiers, e.g. Ctrl+Shift"}};
+  const auto with = [&](json properties) {
+    properties.update(target);
+    properties["wait_ms"] = wait;
+    return properties;
+  };
+  return json::array({
+      tool(
+          "ui_tree",
+          "The visible windows as a user sees them, for driving the UI like a user (QA). One line per widget or "
+          "item: [ref] Class#objectName \"text\" (flags) WxH; menu actions, tabs and the visible rows of lists and "
+          "trees are items with their own ref. The open popup and the modal dialog come first; the windows a "
+          "modal dialog blocks get one line each and cannot be acted on. Refs are those of the "
+          "latest ui_tree: call it again after anything changed. These tools act as the user, also under "
+          "their dialogs.",
+          schema(json::object())),
+      tool(
+          "ui_click",
+          "Click a widget or item like the mouse does (press and release through the window system), at its "
+          "center or at x,y inside it. Returns what the press landed on. Open menus by clicking the menu bar "
+          "item, then the item in the popup ui_tree lists.",
+          schema(with(
+              {{"button", {{"type", "string"}, {"enum", {"left", "right", "middle"}}}},
+               {"double", {{"type", "boolean"}}},
+               {"x", {{"type", "number"}}},
+               {"y", {{"type", "number"}}},
+               {"modifiers", mods}}))),
+      tool(
+          "ui_drag",
+          "Press at `from` (default: the center) of the target, move to `to` (inside the target) or to the center "
+          "of `to_ref`, and release: zoom rectangles, panning, splitters, sliders. Drag-and-drop between widgets "
+          "runs the platform's drag loop and may not complete.",
+          schema(with(
+              {{"from", point},
+               {"to", point},
+               {"to_ref", {{"type", "string"}}},
+               {"button", {{"type", "string"}, {"enum", {"left", "right", "middle"}}}},
+               {"modifiers", mods}}))),
+      tool(
+          "ui_wheel", "Turn the mouse wheel over the target (at its center or x,y): notches > 0 scrolls up / zooms in.",
+          schema(with(
+              {{"notches", {{"type", "integer"}}},
+               {"x", {{"type", "number"}}},
+               {"y", {{"type", "number"}}},
+               {"modifiers", mods}}))),
+      tool(
+          "ui_key",
+          "Press keys, as a key sequence (\"Ctrl+Z\", \"Return\", \"Escape\", \"Ctrl+S, Ctrl+Q\"), into the "
+          "target after focusing it, or into whatever has focus. Window shortcuts fire only in the active "
+          "window: the target's is activated first.",
+          schema(with({{"keys", {{"type", "string"}}}}), {"keys"})),
+      tool(
+          "ui_type",
+          "Type text key by key into the target after focusing it, or into whatever has focus. \\n presses "
+          "Return; text after a Return that closes the window goes nowhere, so send it in a second call. At most " +
+              std::to_string(kMaxUiTypedChars) + " characters per call.",
+          schema(with({{"text", {{"type", "string"}}}}), {"text"})),
+  });
+}
+
 /// `seconds` as the whole number a tool description quotes.
 std::string whole(double seconds) {
   return std::to_string(static_cast<int>(seconds));
@@ -317,8 +393,38 @@ void addWaitS(json& entry) {
 
 }  // namespace
 
+void setUiToolsEnabled(bool enabled) {
+  g_ui_tools_enabled = enabled;
+}
+
+bool uiToolsEnabled() {
+  return g_ui_tools_enabled;
+}
+
+bool isUiTool(const std::string& name) {
+  static const std::set<std::string> ui_tools = {"ui_tree", "ui_click", "ui_drag", "ui_wheel", "ui_key", "ui_type"};
+  return ui_tools.contains(name);
+}
+
+int uiSettleMs(const std::string& name, const json& args) {
+  if (name == "ui_tree") {
+    return 0;
+  }
+  // Read before the input is queued, so it never throws: a call must not fail after acting.
+  const auto wait = args.find("wait_ms");
+  if (wait == args.end() || !wait->is_number()) {
+    return kDefaultUiSettleMs;
+  }
+  return static_cast<int>(std::clamp(wait->get<double>(), 0.0, double(kMaxUiSettleMs)));
+}
+
 json toolList(ToolSet set) {
   json tools = set == ToolSet::kFull ? appToolEntries() : json::array();
+  if (set == ToolSet::kFull && uiToolsEnabled()) {
+    for (json& entry : uiToolEntries()) {
+      tools.push_back(std::move(entry));
+    }
+  }
   for (const json& entry : agentTools().toMcpToolsList()) {
     const std::string name = entry.value("name", "");
     tools.push_back(

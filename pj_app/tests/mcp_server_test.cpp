@@ -445,6 +445,105 @@ TEST_F(McpServerTest, UnderTheUsersDialogOnlyReadsRun) {
   EXPECT_NE(change_text.find("'Hold on' open"), std::string::npos) << change_text;
 }
 
+TEST_F(McpServerTest, UiToolsClickTheUsersDialogOnlyWhenTheRunAskedForThem) {
+  const auto listed = [this] {
+    const Answer answer = rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}}, "test");
+    return answer.body.dump().find("\"ui_click\"") != std::string::npos;
+  };
+  EXPECT_FALSE(listed());
+  EXPECT_TRUE(result(call("ui_tree", json::object())).second);
+
+  PJ::mcp::setUiToolsEnabled(true);
+  EXPECT_TRUE(listed());
+  window_->show();
+  std::pair<std::string, bool> tree{"", true};
+  std::pair<std::string, bool> clicked{"", true};
+  bool closed_by_click = false;
+  bool busy = false;
+  // The user's prompt runs its own modal loop: the calls go from a timer inside it.
+  QTimer probe;
+  QObject::connect(&probe, &QTimer::timeout, [&] {
+    const std::vector<PJ::MessageBox*> boxes = visible<PJ::MessageBox>();
+    if (busy || boxes.empty()) {
+      return;
+    }
+    busy = true;
+    tree = result(call("ui_tree", json::object()));
+    const QRegularExpressionMatch ok =
+        QRegularExpression(uR"(\[(w\d+)\] [^\n]*"OK")"_s).match(QString::fromStdString(tree.first));
+    if (ok.hasMatch()) {
+      clicked = result(call("ui_click", {{"ref", ok.captured(1).toStdString()}}));
+      closed_by_click = pumpUntil([] { return visible<PJ::MessageBox>().empty(); }, 5000);
+    }
+    for (PJ::MessageBox* box : visible<PJ::MessageBox>()) {
+      box->reject();  // never leave the test inside the prompt's loop
+    }
+  });
+  probe.start(50);
+  openUsersDialog();
+  ASSERT_TRUE(pumpUntil([&] { return busy && visible<PJ::MessageBox>().empty(); }));
+
+  ASSERT_FALSE(tree.second) << tree.first;
+  // The user's dialog comes first, and its button has a ref.
+  const std::string first_line = tree.first.substr(0, tree.first.find('\n'));
+  EXPECT_NE(first_line.find("\"Hold on\""), std::string::npos) << tree.first;
+  EXPECT_NE(first_line.find("modal"), std::string::npos) << tree.first;
+  // The window it blocks is one line, not its whole tree.
+  EXPECT_NE(tree.first.find("PJ::MainWindow#MainWindow \"PlotJuggler 4\" (behind the modal dialog)"), std::string::npos)
+      << tree.first;
+  // A UI tool runs under the user's dialog, and its click goes through the window system as a mouse's would.
+  ASSERT_FALSE(clicked.second) << clicked.first << "\n" << tree.first;
+  EXPECT_NE(clicked.first.find("\"OK\""), std::string::npos) << clicked.first;
+  EXPECT_TRUE(closed_by_click);
+  EXPECT_TRUE(result(call("ui_click", {{"ref", "w999999"}})).second);
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
+TEST_F(McpServerTest, UiToolsAnswerAClickThatOpensAModalDialogWhileItIsOpen) {
+  PJ::mcp::setUiToolsEnabled(true);
+  window_->show();
+  QPushButton opener(QStringLiteral("Open"));
+  opener.setObjectName(QStringLiteral("uiToolsOpener"));
+  QObject::connect(&opener, &QPushButton::clicked, window_.get(), [this] {
+    PJ::MessageBox::questionAsync(
+        window_.get(), QStringLiteral("Hold on"), QStringLiteral("Opened by a click."),
+        {{QStringLiteral("OK"), PJ::MessageBox::kPrimaryRole}}, {});
+  });
+  opener.show();
+
+  const std::unique_ptr<QTcpSocket> click = post("ui_click", {{"name", "uiToolsOpener"}});
+  bool answered_while_open = false;
+  std::pair<std::string, bool> escaped{"", true};
+  bool closed_by_key = false;
+  bool busy = false;
+  // The dialog's modal loop runs inside the click's delivery: the checks go from a timer inside it.
+  QTimer probe;
+  QObject::connect(&probe, &QTimer::timeout, [&] {
+    if (busy || visible<PJ::MessageBox>().empty()) {
+      return;
+    }
+    busy = true;
+    answered_while_open = pumpUntil([&] { return click->bytesAvailable() > 0; }, 5000);
+    escaped = result(call("ui_key", {{"keys", "Escape"}}));
+    closed_by_key = pumpUntil([] { return visible<PJ::MessageBox>().empty(); }, 5000);
+    for (PJ::MessageBox* box : visible<PJ::MessageBox>()) {
+      box->reject();  // never leave the test inside the dialog's loop
+    }
+  });
+  probe.start(50);
+  const Answer clicked = exchange(*click);
+  ASSERT_TRUE(pumpUntil([&] { return busy && visible<PJ::MessageBox>().empty(); }));
+
+  const auto [click_text, click_error] = result(clicked);
+  ASSERT_FALSE(click_error) << click_text;
+  EXPECT_NE(click_text.find("uiToolsOpener"), std::string::npos) << click_text;
+  EXPECT_TRUE(answered_while_open) << "the click's answer waited for the dialog it opened to close";
+  // With no target, keys go to the user's modal dialog.
+  EXPECT_FALSE(escaped.second) << escaped.first;
+  EXPECT_TRUE(closed_by_key);
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
 TEST_F(McpServerTest, ADialogAnAgentOpensSaysSo) {
   QFile probe_file(data_.filePath("x.dlgprobe"));
   ASSERT_TRUE(probe_file.open(QIODevice::WriteOnly));
