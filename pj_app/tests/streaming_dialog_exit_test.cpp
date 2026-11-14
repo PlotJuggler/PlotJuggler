@@ -166,6 +166,19 @@ TEST_F(StreamingDialogExitTest, StoppingEverythingWithdrawsAStartAtItsDialog) {
   }
 }
 
+// Erasing the dataset of a start still at its dialog withdraws that start: accepting the dialog
+// later must not launch into a dataset that is gone.
+TEST_F(StreamingDialogExitTest, StoppingItsDatasetWithdrawsAStartAtItsDialog) {
+  manager_->onStartRequested();
+  ASSERT_TRUE(manager_->hasPendingStart());
+  const std::vector<DatasetId> datasets = app_session_->sessionManager().dataEngine().listDatasets();
+  ASSERT_EQ(datasets.size(), 1U);
+
+  EXPECT_FALSE(manager_->stopDatasetAndWait(datasets.front(), QString{})) << "nothing was streaming yet";
+  EXPECT_FALSE(manager_->hasPendingStart());
+  expectNothingLeftBehind();
+}
+
 TEST_F(StreamingDialogExitTest, CancellingTheDialogLeavesNoDataset) {
   settleNextDialog(/*accept=*/false);
   startAndSettle();

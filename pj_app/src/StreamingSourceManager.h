@@ -111,7 +111,8 @@ class StreamingSourceManager : public QObject {
 
   // Requests cooperative stop for one session and joins its worker before
   // returning. Used before real-deleting a dataset so no writer can race the
-  // engine/object-store erase. Returns false when the dataset is not streaming.
+  // engine/object-store erase. Returns false when the dataset is not streaming;
+  // a start still at its dialog for that dataset is withdrawn (and discards it).
   bool stopDatasetAndWait(DatasetId dataset_id, const QString& reason);
 
   // Drops what `dataset_id` holds in the secondary (paused) buffers. A stopped or discarded
@@ -173,6 +174,12 @@ class StreamingSourceManager : public QObject {
 
   // Whether an interactive start is still at its dialog.
   [[nodiscard]] bool hasPendingStart() const;
+
+  // Closes the dialog of every start still at one, as a rejection: each then cleans up after
+  // itself (its session destroyed, its dataset discarded). Before anything that erases datasets,
+  // destroys sessions, or tears down what listens to the catalog; stopAllAndWait and the
+  // destructor do it themselves.
+  void cancelPendingStarts();
 
  public slots:
   // Wired from LeftPanel::streamingStartRequested. Starts a session for the
@@ -261,10 +268,6 @@ class StreamingSourceManager : public QObject {
       const RuntimeDataSourcePlugin& source, const std::shared_ptr<PendingStart>& pending,
       const QString& dialog_title_prefix, const std::function<bool()>& still_allowed,
       const dialog_presenter::DialogWatch& on_dialog, StartDone done);
-
-  // Closes the dialog of every start still at one, as a rejection: each then cleans up after
-  // itself. Before anything that erases datasets or destroys sessions.
-  void cancelPendingStarts();
 
   // The construction both starts share, up to and including bind(): handle,
   // time domain and dataset ("[stream] <label>", mirrored on the secondary

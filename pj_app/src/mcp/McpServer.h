@@ -411,15 +411,18 @@ class McpServer : public QObject {
   void fetchAndLoad(
       const QUrl& url, const QString& name, LoadHints hints, const Caller& caller, Reply reply, bool reload);
 
-  /// A file the relay served, by name.
+  /// A file the relay served, by name, and the source identity of the dataset loaded from it.
   struct RelayFile {
     QUrl url;
     QString name;
+    QString identity;
   };
   /// Where open_file stages the files the relay serves (each removed with its dataset's lease).
   BrowserFileStore agent_files_{QStringLiteral("/pj_agent_files")};
   /// What each dataset this server loaded was downloaded from. The relay serves the file again as
-  /// it is now, which is reload_file's only way to read a file anew in a browser.
+  /// it is now, which is reload_file's only way to read a file anew in a browser. An entry holds
+  /// only while the dataset still has the identity it was loaded with: the user's Replace keeps the
+  /// dataset's id and gives it another source.
   std::map<quint32, RelayFile> relay_files_;
 #endif
 };

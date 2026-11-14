@@ -360,7 +360,10 @@ desktop does the same with `--mcp-relay <url>`, the key copied from the relay's 
   which the page downloads into a staged file (`McpServer::fetchAndLoad`). The server remembers what each dataset
   was downloaded from, so `reload_file` asks the relay for the file again, as it is now, and loads it over the
   dataset in place (`LoadHints::replace_dataset_id` with `require_replacement`). A dataset the user picked by hand
-  has no such url and is refused, as the Reload button treats it.
+  has no such url and is refused, as the Reload button treats it; so is one the user has since replaced with a file
+  of their own (the url is kept only while the dataset has the source identity it was loaded with). Not covered: a
+  file that loaded as several datasets (a strict replacement refuses a fan-out), and an import stopped with its
+  partial rows kept (it never recorded its url).
 - **Lifetime.** The link is a child of the server, deleted with it (in `~QObject`, after the server's members); its
   in-flight replies are deleted without emitting `finished`, so no callback reaches the server then, and replies the
   server still holds check the link through a `QPointer`. A relay that is down is retried, backing off to 10 s, while

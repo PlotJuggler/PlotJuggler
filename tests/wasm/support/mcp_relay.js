@@ -58,12 +58,16 @@ async function startMcpRelay() {
         return;
       }
       const timer = setTimeout(() => answer(null), 20000);
-      const answer = (item) => {
+      const leave = () => {
         clearTimeout(timer);
-        polls.splice(polls.indexOf(answer), 1);
+        if (polls.includes(answer)) polls.splice(polls.indexOf(answer), 1);
+      };
+      const answer = (item) => {
+        leave();
         item ? send(res, req, 200, item) : send(res, req, 204);
       };
       polls.push(answer);
+      res.on('close', leave);  // a poll the page dropped must not swallow the next message
       return;
     }
     let text = '';

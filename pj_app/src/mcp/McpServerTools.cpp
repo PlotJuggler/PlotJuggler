@@ -643,7 +643,10 @@ void McpServer::fetchAndLoad(
         self->startLoad(
             std::move(input), std::move(hints), caller.job, std::move(reply), reload, [self, url, name](DatasetId id) {
               if (self != nullptr) {
-                self->relay_files_[id] = RelayFile{.url = url, .name = name};
+                self->relay_files_[id] = RelayFile{
+                    .url = url,
+                    .name = name,
+                    .identity = self->window_.appSession().sessionManager().datasetSourcePath(id)};
               }
             });
       });
@@ -689,7 +692,12 @@ void McpServer::reloadFile(const json& args, const Caller& caller, Reply reply) 
 #ifdef PJ_TARGET_WASM
   // A browser dataset has no path to read again: only a file the relay served can be fetched anew,
   // and it replaces the dataset in place as a desktop reload does.
-  const auto served = relay_files_.find(id);
+  const SessionManager& manager = window_.appSession().sessionManager();
+  auto served = relay_files_.find(id);
+  if (served != relay_files_.end() && served->second.identity != manager.datasetSourcePath(id)) {
+    relay_files_.erase(served);  // the user replaced it with a file of their own since
+    served = relay_files_.end();
+  }
   if (id == 0 || served == relay_files_.end()) {
     reply(fail(
         id == 0 ? "no dataset matches (see get_status)"
@@ -702,7 +710,6 @@ void McpServer::reloadFile(const json& args, const Caller& caller, Reply reply) 
   hints.dialog_policy = DialogPolicy::kNever;  // which also points the saved settings at the new download
   hints.replace_dataset_id = id;
   hints.require_replacement = true;
-  const SessionManager& manager = window_.appSession().sessionManager();
   if (const auto source = loadedConfig(manager, manager.datasetSourcePath(id))) {
     hints.expected_plugin_id = source->plugin_id;
     hints.preset_config_json = source->plugin_config_json;

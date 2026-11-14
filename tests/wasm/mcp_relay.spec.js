@@ -26,10 +26,13 @@ async function bootLinkedApp(page, relay) {
   return { messages, errors };
 }
 
-async function maxOf(relay, path) {
+// The sample count and the largest value of `path`, read from read_series' statistics.
+async function countAndMax(relay, path) {
   const read = await relay.call('read_series', { paths: [path], mode: 'stats' });
   expect(read.isError, JSON.stringify(read.value)).toBe(false);
-  return JSON.stringify(read.value);
+  const text = JSON.stringify(read.value);
+  const number = key => Number(text.match(new RegExp(`"${key}":(-?[0-9.e+]+)`))[1]);
+  return { count: number('count'), max: number('max') };
 }
 
 test('reload_file downloads the relay file again and replaces the dataset in place', async ({ page }) => {
@@ -40,14 +43,15 @@ test('reload_file downloads the relay file again and replaces the dataset in pla
     const opened = await relay.call('open_file', { url, name: 'reading.csv' });
     expect(opened.isError, JSON.stringify(opened.value)).toBe(false);
     const dataset = opened.value.dataset_id;
-    expect(await maxOf(relay, 'reading/value')).toContain('"max":49');
+    expect(await countAndMax(relay, 'reading/value')).toEqual({ count: 50, max: 49 });
 
     // The file changed on the agent's side: twice the samples, ten times the values.
     relay.serveFile('reading.csv', csv(100, 10));
     const reloaded = await relay.call('reload_file', { dataset });
     expect(reloaded.isError, JSON.stringify(reloaded.value)).toBe(false);
     expect(reloaded.value).toEqual({ reloaded: true, dataset_id: dataset });
-    expect(await maxOf(relay, 'reading/value')).toContain('"max":990');
+    // Replaced, not appended to: exactly the new file's samples.
+    expect(await countAndMax(relay, 'reading/value')).toEqual({ count: 100, max: 990 });
     const status = await relay.call('get_status');
     expect(status.value.datasets.map(entry => entry.id)).toEqual([dataset]);
   } finally {

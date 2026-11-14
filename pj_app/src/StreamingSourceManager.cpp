@@ -5,6 +5,7 @@
 
 #include <QLoggingCategory>
 #include <QMetaObject>
+#include <QPointer>
 #include <QSet>
 #include <QSettings>
 #include <QThread>
@@ -142,6 +143,14 @@ ObjectStore& StreamingSourceManager::secondaryStoreForTests() {
 bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QString& reason) {
   auto it = sessions_.find(dataset_id);
   if (it == sessions_.end()) {
+    // A start still at its dialog owns this dataset too: withdrawn, it discards it itself.
+    const auto pending = std::find_if(pending_starts_.begin(), pending_starts_.end(), [dataset_id](const auto& start) {
+      return start->session != nullptr && start->session->dataset_id == dataset_id;
+    });
+    if (pending != pending_starts_.end() && (*pending)->cancel) {
+      const dialog_presenter::DialogCancelFn cancel = (*pending)->cancel;
+      cancel();
+    }
     return false;
   }
 
@@ -564,8 +573,11 @@ void StreamingSourceManager::configureAndLaunch(
   // does not launch takes it back, or an empty dataset lingers and counts in the catalog's
   // duplicate-label ordinals. The session goes first (as in startFromLayout) and the dataset is
   // gone before the failure is reported.
-  auto finish = [this, pending, source_name, config_key, config, still_allowed,
-                 done = std::move(done)](const dialog_presenter::DataSourceResult& dlg) {
+  auto finish = [self = QPointer<StreamingSourceManager>(this), this, pending, source_name, config_key, config,
+                 still_allowed, done = std::move(done)](const dialog_presenter::DataSourceResult& dlg) {
+    if (self == nullptr) {
+      return;  // the manager went first, without withdrawing this start: nothing is left to clean
+    }
     std::erase(pending_starts_, pending);
     const DatasetId dataset_id = pending->session->dataset_id;
     QString error;
@@ -628,7 +640,17 @@ void StreamingSourceManager::configureAndLaunch(
           .section_band_metrics =
               chrome_metrics_provider_ ? std::optional<ChromeMetrics>(chrome_metrics_provider_()) : std::nullopt,
           .title_prefix = dialog_title_prefix,
-          .on_dialog = on_dialog,
+          // The closer is in place before anyone hears the dialog is up: a listener may withdraw
+          // the start at once.
+          .on_dialog =
+              [pending, on_dialog](dialog_presenter::DialogCancelFn close) {
+                if (close) {
+                  pending->cancel = close;
+                }
+                if (on_dialog) {
+                  on_dialog(std::move(close));
+                }
+              },
       },
       std::move(finish));
 }
