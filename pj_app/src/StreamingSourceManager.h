@@ -113,6 +113,12 @@ class StreamingSourceManager : public QObject {
   // engine/object-store erase. Returns false when the dataset is not streaming.
   bool stopDatasetAndWait(DatasetId dataset_id, const QString& reason);
 
+  // Drops what `dataset_id` holds in the secondary (paused) buffers. A stopped or discarded
+  // stream's teardown does it; whoever erases a dataset must too, because a stream that ended on
+  // its own while paused leaves its paused rows and no session: rows of a dataset the session no
+  // longer has make every later resume merge nothing, for every stream.
+  void removeSecondaryDataset(DatasetId dataset_id);
+
   // Stop-and-join every live session, preserving streamStopped emissions per
   // dataset. Used by remove-all paths before erasing the whole datastore.
   void stopAllAndWait(const QString& reason);
@@ -254,10 +260,6 @@ class StreamingSourceManager : public QObject {
   // Removes a dataset whose session never launched (or is gone) from both
   // engines, the object stores and the catalog.
   void discardDataset(DatasetId dataset_id);
-
-  // Drops `dataset_id`'s secondary-buffer topics and dataset: the half of a teardown a
-  // stopped stream shares with a discarded one (its primary dataset stays).
-  void removeSecondaryDataset(DatasetId dataset_id);
 
   // Each live session's record id (see layoutSources), in start order.
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> layoutIds() const;

@@ -163,7 +163,10 @@ dialog.
 
 `StreamingSourceManager` owns the live streaming sessions (one `DatasetId` each,
 a worker thread per session writing through the runtime host) and the secondary
-tail buffers used while paused. `TopicDemandController` is thin glue from
+tail buffers used while paused. Those buffers can hold rows of a stream that has
+already ended (they merge at the resume), and the merge moves nothing when one
+topic has no destination: whoever erases a dataset also drops its secondary copy
+(`StreamingSourceManager::removeSecondaryDataset`). `TopicDemandController` is thin glue from
 displayed widgets to `TopicDemandTracker`; `PendingDisplayBinder` stages a curve
 or scene layer until its topic materializes. On the first real demand for a
 previewed topic, `TopicDemandController` invalidates the matching XY and

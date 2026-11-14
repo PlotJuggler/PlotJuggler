@@ -36,6 +36,8 @@
 #include "MainWindow.h"
 #include "SourceTimelineController.h"
 #include "StreamingSourceManager.h"
+#include "pj_datastore/engine.hpp"
+#include "pj_datastore/reader.hpp"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
@@ -506,6 +508,46 @@ TEST_F(StreamingPresetTest, StreamOnlyPresetReplacesThePreviousStreams) {
     (void)unused_name;
     EXPECT_FALSE(dataset_id == live.value(u"a"_s) || dataset_id == live.value(u"b"_s)) << "a replaced stream's dataset";
   }
+}
+
+// A stream that ends while streaming is paused leaves its paused rows waiting for the resume, and no
+// session. Removing its dataset takes those rows too: the resume merges nothing at all, for any
+// stream, while the paused buffer holds rows of a dataset the session no longer has.
+TEST_F(StreamingPresetTest, RemovingADatasetDropsThePausedRowsOfItsEndedStream) {
+  const QString end_file = probe_dir_.filePath(u"end"_s);
+  ASSERT_EQ(
+      loadPreset(
+          u"live"_s, streamLayout(
+                         {{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}},
+                         {{u"robot"_s, uR"({"topic":"robot/data","end_file":"%1"})"_s.arg(end_file)}})),
+      u"ok"_s);
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  const PJ::DatasetId dataset = streamSessions().value(u"robot"_s);
+  ASSERT_NE(dataset, 0U);
+
+  streams.onPauseToggled(true);
+  PJ::DataEngine& paused = streams.secondaryEngineForTests();
+  const auto paused_rows = [&] {
+    PJ::DataReader reader(paused);
+    uint64_t rows = 0;
+    for (const PJ::TopicId topic : paused.listTopics(dataset)) {
+      const auto meta = reader.getMetadata(topic);
+      rows += meta.has_value() ? meta->total_row_count : 0;
+    }
+    return rows;
+  };
+  ASSERT_TRUE(pumpUntil([&] { return paused_rows() > 0; }));
+  QSignalSpy stopped(&streams, &PJ::StreamingSourceManager::streamStopped);
+  {
+    QFile end(end_file);
+    ASSERT_TRUE(end.open(QIODevice::WriteOnly));
+  }
+  ASSERT_TRUE(pumpUntil([&] { return !stopped.isEmpty(); }));
+  ASSERT_GT(paused_rows(), 0U) << "the ended stream's paused rows should wait for the resume";
+
+  window_->removeDatasets({dataset});
+  const auto merged = paused.flushTo(sessionManager().dataEngine());
+  EXPECT_TRUE(merged.has_value()) << merged.error();
 }
 
 // Topics that arrive after the layout applied bind to the stream their curve
