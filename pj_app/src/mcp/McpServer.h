@@ -10,6 +10,7 @@
 #include <QTcpServer>
 #endif
 #include <QTimer>
+#include <QUrl>
 #include <chrono>
 #include <functional>
 #include <map>
@@ -339,8 +340,12 @@ class McpServer : public QObject {
   /// any open modal dialog drawn over a dimmed window. Asynchronous; `done` never runs after this
   /// server is gone.
   void grabScreenshot(int max_width, std::function<void(const QByteArray& png)> done);
-  /// Queues `input` for loading and holds `reply` until it settles (open_file's second half).
-  void startLoad(LoadInput input, LoadHints hints, quint64 job, Reply reply);
+  /// Queues `input` for loading and holds `reply` until it settles (open_file's second half, and in
+  /// the browser reload_file's: `reload` as awaitLoad's). `loaded`, when given, hears the dataset
+  /// of a load that succeeded, before the answer is worded.
+  void startLoad(
+      LoadInput input, LoadHints hints, quint64 job, Reply reply, bool reload = false,
+      std::function<void(quint32 dataset)> loaded = {});
   /// Holds `reply` until load `ticket` settles; `on_loaded` words the success. Gives job `job` its
   /// kill (cancelling the load) and its progress. A `reload` replaces data the user already has, so
   /// its kill always discards: keep_partial would leave half of the replacement in its place.
@@ -400,8 +405,25 @@ class McpServer : public QObject {
   bool draining_ = false;
   QTimer resume_tick_;
 #ifdef PJ_TARGET_WASM
+  /// Downloads `url`, a file the agent's relay serves (the page cannot read the agent's disk), into
+  /// a staged file and loads it with `hints`. Until the load is queued the job's kill stops the
+  /// download. `reload` as awaitLoad's.
+  void fetchAndLoad(
+      const QUrl& url, const QString& name, LoadHints hints, const Caller& caller, Reply reply, bool reload);
+
+  /// A file the relay served, by name, and the source identity of the dataset loaded from it.
+  struct RelayFile {
+    QUrl url;
+    QString name;
+    QString identity;
+  };
   /// Where open_file stages the files the relay serves (each removed with its dataset's lease).
   BrowserFileStore agent_files_{QStringLiteral("/pj_agent_files")};
+  /// What each dataset this server loaded was downloaded from. The relay serves the file again as
+  /// it is now, which is reload_file's only way to read a file anew in a browser. An entry holds
+  /// only while the dataset still has the identity it was loaded with: the user's Replace keeps the
+  /// dataset's id and gives it another source.
+  std::map<quint32, RelayFile> relay_files_;
 #endif
 };
 

@@ -356,6 +356,14 @@ desktop does the same with `--mcp-relay <url>`, the key copied from the relay's 
   any page connects, and do not reliably refresh on `list_changed`, so the relay serves its bundled
   `browser-tools.json` (regenerated from a build, see its README) until a page has connected, then that page's list,
   cached for the next sessions.
+- **Files.** The page cannot read the agent's disk: the relay serves the file `open_file` names and passes its url,
+  which the page downloads into a staged file (`McpServer::fetchAndLoad`). The server remembers what each dataset
+  was downloaded from, so `reload_file` asks the relay for the file again, as it is now, and loads it over the
+  dataset in place (`LoadHints::replace_dataset_id` with `require_replacement`). A dataset the user picked by hand
+  has no such url and is refused, as the Reload button treats it; so is one the user has since replaced with a file
+  of their own (the url is kept only while the dataset has the source identity it was loaded with). Not covered: a
+  file that loaded as several datasets (a strict replacement refuses a fan-out), and an import stopped with its
+  partial rows kept (it never recorded its url).
 - **Lifetime.** The link is a child of the server, deleted with it (in `~QObject`, after the server's members); its
   in-flight replies are deleted without emitting `finished`, so no callback reaches the server then, and replies the
   server still holds check the link through a `QPointer`. A relay that is down is retried, backing off to 10 s, while
@@ -415,7 +423,8 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
   travels `LoadHints::dialog_title_prefix` → `DataSourceRequest::title_prefix` → `DialogEngineConfig::title_prefix`
   (for streams, `StreamingSourceManager::startSession`).
 - `start_stream` with `ask_user` opens the named source (checked against `streamSources()`) once its request has
-  returned, and only if no modal dialog came up meanwhile.
+  returned, and only if no modal dialog came up meanwhile. The start does not wait for its dialog
+  (`StreamingSourceManager::startSession` reports through its `done`): a browser cannot block on one.
 - The user sees what agents are running and stops any of it ([Jobs](#jobs), "The user's view").
 
 ## Protocol and security
@@ -447,6 +456,9 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
     in-test source, with and without `keep_partial`.
   - `McpStreamAndDialogJobTest`: a stream as a job (kill, someone else's stop, revocation) and `job_kill` closing
     each of the three dialogs an agent's call opens; a hung-up `unload_file` withdrawing its prompt.
+  - `tests/wasm/mcp_relay.spec.js`: the browser page driven through an in-test relay
+    (`tests/wasm/support/mcp_relay.js`, the page protocol of `pj_mcp_relay.py`): `reload_file` of a file the relay
+    served, and a stream dialog an agent asked for, opened and withdrawn.
   - `McpEndpointTest`: plugin tokens. Covers the forced owner, refused app tools, the `tools/list` profile, no
     discovery file, release and teardown revocation, disconnects, distinct tokens per plugin, and the same endpoint
     on a repeated acquire. Also a session torn down from inside another's resume, and a revoked token's follow-up.

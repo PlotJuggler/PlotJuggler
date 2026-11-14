@@ -605,35 +605,9 @@ void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
     reply(fail("in the browser, open_file needs the PlotJuggler relay (pj_mcp_relay.py) to serve the file"));
     return;
   }
-  const QString name = args.contains("name") ? qs(args, "name") : url.fileName();
-  BrowserFileStore::StageResult staged = agent_files_.reserve(name);
-  if (!staged.input.has_value()) {
-    reply(fail("cannot stage " + name.toStdString() + ": " + staged.error.toStdString()));
-    return;
-  }
-  const QString staged_path = staged.input->backing_path;
-  const quint32 fetch = browserFetchToFile(
-      url, staged_path, kMaxPresetDataBytes, std::chrono::seconds(60),
-      [self = QPointer<McpServer>(this), caller, hints = std::move(hints), reply,
-       input = std::move(*staged.input)](BrowserFetchResult file) mutable {
-        // Dropping `input` (every early return) releases its lease, which removes the partial file.
-        if (self == nullptr || !self->authorized(caller)) {
-          return;
-        }
-        if (!file.error.isEmpty()) {
-          reply(fail("cannot download the file from the relay: " + file.error.toStdString()));
-          return;
-        }
-        input.content_sha256 = std::move(file.sha256);
-        self->startLoad(std::move(input), std::move(hints), caller.job, std::move(reply));
-      });
-  // Until the load is queued, a kill stops the download, whose `done` then never runs.
-  if (Job* job = liveJob(caller.job)) {
-    job->kill = [this, fetch, id = caller.job](bool) {
-      cancelBrowserFetch(fetch);
-      finishJob(id, fail("killed while downloading the file from the relay"));
-    };
-  }
+  fetchAndLoad(
+      url, args.contains("name") ? qs(args, "name") : url.fileName(), std::move(hints), caller, std::move(reply),
+      /*reload=*/false);
 #else
   const QFileInfo info(qs(args, "path"));
   if (!info.isAbsolute() || !info.isFile()) {
@@ -644,25 +618,105 @@ void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
 #endif
 }
 
-void McpServer::startLoad(LoadInput input, LoadHints hints, quint64 job, Reply reply) {
+#ifdef PJ_TARGET_WASM
+void McpServer::fetchAndLoad(
+    const QUrl& url, const QString& name, LoadHints hints, const Caller& caller, Reply reply, bool reload) {
+  BrowserFileStore::StageResult staged = agent_files_.reserve(name);
+  if (!staged.input.has_value()) {
+    reply(fail("cannot stage " + name.toStdString() + ": " + staged.error.toStdString()));
+    return;
+  }
+  const QString staged_path = staged.input->backing_path;
+  const quint32 fetch = browserFetchToFile(
+      url, staged_path, kMaxPresetDataBytes, std::chrono::seconds(60),
+      [self = QPointer<McpServer>(this), caller, hints = std::move(hints), reply, url, name, reload,
+       input = std::move(*staged.input)](BrowserFetchResult file) mutable {
+        // Dropping `input` (every early return) releases its lease, which removes the partial file.
+        if (self == nullptr || !self->authorized(caller)) {
+          return;
+        }
+        if (!file.error.isEmpty()) {
+          reply(fail("cannot download the file from the relay: " + file.error.toStdString()));
+          return;
+        }
+        input.content_sha256 = std::move(file.sha256);
+        self->startLoad(
+            std::move(input), std::move(hints), caller.job, std::move(reply), reload, [self, url, name](DatasetId id) {
+              if (self != nullptr) {
+                self->relay_files_[id] = RelayFile{
+                    .url = url,
+                    .name = name,
+                    .identity = self->window_.appSession().sessionManager().datasetSourcePath(id)};
+              }
+            });
+      });
+  // Until the load is queued, a kill stops the download, whose `done` then never runs.
+  if (Job* job = liveJob(caller.job)) {
+    job->kill = [this, fetch, id = caller.job](bool) {
+      cancelBrowserFetch(fetch);
+      finishJob(id, fail("killed while downloading the file from the relay"));
+    };
+  }
+}
+#endif
+
+void McpServer::startLoad(
+    LoadInput input, LoadHints hints, quint64 job, Reply reply, bool reload, std::function<void(quint32)> loaded) {
   const LoadRequestId ticket = window_.fileLoader().loadFileTicketed(std::move(input), nullptr, hints);
   if (ticket == 0) {
     reply(fail("load rejected (no plugin for this file type?)"));
     return;
   }
-  // What was actually loaded (the user's dialog choices included), so the agent need not guess.
-  awaitLoad(ticket, job, reply, [this](DatasetId id) {
-    const SessionManager& manager = window_.appSession().sessionManager();
-    json result = {{"loaded", true}, {"dataset_id", id}};
-    if (const auto source = loadedConfig(manager, manager.datasetSourcePath(id))) {
-      result["config"] = parseOrNull(source->plugin_config_json);
-    }
-    return ok(result);
-  });
+  awaitLoad(
+      ticket, job, reply,
+      [this, reload, loaded = std::move(loaded)](DatasetId id) {
+        if (loaded) {
+          loaded(id);
+        }
+        if (reload) {
+          return ok({{"reloaded", true}, {"dataset_id", id}});
+        }
+        // What was actually loaded (the user's dialog choices included), so the agent need not guess.
+        const SessionManager& manager = window_.appSession().sessionManager();
+        json result = {{"loaded", true}, {"dataset_id", id}};
+        if (const auto source = loadedConfig(manager, manager.datasetSourcePath(id))) {
+          result["config"] = parseOrNull(source->plugin_config_json);
+        }
+        return ok(result);
+      },
+      reload);
 }
 
 void McpServer::reloadFile(const json& args, const Caller& caller, Reply reply) {
   const DatasetId id = resolveDataset(args.value("dataset", json()));
+#ifdef PJ_TARGET_WASM
+  // A browser dataset has no path to read again: only a file the relay served can be fetched anew,
+  // and it replaces the dataset in place as a desktop reload does.
+  const SessionManager& manager = window_.appSession().sessionManager();
+  auto served = relay_files_.find(id);
+  if (served != relay_files_.end() && served->second.identity != manager.datasetSourcePath(id)) {
+    relay_files_.erase(served);  // the user replaced it with a file of their own since
+    served = relay_files_.end();
+  }
+  if (id == 0 || served == relay_files_.end()) {
+    reply(fail(
+        id == 0 ? "no dataset matches (see get_status)"
+                : "in the browser only a file loaded with open_file can be reloaded: the page cannot read the "
+                  "user's disk again"));
+    return;
+  }
+  LoadHints hints;
+  hints.still_allowed = stillAuthorized(caller);
+  hints.dialog_policy = DialogPolicy::kNever;  // which also points the saved settings at the new download
+  hints.replace_dataset_id = id;
+  hints.require_replacement = true;
+  if (const auto source = loadedConfig(manager, manager.datasetSourcePath(id))) {
+    hints.expected_plugin_id = source->plugin_id;
+    hints.preset_config_json = source->plugin_config_json;
+  }
+  const RelayFile file = served->second;
+  fetchAndLoad(file.url, file.name, std::move(hints), caller, std::move(reply), /*reload=*/true);
+#else
   const LoadRequestId ticket = id == 0 ? 0 : window_.reloadDataset(id, DialogPolicy::kNever, stillAuthorized(caller));
   if (ticket == 0) {
     reply(fail("no file-backed dataset matches (see get_status)"));
@@ -671,6 +725,7 @@ void McpServer::reloadFile(const json& args, const Caller& caller, Reply reply) 
   awaitLoad(
       ticket, caller.job, reply, [](DatasetId reloaded) { return ok({{"reloaded", true}, {"dataset_id", reloaded}}); },
       /*reload=*/true);
+#endif
 }
 
 void McpServer::unloadFile(const json& args, const Caller& caller, Reply reply) {
@@ -723,21 +778,19 @@ void McpServer::startStream(const json& args, const Caller& caller, Reply reply)
             reply(userDialogOpen(*modal));
             return;
           }
-          StreamingSourceManager& streams = window_.streamingSources();
-          DatasetId id = 0;
-          QString failure;
-          QObject guard;
-          connect(&streams, &StreamingSourceManager::streamStarted, &guard, [&id](DatasetId stream) { id = stream; });
-          connect(&streams, &StreamingSourceManager::setupError, &guard, [&failure](const QString& m) { failure = m; });
-          connect(&streams, &StreamingSourceManager::streamError, &guard, [&failure](DatasetId, const QString& m) {
-            failure = m;
-          });
-          streams.startSession(source, agentDialogTitlePrefix(), allowed, watch);
-          if (id != 0) {
-            started(id, json::object());
-          } else {
-            reply(fail(failure.isEmpty() ? "the stream dialog was cancelled" : failure.toStdString()));
-          }
+          // The start settles when the user answers the dialog, which may be after this server is gone.
+          window_.streamingSources().startSession(
+              source, agentDialogTitlePrefix(), allowed, watch,
+              [self = QPointer<McpServer>(this), reply, started](DatasetId id, const QString& failure) {
+                if (self == nullptr) {
+                  return;
+                }
+                if (id != 0) {
+                  started(id, json::object());
+                } else {
+                  reply(fail(failure.isEmpty() ? "the stream dialog was cancelled" : failure.toStdString()));
+                }
+              });
         });
     return;
   }

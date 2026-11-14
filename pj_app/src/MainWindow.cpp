@@ -1197,7 +1197,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       &session_->sessionManager(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
       &MainWindow::scheduleCustomTopicsSync);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
-    if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
+    if (streaming_manager_ != nullptr &&
+        (streaming_manager_->hasActiveSession() || streaming_manager_->hasPendingStart())) {
       streaming_manager_->stopAllAndWait(tr("dataset removed"));
       active_streaming_dataset_id_ = 0;
       streaming_playback_seeded_ = false;
@@ -2418,6 +2419,11 @@ MainWindow::~MainWindow() {
   if (recording_service_ != nullptr) {
     recording_service_->stop();
   }
+  // A stream start still at its dialog discards its dataset when withdrawn, which the catalog
+  // announces to slots that touch the widgets: before they go, not from the member's destructor.
+  if (streaming_manager_ != nullptr) {
+    streaming_manager_->cancelPendingStarts();
+  }
   // Dtor-without-closeEvent path (same precedent as teardownAllToolboxes
   // below): a still-running batch's host teardown fires on_ingest_finished ->
   // endIngest -> the still-connected observer, so the D1 teardown must run
@@ -3447,7 +3453,8 @@ void MainWindow::confirmAndRemoveDependentTransforms(
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   CatalogModel& catalog = session_->catalogModel();
   if (covers_all) {
-    if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
+    if (streaming_manager_ != nullptr &&
+        (streaming_manager_->hasActiveSession() || streaming_manager_->hasPendingStart())) {
       streaming_manager_->stopAllAndWait(tr("dataset removed"));
       active_streaming_dataset_id_ = 0;
       streaming_playback_seeded_ = false;
@@ -5056,7 +5063,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   // user-facing File -> Quit action is the terminal boundary, so cooperatively
   // stop and join every live source before accepting it. Desktop keeps its
   // existing destructor-driven shutdown behavior unchanged.
-  if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
+  if (streaming_manager_ != nullptr &&
+      (streaming_manager_->hasActiveSession() || streaming_manager_->hasPendingStart())) {
     streaming_manager_->stopAllAndWait(tr("application shutdown"));
     active_streaming_dataset_id_ = 0;
     streaming_playback_seeded_ = false;

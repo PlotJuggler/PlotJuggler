@@ -97,6 +97,12 @@ class StreamingDialogExitTest : public ::testing::Test {
     poll->start();
   }
 
+  // Presses Start and waits until the start has settled: it does not wait for its dialog itself.
+  void startAndSettle() {
+    manager_->onStartRequested();
+    ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !manager_->hasPendingStart(); }));
+  }
+
   // Both engines, the catalog and the manager hold nothing of the abandoned start.
   void expectNothingLeftBehind() {
     EXPECT_TRUE(app_session_->sessionManager().dataEngine().listDatasets().empty()) << "primary engine";
@@ -113,7 +119,7 @@ class StreamingDialogExitTest : public ::testing::Test {
     qunsetenv(kDialogConfigEnv);
     qunsetenv(kNullDialogEnv);
     settleNextDialog(/*accept=*/true);
-    manager_->onStartRequested();
+    startAndSettle();
     ASSERT_EQ(started_, 1);
     const CatalogModel& catalog = app_session_->catalogModel();
     ASSERT_TRUE(pj_app_test::pumpUntil([&] { return !catalog.datasets().empty(); }));
@@ -132,9 +138,50 @@ class StreamingDialogExitTest : public ::testing::Test {
   QStringList stream_errors_;
 };
 
+// A browser cannot block on a dialog, so no platform does: the start returns while its dialog is
+// open, and launches when the user accepts.
+TEST_F(StreamingDialogExitTest, TheStartDoesNotWaitForItsDialog) {
+  manager_->onStartRequested();
+  ASSERT_TRUE(manager_->hasPendingStart());
+  EXPECT_EQ(started_, 0);
+
+  settleNextDialog(/*accept=*/true);
+  ASSERT_TRUE(pj_app_test::pumpUntil([this] { return started_ == 1; }));
+  EXPECT_FALSE(manager_->hasPendingStart());
+  EXPECT_TRUE(manager_->hasActiveSession());
+}
+
+// Whatever erases datasets or destroys sessions first withdraws a start still at its dialog.
+TEST_F(StreamingDialogExitTest, StoppingEverythingWithdrawsAStartAtItsDialog) {
+  manager_->onStartRequested();
+  ASSERT_TRUE(manager_->hasPendingStart());
+
+  manager_->stopAllAndWait(QString{});
+  EXPECT_FALSE(manager_->hasPendingStart());
+  expectNothingLeftBehind();
+  EXPECT_TRUE(setup_errors_.isEmpty());
+  EXPECT_TRUE(stream_errors_.isEmpty());
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    EXPECT_FALSE(widget->isVisible() && qobject_cast<QDialog*>(widget) != nullptr) << "the dialog outlived its start";
+  }
+}
+
+// Erasing the dataset of a start still at its dialog withdraws that start: accepting the dialog
+// later must not launch into a dataset that is gone.
+TEST_F(StreamingDialogExitTest, StoppingItsDatasetWithdrawsAStartAtItsDialog) {
+  manager_->onStartRequested();
+  ASSERT_TRUE(manager_->hasPendingStart());
+  const std::vector<DatasetId> datasets = app_session_->sessionManager().dataEngine().listDatasets();
+  ASSERT_EQ(datasets.size(), 1U);
+
+  EXPECT_FALSE(manager_->stopDatasetAndWait(datasets.front(), QString{})) << "nothing was streaming yet";
+  EXPECT_FALSE(manager_->hasPendingStart());
+  expectNothingLeftBehind();
+}
+
 TEST_F(StreamingDialogExitTest, CancellingTheDialogLeavesNoDataset) {
   settleNextDialog(/*accept=*/false);
-  manager_->onStartRequested();
+  startAndSettle();
 
   expectNothingLeftBehind();
   EXPECT_TRUE(setup_errors_.isEmpty()) << "a cancel is not an error";
@@ -144,7 +191,7 @@ TEST_F(StreamingDialogExitTest, CancellingTheDialogLeavesNoDataset) {
 
 TEST_F(StreamingDialogExitTest, APluginContractViolationLeavesNoDataset) {
   qputenv(kNullDialogEnv, "1");
-  manager_->onStartRequested();
+  startAndSettle();
 
   expectNothingLeftBehind();
   EXPECT_TRUE(setup_errors_.isEmpty());
@@ -156,7 +203,7 @@ TEST_F(StreamingDialogExitTest, APluginContractViolationLeavesNoDataset) {
 TEST_F(StreamingDialogExitTest, ARefusedConfigurationLeavesNoDataset) {
   qputenv(kDialogConfigEnv, R"({"reject":true})");
   settleNextDialog(/*accept=*/true);
-  manager_->onStartRequested();
+  startAndSettle();
 
   expectNothingLeftBehind();
   EXPECT_TRUE(setup_errors_.isEmpty());
@@ -169,7 +216,7 @@ TEST_F(StreamingDialogExitTest, ARefusedConfigurationLeavesNoDataset) {
 TEST_F(StreamingDialogExitTest, AFailedStartLeavesNoDataset) {
   qputenv(kDialogConfigEnv, R"({"fail_start":true})");
   settleNextDialog(/*accept=*/true);
-  manager_->onStartRequested();
+  startAndSettle();
 
   expectNothingLeftBehind();
   EXPECT_TRUE(setup_errors_.isEmpty());

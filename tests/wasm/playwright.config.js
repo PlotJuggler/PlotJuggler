@@ -22,6 +22,7 @@ module.exports = defineConfig({
     'dialogs.spec.js',
     'python.spec.js',
     'python_layout.spec.js',
+    'mcp_relay.spec.js',
   ],
   // Every case boots its own page and context, so cases spread across workers and CI shards, file by
   // file or within one. Chromium: cases tagged @serial (time bounds, hover probes) fail on a loaded

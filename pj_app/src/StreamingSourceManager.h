@@ -111,7 +111,8 @@ class StreamingSourceManager : public QObject {
 
   // Requests cooperative stop for one session and joins its worker before
   // returning. Used before real-deleting a dataset so no writer can race the
-  // engine/object-store erase. Returns false when the dataset is not streaming.
+  // engine/object-store erase. Returns false when the dataset is not streaming;
+  // a start still at its dialog for that dataset is withdrawn (and discards it).
   bool stopDatasetAndWait(DatasetId dataset_id, const QString& reason);
 
   // Drops what `dataset_id` holds in the secondary (paused) buffers. A stopped or discarded
@@ -152,18 +153,33 @@ class StreamingSourceManager : public QObject {
   // Test seam: runs one ingest tick for `dataset_id`. GUI thread only.
   void ingestTickForTests(DatasetId dataset_id);
 
+  // How an interactive start ended: `started` is the stream's dataset, or 0 with `error` the
+  // failure, empty when the user cancelled the dialog or `still_allowed` refused.
+  using StartDone = std::function<void(DatasetId started, const QString& error)>;
+
   // The interactive start of stream source `plugin_id` (display name), whatever the Stream combo
   // shows: builds the session (createSession), configures it from the remembered settings and the
   // plugin's dialog (its title prefixed by `dialog_title_prefix`, e.g. who asked), then launches
-  // it. The dialog is modal: this returns once the user has answered it. `still_allowed`, when
-  // given, is asked once the dialog is accepted: false abandons the start as a cancel does,
-  // applying none of the user's choices. Emits streamStarted() on success, setupError()/
-  // streamError() on a failure; nothing when the user cancels. A start that does not launch,
-  // a cancelled dialog included, leaves no dataset behind. `on_dialog`, when given, is told when
-  // the dialog opens and when it is gone.
+  // it. The dialog is modal, but this does NOT wait for it (a browser cannot block on a dialog):
+  // the start settles when the user answers, or before this returns for a source with no dialog.
+  // `still_allowed`, when given, is asked once the dialog is accepted: false abandons the start
+  // as a cancel does, applying none of the user's choices. Emits streamStarted() on success,
+  // setupError()/streamError() on a failure; nothing when the user cancels. A start that does
+  // not launch, a cancelled dialog included, leaves no dataset behind. `on_dialog`, when given,
+  // is told when the dialog opens and when it is gone; `done`, when given, how the start ended.
   void startSession(
       const QString& plugin_id, const QString& dialog_title_prefix = {},
-      const std::function<bool()>& still_allowed = {}, const dialog_presenter::DialogWatch& on_dialog = {});
+      const std::function<bool()>& still_allowed = {}, const dialog_presenter::DialogWatch& on_dialog = {},
+      StartDone done = {});
+
+  // Whether an interactive start is still at its dialog.
+  [[nodiscard]] bool hasPendingStart() const;
+
+  // Closes the dialog of every start still at one, as a rejection: each then cleans up after
+  // itself (its session destroyed, its dataset discarded). Before anything that erases datasets,
+  // destroys sessions, or tears down what listens to the catalog; stopAllAndWait and the
+  // destructor do it themselves.
+  void cancelPendingStarts();
 
  public slots:
   // Wired from LeftPanel::streamingStartRequested. Starts a session for the
@@ -240,17 +256,18 @@ class StreamingSourceManager : public QObject {
   // erasing the session.
   void rememberSkippedLazy(const StreamingSession& session);
 
-  // What startSession does between createSession and the stream running:
-  // configures `session` from the remembered settings and the plugin's dialog
-  // (titled with `dialog_title_prefix`), asks `still_allowed` once the dialog is
-  // accepted, then launchSession()s it. Returns false when nothing launched, with
-  // `error` the failure to report (empty when the user cancelled the dialog or
-  // `still_allowed` refused). Owns no cleanup: the caller destroys `session` and
-  // discards its dataset.
-  [[nodiscard]] bool configureAndLaunch(
-      const RuntimeDataSourcePlugin& source, std::unique_ptr<StreamingSession>& session,
+  // An interactive start still at its dialog.
+  struct PendingStart;
+
+  // What startSession does between createSession and the stream running: configures the pending
+  // session from the remembered settings and the plugin's dialog (titled with
+  // `dialog_title_prefix`), asks `still_allowed` once the dialog is accepted, then
+  // launchSession()s it. Whatever does not launch destroys the session and discards its dataset,
+  // reports a failure through streamError(), and `done` hears the outcome either way.
+  void configureAndLaunch(
+      const RuntimeDataSourcePlugin& source, const std::shared_ptr<PendingStart>& pending,
       const QString& dialog_title_prefix, const std::function<bool()>& still_allowed,
-      const dialog_presenter::DialogWatch& on_dialog, QString& error);
+      const dialog_presenter::DialogWatch& on_dialog, StartDone done);
 
   // The construction both starts share, up to and including bind(): handle,
   // time domain and dataset ("[stream] <label>", mirrored on the secondary
@@ -345,6 +362,7 @@ class StreamingSourceManager : public QObject {
   // stable pointer to the session struct across map mutations on the UI
   // thread.
   std::unordered_map<DatasetId, std::unique_ptr<StreamingSession>> sessions_;
+  std::vector<std::shared_ptr<PendingStart>> pending_starts_;
   // Final pure-lazy counter of each session that has ended. Cleared when the
   // next recording's targets are built, the one point at which the previous
   // values stop mattering.
