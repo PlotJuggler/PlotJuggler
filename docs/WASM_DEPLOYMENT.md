@@ -71,6 +71,7 @@ and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
 |---|---|
 | `PJ_WASM_WITH_CSV` | `data_load_csv` |
 | `PJ_WASM_WITH_MCAP` | `data_load_mcap` |
+| `PJ_WASM_WITH_ULOG` | `data_load_ulog` (PX4 ULog) |
 | `PJ_WASM_WITH_3D_LOADER` | `data_load_3d` (PCD/PLY) |
 | `PJ_WASM_WITH_DUMMY_STREAM` | `data_stream_dummy` |
 | `PJ_WASM_WITH_PJ_BRIDGE` | `data_stream_pj_bridge` (over the browser's WebSocket) |
@@ -78,6 +79,8 @@ and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
 | `PJ_WASM_WITH_PROTOBUF` | `parser_protobuf` |
 | `PJ_WASM_WITH_JSON` | `parser_json` |
 | `PJ_WASM_WITH_DATA_TAMER` | `parser_data_tamer` |
+| `PJ_WASM_WITH_INFLUX` | `parser_influx` (InfluxDB line protocol) |
+| `PJ_WASM_WITH_NAVMAP` | `parser_navmap` |
 | `PJ_WASM_WITH_TRANSFORM_EDITOR` | `toolbox_transform_editor` |
 | `PJ_WASM_WITH_QUATERNION` | `toolbox_quaternion` |
 | `PJ_WASM_WITH_FFT` | `toolbox_fft` |

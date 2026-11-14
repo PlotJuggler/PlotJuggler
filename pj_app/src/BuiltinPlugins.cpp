@@ -78,6 +78,19 @@ extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_AnomalyDetectorDial
 extern const PJ_widget_vtable_t* pj_static_get_widget_vtable_LogViewerPlugin() noexcept;
 #endif
 
+#ifdef PJ_WASM_WITH_INFLUX_PLUGIN
+extern const PJ_message_parser_vtable_t* pj_static_get_message_parser_vtable_InfluxParser() noexcept;
+#endif
+
+#ifdef PJ_WASM_WITH_NAVMAP_PLUGIN
+extern const PJ_message_parser_vtable_t* pj_static_get_message_parser_vtable_NavMapParser() noexcept;
+#endif
+
+#ifdef PJ_WASM_WITH_ULOG_PLUGIN
+extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_ULogSource() noexcept;
+extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_ULogParamsDialog() noexcept;
+#endif
+
 namespace pj_app {
 
 PJ::StaticPluginSet builtInPlugins() {
@@ -139,6 +152,16 @@ PJ::StaticPluginSet builtInPlugins() {
 #endif
 #ifdef PJ_WASM_WITH_LOG_WIDGET_PLUGIN
   plugins.widgets.emplace_back(pj_static_get_widget_vtable_LogViewerPlugin());
+#endif
+#ifdef PJ_WASM_WITH_INFLUX_PLUGIN
+  plugins.message_parsers.emplace_back(pj_static_get_message_parser_vtable_InfluxParser());
+#endif
+#ifdef PJ_WASM_WITH_NAVMAP_PLUGIN
+  plugins.message_parsers.emplace_back(pj_static_get_message_parser_vtable_NavMapParser());
+#endif
+#ifdef PJ_WASM_WITH_ULOG_PLUGIN
+  plugins.data_sources.emplace_back(
+      pj_static_get_data_source_vtable_ULogSource(), pj_static_get_dialog_vtable_ULogParamsDialog());
 #endif
   return plugins;
 }

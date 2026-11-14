@@ -24,6 +24,9 @@ option(PJ_WASM_WITH_DUMMY_STREAM "Build the official Dummy Streamer into the was
 option(PJ_WASM_WITH_PJ_BRIDGE "Build the official PlotJuggler Bridge WebSocket streamer into the wasm app" ON)
 option(PJ_WASM_WITH_JSON "Build the official JSON message parser into the wasm app" ON)
 option(PJ_WASM_WITH_DATA_TAMER "Build the official DataTamer message parser into the wasm app" ON)
+option(PJ_WASM_WITH_INFLUX "Build the official InfluxDB line-protocol parser into the wasm app" ON)
+option(PJ_WASM_WITH_NAVMAP "Build the official NavMap message parser into the wasm app" ON)
+option(PJ_WASM_WITH_ULOG "Build the official PX4 ULog importer into the wasm app" ON)
 option(PJ_WASM_WITH_3D_LOADER "Build the official PCD/PLY point-cloud and mesh importer into the wasm app" ON)
 option(PJ_WASM_WITH_QUATERNION "Build the official Quaternion toolbox into the wasm app" ON)
 option(PJ_WASM_WITH_FFT "Build the official FFT toolbox into the wasm app" ON)
@@ -123,13 +126,14 @@ endif()
 if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF OR
    PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_JSON OR
    PJ_WASM_WITH_DATA_TAMER OR PJ_WASM_WITH_3D_LOADER OR PJ_WASM_WITH_QUATERNION OR
-   PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR OR PJ_WASM_WITH_LOG_WIDGET)
+   PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR OR PJ_WASM_WITH_LOG_WIDGET OR
+   PJ_WASM_WITH_INFLUX OR PJ_WASM_WITH_NAVMAP OR PJ_WASM_WITH_ULOG)
     # Source-only population shared by the narrowly-scoped static plugin
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.
     FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/7ed9067d003fdf8f15decf5995651488d8bb937f
-        URL_HASH SHA256=b48dd47fc8d9181670d6596506d1f4570bdebcabe0ad94334b62fd8b78573fee
+        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/80b447ef9dad78f5fa26c8aa20ada0a8cff0f416
+        URL_HASH SHA256=82a5a757c4ef65ae045b863b246538e8c2457a8977b5719fd17ca7ad0d4d0a56
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists)
     FetchContent_MakeAvailable(pj_official_plugins)
@@ -183,6 +187,17 @@ if(PJ_WASM_WITH_ROS)
             INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pj_rosx_includes}")
     endif()
     unset(_pj_rosx_includes)
+endif()
+
+if(PJ_WASM_WITH_ULOG)
+    # data_load_ulog's pinned PX4 ULog reader (its CPM pin).
+    FetchContent_Declare(ulog_cpp
+        URL https://github.com/PX4/ulog_cpp/archive/refs/tags/v1.0.1.zip
+        URL_HASH SHA256=bb556d4c515f12707be816061c6ca7c0a8125917a0c4911ef1770ed9e1a85cb0
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SYSTEM)
+    FetchContent_MakeAvailable(ulog_cpp)
+    set_target_properties(ulog_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
 if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)

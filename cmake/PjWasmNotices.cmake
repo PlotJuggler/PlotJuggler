@@ -203,6 +203,8 @@ function(pj_wasm_write_notices output python_notices)
   pj_wasm_notice("${output}" pj_official_plugins "liblzf decompressor (in the PCD/PLY loader)" "BSD-2-Clause"
       data_load_3d/contrib/liblzf/LICENSE)
   pj_wasm_notice("${output}" pj_official_plugins "mcap (in the MCAP loader)" "MIT" data_load_mcap/contrib/mcap/LICENSE)
+  pj_wasm_notice("${output}" pj_official_plugins "nanocdr (in the NavMap parser)" "Apache-2.0"
+      parser_navmap/contrib/nanocdr/LICENSE)
   pj_wasm_notice("${output}" qwt_upstream "Qwt 6.3.0" "LGPL-2.1-only WITH Qwt-exception-1.0" COPYING)
   pj_wasm_notice("${output}" nlohmann_json "nlohmann/json" "MIT" LICENSE.MIT)
   pj_wasm_notice("${output}" fmt "{fmt}" "MIT" LICENSE)
@@ -223,6 +225,7 @@ function(pj_wasm_write_notices output python_notices)
   pj_wasm_notice("${output}" rosx_introspection "nanocdr (in rosx_introspection)" "Apache-2.0"
       "HEADER|include/rosx_introspection/contrib/nanocdr.hpp")
   pj_wasm_notice("${output}" data_tamer "Data Tamer" "MIT" LICENSE)
+  pj_wasm_notice("${output}" ulog_cpp "ulog_cpp (PX4)" "BSD-3-Clause" LICENSE)
   pj_wasm_notice("${output}" lz4 "LZ4 library" "BSD-2-Clause" lib/LICENSE)
   pj_wasm_notice("${output}" zstd "Zstandard" "BSD-3-Clause" LICENSE)
   pj_wasm_notice("${output}" Luau "Luau" "MIT" LICENSE.txt)
