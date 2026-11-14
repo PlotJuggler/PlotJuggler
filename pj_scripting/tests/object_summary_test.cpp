@@ -139,7 +139,7 @@ TEST(ObjectSummaryTest, UnrecognizedTypeSummarizesAsTypeOnly) {
   sdk::Log log;
   log.level = sdk::Log::Level::kInfo;
   log.message = "hello";
-  log.name = "node";
+  log.source = "node";
 
   const nlohmann::json doc = summarizeObject(sdk::BuiltinObject(log));
   EXPECT_EQ(doc.at("type").get<std::string>(), "kLog");

@@ -985,7 +985,7 @@ class TaggedObjectParser : public PJ::MessageParserPluginBase {
                                PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
       PJ::sdk::Log decoded;
       decoded.timestamp_ns = ts;
-      decoded.name = tag;  // the decoding parser's identity, readable by the test
+      decoded.source = tag;  // the decoding parser's identity, readable by the test
       decoded.message.assign(reinterpret_cast<const char*>(payload.bytes.data()), payload.bytes.size());
       return PJ::sdk::ObjectRecord{ts, PJ::sdk::BuiltinObject{decoded}};
     };
@@ -1037,7 +1037,7 @@ DecodedTag decodeThroughBoundParser(PJ::SessionManager& session, PJ::ObjectTopic
     return {};
   }
   const auto* log = decoded->object.get<PJ::sdk::Log>();
-  return log != nullptr ? DecodedTag{log->name, log->message} : DecodedTag{};
+  return log != nullptr ? DecodedTag{log->source, log->message} : DecodedTag{};
 }
 
 // The parser instance a topic is bound to right now, as an identity (not merely
