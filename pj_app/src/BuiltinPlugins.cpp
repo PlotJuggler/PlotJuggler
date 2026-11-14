@@ -74,6 +74,10 @@ extern const PJ_toolbox_vtable_t* pj_static_get_toolbox_vtable_AnomalyDetectorTo
 extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_AnomalyDetectorDialog() noexcept;
 #endif
 
+#ifdef PJ_WASM_WITH_LOG_WIDGET_PLUGIN
+extern const PJ_widget_vtable_t* pj_static_get_widget_vtable_LogViewerPlugin() noexcept;
+#endif
+
 namespace pj_app {
 
 PJ::StaticPluginSet builtInPlugins() {
@@ -132,6 +136,9 @@ PJ::StaticPluginSet builtInPlugins() {
 #ifdef PJ_WASM_WITH_ANOMALY_DETECTOR_PLUGIN
   plugins.toolboxes.emplace_back(
       pj_static_get_toolbox_vtable_AnomalyDetectorToolbox(), pj_static_get_dialog_vtable_AnomalyDetectorDialog());
+#endif
+#ifdef PJ_WASM_WITH_LOG_WIDGET_PLUGIN
+  plugins.widgets.emplace_back(pj_static_get_widget_vtable_LogViewerPlugin());
 #endif
   return plugins;
 }

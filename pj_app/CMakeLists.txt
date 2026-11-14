@@ -283,6 +283,10 @@ if(TARGET pj_wasm_anomaly_detector)
     target_link_libraries(pj_app_shell PUBLIC pj_wasm_anomaly_detector)
     target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_ANOMALY_DETECTOR_PLUGIN)
 endif()
+if(TARGET pj_wasm_log_widget)
+    target_link_libraries(pj_app_shell PUBLIC pj_wasm_log_widget)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_LOG_WIDGET_PLUGIN)
+endif()
 
 if(EMSCRIPTEN)
     qt_add_executable(pj_app

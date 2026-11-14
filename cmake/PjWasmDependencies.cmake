@@ -28,6 +28,7 @@ option(PJ_WASM_WITH_3D_LOADER "Build the official PCD/PLY point-cloud and mesh i
 option(PJ_WASM_WITH_QUATERNION "Build the official Quaternion toolbox into the wasm app" ON)
 option(PJ_WASM_WITH_FFT "Build the official FFT toolbox into the wasm app" ON)
 option(PJ_WASM_WITH_ANOMALY_DETECTOR "Build the official Anomaly Detector toolbox into the wasm app" ON)
+option(PJ_WASM_WITH_LOG_WIDGET "Build the official log viewer Custom Widget into the wasm app" ON)
 option(PJ_WASM_WITH_SCENE2D "Build the accelerated Scene2D wasm port" ON)
 option(PJ_WASM_WITH_SCENE3D "Build the accelerated Scene3D wasm port" ON)
 option(PJ_WASM_WITH_VIDEO
@@ -122,7 +123,7 @@ endif()
 if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF OR
    PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_JSON OR
    PJ_WASM_WITH_DATA_TAMER OR PJ_WASM_WITH_3D_LOADER OR PJ_WASM_WITH_QUATERNION OR
-   PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR)
+   PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR OR PJ_WASM_WITH_LOG_WIDGET)
     # Source-only population shared by the narrowly-scoped static plugin
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.

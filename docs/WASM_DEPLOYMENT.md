@@ -82,6 +82,7 @@ and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
 | `PJ_WASM_WITH_QUATERNION` | `toolbox_quaternion` |
 | `PJ_WASM_WITH_FFT` | `toolbox_fft` |
 | `PJ_WASM_WITH_ANOMALY_DETECTOR` | `toolbox_anomaly_detector` (the host runs its rules) |
+| `PJ_WASM_WITH_LOG_WIDGET` | `widget_log` (the log viewer Custom Widget) |
 
 Visualization families are on by default too: `PJ_WASM_WITH_SCENE2D` (images,
 depth, annotations, and with `PJ_WASM_WITH_VIDEO` software H.264/HEVC/AV1 video
