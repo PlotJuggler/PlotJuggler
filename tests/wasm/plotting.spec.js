@@ -230,6 +230,16 @@ async function requestPlotTextPixels(consoleMessages, previousCount) {
   };
 }
 
+// Dark-pixel count of the newest plot readback. A readback completes a frame after
+// it was asked for, so right after a state change the newest one may still show
+// the frame before it: poll this for the expected value instead of taking the
+// first message that arrives.
+function latestPlotTextPixels(consoleMessages) {
+  const message = consoleMessages.filter(entry => entry.includes('PJ_WASM_PLOT_TEXT_PIXELS')).at(-1) || '';
+  const match = message.match(/pixels=(\d+)/);
+  return match ? Number(match[1]) : NaN;
+}
+
 test('QRhi WebGL canvas renders an imported scalar curve', async ({ page }) => {
   test.setTimeout(90000);
   const errors = [];
@@ -1279,18 +1289,21 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   expect(lineOnlyText.markerLabels).toBe(0);
   expect(lineOnlyText.vertices).toBe(6);
   expect(lineOnlyText.alphaPixels).toBeLessThan(valueNameText.alphaPixels);
-  expect(lineOnlyPixels.pixels).toBeLessThan(valueNamePixels.pixels);
+  await expect.poll(() => latestPlotTextPixels(consoleMessages), { timeout: 10000 })
+    .toBeLessThan(valueNamePixels.pixels);
+  lineOnlyPixels.pixels = latestPlotTextPixels(consoleMessages);
 
   await page.evaluate(() => window.pjWasmCycleTimeTrackerProbe());
   const restoredState = await requestPlotState(page, consoleMessages, stateMessages);
   const restoredText = await requestPlotText(consoleMessages, textMessages);
-  const restoredPixels = await requestPlotTextPixels(consoleMessages, textPixelMessages);
   expect(restoredState.trackerParameter).toBe(1);
   expect(restoredText.legendLayers).toBe(1);
   expect(restoredText.markerLabels).toBe(1);
   expect(restoredText.vertices).toBe(12);
   expect(restoredText.alphaPixels).toBeGreaterThan(lineOnlyText.alphaPixels);
-  expect(restoredPixels.pixels).toBeGreaterThan(lineOnlyPixels.pixels);
+  await expect.poll(() => latestPlotTextPixels(consoleMessages), { timeout: 10000 })
+    .toBeGreaterThan(lineOnlyPixels.pixels);
+  const restoredPixels = { pixels: latestPlotTextPixels(consoleMessages) };
 
   // Fault-inject only the atlas stage: production geometry must stay visible,
   // stale text must not be drawn, the warning must latch, and clearing the
