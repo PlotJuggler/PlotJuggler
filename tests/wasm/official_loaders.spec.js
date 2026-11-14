@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // The official file loaders built into the wasm app import browser-selected
-// files: ULog, Parquet, Arrow IPC (inside MCAP), and the CAN logs (candump with a DBC
+// files: ULog, Parquet, the Arrow IPC, InfluxDB and NavMap parsers (inside
+// MCAP), and the CAN logs (candump with a DBC
 // picked from its own dialog, BLF, MF4). Fixtures: fixtures/generate_official_loader_fixtures.py
 // (Parquet, MF4, Arrow MCAP); sample.blf is pj-official-plugins' data_load_blf/test_data/sample.blf.
 const fs = require('fs');
@@ -149,6 +150,44 @@ test('official ULog loader imports a browser-selected log', async ({ page }) => 
     buffer: makeULog([[1_000_000, 1.5], [2_000_000, 2.5], [3_000_000, 4.5]]),
   });
   expect(outcome).toContain('series_samples=sensor/value:3@1000000000..3000000000=1.5..4.5');
+  expect(errors).toEqual([]);
+});
+
+test('official InfluxDB parser decodes line protocol in an MCAP channel', async ({ page }) => {
+  test.setTimeout(90000);
+  const consoleMessages = [];
+  const errors = [];
+  const screen = await boot(page, consoleMessages, errors);
+  const outcome = await importFile(page, screen, consoleMessages, {
+    name: 'influx.mcap',
+    mimeType: 'application/octet-stream',
+    buffer: base64Fixture('influx.mcap.b64'),
+  });
+  // Field series are measurement/tags/field; each line carries its own time.
+  const value = seriesSamples(outcome, '/telegraf/speed/host=car/value', consoleMessages);
+  expect(value).toMatchObject({ count: 3, start: 1_000_000_000n, first: 1.5, last: 4.5 });
+  expect(value.span).toBe(2_000_000_000n);
+  expect(errors).toEqual([]);
+});
+
+test('official NavMap parser decodes a NavMap message in an MCAP channel', async ({ page }) => {
+  test.setTimeout(90000);
+  const consoleMessages = [];
+  const errors = [];
+  const screen = await boot(page, consoleMessages, errors);
+  const outcome = await importFile(page, screen, consoleMessages, {
+    name: 'navmap.mcap',
+    mimeType: 'application/octet-stream',
+    buffer: base64Fixture('navmap.mcap.b64'),
+  });
+  // The parser's summary series (not the generic flattening), plus the mesh
+  // object topic the 3D view draws: 12 catalog items, 11 of them scalar.
+  expect(outcome).toContain('catalog_items=12 scalar_count=11');
+  const count = suffix => seriesSamples(outcome, suffix, consoleMessages);
+  expect(count('/navmap/num_vertices')).toMatchObject({ count: 1, first: 7 });
+  expect(count('/navmap/num_navcels')).toMatchObject({ count: 1, first: 5 });
+  expect(count('/navmap/num_surfaces')).toMatchObject({ count: 1, first: 2 });
+  expect(count('/navmap/dropped_links')).toMatchObject({ count: 1, first: 0 });
   expect(errors).toEqual([]);
 });
 
