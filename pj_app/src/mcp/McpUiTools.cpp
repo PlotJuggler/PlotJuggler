@@ -113,7 +113,8 @@ QString shownText(QWidget* w) {
     return w->windowTitle().remove(u"[*]"_s);
   }
   if (auto* button = qobject_cast<QAbstractButton*>(w)) {
-    return button->text().isEmpty() ? button->toolTip() : button->text();
+    // Without mnemonic markers, which some platform themes add ("&OK"): a script reads the same everywhere.
+    return button->text().isEmpty() ? button->toolTip() : QString(button->text()).remove(u'&');
   }
   if (auto* label = qobject_cast<QLabel*>(w)) {
     return label->text();
@@ -351,6 +352,9 @@ void UiDriver::dumpWidget(QWidget* w, int depth, std::string& out, int& lines) {
     if (w->property("checkable").toBool()) {  // buttons and group boxes
       flags.emplace_back(checkFlag(w->property("checked").toBool()));
     }
+    if (w->property("readOnly").toBool()) {  // line, text and spin box edits: typing does nothing
+      flags.emplace_back("read-only");
+    }
     if (auto* edit = qobject_cast<QLineEdit*>(w);
         edit != nullptr && edit->text().isEmpty() && !edit->placeholderText().isEmpty()) {
       flags.push_back("placeholder \"" + clip(edit->placeholderText()) + "\"");
@@ -551,6 +555,9 @@ UiDriver::Target UiDriver::resolve(const json& args) const {
     const QString object_name = QString::fromStdString(name);
     std::vector<QWidget*> found;
     for (QWidget* top : visibleTopLevels()) {
+      if (blockedByModal(top)) {
+        continue;  // ui_tree does not list them either, and they could not be acted on
+      }
       if (top->objectName() == object_name) {
         found.push_back(top);
       }

@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
+#include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QRectF>
@@ -458,6 +459,7 @@ TEST_F(McpServerTest, UiToolsClickTheUsersDialogOnlyWhenTheRunAskedForThem) {
   window_->show();
   std::pair<std::string, bool> tree{"", true};
   std::pair<std::string, bool> clicked{"", true};
+  std::pair<std::string, bool> by_name{"", true};
   bool closed_by_click = false;
   bool busy = false;
   // The user's prompt runs its own modal loop: the calls go from a timer inside it.
@@ -468,6 +470,16 @@ TEST_F(McpServerTest, UiToolsClickTheUsersDialogOnlyWhenTheRunAskedForThem) {
       return;
     }
     busy = true;
+    // A name the main window behind the dialog also uses names only the dialog's widget.
+    auto* behind = new QLineEdit(window_.get());
+    behind->setObjectName(QStringLiteral("uiToolsTwin"));
+    behind->show();
+    auto* in_dialog = new QLineEdit(boxes.front());
+    in_dialog->setObjectName(QStringLiteral("uiToolsTwin"));
+    in_dialog->setReadOnly(true);
+    in_dialog->show();
+    (new QPushButton(QStringLiteral("&Mnemonic"), boxes.front()))->show();
+    by_name = result(call("ui_click", {{"name", "uiToolsTwin"}}));
     tree = result(call("ui_tree", json::object()));
     const QRegularExpressionMatch ok =
         QRegularExpression(uR"(\[(w\d+)\] [^\n]*"OK")"_s).match(QString::fromStdString(tree.first));
@@ -483,7 +495,11 @@ TEST_F(McpServerTest, UiToolsClickTheUsersDialogOnlyWhenTheRunAskedForThem) {
   openUsersDialog();
   ASSERT_TRUE(pumpUntil([&] { return busy && visible<PJ::MessageBox>().empty(); }));
 
+  EXPECT_FALSE(by_name.second) << by_name.first;
   ASSERT_FALSE(tree.second) << tree.first;
+  // What typing cannot change says so, and a button reads without its mnemonic marker.
+  EXPECT_NE(tree.first.find("#uiToolsTwin (read-only)"), std::string::npos) << tree.first;
+  EXPECT_NE(tree.first.find("QPushButton \"Mnemonic\""), std::string::npos) << tree.first;
   // The user's dialog comes first, and its button has a ref.
   const std::string first_line = tree.first.substr(0, tree.first.find('\n'));
   EXPECT_NE(first_line.find("\"Hold on\""), std::string::npos) << tree.first;
