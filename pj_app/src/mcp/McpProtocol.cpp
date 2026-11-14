@@ -292,7 +292,8 @@ json jobToolEntries() {
       toolEntry(
           "job_kill",
           "Stop a background job: an evaluation stops computing, a file import stops (keep_partial, default true, "
-          "keeps the rows loaded so far; false removes them), a stream stops (its data stays), an export writes "
+          "keeps the rows loaded so far; false removes them; a stopped reload always restores the data it was "
+          "replacing), a stream stops (its data stays), an export writes "
           "nothing, and a dialog the job opened for the user closes. Returns its final state: killed, or "
           "completed/failed if it ended first; when the stop takes longer to act, its state with stopping=true "
           "(job_wait then returns when it has ended).",

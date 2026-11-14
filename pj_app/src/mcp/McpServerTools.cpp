@@ -486,12 +486,13 @@ const std::unordered_map<std::string, McpServer::AppTool>& McpServer::appTools()
   return tools;
 }
 
-void McpServer::awaitLoad(quint64 ticket, quint64 job, Reply reply, std::function<json(quint32)> on_loaded) {
+void McpServer::awaitLoad(
+    quint64 ticket, quint64 job, Reply reply, std::function<json(quint32)> on_loaded, bool reload) {
   FileLoader& loader = window_.fileLoader();
   auto* receiver = new QObject(this);
   connect(
       &loader, &FileLoader::loadFinished, receiver,
-      [receiver, ticket, reply, on_loaded](
+      [receiver, ticket, reply, on_loaded, reload](
           quint64 settled, LoadOutcome outcome, const QString& reason, DatasetId id, const QVector<DatasetId>&) {
         if (settled != ticket) {
           return;
@@ -499,6 +500,8 @@ void McpServer::awaitLoad(quint64 ticket, quint64 job, Reply reply, std::functio
         receiver->deleteLater();
         if (outcome == LoadOutcome::kCancelled && id != 0) {
           reply(fail("the load was stopped; the rows loaded so far stay as dataset " + std::to_string(id)));
+        } else if (outcome == LoadOutcome::kCancelled && reload) {
+          reply(fail("the reload was cancelled; the dataset keeps the data it had"));
         } else if (outcome == LoadOutcome::kCancelled) {
           reply(fail("the load was cancelled (job_kill, or the user closed the dialog or stopped the import)"));
         } else if (outcome != LoadOutcome::kLoaded) {
@@ -523,7 +526,7 @@ void McpServer::awaitLoad(quint64 ticket, quint64 job, Reply reply, std::functio
   running->progress = [&loader, ticket, progress] {
     return progress->is_null() ? json{{"queued", loader.currentLoadTicket() != ticket}} : *progress;
   };
-  running->kill = [&loader, ticket](bool keep_partial) { loader.cancelLoad(ticket, keep_partial); };
+  running->kill = [&loader, ticket, reload](bool keep_partial) { loader.cancelLoad(ticket, keep_partial && !reload); };
 }
 
 void McpServer::getStatus(const json&, const Caller& caller, Reply reply) {
@@ -666,7 +669,8 @@ void McpServer::reloadFile(const json& args, const Caller& caller, Reply reply) 
     return;
   }
   awaitLoad(
-      ticket, caller.job, reply, [](DatasetId reloaded) { return ok({{"reloaded", true}, {"dataset_id", reloaded}}); });
+      ticket, caller.job, reply, [](DatasetId reloaded) { return ok({{"reloaded", true}, {"dataset_id", reloaded}}); },
+      /*reload=*/true);
 }
 
 void McpServer::unloadFile(const json& args, const Caller& caller, Reply reply) {

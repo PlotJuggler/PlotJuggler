@@ -986,11 +986,15 @@ void McpServer::cancelRequest(const Caller& caller, const json& request_id) {
   if (!request_id.is_string() && !request_id.is_number_integer()) {
     return;
   }
+  // A client may name itself on its calls and not on its notifications: an unnamed cancel is matched
+  // on the token alone.
+  const bool unnamed = caller.owner.toStdString() == mcp::ownerFor({});
   std::vector<quint64> matching;
   for (const auto& [id, job] : jobs_) {
     const bool foreground = std::any_of(
         job.waiters.begin(), job.waiters.end(), [](const Waiter& w) { return w.kind == Waiter::Kind::kCall; });
-    if (foreground && !ended(job) && sameClient(job.caller, caller) && job.caller.request_id == request_id) {
+    const bool theirs = unnamed ? job.caller.token == caller.token : sameClient(job.caller, caller);
+    if (foreground && !ended(job) && theirs && job.caller.request_id == request_id) {
       matching.push_back(id);
     }
   }

@@ -1442,6 +1442,16 @@ TEST_F(McpJobTest, ACancelledNotificationStopsThatForegroundCall) {
   EXPECT_EQ(PJ::McpTestPeer::jobs(*server()), 0U);
 }
 
+// A direct client may name itself on its calls only: its cancel then carries no name to match.
+TEST_F(McpJobTest, ACancelThatNamesNoClientStopsTheCallWithThatId) {
+  bool released = false;
+  startEndless({{"wait_s", 60}}, "call-9", lifetimeToken([&released] { released = true; }));
+  const json cancel = {
+      {"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", "call-9"}}}};
+  EXPECT_EQ(rpcAs(token_, cancel, "").status, 202);
+  EXPECT_TRUE(released);
+}
+
 TEST_F(McpJobTest, ACancelNamingTwoCallsOrABackgroundJobStopsNothing) {
   startEndless({{"wait_s", 60}}, 7);
   startEndless({{"wait_s", 60}}, 7);
@@ -1493,7 +1503,10 @@ class McpStreamAndDialogJobTest : public McpServerTest {
     const auto [text, error] =
         result(call("start_stream", {{"source", "Mock Layout Stream"}, {"config", {{"topic", "live"}}}}));
     EXPECT_FALSE(error) << text;
-    return json::parse(text, nullptr, false);
+    json started = json::parse(text, nullptr, false);
+    // The dataset is listed with its first sample: a stream stopped before one leaves nothing to find.
+    EXPECT_TRUE(pumpUntil([&] { return started.contains("dataset_id") && loaded(started["dataset_id"]); }));
+    return started;
   }
 
   [[nodiscard]] bool streaming(const json& dataset) const {
@@ -2157,6 +2170,34 @@ TEST_F(McpActiveLoadTest, JobKillWithoutKeepPartialRemovesTheImportsRows) {
   ASSERT_TRUE(pumpUntil([&] { return replies_.size() == 2; }));
   EXPECT_EQ(textOf(replies_[1]).value("state", ""), "killed") << replies_[1].dump();
   EXPECT_TRUE(engineDatasets().empty()) << "the discarded import's dataset is still loaded";
+}
+
+// Half of a replacement is never what a stop means: whatever stops a reload (here a job_kill left at
+// its keep_partial default, as a client's cancel or a revoked token would) restores the data it replaced.
+TEST_F(McpActiveLoadTest, AStoppedReloadRestoresTheDataItWasReplacing) {
+  ASSERT_TRUE(startHeldImport().is_number_integer());
+  g_gate_released = true;
+  ASSERT_TRUE(pumpUntil([&] { return !terminals_.empty(); }));
+  ASSERT_EQ(engineDatasets().size(), 1U);
+  const PJ::DatasetId dataset = engineDatasets().front();
+  const auto values = [&] {
+    return pj_app_test::singleTopicValues(window_->appSession().sessionManager().createReader(), dataset);
+  };
+  ASSERT_EQ(values(), (std::vector<double>{1.0, 2.0}));
+
+  g_gate_released = false;
+  progressed_ = false;
+  agentCall("reload_file", {{"dataset", static_cast<int>(dataset)}, {"wait_s", 0}});
+  ASSERT_TRUE(pumpUntil([&] { return progressed_ && replies_.size() == 2; }));
+  const json reload = textOf(replies_[1]);
+  ASSERT_EQ(reload.value("state", ""), "running") << reload.dump();
+
+  agentCall("job_kill", {{"job_id", reload["job_id"]}});
+  ASSERT_TRUE(pumpUntil([&] { return replies_.size() == 3; }));
+  const json killed = textOf(replies_[2]);
+  EXPECT_EQ(killed.value("state", ""), "killed") << killed.dump();
+  EXPECT_NE(killed.value("result", "").find("keeps the data it had"), std::string::npos) << killed.dump();
+  EXPECT_EQ(values(), (std::vector<double>{1.0, 2.0})) << "the stopped reload left its partial rows in place";
 }
 
 TEST_F(McpActiveLoadTest, ClosingPublicAccessStopsAnActiveImport) {

@@ -342,8 +342,11 @@ class McpServer : public QObject {
   /// Queues `input` for loading and holds `reply` until it settles (open_file's second half).
   void startLoad(LoadInput input, LoadHints hints, quint64 job, Reply reply);
   /// Holds `reply` until load `ticket` settles; `on_loaded` words the success. Gives job `job` its
-  /// kill (cancelling the load) and its progress.
-  void awaitLoad(quint64 ticket, quint64 job, Reply reply, std::function<nlohmann::json(quint32 dataset)> on_loaded);
+  /// kill (cancelling the load) and its progress. A `reload` replaces data the user already has, so
+  /// its kill always discards: keep_partial would leave half of the replacement in its place.
+  void awaitLoad(
+      quint64 ticket, quint64 job, Reply reply, std::function<nlohmann::json(quint32 dataset)> on_loaded,
+      bool reload = false);
   /// Ties job `job` to the stream into dataset `id` it started: the job stops the stream when
   /// killed, and ends when the stream does (stopped by anyone, ended on its own, or failed).
   void followStream(quint64 job, quint32 id);

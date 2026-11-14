@@ -157,9 +157,10 @@ states: running · waiting_for_user · completed · failed · killed
     (`remove_derived_series` removes it);
   - a load: `FileLoader::cancelLoad(ticket, keep_partial)`. A queued one leaves the queue; an active one stops at
     the producer's next progress callback, keeping the rows loaded so far (`keep_partial`, the default) or removing
-    them. The job ends when `loadFinished` arrives. The first kill decides `keep_partial`.
-    `McpServer::stillAuthorized` is false once the caller's job was asked to stop, so a load killed while it waited
-    never starts;
+    them. The job ends when `loadFinished` arrives. The first kill decides `keep_partial`. A `reload_file` replaces
+    data the user already has, so every stop of it discards (`McpServer::awaitLoad`): the dataset goes back to what
+    it held, whatever `keep_partial` said. `McpServer::stillAuthorized` is false once the caller's job was asked to
+    stop, so a load killed while it waited never starts;
   - in the browser, `open_file`'s download from the relay: `cancelBrowserFetch`, until the load is queued;
   - a stream: `StreamingSourceManager::requestStopDataset`, which only asks (a kill hook must not block on the
     worker's join); the job ends when `streamStopped` arrives, and the data stays loaded;
@@ -192,7 +193,8 @@ states: running · waiting_for_user · completed · failed · killed
   the connection of the call that started it.
 - **`notifications/cancelled`** kills the one foreground call of the same token and owner whose JSON-RPC id matches
   `requestId` (`McpServer::cancelRequest`); none or several matches stop nothing, since ids are per client session.
-  The bridge sends ids unique across bridges.
+  A cancel that names no client (some name themselves on requests only) is matched on the token alone. The bridge
+  sends ids unique across bridges.
 - **Progress** is what the work reports, never a nested event loop: a load gives `{done, total}` in the producer's
   own units (`FileLoader::loadProgress`, total 0 when unknown) or `{queued}` before its first tick; an evaluation
   has none.
@@ -482,4 +484,11 @@ typedef struct PJ_mcp_endpoint_host_vtable_t {
 - A plugin's message box raised while an import runs (`FileLoader`'s plugin message-box gate) is not a dialog a job
   can close: the import's kill stops the load at the producer's next progress callback instead.
 - `export_series` still stages its series on the GUI thread, and the row cap is per export: several wide exports at
-  once hold several copies.
+  once hold several copies. Its write runs on `EnginePool`'s shared lane, which a machine with two or three cores
+  sizes at one thread: derived evaluations wait there until the file is written.
+- A named export is written beside its destination and replaces it only once complete, so it needs a folder it can
+  write to: exporting over a writable file in a folder that is not fails ("cannot create"), where a stopped export
+  written in place would have truncated the file.
+- A `create_derived_object` stopped during its first read-back answers `killed` although the object is installed,
+  and the read-back's removal of an object whose script fails is skipped: `list_created` shows it and
+  `remove_derived_series` removes it.
