@@ -62,16 +62,17 @@ endfunction()
 
 # One FetchContent dependency, its licence files relative to its source tree (an absolute path, such as a text of
 # cmake/wasm_notices/ for a header that only names its licence, is used as is). Nothing when this configuration does
-# not populate it (its option is off).
+# not populate it (its option is off) and a licence file is relative to its tree. A dependency declared only for the
+# source offer (never populated) names absolute texts and is guarded by its caller instead.
 function(pj_wasm_notice output name title spdx)
   FetchContent_GetProperties(${name} POPULATED populated SOURCE_DIR source)
-  if(NOT populated)
-    return()
-  endif()
   set(specs "")
   foreach(spec IN LISTS ARGN)
     string(REGEX MATCH "[^|]+$" file "${spec}")
     if(NOT IS_ABSOLUTE "${file}")
+      if(NOT populated)
+        return()
+      endif()
       string(REGEX REPLACE "([^|]+)$" "${source}/\\1" spec "${spec}")
     endif()
     list(APPEND specs "${spec}")
@@ -236,6 +237,11 @@ function(pj_wasm_write_notices output python_notices)
   pj_wasm_notice("${output}" arrow_thrift "Apache Thrift (in Parquet)" "Apache-2.0" LICENSE NOTICE)
   pj_wasm_notice("${output}" arrow_snappy "Snappy (in Arrow)" "BSD-3-Clause" COPYING)
   pj_wasm_notice("${output}" arrow_simdjson "simdjson (in Arrow)" "Apache-2.0" LICENSE)
+  if(PJ_WASM_WITH_ARROW)
+    # Headers only, through Thrift; declared for the source offer and never populated.
+    pj_wasm_notice("${output}" arrow_boost "Boost (headers, in Thrift)" "BSL-1.0"
+                   "${CMAKE_SOURCE_DIR}/cmake/wasm_notices/BSL-1.0.txt")
+  endif()
   pj_wasm_notice("${output}" lz4 "LZ4 library" "BSD-2-Clause" lib/LICENSE)
   pj_wasm_notice("${output}" zstd "Zstandard" "BSD-3-Clause" LICENSE)
   pj_wasm_notice("${output}" Luau "Luau" "MIT" LICENSE.txt)
