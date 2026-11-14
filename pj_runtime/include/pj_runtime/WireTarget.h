@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <string_view>
 
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/widget_types.hpp"
@@ -21,8 +22,8 @@ struct WireTarget {
   std::size_t column = 0;
   /// kObject: the object topic.
   ObjectTopicId object_topic{};
-  /// kObject: the type name handed to the plugin to pick its codec. Static storage (`sdk::name`).
-  std::string_view object_type_name;
+  /// kObject: the topic's object type; `sdk::name(object_type)` is what the plugin receives to pick its codec.
+  sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;
   /// The dataset's display offset, to move between stored absolute time and the display axis.
   DisplayOffset offset{};
 };

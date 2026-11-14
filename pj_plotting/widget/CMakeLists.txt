@@ -45,6 +45,7 @@ add_library(pj_plotting STATIC
     include/pj_plotting/FilterEditorPanel.h
     include/pj_plotting/ParameterForm.h
     include/pj_plotting/CurveTracker.h
+    include/pj_plotting/CustomWidgetSupport.h
     include/pj_plotting/DockToolbar.h
     include/pj_plotting/DockWidget.h
     include/pj_plotting/PlotDocker.h

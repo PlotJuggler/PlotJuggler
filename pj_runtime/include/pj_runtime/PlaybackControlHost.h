@@ -52,7 +52,29 @@ class PlaybackControlHost {
     return raw_;
   }
 
+  /// True while a plugin, through any instance, is moving the engine (play, pause, seek, rate). What the
+  /// engine reports synchronously then runs inside that plugin's code, so a consumer that calls into
+  /// plugins (a Custom Widget dock) defers its call instead. [main-thread]
+  [[nodiscard]] static bool callInProgress() noexcept {
+    return CallScope::depth > 0;
+  }
+
  private:
+  /// Counts a plugin's call that moves the engine, for callInProgress.
+  struct CallScope {
+    CallScope() noexcept {
+      ++depth;
+    }
+    ~CallScope() {
+      --depth;
+    }
+    CallScope(const CallScope&) = delete;
+    CallScope& operator=(const CallScope&) = delete;
+    CallScope(CallScope&&) = delete;
+    CallScope& operator=(CallScope&&) = delete;
+    static inline int depth = 0;
+  };
+
   static bool onPlay(void* ctx, PJ_error_t* out_error) noexcept;
   static bool onPause(void* ctx, PJ_error_t* out_error) noexcept;
   static bool onSeek(void* ctx, double time_s, PJ_error_t* out_error) noexcept;

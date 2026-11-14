@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "pj_base/buffer_anchor.hpp"
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_plugins/widget_protocol.h"
 
 namespace PJ {
@@ -20,6 +22,14 @@ namespace PJ {
   value.time = time;
   value.label = PJ_string_view_t{label.data(), label.size()};
   return value;
+}
+
+/// The payload of an object value: its bytes and the name of its type. The bytes are referenced: they
+/// must outlive the delivery.
+inline void setObjectPayload(PJ_widget_value_t& value, const sdk::PayloadView& payload, sdk::BuiltinObjectType type) {
+  value.bytes = PJ_bytes_view_t{payload.bytes.data(), payload.bytes.size()};
+  const std::string_view type_name = sdk::name(type);
+  value.type_name = PJ_string_view_t{type_name.data(), type_name.size()};
 }
 
 }  // namespace PJ

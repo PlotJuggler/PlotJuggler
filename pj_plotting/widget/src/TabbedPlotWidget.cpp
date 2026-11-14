@@ -582,6 +582,15 @@ void TabbedPlotWidget::setObjectWidgetFactory(ObjectWidgetFactory factory) {
   }
 }
 
+void TabbedPlotWidget::setCustomWidgetSupport(CustomWidgetSupport support) {
+  custom_widget_support_ = std::move(support);
+  for (const TabEntry& entry : tabs_) {
+    if (entry.docker != nullptr) {
+      entry.docker->setCustomWidgetSupport(custom_widget_support_);
+    }
+  }
+}
+
 void TabbedPlotWidget::onAddTabButtonPressed() {
   addTab({});
   emit undoableChange();
@@ -779,6 +788,7 @@ void TabbedPlotWidget::selectEntry(const TabEntry& entry) {
 PlotDocker* TabbedPlotWidget::createDocker(const QString& tab_name) {
   auto* docker = new PlotDocker(tab_name, session_, catalog_, this);
   docker->setObjectWidgetFactory(object_widget_factory_);
+  docker->setCustomWidgetSupport(custom_widget_support_);
   // A restore splits docks as it rebuilds a tab; those intermediate states are not undo steps.
   connect(docker, &PlotDocker::undoableChange, this, [this]() {
     if (!restoring_state_) {

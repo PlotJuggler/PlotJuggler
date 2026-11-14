@@ -12,6 +12,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_plotting/CustomWidgetSupport.h"
 #include "pj_runtime/HistoryScope.h"
 #include "pj_widgets/ChromeMetrics.h"
 
@@ -53,6 +54,8 @@ class TabbedPlotWidget : public QWidget {
   PlotDocker* addTab(QString name);
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
+  /// Supply the Custom Widget support to every tab's docks, existing and future.
+  void setCustomWidgetSupport(CustomWidgetSupport support);
 
   // Hosts an arbitrary non-plot widget as a whole tab (a heterogeneous,
   // VSCode-style tab — e.g. a pinned toolbox panel). Takes ownership of
@@ -245,6 +248,7 @@ class TabbedPlotWidget : public QWidget {
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
+  CustomWidgetSupport custom_widget_support_;
   QString name_;
   QString state_id_;
   int tab_suffix_count_ = 0;

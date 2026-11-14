@@ -18,8 +18,9 @@ What the module must do. How it is built is in [../CLAUDE.md](../CLAUDE.md).
 ## Values
 
 - R8. On every tracker tick of a visible panel the host resolves, per wire, the latest sample at or before the tracker time (zero-order hold) on the display time axis of the wire's dataset, and calls `on_update` with one value per wire. A wire with no sample, or not resolved yet, is delivered with kind NONE. Every value, NONE included, carries the display name of the wired series.
-- R9. `on_update` is not called when no wired sample changed since the previous call. A change of bindings, settings, inputs or catalog content forces the next delivery; a display offset change delivers only when it moves a wired dataset. A panel receives one delivery right after its widget is created, wired or not.
-- R10. History is not pushed: the widget asks for it through `pj.widget_host.v1` (`query_history`).
+- R9. `on_update` is not called when no wired sample changed since the previous call. A change of bindings, settings, inputs or catalog content forces the next delivery; a display offset change delivers only when it moves a wired dataset. A panel receives one delivery right after its widget is created, wired or not. Two events deliver the unchanged values once more, from the event loop: playback starting or stopping, and entries added to (or evicted from) an object topic a wire reads, wherever they fall relative to the tracker. Several of them before that delivery collapse into one, and none is made when another delivery reached the widget meanwhile.
+- R10. History is not pushed: the widget asks for it through `pj.widget_host.v1` (`query_history`). An object value, current or from history, carries the canonical bytes of its object (the `pj_base` codec of its type), whatever the source stored.
+- R10a. Every widget is offered `pj.playback.v1` (play, pause, seek, rate, state, display-time conversions). A value's `time` converts back to an instant at or after its sample, so seeking to it shows that sample.
 
 ## Settings
 

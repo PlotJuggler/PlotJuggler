@@ -39,6 +39,11 @@ class VisualizationPlaceholderWidget : public QWidget {
   [[nodiscard]] QSize minimumSizeHint() const override;
   // Enables Paste when the host sees compatible widget XML in the clipboard.
   void setPasteActionEnabled(bool enabled);
+  // Enables the Custom Widget icon when at least one Widget type is installed. When disabled its tooltip
+  // says so (and points at the Marketplace unless this build has none). Available by default.
+  void setCustomWidgetsAvailable(bool available);
+  // The Custom Widget icon (null only if construction failed).
+  [[nodiscard]] QToolButton* customWidgetButton() const;
 
  public slots:
   // Re-tints the family icons through renderSvgPixmap so they pick up

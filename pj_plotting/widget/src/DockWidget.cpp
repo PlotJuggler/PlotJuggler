@@ -74,11 +74,15 @@ bool objectElementSeedsWidget(const QDomElement& element) {
   return !element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull();
 }
 
-bool isPanelOnlyItem(const CatalogItem& item) {
-  const auto* object = asObjectTopic(item);
-  const auto* advertised = asAdvertisedTopic(item);
-  return (object != nullptr && isPanelOnlyObjectType(object->object_type)) ||
-         (advertised != nullptr && isPanelOnlyObjectType(advertised->classification));
+/// The object type of a stored or advertised object topic, kNone for anything else.
+sdk::BuiltinObjectType objectTypeOfItem(const CatalogItem& item) {
+  if (const auto* object = asObjectTopic(item)) {
+    return object->object_type;
+  }
+  if (const auto* advertised = asAdvertisedTopic(item)) {
+    return advertised->classification;
+  }
+  return sdk::BuiltinObjectType::kNone;
 }
 
 }  // namespace
@@ -242,6 +246,14 @@ void DockWidget::setPlaceholderWidget() {
       placeholder_widget_, &VisualizationPlaceholderWidget::contextMenuAboutToShow, this,
       &DockWidget::updatePlaceholderPasteAction);
   updatePlaceholderPasteAction();
+  placeholder_widget_->setCustomWidgetsAvailable(custom_widget_support_.available);
+}
+
+void DockWidget::setCustomWidgetSupport(CustomWidgetSupport support) {
+  custom_widget_support_ = std::move(support);
+  if (placeholder_widget_ != nullptr) {
+    placeholder_widget_->setCustomWidgetsAvailable(custom_widget_support_.available);
+  }
 }
 
 void DockWidget::onVisualizationRequested(VisualizationKind kind) {
@@ -416,6 +428,7 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   auto* new_widget = new DockWidget(plot, session_, catalog_, parent_docker, nullptr, false);
   new_widget->setObjectWidgetFactory(object_widget_factory_);
   new_widget->setConfigurationPanelVisibilityQuery(configuration_panel_visible_);
+  new_widget->setCustomWidgetSupport(custom_widget_support_);
   auto* area = parent_docker->addDockWidget(dock_area, new_widget, dockAreaWidget());
   area->setAllowedAreas(ads::OuterDockAreas);
 
@@ -451,12 +464,18 @@ void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
   }
 
   // Before anything else: the first key picks the branch below, and an object row sorts ahead of scalars.
+  // A Custom-Widget-only type is kept only for a mounted widget, which may be a Custom Widget that reads it.
+  const auto& shows_only = custom_widget_support_.shows_only;
   QStringList keys;
   QStringList left_out;
+  QStringList custom_only;
   for (const QString& key : dropped_keys) {
     const auto item = catalog_->itemDescriptor(key);
-    if (item.has_value() && isPanelOnlyItem(*item)) {
+    const sdk::BuiltinObjectType type = item.has_value() ? objectTypeOfItem(*item) : sdk::BuiltinObjectType::kNone;
+    if (isPanelOnlyObjectType(type)) {
       left_out.append(item->topic_name);
+    } else if (object_widget_ == nullptr && shows_only && shows_only(type)) {
+      custom_only.append(item->topic_name);
     } else {
       keys.append(key);
     }
@@ -467,6 +486,12 @@ void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
   } else if (!left_out.isEmpty()) {
     emit topicRefused(
         tr("%1 topics cannot be displayed on their own, but a plugin panel can read them.").arg(left_out.size()));
+  }
+  if (custom_only.size() == 1) {
+    emit topicRefused(tr("This topic is shown by a Custom Widget. Create one in this panel first."));
+  } else if (!custom_only.isEmpty()) {
+    emit topicRefused(
+        tr("%1 topics are shown by a Custom Widget. Create one in this panel first.").arg(custom_only.size()));
   }
   if (keys.empty()) {
     return;
@@ -533,7 +558,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
       const ObjectDropSeed seed{ObjectTopicId{}, advertised->classification, first_item->topic_name};
       IDataWidget* widget = object_widget_factory_(QString(), &seed, this);
       if (widget == nullptr) {
-        return;  // family not hostable — keep the placeholder affordance
+        return;  // no dock family hosts this classification: keep the placeholder
       }
       setObjectWidget(widget);
       // Arm the gate so the first real topic (a later drop into this widget)
@@ -670,6 +695,12 @@ void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
   content_widget_ = object_widget_ != nullptr ? object_widget_->widget() : nullptr;
   if (content_widget_ == nullptr) {
     setPlaceholderWidget();
+    // The first topic got no view (the factory said why: no dock family shows its type, or this topic
+    // cannot be shown). The rest of the drop still lands: a log row selected along with scalar fields must
+    // not lose them. Only that topic is left out, since another topic of its type may well be shown.
+    if (keys.size() > 1) {
+      onCatalogItemsDropped(keys.mid(1));
+    }
     return;
   }
   installObjectContextMenuFilter(content_widget_);

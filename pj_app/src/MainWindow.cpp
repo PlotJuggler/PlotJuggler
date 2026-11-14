@@ -71,6 +71,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -1018,9 +1019,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // Drop path: build, then populate the first topic and apply view
         // side-effects. Failures here surface as transient toasts (non-blocking,
         // WASM-safe): the empty-kind branch is defensive-only (the curve list
-        // refuses drags of undisplayable types, the dock leaves out panel-only
-        // ones), but the per-dock refusals below
-        // are reachable — the drag veto is type-level and cannot see runtime
+        // refuses drags of undisplayable types; the dock leaves panel-only and
+        // Custom-Widget-only ones out of a drop before it calls this factory,
+        // see CustomWidgetSupport), but the per-dock refusals below are
+        // reachable — the drag veto is type-level and cannot see runtime
         // parser availability.
         IDataWidget* widget = makeSceneDock(resolved_kind, dock_parent);
         if (widget == nullptr) {
@@ -1696,8 +1698,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
     plugin_plot_tabs_->refreshAvailability();
     syncCustomTopicsEditor();
+    refreshCustomWidgetsAvailability();
   });
   syncCustomTopicsEditor();
+  refreshCustomWidgetsAvailability();
 
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
@@ -2233,6 +2237,9 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
         &session_->sessionManager(), &session_->catalogModel(), &session_->extensionCatalog(),
         &session_->playbackEngine(), parent);
     widget->setDiagnosticSink(diagnosticSink());
+    widget->setPlaybackTimeMappers(
+        std::bind_front(&MainWindow::displayTimeForTopic, this),
+        std::bind_front(&MainWindow::displayTimeForSource, this));
     if (custom_widgets_ != nullptr) {
       custom_widgets_->attachDock(*widget);
     }
@@ -4858,6 +4865,14 @@ void MainWindow::forEachCustomWidgetDock(const std::function<void(CustomWidgetDo
   });
 }
 
+void MainWindow::refreshCustomWidgetsAvailability() {
+  const auto& widgets = session_->extensionCatalog().widgets();
+  ui_->tabbedPlotWidget->setCustomWidgetSupport({
+      .available = std::ranges::any_of(widgets, [](const LoadedWidget& library) { return !library.widgets.empty(); }),
+      .shows_only = &isCustomWidgetObjectType,
+  });
+}
+
 void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) {
   ui_->tabbedPlotWidget->forEachDocker([&operation](PlotDocker* docker) {
     for (int index = 0; index < docker->plotCount(); ++index) {
@@ -4968,6 +4983,14 @@ void MainWindow::syncWidgetsToCatalog() {
 std::optional<double> MainWindow::displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const {
   const auto seconds = session_->sessionManager().displayTimeForSource(source.id, absolute_ns);
   return seconds.has_value() ? std::optional<double>(toAxisDouble(*seconds)) : std::nullopt;
+}
+
+std::optional<double> MainWindow::displayTimeForTopic(std::string_view topic, int64_t absolute_ns) const {
+  const DatasetId dataset_id = topic.empty()
+                                   ? representativeDatasetId()
+                                   : session_->catalogModel().datasetForTopic(
+                                         QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size())));
+  return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, absolute_ns);
 }
 
 void MainWindow::linkedZoomOut() {
@@ -10602,17 +10625,8 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
   // every plugin tool call already runs on the GUI thread, so the lambdas may
   // touch session state and widgets directly.
   session->playback_host = std::make_unique<PlaybackControlHost>(
-      session_->playbackEngine(),
-      [this](std::string_view topic, int64_t absolute_ns) -> std::optional<double> {
-        const DatasetId dataset_id = topic.empty()
-                                         ? representativeDatasetId()
-                                         : session_->catalogModel().datasetForTopic(
-                                               QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size())));
-        return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, absolute_ns);
-      },
-      [this](PJ_data_source_handle_t source_handle, int64_t absolute_ns) {
-        return displayTimeForSource(source_handle, absolute_ns);
-      });
+      session_->playbackEngine(), std::bind_front(&MainWindow::displayTimeForTopic, this),
+      std::bind_front(&MainWindow::displayTimeForSource, this));
   if (auto status = session->playback_host->registerServices(*session->builder); !status) {
     report_error(
         source,

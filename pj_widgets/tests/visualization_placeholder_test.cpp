@@ -41,6 +41,46 @@ TEST(VisualizationPlaceholderFamiliesTest, CustomWidgetIconRequestsItsFamily) {
   EXPECT_EQ(requested[0], PJ::VisualizationKind::kCustomWidget);
 }
 
+TEST(VisualizationPlaceholderFamiliesTest, CustomWidgetIconFollowsAvailability) {
+  PJ::VisualizationPlaceholderWidget placeholder;
+  std::vector<PJ::VisualizationKind> requested;
+  QObject::connect(
+      &placeholder, &PJ::VisualizationPlaceholderWidget::visualizationRequested, &placeholder,
+      [&](PJ::VisualizationKind kind) { requested.push_back(kind); });
+  QToolButton* button = placeholder.customWidgetButton();
+  ASSERT_NE(button, nullptr);
+  EXPECT_TRUE(button->isEnabled());
+  EXPECT_EQ(button->toolTip(), u"Custom Widget"_s);
+  EXPECT_EQ(button->cursor().shape(), Qt::PointingHandCursor);
+
+  placeholder.setCustomWidgetsAvailable(false);
+  EXPECT_FALSE(button->isEnabled());
+#ifdef PJ_TARGET_WASM
+  EXPECT_EQ(button->toolTip(), u"No custom widgets installed."_s);
+#else
+  EXPECT_EQ(button->toolTip(), u"No custom widgets installed. Get them from the Marketplace."_s);
+#endif
+  EXPECT_NE(button->cursor().shape(), Qt::PointingHandCursor);
+  button->click();
+  EXPECT_TRUE(requested.empty());
+  for (auto* other : placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly)) {
+    if (other != button) {
+      EXPECT_TRUE(other->isEnabled()) << other->objectName().toStdString();
+      EXPECT_EQ(other->cursor().shape(), Qt::PointingHandCursor) << other->objectName().toStdString();
+    }
+  }
+  placeholder.findChild<QToolButton*>(u"buttonVizPlot"_s)->click();
+  EXPECT_EQ(requested.size(), 1U);
+
+  placeholder.setCustomWidgetsAvailable(true);
+  EXPECT_TRUE(button->isEnabled());
+  EXPECT_EQ(button->toolTip(), u"Custom Widget"_s);
+  EXPECT_EQ(button->cursor().shape(), Qt::PointingHandCursor);
+  button->click();
+  ASSERT_EQ(requested.size(), 2U);
+  EXPECT_EQ(requested[1], PJ::VisualizationKind::kCustomWidget);
+}
+
 TEST(VisualizationPlaceholderFamiliesTest, IconRowShrinksToFitANarrowDock) {
   PJ::VisualizationPlaceholderWidget placeholder;
   // Resize events reach a widget only once it is shown.

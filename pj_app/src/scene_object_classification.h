@@ -44,4 +44,10 @@ namespace PJ {
 // panel reads it (isPanelOnlyObjectType).
 [[nodiscard]] bool isDroppableObjectType(sdk::BuiltinObjectType type);
 
+// True for an object type with no built-in view that a Custom Widget input can still take (any
+// non-scalar type no dock family claims, except the panel-only ones DockWidget never offers to a mounted
+// widget): its catalog row starts a drag, and an empty dock answers a drop by saying a Custom Widget
+// shows it.
+[[nodiscard]] bool isCustomWidgetObjectType(sdk::BuiltinObjectType type);
+
 }  // namespace PJ

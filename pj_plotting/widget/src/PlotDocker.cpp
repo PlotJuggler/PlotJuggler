@@ -560,6 +560,18 @@ void PlotDocker::setConfigurationPanelVisibilityQuery(std::function<bool()> quer
   }
 }
 
+void PlotDocker::setCustomWidgetSupport(CustomWidgetSupport support) {
+  custom_widget_support_ = std::move(support);
+  // Every dock of every area: dockWidgetsMap() is keyed by object name, and all docks share "Plot".
+  for (int index = 0; index < dockAreaCount(); ++index) {
+    for (ads::CDockWidget* widget : dockArea(index)->dockWidgets()) {
+      if (auto* dock = qobject_cast<DockWidget*>(widget)) {
+        dock->setCustomWidgetSupport(custom_widget_support_);
+      }
+    }
+  }
+}
+
 QString PlotDocker::stateId() const {
   return state_id_;
 }
@@ -660,6 +672,7 @@ DockWidget* PlotDocker::addDockWithPlot(
   auto* widget = new DockWidget(plot, session_, catalog_, this, nullptr, plot != nullptr);
   widget->setObjectWidgetFactory(object_widget_factory_);
   widget->setConfigurationPanelVisibilityQuery(configuration_panel_visible_);
+  widget->setCustomWidgetSupport(custom_widget_support_);
   auto* area_widget = addDockWidget(dock_area, widget, relative_to);
   area_widget->setAllowedAreas(ads::OuterDockAreas);
 

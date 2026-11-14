@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
 #include <type_traits>
 
 namespace {
@@ -98,6 +99,18 @@ TEST(Time, DisplaySecondsOrdersAndSubtracts) {
   EXPECT_TRUE(b < a);
   EXPECT_DOUBLE_EQ(a - b, 6.0);                       // delta is a bare double
   EXPECT_TRUE((a - 1.0) == PJ::DisplaySeconds{9.0});  // shift by a delta stays typed
+}
+
+TEST(Time, AtOrAfterLeavesAnInstantPastInt64RangeAtTheNearestTime) {
+  // An "end of time" sentinel a plugin may pass to to_display_time: one double step above it no longer
+  // fits a Timestamp, so the round-up must not try (it would convert an out-of-range double).
+  for (const PJ::Timestamp raw :
+       {std::numeric_limits<PJ::Timestamp>::max(), std::numeric_limits<PJ::Timestamp>::min()}) {
+    EXPECT_EQ(
+        PJ::rawToDisplaySecondsAtOrAfter(raw, PJ::DisplayOffset{}).value,
+        PJ::rawToDisplaySeconds(raw, PJ::DisplayOffset{}).value)
+        << raw;
+  }
 }
 
 }  // namespace

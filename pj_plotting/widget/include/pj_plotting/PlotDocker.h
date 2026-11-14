@@ -15,6 +15,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_plotting/CustomWidgetSupport.h"
 #include "pj_runtime/HistoryScope.h"
 #include "pj_widgets/VisualizationKind.h"
 
@@ -55,6 +56,8 @@ class PlotDocker : public ads::CDockManager {
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
   /// Supply the sidebar visibility query to existing and newly created docks.
   void setConfigurationPanelVisibilityQuery(std::function<bool()> query);
+  /// Supply the Custom Widget support to existing and newly created docks.
+  void setCustomWidgetSupport(CustomWidgetSupport support);
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
   /// A history-exempt tab persists in layout files but is omitted from undo and
@@ -154,6 +157,7 @@ class PlotDocker : public ads::CDockManager {
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
   std::function<bool()> configuration_panel_visible_;
+  CustomWidgetSupport custom_widget_support_;
   bool restoring_state_ = false;
   // Coalesces per-mouse-move splitterMoved events into one history snapshot
   // after the drag goes quiet.
