@@ -72,12 +72,12 @@ void McpBrowserLink::retryLater(void (McpBrowserLink::*next)()) {
 
 void McpBrowserLink::endSession() {
   failed_polls_ = 0;
-  delete std::exchange(session_, nullptr);
+  delete session_;
+  session_ = new QObject(this);
 }
 
 void McpBrowserLink::hello() {
   id_.clear();
-  endSession();  // whatever a previous session relayed can no longer be answered
 #ifdef PJ_TARGET_WASM
   constexpr bool kBrowser = true;
 #else
@@ -96,7 +96,6 @@ void McpBrowserLink::hello() {
     }
     id_ = QString::fromStdString(answer["id"].get<std::string>());
     backoff_ms_ = 0;
-    session_ = new QObject(this);
     qCInfo(mcp::lcMcp).noquote() << "linked to the agent relay at"
                                  << relay_.toString(QUrl::RemoveQuery);  // not its secret
     poll();
@@ -109,7 +108,8 @@ void McpBrowserLink::poll() {
     reply->deleteLater();
     const int status = statusOf(*reply);
     if (status == 404) {
-      hello();  // the relay restarted and forgot this page
+      endSession();  // the relay forgot this page: it restarted, or gave up on a page that stopped polling
+      hello();
       return;
     }
     if (reply->error() != QNetworkReply::NoError) {
@@ -122,9 +122,6 @@ void McpBrowserLink::poll() {
     }
     backoff_ms_ = 0;
     failed_polls_ = 0;
-    if (session_ == nullptr) {
-      session_ = new QObject(this);  // the relay answers again, with its memory of this page intact
-    }
     if (status == 200) {
       const json item = json::parse(reply->readAll().toStdString(), nullptr, false);
       if (item.is_object() && item.value("seq", json()).is_number_integer() && item.contains("message")) {

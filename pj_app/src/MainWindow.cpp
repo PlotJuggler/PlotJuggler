@@ -10677,7 +10677,7 @@ void MainWindow::refreshMcpIndicator() {
 #ifdef PJ_TARGET_WASM
     mcp_agent_button_->setToolTip(
         tr("An AI agent is controlling PlotJuggler through MCP. Click to see what it is running and stop it; closing "
-           "the agent's session or this page stops it too."));
+           "this page stops it too."));
 #else
     mcp_agent_button_->setToolTip(
         tr("An AI agent is controlling PlotJuggler through MCP. Click to see what it is running and stop it. Turn "
