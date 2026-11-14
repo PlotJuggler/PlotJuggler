@@ -34,8 +34,10 @@ namespace {
 constexpr std::size_t kMaxResponseBytes = 16 * 1024;
 
 // Materialize a numeric field into parallel timestamp + double columns,
-// coercing any numeric column type to double. Returns false for a non-numeric
-// column (string/bool) or an empty/mismatched read.
+// coercing any numeric column type to double. A null sample (an empty CSV cell,
+// an absent optional field) reads as NaN, as every other read of the store gives
+// it: its slot in the view's value buffer holds no value (hosts zero it). Returns
+// false for a non-numeric column (string/bool) or an empty/mismatched read.
 bool readSeriesDoubles(
     const PJ::sdk::MaterializedSeriesView& view, std::vector<std::int64_t>& out_ts, std::vector<double>& out_vals) {
   const std::size_t n = view.rowCount();
@@ -52,6 +54,13 @@ bool readSeriesDoubles(
     }
     for (std::size_t i = 0; i < n; ++i) {
       out_vals[i] = static_cast<double>(p[i]);
+    }
+    if (view.nullCount() > 0) {
+      for (std::size_t i = 0; i < n; ++i) {
+        if (view.isNull(i)) {
+          out_vals[i] = std::numeric_limits<double>::quiet_NaN();
+        }
+      }
     }
     return true;
   };

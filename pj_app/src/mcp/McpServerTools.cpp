@@ -110,7 +110,8 @@ QString agentDialogTitlePrefix() {
   return QCoreApplication::translate("PJ::McpServer", "An AI agent asked you to choose: ");
 }
 
-/// The value column's rows [begin, end) as doubles; empty for a column type that is not numeric.
+/// The value column's rows [begin, end) as doubles, a null sample as NaN (its slot in the view's
+/// buffer holds no value); empty for a column type that is not numeric.
 std::vector<double> valuesAsDouble(const sdk::MaterializedSeriesView& series, std::size_t begin, std::size_t end) {
   std::vector<double> out(end - begin);
   const auto copy = [&](const auto* values) {
@@ -124,6 +125,13 @@ std::vector<double> valuesAsDouble(const sdk::MaterializedSeriesView& series, st
       copy(series.valuesAsInt32()) || copy(series.valuesAsInt16()) || copy(series.valuesAsInt8()) ||
       copy(series.valuesAsUint64()) || copy(series.valuesAsUint32()) || copy(series.valuesAsUint16()) ||
       copy(series.valuesAsUint8())) {
+    if (series.nullCount() > 0) {
+      for (std::size_t row = begin; row < end; ++row) {
+        if (series.isNull(row)) {
+          out[row - begin] = std::numeric_limits<double>::quiet_NaN();
+        }
+      }
+    }
     return out;
   }
   return {};

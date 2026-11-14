@@ -730,8 +730,10 @@ of the module: its files keep their own SPDX and copyright lines.
   `wait_for`, which watches one series for a sample newer than the latest at the call that
   satisfies a comparison. It resolves the series once, then looks a few times a second,
   however often it is resumed, at the samples past its cursor only: through the host's
-  `scan_values` from that cursor when set (a null is a NaN there, and never matches), else
-  through `read_window` or the whole read, where a null reads as 0. "Newer" is by timestamp, so a
+  `scan_values` from that cursor when set, else through `read_window` or the whole read. A null
+  sample is a NaN on every route, and never matches: the series tools (`read_series`, `wait_for`)
+  read the SDK's `MaterializedSeriesView` through one helper that asks it which samples are null,
+  because the value buffer holds a zero in a null's slot. "Newer" is by timestamp, so a
   sample that arrives late with an older stamp, or one a stream's retention drops between
   two looks, is not seen.
 - `derived_recipes.hpp` also serves `pj_app`'s own MCP tools: series path resolution

@@ -57,6 +57,7 @@
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/service_traits.hpp"
+#include "pj_datastore/writer.hpp"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
@@ -781,6 +782,41 @@ TEST_F(McpServerTest, ExportWritesANaNAsNan) {
   for (qsizetype i = 1; i < lines.size(); ++i) {
     EXPECT_EQ(lines[i].split(',').value(1).toStdString(), "nan") << lines[i].toStdString();
   }
+}
+
+// A null sample (an empty CSV cell, an absent optional field) is no value: the store reads it as
+// NaN everywhere else, and so must the two tools that read through the SDK's series view, whose
+// value buffer holds a zero in that slot.
+TEST_F(McpServerTest, ANullSampleIsNotReadAsZero) {
+  const int dataset = loadMock();
+  ASSERT_NE(dataset, 0);
+  PJ::SessionManager& manager = window_->appSession().sessionManager();
+  PJ::DataWriter writer = manager.dataEngine().createWriter();
+  const auto gaps = writer.registerScalarSeries(static_cast<PJ::DatasetId>(dataset), "gaps", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(gaps.has_value()) << gaps.error();
+  for (const auto& [stamp, value] :
+       std::vector<std::pair<PJ::Timestamp, std::optional<double>>>{{100, 5.0}, {200, std::nullopt}, {300, 7.0}}) {
+    ASSERT_TRUE(writer.beginRow(gaps->topic_id, stamp).has_value());
+    value.has_value() ? writer.set<double>(gaps->topic_id, 0, *value) : writer.setNull(gaps->topic_id, 0);
+    ASSERT_TRUE(writer.finishRow(gaps->topic_id).has_value());
+  }
+  ASSERT_FALSE(manager.commitChunks(writer.flushAll()).empty());
+  window_->appSession().catalogModel().rebuildFromDatastore();
+
+  const auto [stats, stats_error] = result(call("read_series", {{"paths", {"gaps/value"}}, {"mode", "stats"}}));
+  ASSERT_FALSE(stats_error) << stats;
+  EXPECT_NE(stats.find("\"min\":5"), std::string::npos) << "the null was read as a sample of 0: " << stats;
+
+  const auto [text, error] = result(call("export_series", {{"paths", {"gaps/value"}}}));
+  ASSERT_FALSE(error) << text;
+  QFile csv(QString::fromStdString(json::parse(text, nullptr, false).value("path", "")));
+  ASSERT_TRUE(csv.open(QIODevice::ReadOnly));
+  const QList<QByteArray> lines = csv.readAll().trimmed().split('\n');
+  csv.remove();
+  ASSERT_EQ(lines.size(), 4) << lines.join('|').toStdString();
+  EXPECT_EQ(lines[1].split(',').value(1), "5");
+  EXPECT_EQ(lines[2].split(',').value(1), "nan") << "the null was exported as a value";
+  EXPECT_EQ(lines[3].split(',').value(1), "7");
 }
 
 // The CSV holds every value exactly and in the C locale: a value needing more than ten significant digits reads back
