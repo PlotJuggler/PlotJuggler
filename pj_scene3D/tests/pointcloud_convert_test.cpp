@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "pj_base/span.hpp"
-#include "pj_scene3d_core/grid_map_view.h"  // finiteRange
+#include "pj_scene3d_core/finite_range.h"
 
 namespace {
 

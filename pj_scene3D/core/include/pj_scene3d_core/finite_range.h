@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace pj::scene3d {
 
@@ -25,6 +26,15 @@ inline void accumulate(FiniteRange& range, float value) {
     range.lo = std::min(range.lo, value);
     range.hi = std::max(range.hi, value);
   }
+}
+
+// Finite min/max of `values`.
+[[nodiscard]] inline FiniteRange finiteRange(const std::vector<float>& values) {
+  FiniteRange range;
+  for (const float value : values) {
+    accumulate(range, value);
+  }
+  return range;
 }
 
 }  // namespace pj::scene3d

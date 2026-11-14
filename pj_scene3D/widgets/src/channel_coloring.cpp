@@ -19,15 +19,6 @@ using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
-namespace {
-
-bool isValidManualRange(double lo, double hi) {
-  return std::isfinite(lo) && std::isfinite(hi) && std::abs(lo) <= ChannelColoring::kManualRangeLimit &&
-         std::abs(hi) <= ChannelColoring::kManualRangeLimit && lo <= hi;
-}
-
-}  // namespace
-
 bool ChannelColoring::setColormap(PJ::Colormap colormap) {
   if (colormap_ == colormap) {
     return false;
@@ -82,7 +73,7 @@ std::optional<ChannelColoring> ChannelColoring::parseXml(const QDomElement& elem
       !detail::parseZeroOne(element, "auto_range", true, out.auto_range_) ||
       !detail::parseFiniteDouble(element, "range_lo", 0.0, -kManualRangeLimit, kManualRangeLimit, out.manual_lo_) ||
       !detail::parseFiniteDouble(element, "range_hi", 1.0, -kManualRangeLimit, kManualRangeLimit, out.manual_hi_) ||
-      !isValidManualRange(out.manual_lo_, out.manual_hi_)) {
+      out.manual_lo_ > out.manual_hi_) {
     return std::nullopt;
   }
   out.colormap_ = static_cast<PJ::Colormap>(colormap);

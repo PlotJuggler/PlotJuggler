@@ -148,7 +148,7 @@ void GridMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
     copyMatrix(frame.view_projection, uniforms.view_projection);
     copyMatrix(model_f, uniforms.model);
     copyMatrix(glm::mat4(glm::transpose(glm::inverse(glm::mat3(model_f)))), uniforms.normal_to_world);
-    fillLitSurfaceUniforms(uniforms, lit, *layer, grid.color_range);
+    fillLitSurfaceUniforms(uniforms, lit, layer->coloring(), grid.color_range, opacity, layer->lighting());
     uniforms.cell_dims = {
         grid.cell_size.x, grid.cell_size.y, static_cast<float>(grid.column_count), static_cast<float>(grid.row_count)};
     uniforms.flags = {has_elevation ? 1.0F : 0.0F, 0.0F, 0.0F, 0.0F};

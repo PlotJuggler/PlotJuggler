@@ -13,7 +13,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "pj_scene3d_core/pointcloud_convert.h"  // readScalarAt
+#include "pj_scene3d_core/pointcloud_convert.h"  // readScalarAt, readFloat64At
 #include "pj_scene3d_core/pose_math.h"           // poseMatrix
 
 namespace pj::scene3d {
@@ -120,11 +120,6 @@ constexpr uint8_t alphaOf(uint32_t color) {
 
 constexpr uint32_t kNoDataColor = 0xFF808080U;  // mid grey, opaque
 
-// The value of `channel` at corner `i` of the de-indexed mesh.
-double cornerValue(const MeshMapState& state, const MeshMapChannelState& channel, size_t i) {
-  return channel.target == Target::kFace ? channel.values[i / 3] : channel.values[state.indices[i]];
-}
-
 // "face:<name>" / "vertex:<name>" back to its channel, or nullptr.
 const MeshMapChannelState* channelForKey(const MeshMapState& state, std::string_view key) {
   for (const MeshMapChannelState& channel : state.channels) {
@@ -140,48 +135,54 @@ bool hasVertexColor(const MeshMapState& state) {
          colorComponent(state, "blue") != nullptr;
 }
 
-// The three corner values of `face`; false when any is "no data".
-bool faceValues(
-    const MeshMapState& state, const MeshMapChannelState& channel, size_t face, std::array<double, 3>& values) {
-  bool valid = true;
-  for (size_t corner = 0; corner < 3; ++corner) {
-    values[corner] = cornerValue(state, channel, (3 * face) + corner);
-    valid = valid && std::isfinite(values[corner]);
+// Writes one element per corner of faces [begin, end) to `out`: `map(value)`,
+// or `no_data` on all three corners of a face that has "no data" at any.
+template <typename T, typename Map>
+void writeFaces(
+    const MeshMapState& state, const MeshMapChannelState& channel, size_t begin, size_t end, T* out, T no_data,
+    const Map& map) {
+  if (channel.target == Target::kFace) {
+    for (size_t face = begin; face < end; ++face) {
+      const double value = channel.values[face];
+      std::fill_n(out + (3 * face), 3, std::isfinite(value) ? map(value) : no_data);
+    }
+    return;
   }
-  return valid;
-}
-
-// The colormap values of faces [begin, end) of a continuous channel, into `upload.values`.
-void writeFaceValues(
-    const MeshMapState& state, const MeshMapChannelState& channel, size_t begin, size_t end, MeshMapUpload& upload) {
-  std::array<double, 3> values{};
   for (size_t face = begin; face < end; ++face) {
-    const bool valid = faceValues(state, channel, face, values);
+    std::array<double, 3> values{};
+    bool valid = true;
     for (size_t corner = 0; corner < 3; ++corner) {
-      upload.values[(3 * face) + corner] =
-          valid ? static_cast<float>(std::clamp<double>(values[corner], -kMeshMapValueLimit, kMeshMapValueLimit))
-                : kMeshMapNoDataValue;
+      values[corner] = channel.values[state.indices[(3 * face) + corner]];
+      valid = valid && std::isfinite(values[corner]);
+    }
+    for (size_t corner = 0; corner < 3; ++corner) {
+      out[(3 * face) + corner] = valid ? map(values[corner]) : no_data;
     }
   }
 }
 
-// The finite range of colormap values, "no data" corners aside.
-FiniteRange valueRange(const std::vector<float>& values) {
-  FiniteRange range;
-  for (const float value : values) {
-    if (std::abs(value) <= kMeshMapValueLimit) {
-      accumulate(range, value);
-    }
-  }
-  return range;
-}
-
-// The colours of faces [begin, end) of a categorical channel, into
-// `upload.colors`: the producer's category colour, else the palette. The first
-// category of a value that carries a colour wins. Turns `upload.translucent` on
-// for a colour with alpha below 255.
-void writeFaceColors(
+// Colours faces [begin, end) of `upload` by `channel`, in the mode its kind
+// asks for (`values` or `colors`, already sized): a continuous channel through
+// the colormap, with `color_range` brought up to date; a categorical one with
+// the producer's category colour (the first category of a value that carries
+// one), else the palette, turning `translucent` on for an alpha below 255.
+void colorFaces(
     const MeshMapState& state, const MeshMapChannelState& channel, size_t begin, size_t end, MeshMapUpload& upload) {
+  if (channel.info.kind == ChannelKind::kContinuous) {
+    writeFaces(state, channel, begin, end, upload.values.data(), kMeshMapNoDataValue, [](double value) {
+      return static_cast<float>(std::clamp<double>(value, -kMeshMapValueLimit, kMeshMapValueLimit));
+    });
+    // The finite range of every value, "no data" corners aside. The three
+    // corners of a face channel's face are equal: one in three is enough.
+    upload.color_range = {};
+    const size_t stride = channel.target == Target::kFace ? 3 : 1;
+    for (size_t i = 0; i < upload.values.size(); i += stride) {
+      if (std::abs(upload.values[i]) <= kMeshMapValueLimit) {
+        accumulate(upload.color_range, upload.values[i]);
+      }
+    }
+    return;
+  }
   std::unordered_map<int64_t, uint32_t> category_colors;
   for (const PJ::sdk::ChannelCategory& category : channel.info.categories) {
     if (category.color.has_value()) {
@@ -189,19 +190,13 @@ void writeFaceColors(
           category.value, packRgba(category.color->r, category.color->g, category.color->b, category.color->a));
     }
   }
-  const auto color_of = [&category_colors](double value) {
+  writeFaces(state, channel, begin, end, upload.colors.data(), kNoDataColor, [&category_colors](double value) {
     const auto id = static_cast<int64_t>(std::llround(value));
     const auto found = category_colors.find(id);
     return found != category_colors.end() ? found->second : categoricalColor(id);
-  };
-  std::array<double, 3> values{};
-  for (size_t face = begin; face < end; ++face) {
-    const bool valid = faceValues(state, channel, face, values);
-    uint32_t* out = &upload.colors[3 * face];
-    for (size_t corner = 0; corner < 3; ++corner) {
-      out[corner] = valid ? color_of(values[corner]) : kNoDataColor;
-    }
-    upload.translucent = upload.translucent || alphaOf(out[0]) < 255 || alphaOf(out[1]) < 255 || alphaOf(out[2]) < 255;
+  });
+  for (size_t i = 3 * begin; i < 3 * end && !upload.translucent; ++i) {
+    upload.translucent = alphaOf(upload.colors[i]) < 255;
   }
 }
 
@@ -233,7 +228,7 @@ MeshMapState decodeMeshMap(const PJ::sdk::MeshMap& mesh) {
     // Far from the origin (UTM-scale coordinates) float32 has no centimetres:
     // narrow relative to the first finite vertex, and place that vertex through
     // the origin instead. The view's camera-relative model matrix is double.
-    const auto at = [&mesh](size_t i) { return readAs<double>(mesh.positions.data() + (i * sizeof(double))); };
+    const auto at = [&mesh](size_t i) { return readFloat64At(mesh.positions.data() + (i * sizeof(double))); };
     glm::dvec3 offset(0.0);
     const std::optional<glm::dmat4> origin = poseMatrix(mesh.origin);
     for (size_t v = 0; origin.has_value() && v + 2 < coordinates; v += 3) {
@@ -434,13 +429,11 @@ void fillMeshMapColors(const MeshMapState& state, std::string_view source, MeshM
     if (channel->info.kind == ChannelKind::kContinuous) {
       upload.color_mode = MeshMapColorMode::kChannel;
       upload.values.resize(corners);
-      writeFaceValues(state, *channel, 0, corners / 3, upload);
-      upload.color_range = valueRange(upload.values);
     } else {
       upload.color_mode = MeshMapColorMode::kRgba;
       upload.colors.resize(corners);
-      writeFaceColors(state, *channel, 0, corners / 3, upload);
     }
+    colorFaces(state, *channel, 0, corners / 3, upload);
     return;
   }
 
@@ -482,12 +475,7 @@ std::optional<ElementRange> refreshMeshMapColors(
     }
     const uint32_t begin = channel->dirty.begin;
     const uint32_t end = std::min(channel->dirty.end, state.faceCount());
-    if (continuous) {
-      writeFaceValues(state, *channel, begin, end, upload);
-      upload.color_range = valueRange(upload.values);
-    } else {
-      writeFaceColors(state, *channel, begin, end, upload);
-    }
+    colorFaces(state, *channel, begin, end, upload);
     return ElementRange{.begin = 3 * begin, .end = 3 * end};
   }
   if (source == kMeshMapSourceVertexColor && hasVertexColor(state)) {

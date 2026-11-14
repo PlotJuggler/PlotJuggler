@@ -172,17 +172,17 @@ TEST(MeshMapLayer, AppliesUpdatesForwardAndRebuildsGoingBack) {
   rig.layer.renderAtForTest(250);
   EXPECT_FLOAT_EQ(rig.stagedCost(0), 7.0F);
   EXPECT_FLOAT_EQ(rig.stagedCost(1), 3.0F);
-  const int rebuilds = rig.layer.rebuildCountForTest();
+  const int rebuilds = rig.layer.rebaseCountForTest();
 
   rig.layer.renderAtForTest(350);  // forward: only the new update
   EXPECT_FLOAT_EQ(rig.stagedCost(1), 9.0F);
-  EXPECT_EQ(rig.layer.rebuildCountForTest(), rebuilds);
+  EXPECT_EQ(rig.layer.rebaseCountForTest(), rebuilds);
   EXPECT_EQ(rig.layer.appliedUpdateCountForTest(), 2);
 
   rig.layer.renderAtForTest(150);  // back before both updates: rebuilt from the map
   EXPECT_FLOAT_EQ(rig.stagedCost(0), 1.0F);
   EXPECT_FLOAT_EQ(rig.stagedCost(1), 3.0F);
-  EXPECT_EQ(rig.layer.rebuildCountForTest(), rebuilds + 1);
+  EXPECT_EQ(rig.layer.rebaseCountForTest(), rebuilds + 1);
 }
 
 TEST(MeshMapLayer, ALateUpdateWithAnOlderStampRebuilds) {
@@ -253,9 +253,9 @@ TEST(MeshMapLayer, ARewindOnTheSameMapKeepsTheGeometry) {
   rig.layer.renderAtForTest(250);
   ASSERT_NE(rig.layer.stagedMeshForTest(), nullptr);
   const auto geometry = rig.layer.stagedMeshForTest()->geometry_revision;
-  const int rebuilds = rig.layer.rebuildCountForTest();
+  const int rebuilds = rig.layer.rebaseCountForTest();
   rig.layer.renderAtForTest(150);
-  EXPECT_EQ(rig.layer.rebuildCountForTest(), rebuilds + 1);
+  EXPECT_EQ(rig.layer.rebaseCountForTest(), rebuilds + 1);
   EXPECT_FLOAT_EQ(rig.stagedCost(0), 1.0F);
   EXPECT_EQ(rig.layer.stagedMeshForTest()->geometry_revision, geometry) << "the positions were re-uploaded";
 }
@@ -313,7 +313,7 @@ TEST(MeshMapLayer, AnotherMeshsUpdatesLeaveThisLayerAlone) {
   rig.pushMap(100);
   ASSERT_TRUE(rig.layer.attach(rig.ctx));
   rig.layer.renderAtForTest(300);
-  const int rebuilds = rig.layer.rebuildCountForTest();
+  const int rebuilds = rig.layer.rebaseCountForTest();
   const auto revision = rig.layer.stagedRevision();
 
   rig.pushUpdate(400, 0, 7.0F, "2", other);  // in order
@@ -321,7 +321,7 @@ TEST(MeshMapLayer, AnotherMeshsUpdatesLeaveThisLayerAlone) {
   EXPECT_EQ(rig.layer.stagedRevision(), revision) << "re-staged for another mesh's update";
   rig.pushUpdate(200, 0, 7.0F, "2", other);  // late
   rig.layer.renderAtForTest(500);
-  EXPECT_EQ(rig.layer.rebuildCountForTest(), rebuilds) << "rebuilt for another mesh's late update";
+  EXPECT_EQ(rig.layer.rebaseCountForTest(), rebuilds) << "rebuilt for another mesh's late update";
   EXPECT_EQ(rig.layer.stagedRevision(), revision);
   EXPECT_FLOAT_EQ(rig.stagedCost(0), 1.0F);
 
@@ -339,10 +339,10 @@ TEST(MeshMapLayer, ARefusedMapIsNotDecodedAgain) {
   rig.layer.renderAtForTest(100);
   EXPECT_EQ(rig.layer.stagedMeshForTest(), nullptr);
   EXPECT_FALSE(rig.layer.statusWarning().isEmpty());
-  const int decodes = rig.layer.baseDecodeCountForTest();
+  const int decodes = rig.layer.rebaseCountForTest();
   rig.layer.renderAtForTest(100);
   rig.layer.renderAtForTest(150);
-  EXPECT_EQ(rig.layer.baseDecodeCountForTest(), decodes);
+  EXPECT_EQ(rig.layer.rebaseCountForTest(), decodes);
   EXPECT_FALSE(rig.layer.statusWarning().isEmpty());
 }
 
@@ -424,10 +424,10 @@ TEST(MeshMapLayer, XmlRoundTrip) {
 
   pj::scene3d::MeshMapLayer restored{rig.topic_id, u"copy"_s};
   ASSERT_TRUE(restored.xmlLoadState(saved));
-  EXPECT_EQ(restored.colormap(), PJ::Colormap::kViridis);
-  EXPECT_FALSE(restored.autoRange());
-  EXPECT_DOUBLE_EQ(restored.manualRange().first, -1.0);
-  EXPECT_DOUBLE_EQ(restored.manualRange().second, 2.5);
+  EXPECT_EQ(restored.coloring().colormap(), PJ::Colormap::kViridis);
+  EXPECT_FALSE(restored.coloring().autoRange());
+  EXPECT_DOUBLE_EQ(restored.coloring().manualRange().first, -1.0);
+  EXPECT_DOUBLE_EQ(restored.coloring().manualRange().second, 2.5);
   EXPECT_FALSE(restored.lighting());
   EXPECT_DOUBLE_EQ(restored.opacity(), 0.5);
   EXPECT_FALSE(restored.showLinks());

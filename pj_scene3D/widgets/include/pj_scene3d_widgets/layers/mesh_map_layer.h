@@ -6,10 +6,8 @@
 #include <QString>
 #include <QStringList>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,7 +20,6 @@
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_widgets/Colormap.h"
 
-class QFormLayout;
 class QWidget;
 
 namespace pj::scene3d {
@@ -78,26 +75,16 @@ class MeshMapLayer : public Scene3DLayer {
     return staged_revision_;
   }
   // Set when the step from revision stagedRevision() - 1 to stagedRevision()
-  // rewrote only this span of colour corners (possibly none: the colormap range
-  // alone moved): a view holding the previous revision uploads just the span.
+  // rewrote only this (non-empty) span of colour corners: a view holding the
+  // previous revision uploads just the span.
   [[nodiscard]] const std::optional<ElementRange>& stagedColorDelta() const {
     return staged_color_delta_;
   }
   [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
   }
-  [[nodiscard]] PJ::Colormap colormap() const {
-    return coloring_.colormap();
-  }
-  [[nodiscard]] bool autoRange() const {
-    return coloring_.autoRange();
-  }
-  [[nodiscard]] std::pair<double, double> manualRange() const {
-    return coloring_.manualRange();
-  }
-  // The range the colormap maps for `data` (ChannelColoring::effectiveRange).
-  [[nodiscard]] std::pair<float, float> effectiveRange(const FiniteRange& data) const {
-    return coloring_.effectiveRange(data);
+  [[nodiscard]] const ChannelColoring& coloring() const {
+    return coloring_;
   }
   [[nodiscard]] bool lighting() const {
     return lighting_;
@@ -135,11 +122,9 @@ class MeshMapLayer : public Scene3DLayer {
   [[nodiscard]] const MeshMapUpload* stagedMeshForTest() const {
     return staged_mesh_.has_value() ? &*staged_mesh_ : nullptr;
   }
-  [[nodiscard]] int rebuildCountForTest() const {
-    return rebuild_count_;
-  }
-  [[nodiscard]] int baseDecodeCountForTest() const {
-    return base_decode_count_;
+  // Maps decoded to start over from, refused ones included.
+  [[nodiscard]] int rebaseCountForTest() const {
+    return rebase_count_;
   }
   [[nodiscard]] int appliedUpdateCountForTest() const {
     return applied_update_count_;
@@ -174,7 +159,7 @@ class MeshMapLayer : public Scene3DLayer {
   void refreshUpdateTopics();
   // Identifies the set of updates at or before `time_ns`: per topic, the highest
   // arrival UID and the latest-by-stamp entry's UID, folded.
-  [[nodiscard]] std::uint64_t updateKey(int64_t time_ns) const;
+  [[nodiscard]] std::uint64_t updateKey(int64_t time_ns, std::vector<std::uint64_t>* max_uids = nullptr) const;
   // True when an update for this map arrived stamped at or before what was
   // already applied: any late one on a paired topic (the sibling or `matched`),
   // one naming this geometry on another topic (decoded to tell; the topic's
@@ -213,7 +198,6 @@ class MeshMapLayer : public Scene3DLayer {
   MeshMapReconstructor reconstructor_;
   std::uint64_t staged_update_key_ = 0;
   PJ::SequentialUID staged_base_uid_{};
-  bool base_refused_ = false;  // the map at staged_base_uid_ was refused (base_warning_ says why)
   bool colors_dirty_ = true;
   std::uint64_t geometry_revision_ = 0;
   std::optional<AABB> bounds_;
@@ -222,11 +206,10 @@ class MeshMapLayer : public Scene3DLayer {
   QString color_warning_;  // a requested colour source the map lacks
 
   std::string source_frame_;
-  QString fixed_frame_;
+  std::string fixed_frame_;
   bool tracker_dirty_ = false;
   bool visible_ = true;
-  int rebuild_count_ = 0;
-  int base_decode_count_ = 0;  // rebase() calls
+  int rebase_count_ = 0;
   int applied_update_count_ = 0;
 
   std::string color_request_;

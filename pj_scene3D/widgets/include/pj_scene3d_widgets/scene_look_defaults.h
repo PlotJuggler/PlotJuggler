@@ -52,13 +52,13 @@ inline constexpr float kCollisionOpacity = 0.4f;
 // collision hulls visually distinct from the visual meshes.
 inline constexpr glm::vec4 kCollisionDefaultColor{1.0f, 0.5f, 0.1f, 1.0f};
 
-// ---- GridMap heightfield shading (GridMapRhiPass) ----
+// ---- Lit colormapped surfaces (GridMapRhiPass, MeshMapRhiPass) ----
 // Lambert weights scaled by the view's ambient / direct / fill knobs, tuned so a
 // flat, top-lit map sits near the cube passes' brightness. The ambient weight is
-// doubled relative to the cubes' because the heightfield has no AO term.
-inline constexpr float kGridMapAmbient = 0.7f;
-inline constexpr float kGridMapDirect = 0.45f;
-inline constexpr float kGridMapFill = 0.4f;
+// doubled relative to the cubes' because these surfaces have no AO term.
+inline constexpr float kLitSurfaceAmbient = 0.7f;
+inline constexpr float kLitSurfaceDirect = 0.45f;
+inline constexpr float kLitSurfaceFill = 0.4f;
 
 // ---- Composite / post (CompositeParams) ----
 inline constexpr int kTonemapMode = 1;  // 0 None, 1 ACES, 2 AgX, 3 Neutral

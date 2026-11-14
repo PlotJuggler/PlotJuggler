@@ -70,9 +70,6 @@ class MeshMapRhiPass {
   [[nodiscard]] int geometryUploadCount() const {
     return geometry_upload_count_;
   }
-  [[nodiscard]] int colorUploadCount() const {
-    return color_upload_count_;
-  }
   /// Bytes of colour attributes uploaded since the pass was created.
   [[nodiscard]] std::uint64_t colorUploadBytes() const {
     return color_upload_bytes_;
@@ -124,7 +121,6 @@ class MeshMapRhiPass {
   int last_layer_count_ = 0;
   int last_vertex_count_ = 0;
   int geometry_upload_count_ = 0;
-  int color_upload_count_ = 0;
   std::uint64_t color_upload_bytes_ = 0;
 };
 

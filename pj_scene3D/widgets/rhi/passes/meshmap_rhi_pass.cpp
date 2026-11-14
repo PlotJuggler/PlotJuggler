@@ -3,9 +3,7 @@
 
 #include "meshmap_rhi_pass.h"
 
-#include <QCoreApplication>
 #include <array>
-#include <cmath>
 #include <limits>
 
 #include "lit_surface_uniforms.h"
@@ -148,14 +146,13 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
     const void* corners = mesh.color_mode == MeshMapColorMode::kChannel ? static_cast<const void*>(mesh.values.data())
                                                                         : static_cast<const void*>(mesh.colors.data());
     const quint32 offset = delta->begin * 4U;
-    const quint32 bytes = delta->empty() ? 0U : (delta->end - delta->begin) * 4U;
-    if (bytes != 0 && gpu.attributes != nullptr && offset + bytes <= gpu.attributes_capacity) {
+    const quint32 bytes = (delta->end - delta->begin) * 4U;
+    if (gpu.attributes != nullptr && offset + bytes <= gpu.attributes_capacity) {
       PJ::uploadStaticBufferInPieces(
           updates, gpu.attributes, offset, bytes, static_cast<const char*>(corners) + offset);
       color_upload_bytes_ += bytes;
     }
     gpu.uploaded_revision = layer->stagedRevision();
-    ++color_upload_count_;
     return true;
   }
   const void* attribute_data = nullptr;
@@ -198,7 +195,6 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
   color_upload_bytes_ += attribute_bytes;
   gpu.attributes_in_use = mesh.color_mode != MeshMapColorMode::kSolid;
   gpu.uploaded_revision = layer->stagedRevision();
-  ++color_upload_count_;
   return true;
 }
 
@@ -240,7 +236,7 @@ void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
     MeshMapUniforms uniforms;
     copyMatrix(frame.view_projection, uniforms.view_projection);
     copyMatrix(model_f, uniforms.model);
-    fillLitSurfaceUniforms(uniforms, lit, *layer, mesh.color_range);
+    fillLitSurfaceUniforms(uniforms, lit, layer->coloring(), mesh.color_range, opacity, layer->lighting());
     uniforms.flags = {mode, 0.0F, 0.0F, 0.0F};
     frame.updates->updateDynamicBuffer(gpu.surface_uniforms, 0, kUniformBytes, &uniforms);
     draws_.push_back(

@@ -8,6 +8,7 @@
 
 #include "../rhi_scene_pass.h"
 #include "pj_scene3d_core/finite_range.h"
+#include "pj_scene3d_widgets/channel_coloring.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 
@@ -34,24 +35,24 @@ struct LitSurfaceFrame {
       .view_z = {view_z.x, view_z.y, view_z.z, 0.0F},
       .key_dir = {key_dir.x, key_dir.y, key_dir.z, 0.0F},
       .weights = {
-          look::kGridMapAmbient * shading.ambient_scale, look::kGridMapDirect * shading.direct_scale,
-          look::kGridMapFill * shading.fill_light_scale}};
+          look::kLitSurfaceAmbient * shading.ambient_scale, look::kLitSurfaceDirect * shading.direct_scale,
+          look::kLitSurfaceFill * shading.fill_light_scale}};
 }
 
 /// Fills the fields the two surfaces' uniform blocks share: `eye`, `view_z`,
-/// `key_dir`, `color_params` (colormap range of `data` under the layer's
-/// ChannelColoring, colormap id, opacity) and `light_params` (the weights, then
-/// the layer's lighting switch).
-template <typename Uniforms, typename Layer>
+/// `key_dir`, `color_params` (the colormap range of `data` under `coloring`,
+/// the colormap id, `opacity`) and `light_params` (the weights, then the
+/// `lighting` switch).
+template <typename Uniforms>
 void fillLitSurfaceUniforms(
-    Uniforms& uniforms, const LitSurfaceFrame& frame, const Layer& layer, const FiniteRange& data) {
-  const auto [color_lo, color_hi] = layer.effectiveRange(data);
+    Uniforms& uniforms, const LitSurfaceFrame& frame, const ChannelColoring& coloring, const FiniteRange& data,
+    float opacity, bool lighting) {
+  const auto [color_lo, color_hi] = coloring.effectiveRange(data);
   uniforms.eye = frame.eye;
   uniforms.view_z = frame.view_z;
   uniforms.key_dir = frame.key_dir;
-  uniforms.color_params = {
-      color_lo, color_hi, static_cast<float>(layer.colormap()), static_cast<float>(layer.opacity())};
-  uniforms.light_params = {frame.weights[0], frame.weights[1], frame.weights[2], layer.lighting() ? 1.0F : 0.0F};
+  uniforms.color_params = {color_lo, color_hi, static_cast<float>(coloring.colormap()), opacity};
+  uniforms.light_params = {frame.weights[0], frame.weights[1], frame.weights[2], lighting ? 1.0F : 0.0F};
 }
 
 }  // namespace pj::scene3d

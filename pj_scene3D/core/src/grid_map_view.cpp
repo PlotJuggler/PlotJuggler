@@ -34,14 +34,6 @@ uint64_t gridMapCellCount(const PJ::sdk::GridMap& grid) {
   return static_cast<uint64_t>(grid.column_count) * grid.row_count;
 }
 
-FiniteRange finiteRange(const std::vector<float>& values) {
-  FiniteRange range;
-  for (const float value : values) {
-    accumulate(range, value);
-  }
-  return range;
-}
-
 std::vector<float> packGridMapField(
     const PJ::sdk::GridMap& grid, const PJ::sdk::PointField& field, FiniteRange* range) {
   FiniteRange local_range;

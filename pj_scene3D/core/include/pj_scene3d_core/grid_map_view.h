@@ -23,9 +23,6 @@ inline constexpr uint64_t kMaxRenderableGridMapCells = 16ull * 1024 * 1024;
 // Total cell count (column * row). 0 if either dimension is 0.
 [[nodiscard]] uint64_t gridMapCellCount(const PJ::sdk::GridMap& grid);
 
-// Finite min/max of a float array.
-[[nodiscard]] FiniteRange finiteRange(const std::vector<float>& values);
-
 // One GridMap ready for the GPU: placement plus the two de-interleaved channels,
 // row-major `row_count * column_count` floats each (NaN = hole). `elevation` may
 // be empty (a flat plane: the "None" selector). Built by GridMapLayer once per new

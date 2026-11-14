@@ -471,7 +471,7 @@ Every consumer and its clock:
 |---|---|---|
 | 3D view: TF triads, connection lines, hover label, frame picking, follow camera, TF render key | Entry, at the cursor | They show where each frame is at the cursor. |
 | Point cloud, depth cloud, pose array and its trail, voxel grid, grid map | Header at the object's own stamp for `root <- source`; entry at the cursor for `fixed <- root` (a pose-trail point: at its own store timestamp); entry at the cursor as the fallback | An object sits where its frame was when it was measured, as in RViz. |
-| Occupancy grid | Entry, at the cursor | The drawn grid is a keyframe plus later patches, with no single stamp. |
+| Occupancy grid, mesh map | Entry, at the cursor | What is drawn is a keyframe plus later patches, with no single stamp. |
 | Scene entities (markers and their models) | Entry, at the cursor; a finding (D26) at its result's real stamp, as a stamped object | `frame_locked` is not honoured (§20). |
 | Robot model links | Entry, at the cursor | The links are TF frames. |
 | TF frame trail | Entry (`chainSampleTimes` and its lookups) | The trail is split at the cursor and its head meets the frame's triad. |

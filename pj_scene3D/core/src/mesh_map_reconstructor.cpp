@@ -59,7 +59,8 @@ void MeshMapReconstructor::rebase(uint64_t identity, PJ::Timestamp timestamp, Me
   state_ = std::move(state);
   base_identity_ = identity;
   // Exclusive lower bound of the first advance(): updates stamped with the map apply.
-  applied_until_ = timestamp - 1;
+  applied_from_ = timestamp - 1;
+  applied_until_ = applied_from_;
   invalidated_ = false;
 }
 
@@ -89,6 +90,7 @@ void MeshMapReconstructor::reset() {
   streams_.clear();
   state_.reset();
   base_identity_ = 0;
+  applied_from_ = 0;
   applied_until_ = 0;
   invalidated_ = false;
 }

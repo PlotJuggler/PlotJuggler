@@ -118,6 +118,11 @@ class MeshMapReconstructor {
   [[nodiscard]] PJ::Timestamp appliedUntil() const {
     return applied_until_;
   }
+  /// Updates stamped at or before this never apply to the current map: they
+  /// predate it.
+  [[nodiscard]] PJ::Timestamp appliedFrom() const {
+    return applied_from_;
+  }
   /// Sink::wants() outside a replay, for a caller examining entries itself.
   [[nodiscard]] bool wants(uint64_t stream, uint64_t identity) const;
   /// True when `update` would apply to the current map. An entry of a
@@ -145,6 +150,7 @@ class MeshMapReconstructor {
   std::vector<StreamState> streams_;
   std::optional<MeshMapState> state_;
   uint64_t base_identity_ = 0;
+  PJ::Timestamp applied_from_ = 0;
   PJ::Timestamp applied_until_ = 0;
   bool invalidated_ = false;
 };
