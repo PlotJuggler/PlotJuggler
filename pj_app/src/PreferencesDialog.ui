@@ -388,6 +388,9 @@
          </item>
          <item row="5" column="0">
           <widget class="QLabel" name="labelCustomTitleBar">
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
            <property name="toolTip">
             <string>Remove the system window frame and draw PlotJuggler's own title bar instead. Takes effect the next time PlotJuggler starts.</string>
            </property>
@@ -448,6 +451,9 @@
          </item>
          <item row="8" column="0">
           <widget class="QLabel" name="labelCheckUpdates">
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
            <property name="toolTip">
             <string>On startup, quietly check GitHub for a newer PlotJuggler release and show a notification if one is available.</string>
            </property>
@@ -468,6 +474,9 @@
          </item>
          <item row="9" column="0">
           <widget class="QLabel" name="labelTelemetry">
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
            <property name="toolTip">
             <string>On startup, send one anonymous ping to count daily users: a hashed machine id, OS name and version, CPU architecture, app version, and package type. Never any personal data, file names, paths, or usage behavior.</string>
            </property>
@@ -488,6 +497,9 @@
          </item>
          <item row="10" column="0">
           <widget class="QLabel" name="labelSystemFileDialog">
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
            <property name="toolTip">
             <string>Open and save files with the system's own file dialog instead of PlotJuggler's (Save Layout keeps PlotJuggler's). It does not stall on disconnected network drives, but does not follow the app's theme.</string>
            </property>
