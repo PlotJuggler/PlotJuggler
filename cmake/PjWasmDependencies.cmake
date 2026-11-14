@@ -27,6 +27,12 @@ option(PJ_WASM_WITH_DATA_TAMER "Build the official DataTamer message parser into
 option(PJ_WASM_WITH_INFLUX "Build the official InfluxDB line-protocol parser into the wasm app" ON)
 option(PJ_WASM_WITH_NAVMAP "Build the official NavMap message parser into the wasm app" ON)
 option(PJ_WASM_WITH_ULOG "Build the official PX4 ULog importer into the wasm app" ON)
+option(PJ_WASM_WITH_CANDUMP "Build the official candump (SocketCAN log) importer into the wasm app" ON)
+option(PJ_WASM_WITH_BLF "Build the official Vector BLF importer into the wasm app" ON)
+option(PJ_WASM_WITH_MF4 "Build the official ASAM MDF4 importer into the wasm app" ON)
+option(PJ_WASM_WITH_ARROW_PARSER "Build the official Arrow IPC message parser into the wasm app" ON)
+option(PJ_WASM_WITH_PARQUET "Build the official Parquet importer into the wasm app" ON)
+option(PJ_WASM_WITH_DATA_EXPORTER "Build the official Data Exporter toolbox (CSV and Parquet) into the wasm app" ON)
 option(PJ_WASM_WITH_3D_LOADER "Build the official PCD/PLY point-cloud and mesh importer into the wasm app" ON)
 option(PJ_WASM_WITH_QUATERNION "Build the official Quaternion toolbox into the wasm app" ON)
 option(PJ_WASM_WITH_FFT "Build the official FFT toolbox into the wasm app" ON)
@@ -127,13 +133,14 @@ if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PRO
    PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_JSON OR
    PJ_WASM_WITH_DATA_TAMER OR PJ_WASM_WITH_3D_LOADER OR PJ_WASM_WITH_QUATERNION OR
    PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR OR PJ_WASM_WITH_LOG_WIDGET OR
-   PJ_WASM_WITH_INFLUX OR PJ_WASM_WITH_NAVMAP OR PJ_WASM_WITH_ULOG)
+   PJ_WASM_WITH_INFLUX OR PJ_WASM_WITH_NAVMAP OR PJ_WASM_WITH_ULOG OR PJ_WASM_WITH_CANDUMP OR PJ_WASM_WITH_BLF OR
+   PJ_WASM_WITH_MF4 OR PJ_WASM_WITH_ARROW_PARSER OR PJ_WASM_WITH_PARQUET OR PJ_WASM_WITH_DATA_EXPORTER)
     # Source-only population shared by the narrowly-scoped static plugin
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.
     FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/80b447ef9dad78f5fa26c8aa20ada0a8cff0f416
-        URL_HASH SHA256=82a5a757c4ef65ae045b863b246538e8c2457a8977b5719fd17ca7ad0d4d0a56
+        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/6aed8bb299cfb0dcfcfb9a188f218ca0f1a247da
+        URL_HASH SHA256=0db52576ca9b06faa32032f4e78231d770ac01264634048f693b9c458a0b9847
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists)
     FetchContent_MakeAvailable(pj_official_plugins)
@@ -200,6 +207,61 @@ if(PJ_WASM_WITH_ULOG)
     set_target_properties(ulog_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
+if(PJ_WASM_WITH_CANDUMP OR PJ_WASM_WITH_BLF OR PJ_WASM_WITH_MF4)
+    # The CAN loaders' shared DBC decoder (common/can_dbc) builds dbc_parser_cpp
+    # at the plugins' pin; the plugins' own function applies their fixes to it.
+    FetchContent_Declare(dbc_parser_cpp
+        URL https://github.com/LinuxDevon/dbc_parser_cpp/archive/2c8acdbd2d1ea33545f99f9a0d23e10b7f8e0852.tar.gz
+        URL_HASH SHA256=91e12166d83c56f1ff945f6c94f14a7fe80e105219111f984645614ef8e09c57
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR _pj_source_only_no_cmakelists)
+    # dbc_parser_cpp is compiled against the plugins' fast_float pin (header-only),
+    # not the app's newer fast_float, so it parses exactly as the shipped plugins.
+    FetchContent_Declare(dbc_fast_float
+        URL https://github.com/fastfloat/fast_float/archive/1ea4f27b2aeee2859a1354a3c24cff52a116cad1.tar.gz
+        URL_HASH SHA256=06f860e3adb994b9c8523bb53a76a335c4182e27fe5a077246146d283efdc9da
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR _pj_source_only_no_cmakelists)
+    FetchContent_MakeAvailable(dbc_parser_cpp dbc_fast_float)
+endif()
+
+if(PJ_WASM_WITH_BLF)
+    # data_load_blf's pinned BLF reader, hardened by the plugin's own function.
+    FetchContent_Declare(lblf
+        URL https://github.com/PetStr/lblf/archive/a453f188f67637a75e470c272cc76b475080f778.tar.gz
+        URL_HASH SHA256=1ed25162dcab2316d7d8b896ac6d85f9d2f97ca2bfdf40b32165c0e4405046ff
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR _pj_source_only_no_cmakelists)
+    FetchContent_MakeAvailable(lblf)
+endif()
+
+if(PJ_WASM_WITH_MF4)
+    # data_load_mf4's pinned MDF reader and the XML parser it needs (the
+    # plugins' Conan version). Only the expat library is built.
+    FetchContent_Declare(mdflib
+        URL https://github.com/ihedvall/mdflib/archive/5ad85af2c943a1ab810d0768d3873246a3920ebf.tar.gz
+        URL_HASH SHA256=700e11196d570cb480cddc0258d7a1e74adc0562f2d2dfb3ee60f124f79c8cd4
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR _pj_source_only_no_cmakelists)
+    set(EXPAT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(EXPAT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(EXPAT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(EXPAT_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(EXPAT_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
+    set(EXPAT_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+    set(EXPAT_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(EXPAT_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(expat
+        URL https://github.com/libexpat/libexpat/releases/download/R_2_10_0/expat-2.10.0.tar.gz
+        URL_HASH SHA256=5466a341f9c692ef7a958a6881311be597f8e1ce345984cf78414f54793dea4c
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SYSTEM)
+    FetchContent_MakeAvailable(mdflib expat)
+    if(NOT TARGET EXPAT::EXPAT)
+        add_library(EXPAT::EXPAT ALIAS expat)
+    endif()
+endif()
+
 if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)
     # Header-only DataTamer schema/snapshot parser: parser_ros embeds it for its
     # DataTamer specialization, parser_data_tamer is built on it.
@@ -212,10 +274,17 @@ if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)
     FetchContent_MakeAvailable(data_tamer)
 endif()
 
-if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS))
+set(PJ_WASM_WITH_ARROW OFF)
+if(PJ_WASM_WITH_ARROW_PARSER OR PJ_WASM_WITH_PARQUET OR PJ_WASM_WITH_DATA_EXPORTER)
+    set(PJ_WASM_WITH_ARROW ON)
+endif()
+
+if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS) OR
+   PJ_WASM_WITH_ARROW)
     # Match the native Conan graph exactly. MCAP uses these libraries for chunk
-    # decompression, the PlotJuggler Bridge zstd for its data frames, and
-    # Cloudini the same pinned static targets for its second compression stage.
+    # decompression, the PlotJuggler Bridge zstd for its data frames, Arrow both
+    # for its Parquet/IPC codecs, and Cloudini the same pinned static targets for
+    # its second compression stage.
     # Populate them once when any of these browser features needs them.
     set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
     set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
@@ -263,6 +332,10 @@ endif()
 
 if(PJ_WASM_WITH_SCENE3D)
     include(${CMAKE_CURRENT_LIST_DIR}/PjWasmScene3DDependencies.cmake)
+endif()
+
+if(PJ_WASM_WITH_ARROW)
+    include(${CMAKE_CURRENT_LIST_DIR}/PjWasmArrowDependencies.cmake)
 endif()
 
 if(PJ_WASM_WITH_LUAU)

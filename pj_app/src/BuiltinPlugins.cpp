@@ -91,6 +91,35 @@ extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_ULogSourc
 extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_ULogParamsDialog() noexcept;
 #endif
 
+#ifdef PJ_WASM_WITH_CANDUMP_PLUGIN
+extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_CandumpSource() noexcept;
+extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_CandumpDialog() noexcept;
+#endif
+
+#ifdef PJ_WASM_WITH_BLF_PLUGIN
+extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_BlfSource() noexcept;
+extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_BlfDialog() noexcept;
+#endif
+
+#ifdef PJ_WASM_WITH_MF4_PLUGIN
+extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_Mf4Source() noexcept;
+extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_Mf4Dialog() noexcept;
+#endif
+
+#ifdef PJ_WASM_WITH_ARROW_PARSER_PLUGIN
+extern const PJ_message_parser_vtable_t* pj_static_get_message_parser_vtable_ArrowParser() noexcept;
+#endif
+
+#ifdef PJ_WASM_WITH_PARQUET_PLUGIN
+extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_ParquetSource() noexcept;
+extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_ParquetDialog() noexcept;
+#endif
+
+#ifdef PJ_WASM_WITH_DATA_EXPORTER_PLUGIN
+extern const PJ_toolbox_vtable_t* pj_static_get_toolbox_vtable_DataExporterToolbox() noexcept;
+extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_DataExporterDialog() noexcept;
+#endif
+
 namespace pj_app {
 
 PJ::StaticPluginSet builtInPlugins() {
@@ -162,6 +191,29 @@ PJ::StaticPluginSet builtInPlugins() {
 #ifdef PJ_WASM_WITH_ULOG_PLUGIN
   plugins.data_sources.emplace_back(
       pj_static_get_data_source_vtable_ULogSource(), pj_static_get_dialog_vtable_ULogParamsDialog());
+#endif
+#ifdef PJ_WASM_WITH_CANDUMP_PLUGIN
+  plugins.data_sources.emplace_back(
+      pj_static_get_data_source_vtable_CandumpSource(), pj_static_get_dialog_vtable_CandumpDialog());
+#endif
+#ifdef PJ_WASM_WITH_BLF_PLUGIN
+  plugins.data_sources.emplace_back(
+      pj_static_get_data_source_vtable_BlfSource(), pj_static_get_dialog_vtable_BlfDialog());
+#endif
+#ifdef PJ_WASM_WITH_MF4_PLUGIN
+  plugins.data_sources.emplace_back(
+      pj_static_get_data_source_vtable_Mf4Source(), pj_static_get_dialog_vtable_Mf4Dialog());
+#endif
+#ifdef PJ_WASM_WITH_ARROW_PARSER_PLUGIN
+  plugins.message_parsers.emplace_back(pj_static_get_message_parser_vtable_ArrowParser());
+#endif
+#ifdef PJ_WASM_WITH_PARQUET_PLUGIN
+  plugins.data_sources.emplace_back(
+      pj_static_get_data_source_vtable_ParquetSource(), pj_static_get_dialog_vtable_ParquetDialog());
+#endif
+#ifdef PJ_WASM_WITH_DATA_EXPORTER_PLUGIN
+  plugins.toolboxes.emplace_back(
+      pj_static_get_toolbox_vtable_DataExporterToolbox(), pj_static_get_dialog_vtable_DataExporterDialog());
 #endif
   return plugins;
 }

@@ -683,9 +683,16 @@ test('official ULog loader imports a browser-selected log', async ({ page }) => 
   await page.waitForTimeout(1500);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
 
-  await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
-    { timeout: 30000 },
-  ).toContain('series_samples=sensor/value:3@1000000000..3000000000=1.5..4.5');
+  // The load ends in PJ_FILE_LOAD_OK or PJ_FILE_LOAD_REJECTED; a failure shows the loader's log.
+  const outcome = () => consoleMessages.find(
+    message => message.includes('PJ_FILE_LOAD_OK') || message.includes('PJ_FILE_LOAD_REJECTED'),
+  ) || '';
+  try {
+    await expect.poll(outcome, { timeout: 30000 }).not.toBe('');
+  } catch (error) {
+    const log = consoleMessages.filter(message => message.includes('pj.')).slice(-20).join('\n');
+    throw new Error(`${error.message}\nLast app log lines:\n${log}`);
+  }
+  expect(outcome()).toContain('series_samples=sensor/value:3@1000000000..3000000000=1.5..4.5');
   expect(errors).toEqual([]);
 });

@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "DialogWatch.h"
 #include "pj_plugins/dialog_protocol.h"
@@ -43,6 +44,9 @@ enum class Outcome { kNoDialog, kAccepted, kRejected, kPluginContractViolation }
 struct AcceptedPayload {
   std::string saved_config;
   std::string parser_config;
+  // Owners of the staged copies of files picked in the dialog (browser builds
+  // only; empty on desktop). Keep them until the plugin no longer reads them.
+  std::vector<std::shared_ptr<void>> selected_files = {};
 };
 
 // Result of a data-source dialog. payload is engaged iff outcome == kAccepted;

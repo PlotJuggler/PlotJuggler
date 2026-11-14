@@ -11,6 +11,7 @@
 #include <optional>
 #include <pj_plugins/host/dialog_handle.hpp>
 #include <string>
+#include <vector>
 
 QT_BEGIN_NAMESPACE
 class QDialog;
@@ -125,6 +126,13 @@ class DialogEngine {
   /// Only valid after showDialog() returns kAccepted.
   [[nodiscard]] std::string parserConfig() const;
 
+  /// Hand over the staged copies of the files picked in an accepted dialog
+  /// (browser builds stage each pick into MEMFS). A plugin that reads those
+  /// paths after the dialog, e.g. a DBC opened during import, needs them until
+  /// it is done: the caller keeps the returned owners for that long. Empty after
+  /// a rejected dialog and after the first call.
+  [[nodiscard]] std::vector<std::shared_ptr<void>> takeSelectedFiles();
+
   /// Stats from the last showDialog() call.
   struct Stats {
     int tick_count = 0;
@@ -146,7 +154,8 @@ class DialogEngine {
   PJ::DialogHandle handle_;
   DialogEngineConfig config_;
   Stats stats_;
-  std::string parser_config_;  // Saved parser config (populated on accept)
+  std::string parser_config_;                          // Saved parser config (populated on accept)
+  std::vector<std::shared_ptr<void>> selected_files_;  // Staged picks of the accepted dialog
   bool dialog_open_ = false;
   // The QDialog currently driven by openDialog(); cancelActiveDialog() rejects
   // through it. Cleared when the dialog completes.

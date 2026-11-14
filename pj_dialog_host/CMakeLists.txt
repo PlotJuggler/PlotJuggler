@@ -23,6 +23,8 @@ add_library(pj_dialog_engine_qt STATIC
     src/widget_adapters.cpp
     src/dialog_engine.cpp
     src/panel_engine.cpp
+    src/browser_save_target.cpp
+    src/browser_save_target.hpp
     src/pj_ui_loader.cpp
     src/chart_preview_widget.cpp
     src/chart_placeholder_overlay.hpp
@@ -74,6 +76,7 @@ if(PJ_BUILD_TESTS)
             tests/widget_binding_test.cpp
             tests/combo_rules_test.cpp
             tests/chart_preview_widget_test.cpp
+            tests/browser_save_target_test.cpp
         LIBS pj_dialog_engine_qt plotjuggler_sdk::plugin_sdk Qt6::Test
     )
     set_target_properties(pj_dialog_host_tests PROPERTIES AUTOMOC ON)

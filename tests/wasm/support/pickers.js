@@ -91,4 +91,4 @@ async function openSourceReplayChooser(page, screen, geometry, consoleMessages) 
 }
 
 
-module.exports = { openFileChooser, openLayoutChooser, openRobotChooser, openSourceReplayChooser };
+module.exports = { openFileChooser, openLayoutChooser, openRobotChooser, openSourceReplayChooser, retryChooser };

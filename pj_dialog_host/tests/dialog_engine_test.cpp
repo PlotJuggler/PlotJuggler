@@ -946,7 +946,40 @@ TEST_F(DialogEngineTest, AsyncFileSelectorStagesOneRequestAndRetainsLeaseUntilCo
 
   dialog->accept();
   EXPECT_EQ(nlohmann::json::parse(engine.savedConfig())["path"], "/staged/schema.proto");
-  EXPECT_TRUE(weak_lease.expired()) << "the staging lease should be released after dialog completion";
+  // An accepted dialog hands its picks to the caller: a plugin may read them
+  // after the dialog (a DBC during import), so they live until the caller lets go.
+  EXPECT_FALSE(weak_lease.expired()) << "an accepted pick must outlive the dialog";
+  auto selected_files = engine.takeSelectedFiles();
+  EXPECT_EQ(selected_files.size(), 1U);
+  EXPECT_TRUE(engine.takeSelectedFiles().empty()) << "the picks are handed over once";
+  selected_files.clear();
+  EXPECT_TRUE(weak_lease.expired()) << "the staging lease should be released once the caller drops it";
+}
+
+TEST_F(DialogEngineTest, ARejectedDialogReleasesItsPicks) {
+  PJ::DialogFileSelectionCompletion picker_completion;
+  PJ::DialogEngineConfig config;
+  config.file_selector = [&](QWidget*, const std::string&, const std::string&,
+                             PJ::DialogFileSelectionCompletion completion) {
+    picker_completion = std::move(completion);
+  };
+  PJ::DialogEngine engine{PJ::DialogHandle(filePickerDialogVtable()), std::move(config)};
+  engine.openDialog(nullptr, [](PJ::DialogResult) {});
+
+  QDialog* dialog = visibleDialog();
+  ASSERT_NE(dialog, nullptr);
+  auto* pick = dialog->findChild<QPushButton*>(QStringLiteral("pick_file"));
+  ASSERT_NE(pick, nullptr);
+  pick->click();
+  ASSERT_TRUE(picker_completion);
+  auto lease = std::make_shared<int>(5);
+  std::weak_ptr<int> weak_lease = lease;
+  picker_completion(PJ::DialogSelectedFile{.backing_path = "/staged/rejected.proto", .lease = lease});
+  lease.reset();
+
+  dialog->reject();
+  EXPECT_TRUE(weak_lease.expired()) << "a rejected dialog keeps no pick";
+  EXPECT_TRUE(engine.takeSelectedFiles().empty());
 }
 
 // A std::nullopt completion (user cancelled the browser picker) must re-arm the
@@ -1113,8 +1146,9 @@ TEST_F(DialogEngineTest, AsyncFileSelectorReSelectionReplacesLease) {
   EXPECT_FALSE(weak_second.expired()) << "the current selection's lease must stay alive until dialog close";
 
   dialog->accept();
-  EXPECT_TRUE(weak_second.expired()) << "the retained lease should release after dialog completion";
   EXPECT_EQ(nlohmann::json::parse(engine.savedConfig())["path"], "/staged/second.proto");
+  EXPECT_EQ(engine.takeSelectedFiles().size(), 1U) << "only the current pick is handed over";
+  EXPECT_TRUE(weak_second.expired()) << "the retained lease should release once the caller drops it";
 }
 
 // A top-level dialog's own file picker and its injected parser sub-dialog's

@@ -30,6 +30,7 @@
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <utility>
 
+#include "browser_save_target.hpp"
 #include "host_info.hpp"
 using namespace Qt::StringLiterals;
 
@@ -527,6 +528,15 @@ QWidget* PanelEngine::openPanel() {
         forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
       }
     } else if (picker_view.isSaveFilePicker(name)) {
+#ifdef Q_OS_WASM
+      // No path to pick in a browser: the plugin writes into a scratch folder,
+      // whose files become downloads (see BrowserSaveTarget).
+      const BrowserSaveTarget target(browserSaveName(filePickerStart(picker_view, name)));
+      if (target.isValid()) {
+        forward(name, PJ::WidgetEventBuilder::fileSelected(target.path().toStdString()));
+        target.offerDownloads();
+      }
+#else
       const FilePickerStart start = filePickerStart(picker_view, name);
       const QString path = PJ::FileDialog::getSaveFileName(
           impl_->root, QString::fromStdString(picker_view.filePickerTitle(name).value_or("Save File")), start.dir,
@@ -535,13 +545,22 @@ QWidget* PanelEngine::openPanel() {
       if (!path.isEmpty()) {
         forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
       }
+#endif
     } else if (picker_view.isFolderPicker(name)) {
+#ifdef Q_OS_WASM
+      const BrowserSaveTarget target;
+      if (target.isValid()) {
+        forward(name, PJ::WidgetEventBuilder::folderSelected(target.path().toStdString()));
+        target.offerDownloads();
+      }
+#else
       const QString path = PJ::FileDialog::getExistingDirectory(
           impl_->root, QString::fromStdString(picker_view.folderPickerTitle(name).value_or("Select Folder")),
           filePickerStart(picker_view, name).dir);
       if (!path.isEmpty()) {
         forward(name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()));
       }
+#endif
     }
   });
 
