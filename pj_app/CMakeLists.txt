@@ -1075,6 +1075,15 @@ if(PJ_BUILD_TESTS)
     # preset_controller_test serves canned responses with pj_runtime's loopback test server.
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
     target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_custom_widgets/tests)
+    # The MCP UI tools again at scale 2: the input they queue must land on the same widgets at
+    # native pixels as at logical ones.
+    if(NOT EMSCRIPTEN)
+        gtest_discover_tests(pj_app_gui_tests
+            TEST_PREFIX "pj_app_gui_tests.dpr2."
+            TEST_FILTER "McpServerTest.UiTools*"
+            DISCOVERY_MODE PRE_TEST
+            PROPERTIES TIMEOUT 120 RESOURCE_LOCK pj_app_gui_tests ENVIRONMENT_MODIFICATION "QT_SCALE_FACTOR=set:2")
+    endif()
 
     # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,
     # floating-window close and DPR changes, plus the mixed-API negative case.

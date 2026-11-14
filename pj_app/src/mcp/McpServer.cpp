@@ -437,15 +437,7 @@ void McpServer::dispatch(
       }
       result(*lifecycle);
     } else if (message.method == "tools/list") {
-      json tools = mcp::toolList(tool_set);
-#ifndef PJ_TARGET_WASM
-      if (tool_set == mcp::ToolSet::kFull && mcp::uiToolsEnabled()) {
-        for (json& entry : mcp::uiToolEntries()) {
-          tools.push_back(std::move(entry));
-        }
-      }
-#endif
-      result({{"tools", std::move(tools)}});
+      result({{"tools", mcp::toolList(tool_set)}});
     } else if (mcp::isTasksMethod(message.method)) {
       send(taskRequest(message, caller));
     } else if (message.method == "tools/call") {
@@ -500,21 +492,6 @@ json McpServer::userDialogOpen(const QWidget& modal) {
 void McpServer::callTool(const std::string& name, const json& args, const Caller& caller, Reply reply) {
   quint64 job = 0;  // the job this call became, which then owns its reply
   try {
-#ifndef PJ_TARGET_WASM
-    // The UI tools act as the user, so the user's dialogs do not hold them back: closing one is their job.
-    if (mcp::isUiTool(name)) {
-      if (!isPublic(caller) || !mcp::uiToolsEnabled()) {
-        reply(mcp::textResult("unknown tool " + name, true));
-        return;
-      }
-      json result = ui_driver_.call(name, args);
-      // The input is queued: answer once the app had time to handle it, from the event loop, which
-      // also runs inside a modal dialog the input opened.
-      QTimer::singleShot(
-          mcp::UiDriver::settleMs(name, args), this, [reply, result = std::move(result)] { reply(result); });
-      return;
-    }
-#endif
     // A modal dialog belongs to the user: acting under it would change state they are editing. Stopping
     // an agent's own work does not.
     const QWidget* modal = QApplication::activeModalWidget();
@@ -530,6 +507,22 @@ void McpServer::callTool(const std::string& name, const json& args, const Caller
       (this->*tool->second)(args, caller, reply);
       return;
     }
+#ifndef PJ_TARGET_WASM
+    if (mcp::isUiTool(name) && isPublic(caller) && mcp::uiToolsEnabled()) {
+      const int settle = mcp::uiSettleMs(name, args);
+      json result = ui_driver_.call(name, args);
+      // The input is queued: answer once the app had time to handle it, from the event loop, which
+      // also runs inside a modal dialog the input opened.
+      if (settle > 0) {
+        QTimer::singleShot(settle, this, [reply = std::move(reply), result = std::move(result)]() mutable {
+          reply(std::move(result));
+        });
+      } else {
+        reply(std::move(result));
+      }
+      return;
+    }
+#endif
     const bool agent_tool = mcp::agentTools().find(name) != nullptr;
     const auto app_tool = !agent_tool && isPublic(caller) ? appTools().find(name) : appTools().end();
     if (!agent_tool && app_tool == appTools().end()) {

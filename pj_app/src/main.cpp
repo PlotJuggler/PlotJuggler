@@ -56,7 +56,6 @@
 #include "WidgetTuner.h"
 #ifndef PJ_TARGET_WASM
 #include "mcp/McpProtocol.h"
-#include "mcp/McpUiTools.h"
 #endif
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/processor_detail.hpp"

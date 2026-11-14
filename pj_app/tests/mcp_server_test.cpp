@@ -53,7 +53,6 @@
 #include "mcp/McpBrowserLink.h"
 #include "mcp/McpProtocol.h"
 #include "mcp/McpServer.h"
-#include "mcp/McpUiTools.h"
 #include "pj_base/sdk/data_source_plugin_base.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
@@ -497,6 +496,51 @@ TEST_F(McpServerTest, UiToolsClickTheUsersDialogOnlyWhenTheRunAskedForThem) {
   EXPECT_NE(clicked.first.find("\"OK\""), std::string::npos) << clicked.first;
   EXPECT_TRUE(closed_by_click);
   EXPECT_TRUE(result(call("ui_click", {{"ref", "w999999"}})).second);
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
+TEST_F(McpServerTest, UiToolsAnswerAClickThatOpensAModalDialogWhileItIsOpen) {
+  PJ::mcp::setUiToolsEnabled(true);
+  window_->show();
+  QPushButton opener(QStringLiteral("Open"));
+  opener.setObjectName(QStringLiteral("uiToolsOpener"));
+  QObject::connect(&opener, &QPushButton::clicked, window_.get(), [this] {
+    PJ::MessageBox::questionAsync(
+        window_.get(), QStringLiteral("Hold on"), QStringLiteral("Opened by a click."),
+        {{QStringLiteral("OK"), PJ::MessageBox::kPrimaryRole}}, {});
+  });
+  opener.show();
+
+  const std::unique_ptr<QTcpSocket> click = post("ui_click", {{"name", "uiToolsOpener"}});
+  bool answered_while_open = false;
+  std::pair<std::string, bool> escaped{"", true};
+  bool closed_by_key = false;
+  bool busy = false;
+  // The dialog's modal loop runs inside the click's delivery: the checks go from a timer inside it.
+  QTimer probe;
+  QObject::connect(&probe, &QTimer::timeout, [&] {
+    if (busy || visible<PJ::MessageBox>().empty()) {
+      return;
+    }
+    busy = true;
+    answered_while_open = pumpUntil([&] { return click->bytesAvailable() > 0; }, 5000);
+    escaped = result(call("ui_key", {{"keys", "Escape"}}));
+    closed_by_key = pumpUntil([] { return visible<PJ::MessageBox>().empty(); }, 5000);
+    for (PJ::MessageBox* box : visible<PJ::MessageBox>()) {
+      box->reject();  // never leave the test inside the dialog's loop
+    }
+  });
+  probe.start(50);
+  const Answer clicked = exchange(*click);
+  ASSERT_TRUE(pumpUntil([&] { return busy && visible<PJ::MessageBox>().empty(); }));
+
+  const auto [click_text, click_error] = result(clicked);
+  ASSERT_FALSE(click_error) << click_text;
+  EXPECT_NE(click_text.find("uiToolsOpener"), std::string::npos) << click_text;
+  EXPECT_TRUE(answered_while_open) << "the click's answer waited for the dialog it opened to close";
+  // With no target, keys go to the user's modal dialog.
+  EXPECT_FALSE(escaped.second) << escaped.first;
+  EXPECT_TRUE(closed_by_key);
   PJ::mcp::setUiToolsEnabled(false);
 }
 

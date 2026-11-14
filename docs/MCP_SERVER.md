@@ -428,19 +428,33 @@ run turns them on with `--mcp-ui-tools` (which implies `--mcp`), never a setting
 Desktop only: the browser build has no command line to ask for them, so it does not compile them.
 
 - `ui_tree` prints the visible windows as one indented line per widget, `[ref] Class#objectName "text" (flags) WxH`,
-  the open popup and the modal dialog first; a window the modal dialog blocks gets one line. Unnamed, textless Qt containers are left out and their children listed
-  in their place. Menu actions, tabs and the rows visible in item views are items with refs of their own. A ref
-  stays valid while its object lives (a `QPointer` or `QPersistentModelIndex` in `UiDriver`); the other tools also
-  take a widget's `objectName`, which is stable (root `CLAUDE.md`) and so suits a repro script.
+  the open popup and the modal dialog first; a window a modal dialog blocks (as Qt decides it) gets one line, and a
+  target in it is refused, since the window system would drop its input. Unnamed, textless Qt
+  containers are left out and their children listed in their place. Menu actions, tabs and the rows visible in item
+  views are items with refs of their own. Refs are the latest `ui_tree`'s: each call starts a new table and the
+  numbering goes on, so an older ref reads as stale rather than naming another widget. A row ref holds a
+  `QPersistentModelIndex` until the next `ui_tree`; a tab ref holds its index and text, and reads as stale once
+  another tab sits there. The other tools also take a widget's `objectName`, which is stable (root `CLAUDE.md`) and so
+  suits a repro script; a name several visible widgets share is refused rather than resolved to whichever a search
+  finds first.
 - Input goes through `QWindowSystemInterface`, the path a real mouse and keyboard take, so popups, implicit grabs,
-  focus on click, shortcuts and double-click synthesis behave as for a user. It is queued (`AsynchronousDelivery`):
-  a click that opens a modal dialog does not block its call inside the dialog's `exec()`. The server answers after
-  `wait_ms` (`UiDriver::settleMs`), from a timer, which also fires inside such a dialog's loop.
-- They act as the user, so they run under the user's modal dialogs (closing one is often the point).
+  focus on click, shortcuts and double-click synthesis behave as for a user. Points are scaled to native pixels, as a
+  platform plugin reports them. It is queued (`AsynchronousDelivery`), and what has no queued form (the wheel,
+  focusing and activating before keys) is deferred to the event loop: a click that opens a modal dialog, or a
+  focus change whose handler opens one, does not block its call inside the dialog's `exec()`. The server answers
+  after `wait_ms` (`mcp::uiSettleMs`, read before the input is queued so a bad value cannot fail a call that already
+  acted), from a timer, which also fires inside such a dialog's loop. Each call's mouse input is stamped at least a
+  double-click interval after the previous call's, so two calls on one spot never make a double-click.
+- They act as the user, so they run under the user's modal dialogs (closing one is often the point):
+  `mcp::runsUnderUsersDialog` says so, and `ui_tree` is one of `mcp::isReadOnlyTool`'s. Their list entries and
+  that classification live in `McpProtocol`, with the others; `McpUiTools` holds only the driver.
 - Limits: drag-and-drop between widgets enters the platform drag loop, which synthetic input may not finish. Keys go
   to the target's window after activating it, since window shortcuts need the active window: run QA sessions in a
   virtual display (`xvfb-run`, or `QT_QPA_PLATFORM=offscreen`), not on the user's desktop. On macOS the platform
-  delivers shortcuts outside `QWindowSystemInterface::handleKeyEvent`, so `ui_key` shortcuts are untested there.
+  plugin, not `QWindowSystemInterface::handleKeyEvent`, delivers shortcuts, so `ui_key` shortcuts are not expected to
+  fire there although the reply says the keys were pressed (not tried on a Mac). `ui_type` presses its keys into the
+  window chosen when the call came in: text after a `\n` that closes that window goes nowhere, so split it into two
+  calls.
 
 ## The user comes first
 
@@ -493,7 +507,9 @@ Desktop only: the browser build has no command line to ask for them, so it does 
     on a repeated acquire. Also a session torn down from inside another's resume, and a revoked token's follow-up.
   - Revocation of public access before or under an agent's queued dialog: nothing is applied.
   - `UiToolsClick…`: the UI tools are hidden and refused unless the run asked for them; once on, `ui_tree` lists the
-    user's modal dialog first and `ui_click` closes it through the window system.
+    user's modal dialog first and `ui_click` closes it through the window system. `UiToolsAnswer…`: a click that opens
+    a modal dialog is answered while it is open, and `ui_key` Escape closes it. Both run again at
+    `QT_SCALE_FACTOR=2` (`pj_app_gui_tests.dpr2.*`), where unscaled input would miss its widget.
   - `ARelayedCall…`, `ALinkForgotten…`, `OnlyALoopbackHttpRelay…`: the browser link against a fake relay.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
   test answers by hand (a cancellation forwarded while its call is in flight).
