@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "pj_datastore/saturating_time.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_plugins/sdk/widget_plugin_base.hpp"
+#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/ServiceRegistration.h"
 #include "pj_runtime/WidgetValue.h"
 
@@ -35,10 +38,61 @@ Timestamp toRawSaturating(double seconds, DisplayOffset offset) {
   return saturatingAdd(*display_ns, offset.value.count());
 }
 
-/// Samples one call may deliver: `max_samples`, 0 meaning the default, never above the hard cap.
+/// The first stored instant whose delivered time (rawToDisplaySecondsAtOrAfter) is `seconds` or later; nullopt
+/// when even the last instant is delivered before it. A widget queries back with the times it was handed, so a
+/// range is cut where those times change, not at the instant nearest the bound: near 1.7e9 s a double steps
+/// ~238 ns, and near 0 many doubles share a nanosecond.
+std::optional<Timestamp> firstDeliveredAtOrAfter(double seconds, DisplayOffset offset) {
+  constexpr Timestamp kMax = std::numeric_limits<Timestamp>::max();
+  constexpr Timestamp kMin = std::numeric_limits<Timestamp>::min();
+  const auto delivered = [offset](Timestamp raw) { return rawToDisplaySecondsAtOrAfter(raw, offset).value; };
+  const Timestamp nearest = toRawSaturating(seconds, offset);
+  if (nearest == kMax && delivered(kMax) < seconds) {
+    return std::nullopt;  // saturated: no instant is that late
+  }
+  if (!(std::abs(seconds) < 9e9)) {
+    return nearest;  // past every representable instant: the range is everything or nothing
+  }
+  // A delivered time is within a few double steps of the nearest one: bisect over that window.
+  const double step = std::nextafter(std::abs(seconds), std::numeric_limits<double>::infinity()) - std::abs(seconds);
+  const auto window = static_cast<Timestamp>(std::ceil(8.0 * step * 1e9)) + 8;
+  if (nearest >= kMax - (2 * window) || nearest <= kMin + (2 * window)) {
+    return nearest;
+  }
+  Timestamp before = nearest - window;  // delivered before `seconds`
+  Timestamp at = nearest + window;      // delivered at `seconds` or later
+  if (delivered(before) >= seconds || delivered(at) < seconds) {
+    return nearest;
+  }
+  while (at - before > 1) {
+    const Timestamp mid = before + ((at - before) / 2);
+    (delivered(mid) >= seconds ? at : before) = mid;
+  }
+  return at;
+}
+
+/// The stored instants whose delivered times lie in [from, to], inclusive; empty when min > max.
+Range<Timestamp> deliveredRange(const WidgetHistoryQuery& query, DisplayOffset offset) {
+  constexpr Range<Timestamp> kEmpty{.min = 1, .max = 0};
+  const std::optional<Timestamp> first = firstDeliveredAtOrAfter(query.from, offset);
+  if (!first) {
+    return kEmpty;
+  }
+  // The last instant is the one before the first delivered after `to`; none such means every later instant.
+  const std::optional<Timestamp> past =
+      firstDeliveredAtOrAfter(std::nextafter(query.to, std::numeric_limits<double>::infinity()), offset);
+  if (!past) {
+    return Range<Timestamp>{.min = *first, .max = std::numeric_limits<Timestamp>::max()};
+  }
+  if (*past == std::numeric_limits<Timestamp>::min()) {
+    return kEmpty;
+  }
+  return Range<Timestamp>{.min = *first, .max = *past - 1};
+}
+
+/// Samples one call may deliver: `max_samples`, 0 meaning the default.
 uint32_t effectiveCap(const WidgetHistoryQuery& query) {
-  return query.max_samples == 0 ? WidgetRuntimeHost::kDefaultMaxSamples
-                                : std::min(query.max_samples, WidgetRuntimeHost::kMaxSamplesLimit);
+  return query.max_samples == 0 ? WidgetRuntimeHost::kDefaultMaxSamples : query.max_samples;
 }
 
 /// The range count reported as `out_total`: saturated, the ABI field is 32-bit.
@@ -65,10 +119,15 @@ class Decimator {
     return true;
   }
 
+  /// Index of the `j`-th of `cap` samples spread evenly over `total` (first and last included).
+  [[nodiscard]] static std::size_t pick(std::size_t j, std::size_t total, std::size_t cap) {
+    const std::size_t denominator = std::max<std::size_t>(cap - 1, 1);
+    return static_cast<std::size_t>(static_cast<unsigned long long>(j) * (total - 1) / denominator);
+  }
+
  private:
   [[nodiscard]] std::size_t target(std::size_t j) const {
-    const std::size_t denominator = std::max<std::size_t>(cap_ - 1, 1);
-    return static_cast<std::size_t>(static_cast<unsigned long long>(j) * (total_ - 1) / denominator);
+    return pick(j, total_, cap_);
   }
 
   std::size_t total_;
@@ -80,8 +139,9 @@ class Decimator {
 }  // namespace
 
 WidgetRuntimeHost::WidgetRuntimeHost(
-    const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks)
-    : reader_(reader), objects_(objects), resolver_(std::move(resolver)) {
+    const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks,
+    ObjectPayloadEncoder encoder)
+    : reader_(reader), objects_(objects), resolver_(std::move(resolver)), encoder_(std::move(encoder)) {
   bridge_.history = [this](const WidgetHistoryQuery& query, const WidgetValueSink& sink) {
     return history(query, sink);
   };
@@ -122,7 +182,10 @@ Expected<uint32_t> WidgetRuntimeHost::historyNumber(
   if (!series) {
     return unexpected(series.error());
   }
-  const Range<Timestamp> range{toRawSaturating(query.from, target.offset), toRawSaturating(query.to, target.offset)};
+  const Range<Timestamp> range = deliveredRange(query, target.offset);
+  if (range.min > range.max) {
+    return 0U;
+  }
   const auto bounds = series->bounds(range);
   if (!bounds || bounds->sample_count == 0) {
     return 0U;
@@ -137,8 +200,8 @@ Expected<uint32_t> WidgetRuntimeHost::historyNumber(
     }
     const SeriesSample sample = cursor.current();
     PJ_widget_value_t value = baseWidgetValue(
-        query.input, query.slot, PJ_WIDGET_VALUE_NUMBER, rawToDisplaySeconds(sample.timestamp, target.offset).value,
-        wire.label);
+        query.input, query.slot, PJ_WIDGET_VALUE_NUMBER,
+        rawToDisplaySecondsAtOrAfter(sample.timestamp, target.offset).value, wire.label);
     value.number = sample.value;
     if (!sink(value)) {
       break;
@@ -150,8 +213,11 @@ Expected<uint32_t> WidgetRuntimeHost::historyNumber(
 Expected<uint32_t> WidgetRuntimeHost::historyText(
     const WidgetHistoryQuery& query, const ResolvedWire& wire, const WidgetValueSink& sink) const {
   const WireTarget& target = wire.target;
-  const QueryRange range{
-      target.topic_id, toRawSaturating(query.from, target.offset), toRawSaturating(query.to, target.offset)};
+  const Range<Timestamp> delivered = deliveredRange(query, target.offset);
+  if (delivered.min > delivered.max) {
+    return 0U;
+  }
+  const QueryRange range{.topic_id = target.topic_id, .t_min = delivered.min, .t_max = delivered.max};
 
   // A row is a sample only when its cell in this column is a non-null string; the chunks before a
   // mid-stream column addition may not have the column at all.
@@ -186,7 +252,7 @@ Expected<uint32_t> WidgetRuntimeHost::historyText(
     const SampleRow& row = rows[i];
     const std::string_view text = row.chunk->readString(target.column, row.row_index);
     PJ_widget_value_t value = baseWidgetValue(
-        query.input, query.slot, PJ_WIDGET_VALUE_TEXT, rawToDisplaySeconds(row.timestamp, target.offset).value,
+        query.input, query.slot, PJ_WIDGET_VALUE_TEXT, rawToDisplaySecondsAtOrAfter(row.timestamp, target.offset).value,
         wire.label);
     value.text = PJ_string_view_t{text.data(), text.size()};
     if (!sink(value)) {
@@ -199,35 +265,82 @@ Expected<uint32_t> WidgetRuntimeHost::historyText(
 Expected<uint32_t> WidgetRuntimeHost::historyObject(
     const WidgetHistoryQuery& query, const ResolvedWire& wire, const WidgetValueSink& sink) const {
   const WireTarget& target = wire.target;
-  const Timestamp from = toRawSaturating(query.from, target.offset);
-  const Timestamp to = toRawSaturating(query.to, target.offset);
-  // rangeByTime is (lo, hi]; the history range is inclusive on both ends.
-  const Timestamp lo = saturatingSub(from, 1);
-  const auto entries = objects_.rangeByTime(target.object_topic, lo, to);
-  if (entries.empty()) {
+  const Range<Timestamp> delivered = deliveredRange(query, target.offset);
+  if (delivered.min > delivered.max) {
     return 0U;
   }
-  Decimator decimator(entries.size(), effectiveCap(query));
-  for (std::size_t i = 0; i < entries.size(); ++i) {
-    if (!decimator.take(i)) {
-      continue;
+  const Timestamp to = delivered.max;
+  // rangeByTime is (lo, hi]; the history range is inclusive on both ends.
+  const Timestamp lo = saturatingSub(delivered.min, 1);
+
+  // Count and choose the delivered entries by binary search over the sorted timestamps, so a call that
+  // delivers few samples (a widget probing a range with max_samples 1) costs O(log n), not a copy of the
+  // whole window. A chosen entry is named by its timestamp and its rank among the entries sharing it.
+  std::size_t total = 0;
+  std::vector<std::pair<Timestamp, std::size_t>> chosen;
+  {
+    const EntryTimestampsView stamps = objects_.entryTimestamps(target.object_topic);
+    const Timestamp* first = std::upper_bound(stamps.begin(), stamps.end(), lo);
+    const Timestamp* last = std::upper_bound(first, stamps.end(), to);
+    total = static_cast<std::size_t>(last - first);
+    if (total == 0) {
+      return 0U;
     }
-    // Resolved one at a time, outside any store lock: a lazy entry may refetch. An entry evicted
-    // since rangeByTime, or whose fetch failed, has no payload to deliver and is skipped.
-    const auto entry = objects_.at(target.object_topic, entries[i].uid);
-    if (!entry || entry->fetch_failed) {
-      continue;
-    }
-    PJ_widget_value_t value = baseWidgetValue(
-        query.input, query.slot, PJ_WIDGET_VALUE_OBJECT, rawToDisplaySeconds(entry->timestamp, target.offset).value,
-        wire.label);
-    value.bytes = PJ_bytes_view_t{entry->payload.bytes.data(), entry->payload.bytes.size()};
-    value.type_name = PJ_string_view_t{target.object_type_name.data(), target.object_type_name.size()};
-    if (!sink(value)) {
-      break;
+    const std::size_t cap = std::max<std::size_t>(effectiveCap(query), 1);
+    if (total > cap) {
+      chosen.reserve(cap);
+      for (std::size_t j = 0; j < cap; ++j) {
+        const std::size_t index = Decimator::pick(j, total, cap);
+        const Timestamp stamp = first[index];
+        const auto rank = static_cast<std::size_t>(first + index - std::lower_bound(first, first + index, stamp));
+        chosen.emplace_back(stamp, rank);
+      }
     }
   }
-  return saturatedTotal(entries.size());
+
+  // Resolved one at a time, outside any store lock: a lazy entry may refetch. An entry evicted since it was
+  // counted, or whose fetch failed or did not encode, has no payload to deliver and is skipped.
+  const auto deliver = [&](SequentialUID uid) {
+    const auto entry = resolveEncodedObject(objects_, target, uid, encoder_);
+    if (!entry) {
+      return true;
+    }
+    const sdk::PayloadView& payload = entry->payload;
+    PJ_widget_value_t value = baseWidgetValue(
+        query.input, query.slot, PJ_WIDGET_VALUE_OBJECT,
+        rawToDisplaySecondsAtOrAfter(entry->timestamp, target.offset).value, wire.label);
+    value.bytes = PJ_bytes_view_t{payload.bytes.data(), payload.bytes.size()};
+    const std::string_view type_name = sdk::name(target.object_type);
+    value.type_name = PJ_string_view_t{type_name.data(), type_name.size()};
+    return sink(value);
+  };
+
+  if (chosen.empty()) {
+    // A streaming push between the count and this read can grow the window: never deliver more than the
+    // `total` (<= max_samples) that was counted and is returned.
+    const auto entries = objects_.rangeByTime(target.object_topic, lo, to);
+    const std::size_t count = std::min(entries.size(), total);
+    for (std::size_t i = 0; i < count; ++i) {
+      if (!deliver(entries[i].uid)) {
+        break;
+      }
+    }
+  } else {
+    // The picks ascend, so those sharing a stamp are adjacent: its entries are read once, not once per pick
+    // (all entries on one stamp would otherwise cost cap x total).
+    std::optional<Timestamp> read_stamp;
+    std::vector<OrderedEntries::TimeRangeEntry> at_stamp;
+    for (const auto& [stamp, rank] : chosen) {
+      if (read_stamp != stamp) {
+        at_stamp = objects_.rangeByTime(target.object_topic, saturatingSub(stamp, 1), stamp);
+        read_stamp = stamp;
+      }
+      if (rank < at_stamp.size() && !deliver(at_stamp[rank].uid)) {
+        break;
+      }
+    }
+  }
+  return saturatedTotal(total);
 }
 
 }  // namespace PJ

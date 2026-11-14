@@ -983,6 +983,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // construct, and populate. Family routing for v0:
         //   3D-ish (point clouds, transforms, grids, poses)                          → scene3d
         //   2D-ish (kImage/kDepthImage/kImageAnnotations/kSceneEntities/kVideoFrame) → scene2d
+        if (kind.isEmpty() && seed != nullptr && isCustomWidgetObjectType(seed->object_type)) {
+          // No dock family shows it: only a Custom Widget already in the dock takes it, and that drop
+          // never reaches this factory (DockWidget offers it to the mounted widget).
+          showToast(tr("This topic is shown by a Custom Widget. Create one in this panel first."));
+          return nullptr;
+        }
         QString resolved_kind = kind;
         if (resolved_kind.isEmpty() && seed != nullptr) {
           // Classify the dropped object into a scene kind — the single routing
@@ -1696,8 +1702,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
     plugin_plot_tabs_->refreshAvailability();
     syncCustomTopicsEditor();
+    refreshCustomWidgetsAvailability();
   });
   syncCustomTopicsEditor();
+  refreshCustomWidgetsAvailability();
 
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
@@ -2233,6 +2241,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
         &session_->sessionManager(), &session_->catalogModel(), &session_->extensionCatalog(),
         &session_->playbackEngine(), parent);
     widget->setDiagnosticSink(diagnosticSink());
+    setPlaybackTimeMappers(*widget);
     if (custom_widgets_ != nullptr) {
       custom_widgets_->attachDock(*widget);
     }
@@ -4208,8 +4217,12 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
   connect(docker, &PlotDocker::topicRefused, this, [this](const QString& reason) { showToast(reason); });
+  connect(docker, &PlotDocker::dockAdded, this, [this](DockWidget* dock) {
+    dock->setCustomWidgetsAvailable(custom_widgets_available_);
+  });
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
+      dock->setCustomWidgetsAvailable(custom_widgets_available_);
       onPlotAdded(dock->plotWidget());
     }
   }
@@ -4858,6 +4871,13 @@ void MainWindow::forEachCustomWidgetDock(const std::function<void(CustomWidgetDo
   });
 }
 
+void MainWindow::refreshCustomWidgetsAvailability() {
+  const auto& widgets = session_->extensionCatalog().widgets();
+  custom_widgets_available_ =
+      std::ranges::any_of(widgets, [](const LoadedWidget& library) { return !library.widgets.empty(); });
+  forEachDock([this](DockWidget* dock) { dock->setCustomWidgetsAvailable(custom_widgets_available_); });
+}
+
 void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) {
   ui_->tabbedPlotWidget->forEachDocker([&operation](PlotDocker* docker) {
     for (int index = 0; index < docker->plotCount(); ++index) {
@@ -4968,6 +4988,22 @@ void MainWindow::syncWidgetsToCatalog() {
 std::optional<double> MainWindow::displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const {
   const auto seconds = session_->sessionManager().displayTimeForSource(source.id, absolute_ns);
   return seconds.has_value() ? std::optional<double>(toAxisDouble(*seconds)) : std::nullopt;
+}
+
+std::optional<double> MainWindow::displayTimeForTopic(std::string_view topic, int64_t absolute_ns) const {
+  const DatasetId dataset_id = topic.empty()
+                                   ? representativeDatasetId()
+                                   : session_->catalogModel().datasetForTopic(
+                                         QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size())));
+  return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, absolute_ns);
+}
+
+void MainWindow::setPlaybackTimeMappers(CustomWidgetDockWidget& dock) {
+  dock.setPlaybackTimeMappers(
+      [this](std::string_view topic, int64_t absolute_ns) { return displayTimeForTopic(topic, absolute_ns); },
+      [this](PJ_data_source_handle_t source, int64_t absolute_ns) {
+        return displayTimeForSource(source, absolute_ns);
+      });
 }
 
 void MainWindow::linkedZoomOut() {
@@ -10603,13 +10639,7 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
   // touch session state and widgets directly.
   session->playback_host = std::make_unique<PlaybackControlHost>(
       session_->playbackEngine(),
-      [this](std::string_view topic, int64_t absolute_ns) -> std::optional<double> {
-        const DatasetId dataset_id = topic.empty()
-                                         ? representativeDatasetId()
-                                         : session_->catalogModel().datasetForTopic(
-                                               QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size())));
-        return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, absolute_ns);
-      },
+      [this](std::string_view topic, int64_t absolute_ns) { return displayTimeForTopic(topic, absolute_ns); },
       [this](PJ_data_source_handle_t source_handle, int64_t absolute_ns) {
         return displayTimeForSource(source_handle, absolute_ns);
       });

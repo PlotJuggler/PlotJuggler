@@ -291,6 +291,29 @@ TEST(DockWidgetPlaceholderTest, EmptyDockerStartsWithPlaceholderDock) {
   EXPECT_EQ(dock->objectWidget(), nullptr);
 }
 
+TEST(DockWidgetPlaceholderTest, CustomWidgetAvailabilitySurvivesPlaceholderRecreation) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  const auto button = [&]() {
+    auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+    return placeholder != nullptr ? placeholder->customWidgetButton() : nullptr;
+  };
+  ASSERT_NE(button(), nullptr);
+  EXPECT_TRUE(button()->isEnabled());
+
+  dock->setCustomWidgetsAvailable(false);
+  EXPECT_FALSE(button()->isEnabled());
+  dock->setPlaceholderWidget();
+  ASSERT_NE(button(), nullptr);
+  EXPECT_FALSE(button()->isEnabled());
+
+  dock->setCustomWidgetsAvailable(true);
+  EXPECT_TRUE(button()->isEnabled());
+}
+
 TEST(DockWidgetPlaceholderTest, BarePlaceholderSurvivesLayoutSaveRestore) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);

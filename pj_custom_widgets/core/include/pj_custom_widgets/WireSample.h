@@ -11,6 +11,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_plugins/widget_protocol.h"
+#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/WireTarget.h"
 
@@ -26,8 +27,9 @@ struct WireSample {
   Timestamp stamp = 0;  ///< stored timestamp of the sample
   double number = 0.0;
   std::string text;
-  SequentialUID uid;                          ///< object samples: the entry that was found
-  std::optional<ResolvedObjectEntry> object;  ///< object samples after fetchObjectPayload
+  SequentialUID uid;  ///< object samples: the entry that was found
+  /// Object samples after fetchObjectPayload; its payload is what the encoder made of the stored bytes.
+  std::optional<ResolvedObjectEntry> object;
 };
 
 /// Reads the latest sample of `target` at or before the absolute instant `at`. A wire with no
@@ -40,9 +42,12 @@ struct WireSample {
 void refreshWireSample(
     const DataReader& reader, const ObjectStore& objects, const WireTarget& target, Timepoint at, WireSample& sample);
 
-/// Resolves the payload of an object sample. An entry that was evicted since `readWireSample`, or
-/// whose lazy fetch failed, turns the sample into NONE. No-op for other kinds.
-void fetchObjectPayload(const ObjectStore& objects, const WireTarget& target, WireSample& sample);
+/// Resolves the payload of an object sample and passes it through `encoder` (empty: the stored bytes).
+/// An entry that was evicted since `readWireSample`, whose lazy fetch failed or that the encoder
+/// refused, turns the sample into NONE. A sample that already holds its payload is left alone, so an
+/// entry is encoded once for as long as the wire keeps showing it. No-op for other kinds.
+void fetchObjectPayload(
+    const ObjectStore& objects, const WireTarget& target, const ObjectPayloadEncoder& encoder, WireSample& sample);
 
 /// Folds the sample (kind, stamp, the number or the object entry uid) and the display offset into
 /// `hash`. A text sample folds its stamp only: its row stamp names the string. Two ticks that fold to

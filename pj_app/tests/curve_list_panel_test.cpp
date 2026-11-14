@@ -277,7 +277,7 @@ TEST(CurveListPanelTest, HoverTooltipReportsTypeAndCounts) {
   EXPECT_TRUE(dataset_tip.contains(u"<span style=\"font-weight:600\">Topics:</span> 2"_s)) << dataset_tip.toStdString();
 }
 
-TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
+TEST(CurveListPanelTest, NoViewObjectTopicRowDragsToACustomWidgetWithTooltip) {
   AppSession app_session;
   const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
   ASSERT_NE(dataset, 0U);
@@ -320,8 +320,9 @@ TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
   ASSERT_NE(image_row, nullptr);
 
   EXPECT_TRUE(update_row->flags().testFlag(Qt::ItemIsSelectable));
-  EXPECT_FALSE(update_row->flags().testFlag(Qt::ItemIsDragEnabled));
-  EXPECT_FALSE(update_row->toolTip(0).isEmpty());
+  // No built-in view shows it, but a Custom Widget input takes any object type: it drags.
+  EXPECT_TRUE(update_row->flags().testFlag(Qt::ItemIsDragEnabled));
+  EXPECT_TRUE(update_row->toolTip(0).contains(u"Custom Widget"_s)) << update_row->toolTip(0).toStdString();
 
   EXPECT_TRUE(image_row->flags().testFlag(Qt::ItemIsDragEnabled));
   EXPECT_TRUE(image_row->toolTip(0).isEmpty());
@@ -374,6 +375,38 @@ TEST(CurveListPanelTest, CameraInfoTopicRowCanBeDraggedToAPanel) {
 
   EXPECT_TRUE(row->flags().testFlag(Qt::ItemIsDragEnabled));
   EXPECT_TRUE(row->toolTip(0).contains(u"plugin panel"_s)) << row->toolTip(0).toStdString();
+
+  row->setSelected(true);
+  const std::unique_ptr<QMimeData> payload(tree->createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(payload, nullptr);
+  EXPECT_EQ(CurveTreeView::decodeCatalogKeys(payload.get()), QStringList{key});
+}
+
+// No built-in view displays a log, but a Custom Widget can read any object type: the row starts a drag and says where
+// it goes.
+TEST(CurveListPanelTest, LogTopicRowCanBeDraggedToACustomWidget) {
+  AppSession app_session;
+  const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
+  ASSERT_NE(dataset, 0U);
+  auto topic = app_session.sessionManager().objectStore().registerTopic(
+      ObjectTopicDescriptor{
+          .dataset_id = dataset,
+          .topic_name = "/rosout",
+          .metadata_json = R"({"builtin_object_type":"kLog"})",
+      });
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  app_session.catalogModel().rebuildFromDatastore();
+
+  CurveListPanel panel;
+  panel.setCatalog(&app_session.catalogModel());
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  const QString key = keyOfTopic(app_session.catalogModel(), u"/rosout"_s);
+  QTreeWidgetItem* row = findRowByCatalogKey(tree->invisibleRootItem(), key);
+  ASSERT_NE(row, nullptr);
+
+  EXPECT_TRUE(row->flags().testFlag(Qt::ItemIsDragEnabled));
+  EXPECT_EQ(row->toolTip(0), u"Drop it on a Custom Widget panel."_s);
 
   row->setSelected(true);
   const std::unique_ptr<QMimeData> payload(tree->createDragMimeData(Qt::LeftButton));

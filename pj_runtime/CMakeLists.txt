@@ -59,6 +59,7 @@ add_library(pj_runtime STATIC
     src/UpdateChecker.cpp
     src/ViewportRuntimeHost.cpp
     src/WidgetRuntimeHost.cpp
+    src/CanonicalObjectPayload.cpp
     src/ActiveWidgetsMarker.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
@@ -112,6 +113,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/UpdateVersion.h
     include/pj_runtime/ViewportRuntimeHost.h
     include/pj_runtime/WidgetRuntimeHost.h
+    include/pj_runtime/CanonicalObjectPayload.h
     include/pj_runtime/WidgetValue.h
     include/pj_runtime/WireTarget.h
     include/pj_runtime/ActiveWidgetsMarker.h

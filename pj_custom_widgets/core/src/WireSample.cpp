@@ -3,9 +3,11 @@
 
 #include "pj_custom_widgets/WireSample.h"
 
+#include <string_view>
 #include <utility>
 
 #include "pj_datastore/query.hpp"
+#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/WidgetValue.h"
 #include "pj_widgets/Fnv1a.h"
 
@@ -95,12 +97,13 @@ void refreshWireSample(
   sample = WireSample{};
 }
 
-void fetchObjectPayload(const ObjectStore& objects, const WireTarget& target, WireSample& sample) {
+void fetchObjectPayload(
+    const ObjectStore& objects, const WireTarget& target, const ObjectPayloadEncoder& encoder, WireSample& sample) {
   if (sample.kind != PJ_WIDGET_VALUE_OBJECT || sample.object) {
     return;
   }
-  auto entry = objects.at(target.object_topic, sample.uid);
-  if (!entry || entry->fetch_failed) {
+  auto entry = resolveEncodedObject(objects, target, sample.uid, encoder);
+  if (!entry) {
     sample = WireSample{};
     return;
   }
@@ -128,7 +131,7 @@ PJ_widget_value_t makeWidgetValue(
     std::uint32_t input, std::uint32_t slot, const WireTarget& target, const WireSample& sample,
     std::string_view label) {
   const double time =
-      sample.kind == PJ_WIDGET_VALUE_NONE ? 0.0 : rawToDisplaySeconds(sample.stamp, target.offset).value;
+      sample.kind == PJ_WIDGET_VALUE_NONE ? 0.0 : rawToDisplaySecondsAtOrAfter(sample.stamp, target.offset).value;
   PJ_widget_value_t value = baseWidgetValue(input, slot, sample.kind, time, label);
   switch (sample.kind) {
     case PJ_WIDGET_VALUE_NUMBER:
@@ -140,7 +143,8 @@ PJ_widget_value_t makeWidgetValue(
     case PJ_WIDGET_VALUE_OBJECT:
       if (sample.object) {
         value.bytes = PJ_bytes_view_t{sample.object->payload.bytes.data(), sample.object->payload.bytes.size()};
-        value.type_name = PJ_string_view_t{target.object_type_name.data(), target.object_type_name.size()};
+        const std::string_view type_name = sdk::name(target.object_type);
+        value.type_name = PJ_string_view_t{type_name.data(), type_name.size()};
       }
       break;
     default:

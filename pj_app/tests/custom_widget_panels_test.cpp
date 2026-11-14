@@ -15,6 +15,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPointer>
 #include <QPushButton>
 #include <QSettings>
@@ -44,6 +46,7 @@
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/Style.h"
 #include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/ToastNotification.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 #include "support/gui_test_env.h"
@@ -451,6 +454,48 @@ TEST_F(CustomWidgetPagesTest, MissingWidgetShowsTheReasonAndItsStoredWiresReadOn
 
 using Peer = PJ::MainWindowLayoutImportTestPeer;
 
+/// Collects the Qt warnings emitted while it lives (one instance at a time).
+class WarningCapture {
+ public:
+  WarningCapture() {
+    instance_ = this;
+    previous_ = qInstallMessageHandler(&WarningCapture::handle);
+  }
+  ~WarningCapture() {
+    qInstallMessageHandler(previous_);
+    instance_ = nullptr;
+  }
+  WarningCapture(const WarningCapture&) = delete;
+  WarningCapture& operator=(const WarningCapture&) = delete;
+
+  [[nodiscard]] QStringList messagesContaining(const QString& needle) const {
+    QMutexLocker lock(&mutex_);
+    QStringList found;
+    for (const QString& message : messages_) {
+      if (message.contains(needle)) {
+        found << message;
+      }
+    }
+    return found;
+  }
+
+ private:
+  static void handle(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (instance_ != nullptr && (type == QtWarningMsg || type == QtCriticalMsg)) {
+      QMutexLocker lock(&instance_->mutex_);
+      instance_->messages_ << message;
+    }
+    if (instance_ != nullptr && instance_->previous_ != nullptr) {
+      instance_->previous_(type, context, message);
+    }
+  }
+
+  inline static WarningCapture* instance_ = nullptr;
+  QtMessageHandler previous_ = nullptr;
+  mutable QMutex mutex_;
+  QStringList messages_;
+};
+
 class CustomWidgetShellFlowTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -458,6 +503,8 @@ class CustomWidgetShellFlowTest : public ::testing::Test {
     ASSERT_TRUE(extensions_dir_.isValid());
     window_ = std::make_unique<PJ::MainWindow>(extensions_dir_.path());
     ASSERT_TRUE(Peer::session(*window_).extensionCatalog().pluginCatalog().registerStaticWidget(goodVtable()));
+    // A raw registration does not notify; announce it the way a reload does.
+    emit Peer::session(*window_).extensionCatalog().catalogChanged();
     auto* tabbed = window_->findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
     ASSERT_NE(tabbed, nullptr);
     dock_ = tabbed->currentTab()->plotAt(0);
@@ -491,6 +538,86 @@ class CustomWidgetShellFlowTest : public ::testing::Test {
   QStackedWidget* stack_ = nullptr;
 };
 
+TEST(CustomWidgetShellAvailabilityTest, FifthIconFollowsTheInstalledWidgetCatalog) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  pj_cw_test::g = pj_cw_test::PluginStats{};
+  PJ::MainWindow window(extensions_dir.path());
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  PJ::DockWidget* dock = tabbed->currentTab()->plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  dock->setPlaceholderWidget();
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  QToolButton* button = placeholder->customWidgetButton();
+  ASSERT_NE(button, nullptr);
+  EXPECT_FALSE(button->isEnabled());
+
+  PJ::ExtensionCatalogService& extensions = Peer::session(window).extensionCatalog();
+  ASSERT_TRUE(extensions.pluginCatalog().registerStaticWidget(goodVtable()));
+  emit extensions.catalogChanged();
+  EXPECT_TRUE(button->isEnabled());
+  EXPECT_EQ(button->toolTip(), u"Custom Widget"_s);
+
+  PJ::DockWidget* split = dock->splitHorizontal();
+  ASSERT_NE(split, nullptr);
+  auto* split_placeholder = split->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(split_placeholder, nullptr);
+  EXPECT_TRUE(split_placeholder->customWidgetButton()->isEnabled()) << "a new dock starts with the current state";
+}
+
+// Docks born after the shell wired their tab (a new tab, a split) take the Custom Widget availability through
+// PlotDocker::dockAdded. A lambda cannot be a Qt::UniqueConnection: Qt refused that connection with a warning,
+// and those docks kept the default whatever the catalog held.
+TEST(CustomWidgetShellAvailabilityTest, DocksAddedAfterTheTabWasWiredFollowTheCatalogWithoutConnectionWarnings) {
+  WarningCapture warnings;
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  pj_cw_test::g = pj_cw_test::PluginStats{};
+  PJ::MainWindow window(extensions_dir.path());
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  PJ::DockWidget* original = tabbed->currentTab()->plotAt(0);
+  ASSERT_NE(original, nullptr);
+  PJ::PlotDocker* tab = tabbed->addTab(u"Second"_s);
+  ASSERT_NE(tab, nullptr);
+  PJ::DockWidget* first = tab->plotAt(0);
+  ASSERT_NE(first, nullptr);
+  first->setPlaceholderWidget();
+  PJ::DockWidget* split = first->splitHorizontal();
+  ASSERT_NE(split, nullptr);
+
+  const auto customButton = [](PJ::DockWidget* dock) {
+    auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+    return placeholder != nullptr ? placeholder->customWidgetButton() : nullptr;
+  };
+  ASSERT_NE(customButton(first), nullptr);
+  ASSERT_NE(customButton(split), nullptr);
+  EXPECT_FALSE(customButton(first)->isEnabled()) << "no widget installed";
+  EXPECT_FALSE(customButton(split)->isEnabled()) << "no widget installed";
+
+  PJ::ExtensionCatalogService& extensions = Peer::session(window).extensionCatalog();
+  ASSERT_TRUE(extensions.pluginCatalog().registerStaticWidget(goodVtable()));
+  emit extensions.catalogChanged();
+  EXPECT_TRUE(customButton(first)->isEnabled());
+  EXPECT_TRUE(customButton(split)->isEnabled());
+
+  // Docks added once the catalog already lists a widget start enabled, in the new tab and in the first one.
+  PJ::DockWidget* later = split->splitVertical();
+  ASSERT_NE(later, nullptr);
+  ASSERT_NE(customButton(later), nullptr);
+  EXPECT_TRUE(customButton(later)->isEnabled()) << "a split of the new tab";
+  PJ::DockWidget* original_split = original->splitHorizontal();
+  ASSERT_NE(original_split, nullptr);
+  original_split->setPlaceholderWidget();
+  ASSERT_NE(customButton(original_split), nullptr);
+  EXPECT_TRUE(customButton(original_split)->isEnabled()) << "a split of the first tab";
+
+  EXPECT_TRUE(warnings.messagesContaining(u"unique connections require a pointer to member function"_s).isEmpty())
+      << warnings.messagesContaining(u"unique connections"_s).join(u" | "_s).toStdString();
+}
+
 TEST_F(CustomWidgetShellFlowTest, FifthIconOpensThePickerAndAChoiceBuildsABoundPanel) {
   clickIcon("buttonVizCustomWidget");
   EXPECT_EQ(dock_->objectWidget(), nullptr) << "nothing is built before the choice";
@@ -514,6 +641,133 @@ TEST_F(CustomWidgetShellFlowTest, FifthIconOpensThePickerAndAChoiceBuildsABoundP
 
   emit list->itemClicked(gauge);
   EXPECT_EQ(g.widgets_created, 1) << "the choice is spent";
+}
+
+TEST_F(CustomWidgetShellFlowTest, ThePanelsWidgetGetsThePlaybackServiceWithTheShellsTimeMappers) {
+  PJ::AppSession& app = Peer::session(*window_);
+  app.sessionManager().setUseTimeOffset(false);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "mapped");
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+
+  clickIcon("buttonVizCustomWidget");
+  auto* list = picker_->findChild<QListWidget*>(u"listCustomWidgets"_s);
+  emit list->itemClicked(itemNamed(list, u"Gauge"_s));
+  ASSERT_NE(dock_->objectWidget(), nullptr);
+  ASSERT_TRUE(g.offered_playback);
+  ASSERT_TRUE(g.playback.valid());
+
+  const auto display = g.playback.toDisplayTime("/signal", 3'000'000'000);
+  ASSERT_TRUE(display.has_value()) << display.error();
+  EXPECT_DOUBLE_EQ(*display, 3.0);
+  EXPECT_FALSE(g.playback.toDisplayTime("/nowhere", 0).has_value());
+  const auto by_source =
+      g.playback.toDisplayTimeForSource(PJ::sdk::DataSourceHandle{static_cast<uint32_t>(dataset)}, 4'000'000'000);
+  ASSERT_TRUE(by_source.has_value()) << by_source.error();
+  EXPECT_DOUBLE_EQ(*by_source, 4.0);
+}
+
+TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockSaysWhereItGoes) {
+  PJ::AppSession& app = Peer::session(*window_);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
+  auto topic = app.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  app.catalogModel().rebuildFromDatastore();
+  QString key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      key = item.key;
+    }
+  }
+  ASSERT_FALSE(key.isEmpty());
+  const auto drop = [&key](PJ::DockWidget* target) {
+    return QMetaObject::invokeMethod(
+        target, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{key}));
+  };
+  const auto toasts = [this]() {
+    QStringList messages;
+    for (const auto* toast : window_->findChildren<PJ::ToastNotification*>()) {
+      messages << toast->message();
+    }
+    return messages;
+  };
+
+  ASSERT_TRUE(drop(dock_));
+  EXPECT_EQ(dock_->objectWidget(), nullptr) << "no built-in view takes a log";
+  EXPECT_TRUE(toasts().contains(u"This topic is shown by a Custom Widget. Create one in this panel first."_s))
+      << toasts().join(u" | "_s).toStdString();
+
+  clickIcon("buttonVizCustomWidget");
+  auto* list = picker_->findChild<QListWidget*>(u"listCustomWidgets"_s);
+  emit list->itemClicked(itemNamed(list, u"Viewer"_s));
+  ASSERT_NE(dock_->objectWidget(), nullptr);
+  auto* custom = qobject_cast<PJ::CustomWidgetDockWidget*>(dock_->objectWidget()->widget());
+  ASSERT_NE(custom, nullptr);
+  ASSERT_TRUE(custom->bindings().empty());
+
+  ASSERT_TRUE(drop(dock_));
+  ASSERT_EQ(custom->bindings().size(), 1U);
+  EXPECT_EQ(custom->bindings()[0].label, "/rosout");
+  EXPECT_EQ(dock_->objectWidget()->widget(), custom) << "the panel took the topic in place";
+}
+
+TEST_F(CustomWidgetShellFlowTest, ALogTopicDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
+  PJ::AppSession& app = Peer::session(*window_);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
+  auto topic = app.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+  app.catalogModel().rebuildFromDatastore();
+  QString log_key;
+  QString scalar_key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      log_key = item.key;
+    } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
+      scalar_key = item.key;
+    }
+  }
+  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(scalar_key.isEmpty());
+
+  // The order a curve-list drag delivers: the object row sorts ahead of the scalar field.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock_, "onCatalogItemsDropped", Qt::DirectConnection,
+          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
+  ASSERT_NE(dock_->plotWidget(), nullptr) << "the scalar of a drop that also carried a log was not plotted";
+  EXPECT_FALSE(dock_->plotWidget()->isEmpty());
+}
+
+TEST_F(CustomWidgetShellFlowTest, AnAdvertisedLogDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
+  PJ::AppSession& app = Peer::session(*window_);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "live");
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+  app.catalogModel().rebuildFromDatastore();
+  // A streaming source's unsubscribed /rosout: a catalog row with no data yet.
+  app.catalogModel().setAdvertisedTopics(
+      dataset, {PJ::AdvertisedTopic{u"/rosout"_s, PJ::sdk::BuiltinObjectType::kLog}});
+  QString log_key;
+  QString scalar_key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      log_key = item.key;
+    } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
+      scalar_key = item.key;
+    }
+  }
+  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(scalar_key.isEmpty());
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock_, "onCatalogItemsDropped", Qt::DirectConnection,
+          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
+  ASSERT_NE(dock_->plotWidget(), nullptr) << "the scalar of a drop that also carried an advertised log was not plotted";
+  EXPECT_FALSE(dock_->plotWidget()->isEmpty());
 }
 
 TEST_F(CustomWidgetShellFlowTest, AChoiceForAPanelFilledMeanwhileDoesNothing) {
