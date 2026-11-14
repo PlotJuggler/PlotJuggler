@@ -712,6 +712,64 @@ TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockS
   EXPECT_EQ(dock_->objectWidget()->widget(), custom) << "the panel took the topic in place";
 }
 
+TEST_F(CustomWidgetShellFlowTest, ALogTopicDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
+  PJ::AppSession& app = Peer::session(*window_);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
+  auto topic = app.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+  app.catalogModel().rebuildFromDatastore();
+  QString log_key;
+  QString scalar_key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      log_key = item.key;
+    } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
+      scalar_key = item.key;
+    }
+  }
+  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(scalar_key.isEmpty());
+
+  // The order a curve-list drag delivers: the object row sorts ahead of the scalar field.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock_, "onCatalogItemsDropped", Qt::DirectConnection,
+          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
+  ASSERT_NE(dock_->plotWidget(), nullptr) << "the scalar of a drop that also carried a log was not plotted";
+  EXPECT_FALSE(dock_->plotWidget()->isEmpty());
+}
+
+TEST_F(CustomWidgetShellFlowTest, AnAdvertisedLogDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
+  PJ::AppSession& app = Peer::session(*window_);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "live");
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+  app.catalogModel().rebuildFromDatastore();
+  // A streaming source's unsubscribed /rosout: a catalog row with no data yet.
+  app.catalogModel().setAdvertisedTopics(
+      dataset, {PJ::AdvertisedTopic{u"/rosout"_s, PJ::sdk::BuiltinObjectType::kLog}});
+  QString log_key;
+  QString scalar_key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      log_key = item.key;
+    } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
+      scalar_key = item.key;
+    }
+  }
+  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(scalar_key.isEmpty());
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock_, "onCatalogItemsDropped", Qt::DirectConnection,
+          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
+  ASSERT_NE(dock_->plotWidget(), nullptr) << "the scalar of a drop that also carried an advertised log was not plotted";
+  EXPECT_FALSE(dock_->plotWidget()->isEmpty());
+}
+
 TEST_F(CustomWidgetShellFlowTest, AChoiceForAPanelFilledMeanwhileDoesNothing) {
   clickIcon("buttonVizCustomWidget");
   clickIcon("buttonVizPlot");

@@ -300,8 +300,12 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
   };
 
   if (chosen.empty()) {
-    for (const auto& entry : objects_.rangeByTime(target.object_topic, lo, to)) {
-      if (!deliver(entry.uid)) {
+    // A streaming push between the count and this read can grow the window: never deliver more than the
+    // `total` (<= max_samples) that was counted and is returned.
+    const auto entries = objects_.rangeByTime(target.object_topic, lo, to);
+    const std::size_t count = std::min(entries.size(), total);
+    for (std::size_t i = 0; i < count; ++i) {
+      if (!deliver(entries[i].uid)) {
         break;
       }
     }

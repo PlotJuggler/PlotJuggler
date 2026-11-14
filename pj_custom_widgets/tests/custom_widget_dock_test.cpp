@@ -357,6 +357,97 @@ TEST_F(CustomWidgetDockTest, SeekingToADeliveredSampleTimeShowsThatSample) {
   check_topic("/epoch", 1'731'234'567'000'000'005);
 }
 
+TEST_F(CustomWidgetDockTest, SeekingToTheLastSampleOfAnEpochRangeShowsThatSample) {
+  // An epoch-scale stamp whose nearest display double converts back to an instant before it: the range
+  // ends there, and the engine clamps a seek into the range.
+  int64_t last_ns = 1'731'234'567'000'000'005;
+  while (displaySecondsToRaw(rawToDisplaySeconds(last_ns, DisplayOffset{}), DisplayOffset{}) >= last_ns) {
+    ++last_ns;
+  }
+  const DatasetId epoch = pj_cw_test::createDataset(*app_, "epoch.mcap");
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto topic =
+      objects.registerTopic(ObjectTopicDescriptor{.dataset_id = epoch, .topic_name = "/epoch", .metadata_json = {}});
+  ASSERT_TRUE(topic.has_value());
+  for (uint8_t k = 0; k < 3; ++k) {
+    ASSERT_TRUE(objects.pushOwned(*topic, last_ns - (2 - k) * 1'000'003, {k}).has_value());
+  }
+  PlaybackEngine& engine = app_->playbackEngine();
+  ASSERT_TRUE(app_->focusPlaybackOnDatasets({epoch}));  // the range a file load sets
+  auto dock = makeBound(u"viewer"_s);
+  QObject::connect(&engine, &PlaybackEngine::currentTimeChanged, dock.get(), &CustomWidgetDockWidget::onTrackerTime);
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(*topic, sdk::BuiltinObjectType::kImage, u"/epoch"_s));
+
+  const double delivered = rawToDisplaySecondsAtOrAfter(last_ns, app_->sessionManager().displayOffset(epoch)).value;
+  ASSERT_TRUE(g.playback.seek(delivered).has_value());
+  ASSERT_FALSE(g.last_values.empty());
+  EXPECT_EQ(g.last_values.back().bytes, (std::vector<uint8_t>{2})) << "the seek to the last sample showed another";
+}
+
+TEST_F(CustomWidgetDockTest, ASeekFromInsideOnUpdateIsDeliveredAfterTheCallReturns) {
+  PlaybackEngine& engine = app_->playbackEngine();
+  engine.setRange(displayRange(0.0, 10.0));
+  auto dock = makeBound();
+  QObject::connect(&engine, &PlaybackEngine::currentTimeChanged, dock.get(), &CustomWidgetDockWidget::onTrackerTime);
+  ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));
+  bool seeked = false;
+  g.on_update = [&]() {
+    if (!seeked) {
+      seeked = true;
+      ASSERT_TRUE(g.playback.seek(2.5).has_value());
+    }
+  };
+
+  dock->onTrackerTime(1.5);  // on_update seeks; the engine reports the new time synchronously
+  EXPECT_EQ(g.max_update_depth, 1) << "on_update re-entered from the widget's own seek";
+  EXPECT_FALSE(g.values_changed_under_call) << "the values of a running on_update were replaced";
+  QCoreApplication::processEvents();
+  ASSERT_FALSE(g.last_values.empty());
+  EXPECT_DOUBLE_EQ(g.last_values.back().number, 20.0) << "the seek's time was delivered once the call returned";
+}
+
+TEST_F(CustomWidgetDockTest, AnUpdateAskedForDuringANestedEventLoopWaitsWithoutSpinning) {
+  // Counts the queued calls the dock receives (its deferred updates arrive as QEvent::MetaCall).
+  class MetaCallCounter : public QObject {
+   public:
+    int count = 0;
+    bool eventFilter(QObject* /*watched*/, QEvent* event) override {
+      if (event->type() == QEvent::MetaCall) {
+        ++count;
+      }
+      return false;
+    }
+  };
+  PlaybackEngine& engine = app_->playbackEngine();
+  engine.setRange(displayRange(0.0, 10.0));
+  auto dock = makeBound();
+  QObject::connect(&engine, &PlaybackEngine::currentTimeChanged, dock.get(), &CustomWidgetDockWidget::onTrackerTime);
+  ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));
+  MetaCallCounter counter;
+  dock->installEventFilter(&counter);
+  bool seeked = false;
+  int during_call = 0;
+  g.on_update = [&]() {
+    if (seeked) {
+      return;
+    }
+    seeked = true;
+    ASSERT_TRUE(g.playback.seek(2.5).has_value());
+    // A widget running a modal dialog: the event loop turns while its on_update is on the stack.
+    for (int i = 0; i < 5; ++i) {
+      QCoreApplication::processEvents();
+    }
+    during_call = counter.count;
+  };
+
+  dock->onTrackerTime(1.5);
+  EXPECT_LE(during_call, 1) << "the deferred update re-armed itself on every turn of the nested loop";
+  EXPECT_EQ(g.max_update_depth, 1);
+  QCoreApplication::processEvents();
+  ASSERT_FALSE(g.last_values.empty());
+  EXPECT_DOUBLE_EQ(g.last_values.back().number, 20.0) << "the seek's time was delivered once the call returned";
+}
+
 TEST_F(CustomWidgetDockTest, PlayAndPauseEachBringOneDeferredUpdate) {
   auto dock = makeBound();
   ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));
@@ -391,6 +482,50 @@ TEST_F(CustomWidgetDockTest, PlayAndPauseEachBringOneDeferredUpdate) {
   EXPECT_EQ(g.updates, base + 4);
   engine.pause();
   QCoreApplication::processEvents();
+}
+
+TEST_F(CustomWidgetDockTest, EntriesFromAFileLoadOfOnlyObjectTopicsBringAnUpdate) {
+  // A dataset with no scalar topic: its load announces no sample ids, only ingest progress.
+  const DatasetId objects_only = pj_cw_test::createDataset(*app_, "bag_of_logs.mcap");
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto topic = objects.registerTopic(
+      ObjectTopicDescriptor{.dataset_id = objects_only, .topic_name = "/rosout", .metadata_json = {}});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(objects.pushOwned(*topic, kSecond, {1}).has_value());
+  auto dock = makeBound(u"viewer"_s);
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(*topic, sdk::BuiltinObjectType::kImage, u"/rosout"_s));
+  dock->onTrackerTime(1.5);
+  const int base = g.updates;
+
+  SessionManager& session = app_->sessionManager();
+  const IngestToken token = session.beginIngest(objects_only, u"load"_s, 2, /*cancellable=*/false, {});
+  ASSERT_TRUE(objects.pushOwned(*topic, 5 * kSecond, {5}).has_value());
+  session.updateIngest(token, 1, 2);
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 1) << "entries committed by a load's progress tick reached no widget";
+
+  ASSERT_TRUE(objects.pushOwned(*topic, 6 * kSecond, {6}).has_value());
+  session.endIngest(token, IngestOutcome::kCompleted);
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 2) << "entries committed at the end of a load reached no widget";
+}
+
+TEST_F(CustomWidgetDockTest, DerivedEntriesOnAWiredObjectTopicBringAnUpdate) {
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  auto topic = objects.registerTopic(
+      ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/derived", .metadata_json = {}});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(objects.pushOwned(*topic, kSecond, {1}).has_value());
+  auto dock = makeBound(u"viewer"_s);
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(*topic, sdk::BuiltinObjectType::kImage, u"/derived"_s));
+  dock->onTrackerTime(1.5);
+  const int base = g.updates;
+
+  // What a derived node's publication does: the entries are in the store before the signal.
+  ASSERT_TRUE(objects.pushOwned(*topic, 5 * kSecond, {5}).has_value());
+  emit app_->sessionManager().derivedEntriesPublished(u"node"_s, {*topic});
+  QCoreApplication::processEvents();
+  EXPECT_EQ(g.updates, base + 1) << "entries published by a derived node reached no widget";
 }
 
 TEST_F(CustomWidgetDockTest, NewEntriesOnAWiredObjectTopicBringOneUpdate) {

@@ -61,10 +61,12 @@ class WidgetRuntimeHost {
   /// @param objects  object topics (must outlive this host).
   /// @param resolver wire lookup, called on the main thread inside each history call.
   /// @param encoder  the bytes of each object sample delivered (canonicalObjectEncoder); an entry it
-  ///                 fails on is skipped like an evicted one. Empty: the stored bytes as they are.
+  ///                 fails on is skipped like an evicted one. Empty: the stored bytes as they are, which
+  ///                 is wire bytes (e.g. ROS CDR) on a parser-bound topic; required so that no host
+  ///                 hands those to widgets by omission.
   WidgetRuntimeHost(
-      const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks = {},
-      ObjectPayloadEncoder encoder = {});
+      const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks,
+      ObjectPayloadEncoder encoder);
 
   WidgetRuntimeHost(const WidgetRuntimeHost&) = delete;
   WidgetRuntimeHost& operator=(const WidgetRuntimeHost&) = delete;

@@ -97,6 +97,10 @@ bool CustomWidgetDockWidget::callOrDisable(Call&& call) {
     disablePlugin(*error);
     return false;
   }
+  if (plugin_call_depth_ == 0 && update_wanted_) {
+    // A push asked for while the widget's code ran (it moved the tracker): deliver it now that it returned.
+    requestUpdate();
+  }
   return true;
 }
 
@@ -145,11 +149,17 @@ CustomWidgetDockWidget::CustomWidgetDockWidget(
   if (playback_ != nullptr) {
     connect(playback_, &PlaybackEngine::playingChanged, this, [this]() { requestUpdate(); });
   }
-  connect(session_, &SessionManager::samplesIngested, this, [this]() {
+  // samplesIngested names scalar topics only: a load of object-only data, and derived objects, announce
+  // themselves through the ingest lifecycle and derivedEntriesPublished instead.
+  const auto on_entries_landed = [this]() {
     if (wiredObjectContentChanged()) {
       requestUpdate();
     }
-  });
+  };
+  connect(session_, &SessionManager::samplesIngested, this, on_entries_landed);
+  connect(session_, &SessionManager::ingestProgressed, this, on_entries_landed);
+  connect(session_, &SessionManager::ingestEnded, this, on_entries_landed);
+  connect(session_, &SessionManager::derivedEntriesPublished, this, on_entries_landed);
   // An object wire names its dataset by source path, which an asynchronous file load registers only at
   // commit and which no catalog change reports.
   connect(session_, &SessionManager::datasetSourcePathChanged, this, [this]() {
@@ -683,6 +693,13 @@ void CustomWidgetDockWidget::refresh() {
 
 void CustomWidgetDockWidget::pushValues(double time, bool force) {
   if (!handle_ || !std::isfinite(time)) {
+    return;
+  }
+  if (plugin_call_depth_ > 0) {
+    // The widget moved the tracker from inside one of its own calls (a seek in on_update): the values it is
+    // reading must not change under it. callOrDisable pushes once that call returned; nothing is scheduled
+    // meanwhile, so a nested event loop (a modal dialog) does not spin on it.
+    update_wanted_ = true;
     return;
   }
   const std::vector<WidgetWire>& wires = bindings_.wires();

@@ -541,7 +541,20 @@ void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
       const ObjectDropSeed seed{ObjectTopicId{}, advertised->classification, first_item->topic_name};
       IDataWidget* widget = object_widget_factory_(QString(), &seed, this);
       if (widget == nullptr) {
-        return;  // family not hostable — keep the placeholder affordance
+        // No dock family hosts this classification (the seed names no topic, so the refusal is the
+        // type's): keep the placeholder, and still land the rest of the drop without those topics.
+        QStringList rest;
+        for (const QString& key : keys) {
+          const auto item = catalog_->itemDescriptor(key);
+          const auto* adv = item.has_value() ? asAdvertisedTopic(*item) : nullptr;
+          if (adv == nullptr || adv->classification != advertised->classification) {
+            rest.append(key);
+          }
+        }
+        if (!rest.empty()) {
+          onCatalogItemsDropped(rest);
+        }
+        return;
       }
       setObjectWidget(widget);
       // Arm the gate so the first real topic (a later drop into this widget)
@@ -678,6 +691,12 @@ void DockWidget::onCatalogItemsDropped(const QStringList& dropped_keys) {
   content_widget_ = object_widget_ != nullptr ? object_widget_->widget() : nullptr;
   if (content_widget_ == nullptr) {
     setPlaceholderWidget();
+    // The first topic got no view (the factory said why: no dock family shows its type, or this topic
+    // cannot be shown). The rest of the drop still lands: a log row selected along with scalar fields must
+    // not lose them. Only that topic is left out, since another topic of its type may well be shown.
+    if (keys.size() > 1) {
+      onCatalogItemsDropped(keys.mid(1));
+    }
     return;
   }
   installObjectContextMenuFilter(content_widget_);

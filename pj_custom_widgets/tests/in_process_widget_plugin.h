@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QPointer>
 #include <QtGlobal>
+#include <algorithm>
 #include <cstddef>
 #include <functional>
 #include <limits>
@@ -85,6 +86,10 @@ struct PluginStats {
   bool corrupt_inputs = false;             ///< "faulty_widgets" reports an impossible input name
   bool corrupt_saved_config = false;       ///< "faulty_widgets" reports an impossible save_config length
   std::function<void()> on_create_widget;  ///< runs at the start of createWidget
+  std::function<void()> on_update;         ///< runs inside onUpdate, after the values are copied
+  int update_depth = 0;                    ///< onUpdate calls currently on the stack
+  int max_update_depth = 0;                ///< deepest onUpdate nesting seen (1 = never re-entered)
+  bool values_changed_under_call = false;  ///< the host's value span changed while onUpdate ran
   bool offered_playback = false;           ///< bind found pj.playback.v1
   sdk::PlaybackHostView playback;          ///< the live instance's pj.playback.v1; invalid once it is destroyed
 };
@@ -176,10 +181,24 @@ class TestPlugin : public WidgetPluginBase {
     if (has("throw_on_update")) {
       throw std::runtime_error("on_update failed");
     }
+    ++g.update_depth;
+    g.max_update_depth = std::max(g.max_update_depth, g.update_depth);
     g.last_values.clear();
+    std::vector<double> times;  // this call's own copy: g.last_values is rewritten by a nested call
     for (const PJ_widget_value_t& v : values) {
       g.last_values.push_back(copyValue(v));
+      times.push_back(v.time);
     }
+    if (g.on_update) {
+      g.on_update();
+    }
+    // Read after the hook: a nested on_update would have refilled the host's span under this call.
+    for (std::size_t i = 0; i < values.size() && i < times.size(); ++i) {
+      if (values[i].time != times[i]) {
+        g.values_changed_under_call = true;
+      }
+    }
+    --g.update_depth;
     if (has("history")) {
       readHistory();
     }

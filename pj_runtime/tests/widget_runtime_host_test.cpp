@@ -88,7 +88,8 @@ class WidgetRuntimeHostTest : public ::testing::Test {
             .inputs_changed = [this] { ++inputs_changed_; },
             .report_message = [this](
                                   WidgetMessageLevel level,
-                                  std::string_view message) { messages_.emplace_back(level, std::string(message)); }});
+                                  std::string_view message) { messages_.emplace_back(level, std::string(message)); }},
+        ObjectPayloadEncoder{});  // no parsers here: the stored bytes are what a widget receives
   }
 
   /// 10 samples at t = 0..9 s (value = 10 * t) on a numeric topic; returns the wire.

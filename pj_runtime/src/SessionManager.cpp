@@ -738,7 +738,8 @@ std::optional<DisplaySeconds> SessionManager::displayTimeForSource(DatasetId dat
   if (dataset_id == 0 || data_engine_.getDataset(dataset_id) == nullptr) {
     return std::nullopt;
   }
-  return rawToDisplaySeconds(absolute_ns, displayOffset(dataset_id));
+  // Seek-safe: a seek to the returned time shows the sample at `absolute_ns`, not the one before it.
+  return rawToDisplaySecondsAtOrAfter(absolute_ns, displayOffset(dataset_id));
 }
 
 Timestamp SessionManager::globalTimeReference() const {
@@ -933,7 +934,7 @@ std::optional<DisplayRange> SessionManager::datasetDisplayRange(DatasetId datase
   // match) so a bare raw-ns range can never reach the playback axis.
   const DisplayOffset offset = displayOffset(dataset_id);
   return DisplayRange{
-      .min = rawToDisplaySeconds(bounds->first, offset), .max = rawToDisplaySeconds(bounds->second, offset)};
+      .min = rawToDisplaySeconds(bounds->first, offset), .max = rawToDisplaySecondsAtOrAfter(bounds->second, offset)};
 }
 
 void SessionManager::setSeriesVisibleStart(DatasetId dataset_id, DisplaySeconds start) {

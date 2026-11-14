@@ -157,10 +157,18 @@ using DisplayRange = PJ::Range<DisplaySeconds>;
 /// rawToDisplaySeconds raised to the first double that displaySecondsToRaw maps back to `raw_ns` or later.
 /// Far from the display origin a double does not hold every nanosecond (near 1.7e9 s it steps ~238 ns),
 /// and the nearest one can convert back to an instant before `raw_ns`: a seek to that time would show
-/// the sample before. The time of a sample handed to a Widget plugin, so that seeking to it shows that
-/// sample (or a later one less than a step after it).
+/// the sample before. Used for every time a seek may come back with: a sample handed to a Widget plugin,
+/// pj.playback.v1's to_display_time, and the end of a playback range (the engine clamps a seek into the
+/// range, so a nearest-rounded end would clamp a seek to the last sample onto the one before it).
 [[nodiscard]] inline DisplaySeconds rawToDisplaySecondsAtOrAfter(Timestamp raw_ns, DisplayOffset offset) noexcept {
   DisplaySeconds seconds = rawToDisplaySeconds(raw_ns, offset);
+  // Within a millisecond of the int64 limits (an "end of time" sentinel) a raised double no longer converts
+  // back to a Timestamp: keep the nearest time there.
+  constexpr Timestamp kLimitMargin = 1'000'000;
+  if (raw_ns > std::numeric_limits<Timestamp>::max() - kLimitMargin ||
+      raw_ns < std::numeric_limits<Timestamp>::min() + kLimitMargin) {
+    return seconds;
+  }
   // Each step moves the converted instant by one double step; two cover the rounding of both conversions.
   for (int step = 0; step < 4 && displaySecondsToRaw(seconds, offset) < raw_ns; ++step) {
     seconds.value = std::nextafter(seconds.value, std::numeric_limits<double>::infinity());
