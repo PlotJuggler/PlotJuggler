@@ -3858,7 +3858,7 @@ Details: %1</source>
         <message>
             <location filename="../src/mcp/McpServerTools.cpp" line="+97" />
             <source>An AI agent asked you to choose: </source>
-            <translation>AI 智能体请您选择：</translation>
+            <translation>AI 智能体请求选择： </translation>
         </message>
     </context>
     <context>
