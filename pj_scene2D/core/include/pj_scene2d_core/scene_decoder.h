@@ -41,7 +41,7 @@ namespace detail {
 // routes land on the same struct — wrap it in a one-annotation SceneFrame.
 [[nodiscard]] inline SceneFrame imageAnnotationsToFrame(ImageAnnotation annotations) {
   SceneFrame frame;
-  frame.timestamp = annotations.timestamp;
+  frame.timestamp = annotations.timestamp_ns;
   frame.annotations.push_back(std::move(annotations));
   return frame;
 }

@@ -113,7 +113,7 @@ PJ::sdk::FrameTransforms decodeFrameTransforms(
     std::memcpy(&stamp_offset_ns, &bits, sizeof(stamp_offset_ns));
 
     PJ::sdk::FrameTransform edge;
-    edge.timestamp = entry_ts + stamp_offset_ns;
+    edge.timestamp_ns = entry_ts + stamp_offset_ns;
     edge.parent_frame_id = frameName(parent_index);
     edge.child_frame_id = frameName(child_index);
     edge.translation = {1.0 + (vary_translation ? static_cast<double>(entry_ts) : 0.0), 2.0, 3.0};
@@ -160,7 +160,7 @@ class MalformedTfParser : public PJ::MessageParserPluginBase {
             .parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView) -> PJ::Expected<PJ::sdk::ObjectRecord> {
               auto validEdge = [ts](std::string parent, std::string child) {
                 PJ::sdk::FrameTransform edge;
-                edge.timestamp = ts;
+                edge.timestamp_ns = ts;
                 edge.parent_frame_id = std::move(parent);
                 edge.child_frame_id = std::move(child);
                 edge.translation = {1.0, 2.0, 3.0};
@@ -310,7 +310,7 @@ std::vector<uint8_t> canonicalEdgePayload(
     const std::string& parent, const std::string& child, PJ::Timestamp inner_stamp_ns) {
   PJ::sdk::FrameTransforms ft;
   PJ::sdk::FrameTransform edge;
-  edge.timestamp = inner_stamp_ns;
+  edge.timestamp_ns = inner_stamp_ns;
   edge.parent_frame_id = parent;
   edge.child_frame_id = child;
   edge.translation = {1.0, 2.0, 3.0};

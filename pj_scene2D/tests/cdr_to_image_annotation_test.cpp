@@ -73,7 +73,7 @@ TEST(CdrDetection2DTest, ThreeBboxesProduceThreeLineLoops) {
   ASSERT_TRUE(result.has_value());
 
   EXPECT_EQ(result->image_topic, "/camera/image");
-  EXPECT_EQ(result->timestamp, 1234LL * 1'000'000'000LL + 567'000'000LL);
+  EXPECT_EQ(result->timestamp_ns, 1234LL * 1'000'000'000LL + 567'000'000LL);
   ASSERT_EQ(result->points.size(), 3u);
 
   for (const auto& bbox : result->points) {

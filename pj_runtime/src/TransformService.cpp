@@ -77,7 +77,7 @@ void ingestEntry(
     // never rewrites. A time-shifted dataset merge records the slide in
     // payload_stamp_shift; add it so a merged source's frames land on the anchor's
     // clock (it is 0 for unmerged data, so the common path is unchanged).
-    st.stamp = PJ::fromRaw(t.timestamp + payload_stamp_shift);
+    st.stamp = PJ::fromRaw(t.timestamp_ns + payload_stamp_shift);
     st.parent_frame = t.parent_frame_id;
     st.child_frame = t.child_frame_id;
     st.transform.t = glm::dvec3{t.translation.x, t.translation.y, t.translation.z};

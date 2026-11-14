@@ -126,7 +126,7 @@ decltype(auto) dispatchCompare(CompareOp op, Visit&& visit) {
 /// Re-expresses every record in `tf.parent_frame_id`, the output's frame (an empty parent keeps the input's
 /// frame): `p' = rotation * p + translation` on x/y/z, with the rotation normalized; every other channel is
 /// copied verbatim and a non-finite record is left untouched. A non-finite transform or a zero rotation is
-/// an error. Never compacts: an organized cloud keeps its shape. `tf.child_frame_id` and `tf.timestamp` are
+/// an error. Never compacts: an organized cloud keeps its shape. `tf.child_frame_id` and `tf.timestamp_ns` are
 /// not read. The new frame name is charged with the output.
 [[nodiscard]] Expected<sdk::PointCloud> transformXyz(
     const sdk::PointCloud& cloud, const sdk::FrameTransform& tf, const NativeLimits& limits);

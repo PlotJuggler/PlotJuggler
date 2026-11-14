@@ -820,7 +820,7 @@ def evaluate(inputs, params):
   const auto* annotations = objectOf<sdk::ImageAnnotations>(result, "overlay");
   ASSERT_NE(annotations, nullptr);
   EXPECT_EQ(annotations->image_topic, "/camera");
-  EXPECT_EQ(annotations->timestamp, 7);  // no image input: the result's stamp
+  EXPECT_EQ(annotations->timestamp_ns, 7);  // no image input: the result's stamp
   ASSERT_EQ(annotations->points.size(), 1u);
   EXPECT_EQ(annotations->points[0].points.size(), 4u);
   EXPECT_EQ(annotations->points[0].color, (sdk::ColorRGBA{255, 0, 0, 128}));
@@ -2253,7 +2253,7 @@ def evaluate(inputs, params):
     const auto* annotations = objectOf<sdk::ImageAnnotations>(result, name);
     ASSERT_NE(annotations, nullptr) << name;
     EXPECT_EQ(annotations->image_topic, "/video") << name;
-    EXPECT_EQ(annotations->timestamp, stamp) << name;
+    EXPECT_EQ(annotations->timestamp_ns, stamp) << name;
   }
   EXPECT_EQ(video->calls, 2);
   EXPECT_EQ(decoder->calls, 2);
@@ -2364,7 +2364,7 @@ def evaluate(inputs, params):
     const auto* annotations = objectOf<sdk::ImageAnnotations>(result, name);
     ASSERT_NE(annotations, nullptr) << name;
     EXPECT_EQ(annotations->image_topic, "/video") << name;
-    EXPECT_EQ(annotations->timestamp, 10 + 10 * index) << name;
+    EXPECT_EQ(annotations->timestamp_ns, 10 + 10 * index) << name;
   }
 }
 

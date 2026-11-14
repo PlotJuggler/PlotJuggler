@@ -832,7 +832,7 @@ py::object finish(PyObject* self) {
   slot.builder.reset();
   if constexpr (std::is_same_v<Builder, Annotations>) {
     // Paired with the image input `image_topic` names (`ScriptMedia::pairing`).
-    std::tie(done.value.image_topic, done.value.timestamp) = currentRun().media.pairing(done.value.image_topic);
+    std::tie(done.value.image_topic, done.value.timestamp_ns) = currentRun().media.pairing(done.value.image_topic);
   } else if constexpr (requires { done.value.timestamp_ns; }) {
     currentRun().media.stampUnset(done.value.timestamp_ns);
   }

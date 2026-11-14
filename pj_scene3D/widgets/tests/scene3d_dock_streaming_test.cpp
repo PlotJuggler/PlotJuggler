@@ -93,7 +93,7 @@ constexpr std::string_view kTfSchema = "mock/frame_transforms";
 PJ::Expected<PJ::sdk::ObjectRecord> emitTfEdge(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   static constexpr std::array<const char*, 3> kChildren{"odom", "odom_reloaded", "odom_merged"};
   PJ::sdk::FrameTransform edge;
-  edge.timestamp = ts;
+  edge.timestamp_ns = ts;
   edge.parent_frame_id = "map";
   edge.child_frame_id = kChildren.at(payload.bytes.empty() ? 0 : payload.bytes[0]);
   edge.rotation = {0.0, 0.0, 0.0, 1.0};

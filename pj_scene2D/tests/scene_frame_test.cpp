@@ -51,7 +51,7 @@ TEST(SceneFrameTest, NestedSceneFrameEquality) {
   SceneFrame a;
   a.timestamp = 1234;
   ImageAnnotation ia;
-  ia.timestamp = 1234;
+  ia.timestamp_ns = 1234;
   ia.image_topic = "/camera/image";
   ia.points.emplace_back();
   a.annotations.push_back(ia);

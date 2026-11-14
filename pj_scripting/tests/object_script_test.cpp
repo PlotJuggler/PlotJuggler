@@ -694,12 +694,12 @@ TEST(ObjectScript, ReferenceScriptHappyPath) {
   ASSERT_NE(witness, nullptr);
   ASSERT_EQ(witness->deletions.size(), 1u);
   EXPECT_EQ(witness->deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
-  EXPECT_EQ(witness->deletions[0].timestamp, 0);
+  EXPECT_EQ(witness->deletions[0].timestamp_ns, 0);
   ASSERT_EQ(witness->entities.size(), 1u);
   const auto& entity = witness->entities[0];
   EXPECT_EQ(entity.frame_id, "base_link");  // the cloud's
   EXPECT_EQ(entity.id, "witness");
-  EXPECT_EQ(entity.timestamp, 0);
+  EXPECT_EQ(entity.timestamp_ns, 0);
   ASSERT_EQ(entity.spheres.size(), 1u);
   EXPECT_EQ(entity.spheres[0].pose.position, (sdk::Vector3{1, 1, 1}));
   EXPECT_DOUBLE_EQ(entity.spheres[0].size.x, 0.2);
@@ -805,7 +805,7 @@ TEST(ObjectScript, AnnotationsBuilderProducesPrimitives) {
   const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, "overlay");
   ASSERT_NE(annotations, nullptr);
   EXPECT_EQ(annotations->image_topic, "/camera");
-  EXPECT_EQ(annotations->timestamp, 7);  // "/camera" is no image input: the result's stamp
+  EXPECT_EQ(annotations->timestamp_ns, 7);  // "/camera" is no image input: the result's stamp
   ASSERT_EQ(annotations->points.size(), 1u);
   EXPECT_EQ(annotations->points[0].topology, sdk::AnnotationTopology::kLineLoop);
   EXPECT_EQ(annotations->points[0].points.size(), 4u);
@@ -1984,7 +1984,7 @@ TEST(ObjectScript, AnnotationsOfAChainedImageNameItByItsInputName) {
   const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, "ann");
   ASSERT_NE(annotations, nullptr);
   EXPECT_EQ(annotations->image_topic, "image");
-  EXPECT_EQ(annotations->timestamp, 6);
+  EXPECT_EQ(annotations->timestamp_ns, 6);
 }
 
 TEST(ObjectScript, AnnotationsCountSumsPointsOverAllEntries) {
@@ -2103,18 +2103,18 @@ TEST(ObjectScript, AnnotationsAreStampedWithTheImagesPayloadTime) {
     const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, name);
     ASSERT_NE(annotations, nullptr);
     EXPECT_EQ(annotations->image_topic, "/cam");  // the store topic, whichever spelling the script used
-    EXPECT_EQ(annotations->timestamp, 4 * kSecond);
+    EXPECT_EQ(annotations->timestamp_ns, 4 * kSecond);
   }
   const auto* other = objectOf<sdk::ImageAnnotations>(*result, "other");
   ASSERT_NE(other, nullptr);
   EXPECT_EQ(other->image_topic, "/elsewhere");
-  EXPECT_EQ(other->timestamp, 15 * kSecond);
+  EXPECT_EQ(other->timestamp_ns, 15 * kSecond);
   // An image at stamp 0 pairs at 0, not at the result's stamp.
   result =
       run("local inputs = ...; return {a = pj.annotations.new{image_topic = '/cam'}:finish()}",
           {imageInput("image", "/cam", 0)}, specs({"a:kImageAnnotations"}), "{}", options);
   ASSERT_TRUE(result.has_value()) << result.error();
-  EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, "a")->timestamp, 0);
+  EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, "a")->timestamp_ns, 0);
 }
 
 // On an image a zero stamp is a stamp: the dataset shift moves it, and what pairs with the image follows. Other types
@@ -2138,7 +2138,7 @@ TEST(ObjectScript, AZeroImageStampMovesWithTheDatasetShift) {
   ASSERT_TRUE(result.has_value()) << result.error();
   for (const char* name : {"threshold", "built"}) {
     SCOPED_TRACE(name);
-    EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, name)->timestamp, 2 * kSecond);
+    EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, name)->timestamp_ns, 2 * kSecond);
   }
   EXPECT_EQ(number(*result, "image"), 2 * kSecond);
   EXPECT_EQ(number(*result, "camera"), 0);
@@ -2226,7 +2226,7 @@ return {a = a.image:decode():threshold(">", 0), b = b.image:decode():threshold("
       const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, name);
       ASSERT_NE(annotations, nullptr) << name;
       EXPECT_EQ(annotations->image_topic, "/video") << name;
-      EXPECT_EQ(annotations->timestamp, stamp) << name;
+      EXPECT_EQ(annotations->timestamp_ns, stamp) << name;
     }
   }
 }
@@ -2253,7 +2253,7 @@ return {built = pj.annotations.new{image_topic = "video"}:finish()}
   const auto* built = objectOf<sdk::ImageAnnotations>(*result, "built");
   ASSERT_NE(built, nullptr);
   EXPECT_EQ(built->image_topic, "/video");
-  EXPECT_EQ(built->timestamp, 99);
+  EXPECT_EQ(built->timestamp_ns, 99);
 
   RunOptions tiny = withVideo(video, decoder);
   tiny.native_budget_bytes = 256;  // the error string fits, the frame's 768 bytes do not
@@ -2323,7 +2323,7 @@ TEST(ObjectScript, AZeroVideoStampMovesWithTheDatasetShift) {
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(text(*result, "stamp"), "1000");
   EXPECT_EQ(video->received, 1000);
-  EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, "built")->timestamp, 1000);
+  EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, "built")->timestamp_ns, 1000);
 }
 
 // `frame_at` hands the source the run's cancel check, so a cancelled run stops inside a long decode too.

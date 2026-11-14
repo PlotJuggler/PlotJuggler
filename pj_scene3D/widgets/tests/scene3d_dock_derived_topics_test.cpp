@@ -66,7 +66,7 @@ PJ::ObjectTopicId registerCanonicalTopic(
 
 PJ::sdk::SceneEntity sphereEntity(const std::string& id, Timestamp stamp = 0, std::string frame = "map") {
   PJ::sdk::SceneEntity entity;
-  entity.timestamp = stamp;
+  entity.timestamp_ns = stamp;
   entity.frame_id = std::move(frame);
   entity.id = id;
   entity.spheres.push_back(PJ::sdk::SpherePrimitive{});

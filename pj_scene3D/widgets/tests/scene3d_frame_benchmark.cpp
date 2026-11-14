@@ -163,13 +163,13 @@ QByteArray robotUrdf(int links) {
 std::vector<uint8_t> robotTf(int links, int k, PJ::Timestamp t) {
   PJ::sdk::FrameTransforms transforms;
   PJ::sdk::FrameTransform base;
-  base.timestamp = t;
+  base.timestamp_ns = t;
   base.parent_frame_id = kFrame;
   base.child_frame_id = "base_link";
   transforms.transforms.push_back(base);
   for (int i = 0; i < links; ++i) {
     PJ::sdk::FrameTransform edge;
-    edge.timestamp = t;
+    edge.timestamp_ns = t;
     edge.parent_frame_id = "base_link";
     edge.child_frame_id = "link_" + std::to_string(i);
     edge.translation = {0.5 * (i % 10) - 2.25, 0.5 * (i / 10) - 1.0, 0.3};
@@ -814,7 +814,7 @@ TEST_F(Scene3dFrameBenchmark, MarkersPanFollow) {
   const auto base_tf = [&](int k) {
     PJ::sdk::FrameTransforms transforms;
     PJ::sdk::FrameTransform edge;
-    edge.timestamp = time_of(k);
+    edge.timestamp_ns = time_of(k);
     edge.parent_frame_id = kFrame;
     edge.child_frame_id = "base";
     edge.translation = {0.02 * k, 0.0, 0.0};

@@ -170,8 +170,6 @@ Retention gaps: when retention evicts input chunks a node never consumed, the no
 
 **`ColorMapRegistry`** (`colormap_registry.hpp`) — Registry of named colormap callbacks. A plugin registers one or more named `ColorMapEvalFn`s (scalar -> CSS color / `#rrggbb`) via `registerMap()` and selects an active one with `setActive()`; consumers (chart renderers, exporters) evaluate the active map per data point via `evaluate()`. The registry holds raw callback pointers + user contexts and does not own the plugin that supplied them.
 
-**`makeColorMapRegistryHost()`** (`colormap_registry_host.hpp`) — Wraps a `ColorMapRegistry` as a C-ABI `PJ_colormap_registry_t` fat pointer for `bind_colormap_registry`. The fat pointer references the registry by address (the registry must outlive every bound plugin); the vtable is a static singleton, safe to share across plugins and threads.
-
 ### Plugin Host Layer
 
 **`DatastoreSourceWriteHost`** / **`DatastoreParserWriteHost`** / **`DatastoreToolboxHost`** — Bridge between the C ABI scalar-write protocol (`PJ_source_write_host_t`, etc.) and the C++ `DataWriter`/`DataEngine`. Each wraps a pimpl state struct. Provides `raw()` to get the C function-pointer table and `flushPending()` to seal/commit accumulated data.

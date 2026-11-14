@@ -770,7 +770,7 @@ int lAnnotationsFinish(lua_State* L) {
   slot.reset();
   auto [topic, stamp] = runMedia(L).pairing(done.value.image_topic);
   done.value.image_topic = std::move(topic);
-  done.value.timestamp = stamp;
+  done.value.timestamp_ns = stamp;
   return pushCharged(L, std::move(done));
 }
 

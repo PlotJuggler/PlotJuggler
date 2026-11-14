@@ -40,7 +40,7 @@ class MockDecoder final : public ISceneDecoder {
     SceneFrame sf;
     sf.timestamp = ts;
     ImageAnnotation ia;
-    ia.timestamp = ts;
+    ia.timestamp_ns = ts;
     ia.points.resize(n);
     sf.annotations.push_back(std::move(ia));
     return sf;
@@ -54,7 +54,7 @@ class MockDecoder final : public ISceneDecoder {
       return unexpected(std::string("mock decoder: object is not ImageAnnotations"));
     }
     SceneFrame sf;
-    sf.timestamp = ia->timestamp;
+    sf.timestamp = ia->timestamp_ns;
     sf.annotations.push_back(*ia);
     return sf;
   }
@@ -240,7 +240,7 @@ TEST(ScenePipelineSourceTest, HostEntryDecoderConvertsRawStorePayload) {
         EXPECT_EQ(ts, 1000);
         EXPECT_FALSE(payload.bytes.empty());
         sdk::ImageAnnotations annotations;
-        annotations.timestamp = ts;
+        annotations.timestamp_ns = ts;
         annotations.points.resize(3);
         const sdk::BuiltinObject object = annotations;
         return decoder.decode(object);

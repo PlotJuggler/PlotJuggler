@@ -61,7 +61,7 @@ std::optional<std::uint64_t> modelEntityBytes(const PJ::sdk::SceneEntity& entity
 
 PJ::sdk::SceneEntity modelOnlyEntity(const PJ::sdk::SceneEntity& source) {
   PJ::sdk::SceneEntity out;
-  out.timestamp = source.timestamp;
+  out.timestamp_ns = source.timestamp_ns;
   out.frame_id = source.frame_id;
   out.id = source.id;
   out.lifetime_ns = source.lifetime_ns;
@@ -71,7 +71,7 @@ PJ::sdk::SceneEntity modelOnlyEntity(const PJ::sdk::SceneEntity& source) {
 }
 
 bool deletedBy(const PJ::sdk::SceneEntity& entity, const PJ::sdk::SceneEntityDeletion& deletion) {
-  if (entity.timestamp > deletion.timestamp) {
+  if (entity.timestamp_ns > deletion.timestamp_ns) {
     return false;
   }
   return deletion.type == PJ::sdk::SceneEntityDeletion::Type::kAll || deletion.id == entity.id;

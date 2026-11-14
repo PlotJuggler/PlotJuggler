@@ -38,7 +38,7 @@ TEST(SceneEntities2DDecoderTest, FactoryCreatesDecoderForSchema) {
 TEST(SceneEntities2DDecoderTest, ProjectsRenderablePrimitivesToImageAnnotations) {
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 42;
+  entity.timestamp_ns = 42;
   entity.frame_id = "camera";
   entity.id = "overlay";
 
@@ -74,7 +74,7 @@ TEST(SceneEntities2DDecoderTest, ProjectsRenderablePrimitivesToImageAnnotations)
   EXPECT_EQ(frame->timestamp, 42);
   ASSERT_EQ(frame->annotations.size(), 1u);
   const auto& annotation = frame->annotations.front();
-  EXPECT_EQ(annotation.timestamp, 42);
+  EXPECT_EQ(annotation.timestamp_ns, 42);
 
   ASSERT_EQ(annotation.points.size(), 1u);
   const auto& projected_line = annotation.points.front();
@@ -100,7 +100,7 @@ TEST(SceneEntities2DDecoderTest, ProjectsRenderablePrimitivesToImageAnnotations)
 TEST(SceneEntities2DDecoderTest, ProjectsCubeFootprintCorners) {
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 11;
+  entity.timestamp_ns = 11;
 
   sdk::CubePrimitive cube;
   cube.pose = poseAt(10.0, 20.0);
@@ -132,7 +132,7 @@ TEST(SceneEntities2DDecoderTest, ProjectsCubeFootprintCorners) {
 TEST(SceneEntities2DDecoderTest, ProjectsTriangleEdgesFromExplicitAndSynthesizedIndices) {
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 12;
+  entity.timestamp_ns = 12;
 
   sdk::TrianglePrimitive explicit_indices;
   explicit_indices.pose = poseAt(10.0, 20.0);
@@ -192,7 +192,7 @@ TEST(SceneEntities2DDecoderTest, ProjectsTriangleEdgesFromExplicitAndSynthesized
 TEST(SceneEntities2DDecoderTest, ProjectsArrowAsLineSegment) {
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 13;
+  entity.timestamp_ns = 13;
 
   sdk::ArrowPrimitive arrow;
   arrow.pose = poseAt(2.0, 3.0);
@@ -223,7 +223,7 @@ TEST(SceneEntities2DDecoderTest, ProjectsArrowAsLineSegment) {
 TEST(SceneEntities2DDecoderTest, ProjectsAxesAsTwoFixedColorSegments) {
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 14;
+  entity.timestamp_ns = 14;
 
   sdk::AxesPrimitive axes;
   axes.pose = poseAt(10.0, 20.0);
@@ -260,7 +260,7 @@ TEST(SceneEntities2DDecoderTest, ProjectsAxesAsTwoFixedColorSegments) {
 TEST(SceneEntities2DDecoderTest, IndexedLineReindexesPointsAndColors) {
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 15;
+  entity.timestamp_ns = 15;
 
   sdk::LinePrimitive line;
   line.type = sdk::LineType::kLineStrip;
@@ -305,7 +305,7 @@ TEST(SceneEntities2DDecoderTest, IndexedLineReindexesPointsAndColors) {
 TEST(SceneEntities2DDecoderTest, EntityWithoutPrimitivesDecodesToEmptyFrame) {
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 16;
+  entity.timestamp_ns = 16;
   entities.entities.push_back(std::move(entity));
 
   auto frame = decodeSerialized(entities);
@@ -320,7 +320,7 @@ TEST(SceneEntities2DDecoderTest, ObjectRouteMatchesByteRoute) {
   // re-serializing it to bytes and re-parsing. Both routes must agree exactly.
   sdk::SceneEntities entities;
   sdk::SceneEntity entity;
-  entity.timestamp = 7;
+  entity.timestamp_ns = 7;
   sdk::LinePrimitive line;
   line.type = sdk::LineType::kLineStrip;
   line.pose = poseAt(1.0, 2.0);

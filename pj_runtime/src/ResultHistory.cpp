@@ -66,7 +66,7 @@ Expected<std::vector<uint8_t>> emptyObjectBytes(
     }
     case sdk::BuiltinObjectType::kImageAnnotations: {
       sdk::ImageAnnotations annotations;
-      annotations.timestamp = stamp;
+      annotations.timestamp_ns = stamp;
       empty = std::move(annotations);
       break;
     }

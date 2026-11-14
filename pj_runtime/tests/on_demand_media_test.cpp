@@ -186,7 +186,7 @@ TEST(OnDemandMediaTest, CanonicalDepthDecodePreservesPairingAndPayloadTime) {
   EXPECT_EQ(fx.decoder->calls, 1);  // one decode per input and run
   const auto annotations = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("pair"), 7 * kSec);
   EXPECT_EQ(annotations.image_topic, "depth");
-  EXPECT_EQ(annotations.timestamp, 3 * kSec);
+  EXPECT_EQ(annotations.timestamp_ns, 3 * kSec);
   ASSERT_EQ(annotations.points.size(), 1u);
   EXPECT_EQ(annotations.points[0].points.size(), 1u);
 }
@@ -210,7 +210,7 @@ TEST(OnDemandMediaTest, DatasetQualifiedImageInputAnnotatesWithTheStoreTopicName
     SCOPED_TRACE(index);
     const auto annotations = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("qualified", index), 7 * kSec);
     EXPECT_EQ(annotations.image_topic, "depth");
-    EXPECT_EQ(annotations.timestamp, 3 * kSec);
+    EXPECT_EQ(annotations.timestamp_ns, 3 * kSec);
   }
 }
 
@@ -241,7 +241,7 @@ TEST(OnDemandMediaTest, ImageAnnotationsOutputIsStampedAndMarkedSnapshot) {
     const auto annotations = test::decodeAt<sdk::ImageAnnotations>(fx.store, topic, 20 * kSec);
     // Paired with the image: its topic and its time, not the newer scalar's; no image input: the result's stamp.
     EXPECT_EQ(annotations.image_topic, index == 2 ? "/cam" : "depth");
-    EXPECT_EQ(annotations.timestamp, index == 2 ? 15 * kSec : 10 * kSec);
+    EXPECT_EQ(annotations.timestamp_ns, index == 2 ? 15 * kSec : 10 * kSec);
   }
 }
 
@@ -256,7 +256,7 @@ TEST(OnDemandMediaTest, AnEvaluationDecodesAndPairsLikeARequest) {
       test::onDemandRecipe("eval", {"depth", "threshold"}, {spec("width:number"), spec("stamp:number")});
   recipe.script = R"(local inputs = ...
     local other = pj.annotations.new{image_topic = "/cam"}:finish()
-    return {width = inputs.depth:decode().width, stamp = other.timestamp:to_number()})";
+    return {width = inputs.depth:decode().width, stamp = other.timestamp_ns:to_number()})";
   ASSERT_TRUE(fx.service->install(recipe).has_value());
   std::optional<GridRunner::Report> report;
   const auto job = fx.service->evaluations().submit(
@@ -344,7 +344,7 @@ TEST(OnDemandMediaTest, CanonicalDepthThresholdKeepsPairing) {
       "local inputs = ...; return {overlay = inputs.depth:decode():threshold('>', 500)}", 100);
   const auto annotations = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("pair"), 100);
   EXPECT_EQ(annotations.image_topic, "depth");
-  EXPECT_EQ(annotations.timestamp, 123);
+  EXPECT_EQ(annotations.timestamp_ns, 123);
   ASSERT_EQ(annotations.points.size(), 1u);
 }
 
@@ -449,7 +449,7 @@ TEST(OnDemandMediaTest, VideoContentRevisionJoinsTheCacheKey) {
   ASSERT_EQ(overlay.texts.size(), 1u);
   EXPECT_EQ(overlay.texts[0].text, std::to_string(10 * kSec));
   EXPECT_EQ(overlay.image_topic, "video");
-  EXPECT_EQ(overlay.timestamp, 10 * kSec) << "paired with the frame's presentation time";
+  EXPECT_EQ(overlay.timestamp_ns, 10 * kSec) << "paired with the frame's presentation time";
 }
 
 // The frame a run looks up joins its identity through the content (D30: a changed dependency is a miss, never an
@@ -477,7 +477,7 @@ TEST(OnDemandMediaCacheTest, ActualVideoQueriesInvalidateCacheAndRepublishObject
   const auto republished = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("ahead"), 10 * kSec);
   ASSERT_EQ(republished.texts.size(), 1u);
   EXPECT_EQ(republished.texts[0].text, std::to_string(20 * kSec));
-  EXPECT_EQ(republished.timestamp, 20 * kSec);
+  EXPECT_EQ(republished.timestamp_ns, 20 * kSec);
 
   fx.push(topic, 15 * kSec, videoPacket(15 * kSec));
   video->hold = true;
