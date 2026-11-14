@@ -58,6 +58,7 @@
 #include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/builtin/mesh_map_codec.hpp"
+#include "pj_base/builtin/mesh_map_update_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_update_codec.hpp"
 #include "pj_base/builtin/poses_in_frame_codec.hpp"
@@ -466,6 +467,27 @@ class RhiScene {
     mesh.links = {link};
     return fixture_.add("/mesh_map", BT::kMeshMap, PJ::serializeMeshMap(mesh));
   }
+  // A sparse update of the wall's `cost` on its `<topic>_updates` sibling,
+  // writing `value` to `faces` at time `t`.
+  void pushMeshMapCost(PJ::Timestamp t, const std::vector<uint32_t>& faces, float value) {
+    if (!mesh_map_updates_.has_value()) {
+      mesh_map_updates_ = fixture_.registerTopic("/mesh_map_updates", BT::kMeshMapUpdate);
+    }
+    const std::vector<float> values(faces.size(), value);
+    PJ::sdk::MeshChannelPatch patch;
+    patch.channel.name = "cost";
+    patch.channel.target = PJ::sdk::MeshChannel::Target::kFace;
+    patch.channel.datatype = PJ::sdk::PointField::Datatype::kFloat32;
+    patch.channel.info.no_data = -1.0;
+    patch.channel.data =
+        PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(values.data()), values.size() * sizeof(float));
+    patch.indices =
+        PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(faces.data()), faces.size() * sizeof(uint32_t));
+    PJ::sdk::MeshMapUpdate update;
+    update.timestamp_ns = t;
+    update.patches = {patch};
+    fixture_.push(*mesh_map_updates_, t, PJ::serializeMeshMapUpdate(update));
+  }
   // A pose topic whose first pose visits `positions`, one sample per 100 ns
   // from t = 100. Binds the fixture's TF service first: trails need a TF buffer.
   PJ::ObjectTopicId addPoseTrack(const std::vector<glm::vec3>& positions) {
@@ -533,6 +555,7 @@ class RhiScene {
   pj::scene3d::test::Scene3DRenderFixture fixture_;
   QTemporaryDir urdf_dir_;
   PJ::ObjectTopicId occupancy_updates_;
+  std::optional<PJ::ObjectTopicId> mesh_map_updates_;
 };
 
 class Scene3dRhiRenderTest : public ::testing::Test {
@@ -2000,6 +2023,44 @@ TEST_F(Scene3dRhiRenderTest, MeshMapDrawsChannelColoursAndNoData) {
   EXPECT_GT(delta(half_low, low), 30) << "half opacity drew the opaque colour";
   EXPECT_GT(delta(half_low, backdrop_low), 30) << "half opacity drew nothing";
   EXPECT_LT(delta(half_low, backdrop_low), delta(low, backdrop_low));
+}
+
+// A sparse update of the coloured face channel reaches the GPU as the corners
+// it rewrote, not the whole colour buffer, and only its quad changes colour.
+TEST_F(Scene3dRhiRenderTest, MeshMapUpdateUploadsOnlyTheFacesItWrote) {
+  RhiScene scene;
+  const PJ::ObjectTopicId topic = scene.addMeshMapWall();
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  auto* layer = dynamic_cast<pj::scene3d::MeshMapLayer*>(scene.dock()->layerFor(topic));
+  ASSERT_NE(layer, nullptr);
+  scene.setLayerAttribute(topic, u"lighting"_s, u"0"_s);
+  layer->setAutoRange(false);  // a fixed range: only the patched quad may change
+  layer->setManualRange(0.0, 10.0);
+  scene.pushMeshMapCost(150, {0, 1}, 0.0F);  // lists the update topic: this stage is whole
+  layer->setTrackerTime(PJ::fromRaw(200));
+  GRAB_OR_SKIP(before, view, "mesh_map_before_update");
+  const pj::scene3d::MeshMapRhiPass& pass = SceneViewTestAccess::meshMapPass(*view);
+  const std::uint64_t uploaded = pass.colorUploadBytes();
+  const int geometry_uploads = pass.geometryUploadCount();
+  ASSERT_GE(uploaded, 6U * 3U * sizeof(float));
+
+  scene.pushMeshMapCost(250, {4, 5}, 10.0F);  // the "no data" quad gets a value
+  layer->setTrackerTime(PJ::fromRaw(300));
+  GRAB_OR_SKIP(after, view, "mesh_map_after_update");
+  EXPECT_EQ(pass.colorUploadBytes() - uploaded, 2U * 3U * sizeof(float)) << "two faces of the six";
+  EXPECT_EQ(pass.geometryUploadCount(), geometry_uploads);
+  EXPECT_TRUE(layer->statusWarning().isEmpty()) << layer->statusWarning().toStdString();
+
+  const auto centre = [&](float x) { return project(*view, {x, 0.0F, 0.75F}, before.size()); };
+  const auto delta = [](const QColor& a, const QColor& b) { return channelDeltaSum(a.rgb(), b.rgb()); };
+  EXPECT_GT(delta(meanColor(before, centre(1.0F)), meanColor(after, centre(1.0F))), 30)
+      << "the patched quad kept its no-data grey";
+  EXPECT_LE(delta(meanColor(before, centre(-1.0F)), meanColor(after, centre(-1.0F))), 6);
+  EXPECT_LE(delta(meanColor(before, centre(0.0F)), meanColor(after, centre(0.0F))), 6);
+  EXPECT_LE(delta(meanColor(after, centre(0.0F)), meanColor(after, centre(1.0F))), 6)
+      << "both quads hold 10: the same colour";
 }
 
 // Five samples on a straight line at z = 1: the ribbon spans their projection,

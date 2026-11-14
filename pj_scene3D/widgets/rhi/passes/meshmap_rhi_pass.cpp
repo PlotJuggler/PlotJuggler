@@ -8,9 +8,9 @@
 #include <cmath>
 #include <limits>
 
+#include "lit_surface_uniforms.h"
 #include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_widgets/layers/mesh_map_layer.h"
-#include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_widgets/GraphicsApi.h"  // uploadStaticBufferInPieces
 
 namespace pj::scene3d {
@@ -141,6 +141,23 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
   if (!colors) {
     return true;
   }
+  // One revision behind, with only a span of corners rewritten since: the buffer
+  // already holds the rest. Both colour attributes are four bytes per corner.
+  const std::optional<ElementRange>& delta = layer->stagedColorDelta();
+  if (!geometry && delta.has_value() && gpu.uploaded_revision + 1 == layer->stagedRevision()) {
+    const void* corners = mesh.color_mode == MeshMapColorMode::kChannel ? static_cast<const void*>(mesh.values.data())
+                                                                        : static_cast<const void*>(mesh.colors.data());
+    const quint32 offset = delta->begin * 4U;
+    const quint32 bytes = delta->empty() ? 0U : (delta->end - delta->begin) * 4U;
+    if (bytes != 0 && gpu.attributes != nullptr && offset + bytes <= gpu.attributes_capacity) {
+      PJ::uploadStaticBufferInPieces(
+          updates, gpu.attributes, offset, bytes, static_cast<const char*>(corners) + offset);
+      color_upload_bytes_ += bytes;
+    }
+    gpu.uploaded_revision = layer->stagedRevision();
+    ++color_upload_count_;
+    return true;
+  }
   const void* attribute_data = nullptr;
   std::size_t attribute_bytes = 0;
   if (mesh.color_mode == MeshMapColorMode::kChannel) {
@@ -178,6 +195,7 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
     ++geometry_upload_count_;
   }
   recordUpload(updates, gpu.attributes, attribute_data, attribute_bytes);
+  color_upload_bytes_ += attribute_bytes;
   gpu.attributes_in_use = mesh.color_mode != MeshMapColorMode::kSolid;
   gpu.uploaded_revision = layer->stagedRevision();
   ++color_upload_count_;
@@ -191,11 +209,7 @@ void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
   draws_.clear();
   last_layer_count_ = 0;
   last_vertex_count_ = 0;
-  const glm::mat4 view_to_scene = glm::inverse(frame.view);
-  const glm::vec3 eye(view_to_scene[3]);
-  const glm::vec3 view_z = glm::normalize(glm::vec3(view_to_scene[2]));
-  const float key_length = glm::length(shading.key_light_dir);
-  const glm::vec3 key_dir = key_length > 1e-6F ? shading.key_light_dir / key_length : glm::vec3(0.0F, 0.0F, 1.0F);
+  const LitSurfaceFrame lit = litSurfaceFrame(frame, shading);
   for (const auto& admitted : admitted_) {
     MeshMapLayer* layer = admitted.layer;
     const MeshMapUpload& mesh = *layer->stagedMesh();
@@ -210,7 +224,6 @@ void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
 
     const glm::mat4 model_f =
         relativeModel(admitted.fixed_from_source.matrix() * poseTransform(mesh.origin).matrix(), frame.render_origin);
-    const auto [color_lo, color_hi] = layer->effectiveRange(mesh.color_range);
     const auto opacity = static_cast<float>(layer->opacity());
     // Blending surfaces draw after the opaque ones without writing depth: below
     // full layer opacity, or with a colour whose own alpha is below 255. The links
@@ -227,14 +240,7 @@ void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
     MeshMapUniforms uniforms;
     copyMatrix(frame.view_projection, uniforms.view_projection);
     copyMatrix(model_f, uniforms.model);
-    uniforms.eye = {eye.x, eye.y, eye.z, 0.0F};
-    uniforms.view_z = {view_z.x, view_z.y, view_z.z, 0.0F};
-    uniforms.key_dir = {key_dir.x, key_dir.y, key_dir.z, 0.0F};
-    uniforms.color_params = {color_lo, color_hi, static_cast<float>(layer->colormap()), opacity};
-    // The grid map's lit-surface weights: both are flat-ish maps without AO.
-    uniforms.light_params = {
-        look::kGridMapAmbient * shading.ambient_scale, look::kGridMapDirect * shading.direct_scale,
-        look::kGridMapFill * shading.fill_light_scale, layer->lighting() ? 1.0F : 0.0F};
+    fillLitSurfaceUniforms(uniforms, lit, *layer, mesh.color_range);
     uniforms.flags = {mode, 0.0F, 0.0F, 0.0F};
     frame.updates->updateDynamicBuffer(gpu.surface_uniforms, 0, kUniformBytes, &uniforms);
     draws_.push_back(

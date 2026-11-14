@@ -53,7 +53,8 @@ catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline)
 ## Layout
 
 - `core/`: pure geometry/scene logic, **no Qt or GPU**: cameras, frame picking and connection lines over the `pj_tf`
-  buffer (TF types come from `pj_tf`, not this tree), `OccupancyGridReconstructor`, point-cloud conversion and codecs,
+  buffer (TF types come from `pj_tf`, not this tree), `OccupancyGridReconstructor` and `MeshMapReconstructor` (a map
+  plus its update stream at a time, store-free), point-cloud conversion and codecs,
   depth back-projection, `SceneLimits` and the per-family budgets, trail sampling, the grid-map, mesh-map and voxel
   views.
   Public links stay `glm` / `pj_base` / `nlohmann_json` / `pj_tf`.

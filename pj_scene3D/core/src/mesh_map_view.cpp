@@ -140,6 +140,71 @@ bool hasVertexColor(const MeshMapState& state) {
          colorComponent(state, "blue") != nullptr;
 }
 
+// The three corner values of `face`; false when any is "no data".
+bool faceValues(
+    const MeshMapState& state, const MeshMapChannelState& channel, size_t face, std::array<double, 3>& values) {
+  bool valid = true;
+  for (size_t corner = 0; corner < 3; ++corner) {
+    values[corner] = cornerValue(state, channel, (3 * face) + corner);
+    valid = valid && std::isfinite(values[corner]);
+  }
+  return valid;
+}
+
+// The colormap values of faces [begin, end) of a continuous channel, into `upload.values`.
+void writeFaceValues(
+    const MeshMapState& state, const MeshMapChannelState& channel, size_t begin, size_t end, MeshMapUpload& upload) {
+  std::array<double, 3> values{};
+  for (size_t face = begin; face < end; ++face) {
+    const bool valid = faceValues(state, channel, face, values);
+    for (size_t corner = 0; corner < 3; ++corner) {
+      upload.values[(3 * face) + corner] =
+          valid ? static_cast<float>(std::clamp<double>(values[corner], -kMeshMapValueLimit, kMeshMapValueLimit))
+                : kMeshMapNoDataValue;
+    }
+  }
+}
+
+// The finite range of colormap values, "no data" corners aside.
+FiniteRange valueRange(const std::vector<float>& values) {
+  FiniteRange range;
+  for (const float value : values) {
+    if (std::abs(value) <= kMeshMapValueLimit) {
+      accumulate(range, value);
+    }
+  }
+  return range;
+}
+
+// The colours of faces [begin, end) of a categorical channel, into
+// `upload.colors`: the producer's category colour, else the palette. The first
+// category of a value that carries a colour wins. Turns `upload.translucent` on
+// for a colour with alpha below 255.
+void writeFaceColors(
+    const MeshMapState& state, const MeshMapChannelState& channel, size_t begin, size_t end, MeshMapUpload& upload) {
+  std::unordered_map<int64_t, uint32_t> category_colors;
+  for (const PJ::sdk::ChannelCategory& category : channel.info.categories) {
+    if (category.color.has_value()) {
+      category_colors.try_emplace(
+          category.value, packRgba(category.color->r, category.color->g, category.color->b, category.color->a));
+    }
+  }
+  const auto color_of = [&category_colors](double value) {
+    const auto id = static_cast<int64_t>(std::llround(value));
+    const auto found = category_colors.find(id);
+    return found != category_colors.end() ? found->second : categoricalColor(id);
+  };
+  std::array<double, 3> values{};
+  for (size_t face = begin; face < end; ++face) {
+    const bool valid = faceValues(state, channel, face, values);
+    uint32_t* out = &upload.colors[3 * face];
+    for (size_t corner = 0; corner < 3; ++corner) {
+      out[corner] = valid ? color_of(values[corner]) : kNoDataColor;
+    }
+    upload.translucent = upload.translucent || alphaOf(out[0]) < 255 || alphaOf(out[1]) < 255 || alphaOf(out[2]) < 255;
+  }
+}
+
 }  // namespace
 
 const MeshMapChannelState* MeshMapState::find(Target target, std::string_view name) const {
@@ -204,7 +269,8 @@ MeshMapState decodeMeshMap(const PJ::sdk::MeshMap& mesh) {
          .target = channel.target,
          .datatype = channel.datatype,
          .info = channel.info,
-         .values = readValues(channel, elements)});
+         .values = readValues(channel, elements),
+         .dirty = {}});
   }
   return state;
 }
@@ -239,9 +305,12 @@ MeshMapUpdateResult applyMeshMapUpdate(MeshMapState& state, const PJ::sdk::MeshM
       state.channels.push_back(std::move(created));
       target = &state.channels.back();
     }
+    // New semantics re-colour every element, as a dense patch or a new channel does.
+    bool all_dirty = dense || target->info != channel.info;
     target->info = channel.info;
     if (target->values.size() != elements) {
       target->values.assign(elements, kNaN);  // a new channel: "no data" where the patch is silent
+      all_dirty = true;
     }
     for (size_t k = 0; k < values; ++k) {
       uint32_t index = static_cast<uint32_t>(k);
@@ -253,9 +322,21 @@ MeshMapUpdateResult applyMeshMapUpdate(MeshMapState& state, const PJ::sdk::MeshM
         continue;
       }
       target->values[index] = readValue(channel.data.data(), channel.datatype, channel.info, k);
+      if (!all_dirty) {
+        target->dirty.add(index);
+      }
+    }
+    if (all_dirty) {
+      target->dirty = {.begin = 0, .end = static_cast<uint32_t>(elements)};
     }
   }
   return result;
+}
+
+void clearMeshMapDirty(MeshMapState& state) {
+  for (MeshMapChannelState& channel : state.channels) {
+    channel.dirty = {};
+  }
 }
 
 std::string meshMapChannelKey(Target target, std::string_view name) {
@@ -353,58 +434,12 @@ void fillMeshMapColors(const MeshMapState& state, std::string_view source, MeshM
     if (channel->info.kind == ChannelKind::kContinuous) {
       upload.color_mode = MeshMapColorMode::kChannel;
       upload.values.resize(corners);
-      for (size_t face = 0; face * 3 < corners; ++face) {
-        std::array<double, 3> values{};
-        bool valid = true;
-        for (size_t corner = 0; corner < 3; ++corner) {
-          values[corner] = cornerValue(state, *channel, (3 * face) + corner);
-          valid = valid && std::isfinite(values[corner]);
-        }
-        for (size_t corner = 0; corner < 3; ++corner) {
-          float value = kMeshMapNoDataValue;
-          if (valid) {
-            value = static_cast<float>(std::clamp<double>(values[corner], -kMeshMapValueLimit, kMeshMapValueLimit));
-            accumulate(upload.color_range, value);
-          }
-          upload.values[(3 * face) + corner] = value;
-        }
-      }
-      return;
-    }
-    // Categorical / bitmask: the producer's category colour, else the palette.
-    // The first category of a value that carries a colour wins.
-    std::unordered_map<int64_t, uint32_t> category_colors;
-    for (const PJ::sdk::ChannelCategory& category : channel->info.categories) {
-      if (category.color.has_value()) {
-        category_colors.try_emplace(
-            category.value, packRgba(category.color->r, category.color->g, category.color->b, category.color->a));
-      }
-    }
-    const auto color_of = [&category_colors](double value) {
-      const auto id = static_cast<int64_t>(std::llround(value));
-      const auto found = category_colors.find(id);
-      return found != category_colors.end() ? found->second : categoricalColor(id);
-    };
-    upload.color_mode = MeshMapColorMode::kRgba;
-    upload.colors.resize(corners);
-    for (size_t face = 0; face * 3 < corners; ++face) {
-      uint32_t* out = &upload.colors[3 * face];
-      if (channel->target == Target::kFace) {
-        const double value = channel->values[face];
-        std::fill_n(out, 3, std::isfinite(value) ? color_of(value) : kNoDataColor);
-      } else {
-        std::array<double, 3> values{};
-        bool valid = true;
-        for (size_t corner = 0; corner < 3; ++corner) {
-          values[corner] = channel->values[state.indices[(3 * face) + corner]];
-          valid = valid && std::isfinite(values[corner]);
-        }
-        for (size_t corner = 0; corner < 3; ++corner) {
-          out[corner] = valid ? color_of(values[corner]) : kNoDataColor;
-        }
-      }
-      upload.translucent =
-          upload.translucent || alphaOf(out[0]) < 255 || alphaOf(out[1]) < 255 || alphaOf(out[2]) < 255;
+      writeFaceValues(state, *channel, 0, corners / 3, upload);
+      upload.color_range = valueRange(upload.values);
+    } else {
+      upload.color_mode = MeshMapColorMode::kRgba;
+      upload.colors.resize(corners);
+      writeFaceColors(state, *channel, 0, corners / 3, upload);
     }
     return;
   }
@@ -424,6 +459,45 @@ void fillMeshMapColors(const MeshMapState& state, std::string_view source, MeshM
       upload.translucent = upload.translucent || a < 255;
     }
   }
+}
+
+std::optional<ElementRange> refreshMeshMapColors(
+    const MeshMapState& state, std::string_view source, MeshMapUpload& upload) {
+  const size_t corners = state.indices.size();
+  if (const MeshMapChannelState* channel = channelForKey(state, source); channel != nullptr) {
+    const bool continuous = channel->info.kind == ChannelKind::kContinuous;
+    const bool same_mode = continuous
+                               ? upload.color_mode == MeshMapColorMode::kChannel && upload.values.size() == corners
+                               : upload.color_mode == MeshMapColorMode::kRgba && upload.colors.size() == corners;
+    if (!same_mode) {
+      return std::nullopt;
+    }
+    if (channel->dirty.empty()) {
+      return ElementRange{};
+    }
+    // ponytail: a dirty vertex channel re-colours whole; a vertex -> faces index
+    // would bound it, if vertex-channel updates on large meshes turn out to matter.
+    if (channel->target != Target::kFace) {
+      return std::nullopt;
+    }
+    const uint32_t begin = channel->dirty.begin;
+    const uint32_t end = std::min(channel->dirty.end, state.faceCount());
+    if (continuous) {
+      writeFaceValues(state, *channel, begin, end, upload);
+      upload.color_range = valueRange(upload.values);
+    } else {
+      writeFaceColors(state, *channel, begin, end, upload);
+    }
+    return ElementRange{.begin = 3 * begin, .end = 3 * end};
+  }
+  if (source == kMeshMapSourceVertexColor && hasVertexColor(state)) {
+    const bool untouched = std::all_of(kColorComponents.begin(), kColorComponents.end(), [&state](auto name) {
+      const MeshMapChannelState* component = state.find(Target::kVertex, name);
+      return component == nullptr || component->dirty.empty();
+    });
+    return untouched && upload.color_mode == MeshMapColorMode::kRgba ? std::optional(ElementRange{}) : std::nullopt;
+  }
+  return upload.color_mode == MeshMapColorMode::kSolid ? std::optional(ElementRange{}) : std::nullopt;
 }
 
 AABB meshMapBounds(const MeshMapState& state) {

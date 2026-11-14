@@ -1372,7 +1372,7 @@ mode does. It renders in every build, the browser included.
 
 ## Mesh-map layer (`MeshMapLayer`)
 
-Renders an `sdk::MeshMap` (SDK ≥ 0.41.0), a triangle mesh whose vertices and
+Renders an `sdk::MeshMap` (SDK ≥ 1.0.0), a triangle mesh whose vertices and
 faces carry named data channels (navigation meshes such as EasyNavigation
 NavMap, cost and semantic meshes), and keeps it current with the
 `sdk::MeshMapUpdate` patches of its update topics. It renders in every build,
@@ -1393,34 +1393,61 @@ the browser included.
   update's patches into the state: dense patches replace a channel (and must
   hold one value per element), sparse ones write the listed elements, a channel
   the map lacks is created with NaN elsewhere, and an update whose `geometry_id`
-  is set and differs is refused whole.
-- **Update topics.** Every `MeshMapUpdate` topic of the dataset is read (found by
-  its `builtin_object_type` metadata, re-listed when the dataset's topic list
-  changes). An update applies when its `geometry_id` equals the map's, both set;
-  the `<topic>_updates` sibling, OccupancyGridLayer's convention, also applies
-  updates without one, and only its decode failures warn (another topic's
-  updates for other geometries are not this map's business).
+  is set and differs is refused whole. Every element written joins its
+  channel's `dirty` span (a dense patch, a new channel or changed `ChannelInfo`
+  marks all of it), which is what lets the colours follow an update without a
+  whole re-colour.
+- **Who does what.** `core/mesh_map_reconstructor.{h,cpp}` (`MeshMapReconstructor`,
+  Qt-free and store-free, the counterpart of `OccupancyGridReconstructor`) owns
+  the mesh: the state, how far updates were applied, which update belongs to
+  the map, and when to start over from the map. `MeshMapLayer` owns the store
+  side: which entries exist at the tracker time, fetching and decoding them
+  (`resolveObject`), spotting a late arrival, the gate that skips an unchanged
+  time, the warnings. The layer hands the map to `rebase()` when `needsBase()`
+  asks, and the updates of a window through the `UpdatesProvider` of
+  `advance()`.
+- **Update topics.** Every `MeshMapUpdate` topic of the dataset is a candidate
+  stream (found by its `builtin_object_type` metadata, re-listed when the
+  dataset's topic list changes). An update applies when its `geometry_id`
+  equals the map's, both set; the `<topic>_updates` sibling, OccupancyGridLayer's
+  convention, also applies updates without one, and only its decode failures
+  warn (another topic's updates for other geometries are not this map's
+  business). An entry of a non-sibling stream found to name another geometry is
+  remembered by its UID and skipped before the fetch from then on, for as long
+  as the map's geometry id stays the same: a replay after a rewind does not
+  re-read another mesh's updates. The first pass still decodes each one once;
+  nothing cheaper can read a `geometry_id` behind a parser plugin.
 - **Updates over time.** At the tracker time the layer takes the latest map at or
-  before it and applies the updates stamped in (map stamp - 1, time], merged
-  across topics in time order (`ObjectStore::rangeByTime`). Moving forward
-  applies only the new window. Moving back before what was applied, a new map, a
-  new update topic, or a late update stamped at or before the applied window
+  before it and the reconstructor applies the updates stamped in
+  (map stamp - 1, time], merged across topics in time order
+  (`ObjectStore::rangeByTime`). Moving forward applies only the new window.
+  Moving back before what was applied, a new map, a changed set of update
+  topics, or a late update stamped at or before the applied window
   (`ObjectStore::oldestArrivalAfter` against each topic's applied-arrival
-  cursor, taken before the window is read) rebuilds from the map. A late update
+  cursor, taken before the window is read) starts over from the map. A late update
   counts on the sibling and on a topic already paired; on another topic only
-  one naming this map's geometry does (its late entries are decoded to tell),
-  so another mesh's updates neither rebuild nor re-stage this layer. A rebuild
-  on the same map entry re-colours but keeps the uploaded positions. The update
+  one naming this map's geometry does (its late entries are decoded to tell,
+  once each), so another mesh's updates neither rebuild nor re-stage this layer.
+  A rebuild on the same map entry re-colours but keeps the uploaded positions. The update
   fingerprint (`renderKey()` and the layer's own gate) folds, per topic, the
   highest arrival UID and the latest-by-stamp entry at the time: the maximum
   alone does not tell apart the update sets at two times when arrival and stamp
-  order differ. `timeRange()` unions the sibling's range and every topic that
-  has applied an update; that pairing outlives rebuilds and new maps and is
-  forgotten only with the streaming state (attach, dataset replacement), or the
-  scrub clamp would pin the tracker at the last map. A refused map (invalid,
-  non-finite `origin`, over the face limit) keeps its warning and is not
-  decoded again until the map or the updates at the time change. An update
+  order differ. `timeRange()` unions the range of every paired topic (the
+  sibling, and any topic that has applied an update); that pairing outlives
+  rebuilds and new maps and is forgotten only with the streaming state (attach,
+  dataset replacement), or the scrub clamp would pin the tracker at the last
+  map. A refused map (invalid, non-finite `origin`, over the face limit) keeps
+  its warning and is not decoded again while it is the map at the time. An update
   whose source re-read failed is reported as lost.
+- **Staging.** After a replay the layer stages one of three things: nothing,
+  when the updates wrote only channels the mesh is not coloured by; a span of
+  colour corners (`stagedColorDelta()`), when they wrote faces of the coloured
+  FACE channel and nothing else asked for a re-colour
+  (`refreshMeshMapColors()`); the whole colour array otherwise (new positions,
+  another source, a rebuild from the map, a vertex channel or the vertex
+  colour, a patch that changed the channel's kind). The span is the single
+  range from the lowest to the highest face written, so scattered indices
+  re-colour what lies between them too.
 - **Placement** is at the tracker time in the entry clock, like the occupancy
   grid: the drawn mesh is a map plus later updates, with no single stamp. The
   model is `TF(fixed <- frame_id) * origin`.
@@ -1431,14 +1458,16 @@ the browser included.
   channel, else the first continuous vertex channel, else the vertex colour,
   else the first categorical channel, else solid: the channel's `ChannelKind`,
   not its name, decides. A continuous channel goes through the shared colormap;
-  a categorical or bitmask channel is coloured on the CPU from its categories'
+  a categorical channel is coloured on the CPU from its categories'
   colours, else a ten-colour qualitative palette (`categoricalColor`), as are
   link segments by kind. Coloured by any channel, a face with no data at any
   corner draws whole as no data.
 - **Geometry and colour on the GPU.** `MeshMapRhiPass` draws de-indexed
   triangles (three vertices per face) from two static vertex buffers: positions,
   uploaded only when the upload's `geometry_revision` changes, and one 4-byte
-  attribute per vertex, uploaded when the colouring or the values change: a
+  attribute per vertex, uploaded when the colouring or the values change (only
+  the layer's `stagedColorDelta()` span when the pass holds the revision just
+  before it, the whole buffer otherwise): a
   channel value (a face channel repeats its value on the three corners and draws
   flat, a vertex channel interpolates) or an RGBA8 colour. Solid mode binds the
   position buffer in both attribute slots, never a colour buffer left from an
@@ -1458,7 +1487,9 @@ the browser included.
 - **Shading** is a flat normal from `cross(dFdx(p), dFdy(p))` in the fragment
   shader (WebGL2 has the derivatives; it has no `gl_PrimitiveID`), faced towards
   the eye; a degenerate or sub-pixel triangle, whose cross product is ~0, takes
-  the view direction instead of a NaN normal, with the grid map's Lambert key + fill weights. Not the model PBR path;
+  the view direction instead of a NaN normal, with the grid map's Lambert key + fill weights (both passes fill
+  those uniforms through `rhi/passes/lit_surface_uniforms.h`; the two fragment
+  shaders still spell the three-term sum out each). Not the model PBR path;
   no shadow cast or receive.
 - **Links** (`MeshFaceLink`) draw as a line list between face centroids through
   the line pipelines (Lines topology, same shaders, unlit).
@@ -1468,8 +1499,11 @@ the browser included.
   falls back with a warning and is honoured again when it reappears.
 - **Limits.** A map past `kMaxRenderableMeshMapFaces` is refused with a status
   warning. The per-view triangle budget of `kSceneLimits` does not cover this
-  family yet. Each applied update re-expands and re-uploads the whole colour
-  attribute; a rewind replays every update since the map (no checkpoints).
+  family yet. A rewind replays every update since the map (no checkpoints, where
+  `OccupancyGridReconstructor` keeps snapshots). An update to a vertex channel
+  the mesh is coloured by re-colours and re-uploads the whole attribute (no
+  vertex-to-faces index). The memo of another mesh's entries grows by one UID
+  per entry for as long as the geometry id stays the same.
 - **Not built:** smooth shading from a `normal` channel, shadows, picking a face,
   a wireframe overlay, the `id` field (one mesh per topic).
 

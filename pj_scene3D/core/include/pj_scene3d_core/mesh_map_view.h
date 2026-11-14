@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -31,6 +32,27 @@ inline constexpr float kMeshMapValueLimit = 1.0e28F;
 inline constexpr std::string_view kMeshMapSourceVertexColor = "<vertex color>";
 inline constexpr std::string_view kMeshMapSourceSolid = "<solid>";
 
+// A half-open span of element indices [begin, end); empty when begin >= end.
+struct ElementRange {
+  uint32_t begin = 0;
+  uint32_t end = 0;
+
+  [[nodiscard]] bool empty() const {
+    return begin >= end;
+  }
+  // Grows the span to cover `index`.
+  void add(uint32_t index) {
+    if (empty()) {
+      begin = index;
+      end = index + 1;
+    } else {
+      begin = begin < index ? begin : index;
+      end = end > index ? end : index + 1;
+    }
+  }
+  bool operator==(const ElementRange&) const = default;
+};
+
 // One scalar channel of a decoded mesh. Values are exact: a double holds every
 // value of the supported datatypes (no 64-bit integers), so category ids above
 // 2^24 stay distinct. "No data" is NaN: the channel's info.no_data value is
@@ -42,6 +64,13 @@ struct MeshMapChannelState {
   PJ::sdk::PointField::Datatype datatype = PJ::sdk::PointField::Datatype::kFloat32;
   PJ::sdk::ChannelInfo info;
   std::vector<double> values;  ///< one per vertex or face
+  /// The span holding every element applyMeshMapUpdate() wrote since
+  /// clearMeshMapDirty(), or all of them when a patch changed `info`: what
+  /// refreshMeshMapColors() re-colours.
+  // ponytail: one span, lowest to highest index written. A patch local in space
+  // need not be local in index order; keep a few runs instead if the elements
+  // between them start to cost.
+  ElementRange dirty;
 };
 
 // A MeshMap decoded for display and for applying MeshMapUpdates. Built once per
@@ -86,9 +115,13 @@ struct MeshMapUpdateResult {
 // per element; a channel the state lacks is created ("no data" elsewhere);
 // `channel.info` replaces the state channel's; its datatype stays the one the
 // channel was created with (a uint8 colour component patched with float values
-// stays the vertex colour). `update` must have passed
-// PJ::validateMeshMapUpdate().
+// stays the vertex colour). Every element written joins its channel's `dirty`
+// span. `update` must have passed PJ::validateMeshMapUpdate().
 [[nodiscard]] MeshMapUpdateResult applyMeshMapUpdate(MeshMapState& state, const PJ::sdk::MeshMapUpdate& update);
+
+// Empties every channel's `dirty` span: call once the colours built from the
+// state are up to date.
+void clearMeshMapDirty(MeshMapState& state);
 
 // The selector key of a channel: "face:<name>" or "vertex:<name>".
 [[nodiscard]] std::string meshMapChannelKey(PJ::sdk::MeshChannel::Target target, std::string_view name);
@@ -135,11 +168,21 @@ struct MeshMapUpload {
 void fillMeshMapGeometry(const MeshMapState& state, MeshMapUpload& upload);
 
 // Colours `upload` from `source` (a channel key or a kMeshMapSource* token): a
-// continuous channel through the colormap (kChannel), a categorical or bitmask
+// continuous channel through the colormap (kChannel), a categorical
 // channel through its categories' colours or the palette (kRgba), the vertex
 // colour (kRgba), else solid. An unknown source colours solid. Coloured by a
 // channel, a face with "no data" at any corner draws whole as no data.
 void fillMeshMapColors(const MeshMapState& state, std::string_view source, MeshMapUpload& upload);
+
+// Brings an `upload` that fillMeshMapColors() coloured from the same `source`
+// up to date with the channels' `dirty` spans, rewriting only the faces a FACE
+// channel's span covers. Returns the span of corners (three per face) it rewrote,
+// empty when the source's channels are untouched. nullopt when the upload must
+// be coloured whole instead: the dirty source is a vertex channel or the vertex
+// colour (a vertex touches faces anywhere in the buffer), or its kind no longer
+// matches the upload's colour mode. `translucent` only ever turns on here.
+[[nodiscard]] std::optional<ElementRange> refreshMeshMapColors(
+    const MeshMapState& state, std::string_view source, MeshMapUpload& upload);
 
 // A distinct colour per small integer (qualitative palette), packed RGBA8.
 [[nodiscard]] uint32_t categoricalColor(int64_t value);

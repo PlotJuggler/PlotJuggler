@@ -260,6 +260,50 @@ TEST(MeshMapLayer, ARewindOnTheSameMapKeepsTheGeometry) {
   EXPECT_EQ(rig.layer.stagedMeshForTest()->geometry_revision, geometry) << "the positions were re-uploaded";
 }
 
+// An update that rewrote faces of the coloured channel stages that span alone;
+// anything that needs every colour again (a rewind here) stages whole.
+TEST(MeshMapLayer, ASparseUpdateStagesOnlyTheFacesItWrote) {
+  Rig rig;
+  rig.pushMap(100);
+  rig.pushUpdate(200, 1, 9.0F);
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(150);
+  EXPECT_FALSE(rig.layer.stagedColorDelta().has_value()) << "the first stage is whole";
+  const auto revision = rig.layer.stagedRevision();
+  const auto geometry = rig.layer.stagedMeshForTest()->geometry_revision;
+
+  rig.layer.renderAtForTest(250);
+  EXPECT_EQ(rig.layer.stagedRevision(), revision + 1);
+  ASSERT_TRUE(rig.layer.stagedColorDelta().has_value());
+  EXPECT_EQ(*rig.layer.stagedColorDelta(), (pj::scene3d::ElementRange{.begin = 3, .end = 6}));
+  EXPECT_EQ(rig.layer.stagedMeshForTest()->geometry_revision, geometry);
+  EXPECT_FLOAT_EQ(rig.stagedCost(0), 1.0F);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 9.0F);
+  EXPECT_FLOAT_EQ(rig.layer.stagedMeshForTest()->color_range.hi, 9.0F);
+
+  rig.layer.renderAtForTest(150);
+  EXPECT_FALSE(rig.layer.stagedColorDelta().has_value());
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 3.0F);
+}
+
+// An update to a channel the mesh is not coloured by changes nothing on screen.
+TEST(MeshMapLayer, AnUpdateToAnotherChannelDoesNotRestage) {
+  Rig rig;
+  rig.pushMap(100);
+  rig.pushUpdate(200, 1, 9.0F);
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.setColorBy(QString::fromUtf8(kMeshMapSourceVertexColor.data()));
+  rig.layer.renderAtForTest(150);
+  const auto revision = rig.layer.stagedRevision();
+  rig.layer.renderAtForTest(250);
+  EXPECT_EQ(rig.layer.appliedUpdateCountForTest(), 1);
+  EXPECT_EQ(rig.layer.stagedRevision(), revision);
+
+  rig.layer.setColorBy(u"face:cost"_s);  // the update is there once it is shown
+  rig.layer.renderAtForTest(250);
+  EXPECT_FLOAT_EQ(rig.stagedCost(1), 9.0F);
+}
+
 // Updates for another mesh, on a topic this map never paired with, neither
 // rebuild nor re-stage it, whether they arrive in order or late; a late update
 // that does name this geometry still applies.

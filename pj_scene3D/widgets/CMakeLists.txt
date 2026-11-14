@@ -75,6 +75,7 @@ add_library(pj_scene3d_widgets STATIC
   rhi/passes/overlay_rhi_pass.h
   rhi/passes/gridmap_rhi_pass.cpp
   rhi/passes/gridmap_rhi_pass.h
+  rhi/passes/lit_surface_uniforms.h
   rhi/passes/meshmap_rhi_pass.cpp
   rhi/passes/meshmap_rhi_pass.h
   rhi/passes/trail_rhi_pass.cpp

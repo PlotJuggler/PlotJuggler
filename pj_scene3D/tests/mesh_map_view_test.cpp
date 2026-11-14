@@ -238,6 +238,100 @@ TEST(MeshMapViewTest, AppliesPatches) {
   EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 100.0);
 }
 
+TEST(MeshMapViewTest, PatchesMarkWhatTheyWrote) {
+  Fixture fixture;
+  MeshMapState state = decodeMeshMap(fixture.mesh);
+  Bytes bytes;
+  const auto dirty = [&state](Target target, const char* name) { return state.find(target, name)->dirty; };
+  EXPECT_TRUE(dirty(Target::kFace, "cost").empty());
+
+  // Sparse: the span of the indices written; one past the end is not.
+  (void)applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "cost", {9.0F, 1.0F}, {1, 5}));
+  EXPECT_EQ(dirty(Target::kFace, "cost"), (ElementRange{.begin = 1, .end = 2}));
+  EXPECT_TRUE(dirty(Target::kFace, "surface").empty());
+  clearMeshMapDirty(state);
+  EXPECT_TRUE(dirty(Target::kFace, "cost").empty());
+
+  // Dense, a new channel, and new semantics: every element.
+  (void)applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "cost", {5.0F, 6.0F}));
+  EXPECT_EQ(dirty(Target::kFace, "cost"), (ElementRange{.begin = 0, .end = 2}));
+  (void)applyMeshMapUpdate(state, makeUpdate(bytes, Target::kVertex, "slope", {0.5F}, {3}));
+  EXPECT_EQ(dirty(Target::kVertex, "slope"), (ElementRange{.begin = 0, .end = 4}));
+  clearMeshMapDirty(state);
+  MeshMapUpdate relabel = makeUpdate(bytes, Target::kFace, "cost", {1.0F}, {0});
+  relabel.patches[0].channel.info.unit = "s";
+  (void)applyMeshMapUpdate(state, relabel);
+  EXPECT_EQ(dirty(Target::kFace, "cost"), (ElementRange{.begin = 0, .end = 2}));
+}
+
+// A refresh must leave the upload as a whole fill from the same state would.
+TEST(MeshMapViewTest, RefreshRecoloursOnlyTheFacesAFaceChannelPatchWrote) {
+  Fixture fixture;
+  MeshMapState state = decodeMeshMap(fixture.mesh);
+  Bytes bytes;
+  for (const char* source : {"face:cost", "face:surface"}) {
+    SCOPED_TRACE(source);
+    clearMeshMapDirty(state);
+    MeshMapUpload upload;
+    fillMeshMapGeometry(state, upload);
+    fillMeshMapColors(state, source, upload);
+    EXPECT_EQ(refreshMeshMapColors(state, source, upload), ElementRange{}) << "nothing written: nothing to do";
+
+    MeshMapUpdate update = makeUpdate(bytes, Target::kFace, "cost", {1.0F}, {1});
+    update.patches.push_back(makeUpdate(bytes, Target::kFace, "surface", {0.0F}, {1}).patches[0]);
+    update.patches[1].channel.info = state.find(Target::kFace, "surface")->info;  // still categorical
+    (void)applyMeshMapUpdate(state, update);
+
+    const auto corners = refreshMeshMapColors(state, source, upload);
+    ASSERT_TRUE(corners.has_value());
+    EXPECT_EQ(*corners, (ElementRange{.begin = 3, .end = 6}));
+    MeshMapUpload whole;
+    fillMeshMapGeometry(state, whole);
+    fillMeshMapColors(state, source, whole);
+    EXPECT_EQ(upload.values, whole.values);
+    EXPECT_EQ(upload.colors, whole.colors);
+    EXPECT_EQ(upload.color_range.valid, whole.color_range.valid);
+    EXPECT_FLOAT_EQ(upload.color_range.lo, whole.color_range.lo);
+    EXPECT_FLOAT_EQ(upload.color_range.hi, whole.color_range.hi) << "the range shrinks with the values";
+  }
+}
+
+TEST(MeshMapViewTest, RefreshAsksForAWholeFillWhenASpanIsNotEnough) {
+  Fixture fixture;
+  MeshMapState state = decodeMeshMap(fixture.mesh);
+  Bytes bytes;
+  MeshMapUpload upload;
+  fillMeshMapGeometry(state, upload);
+
+  // A vertex touches faces anywhere in the buffer.
+  fillMeshMapColors(state, "vertex:height", upload);
+  (void)applyMeshMapUpdate(state, makeUpdate(bytes, Target::kVertex, "height", {5.0F}, {0}));
+  EXPECT_FALSE(refreshMeshMapColors(state, "vertex:height", upload).has_value());
+  // Another channel's patch leaves this source alone.
+  fillMeshMapColors(state, "face:cost", upload);
+  EXPECT_EQ(refreshMeshMapColors(state, "face:cost", upload), ElementRange{});
+
+  // The vertex colour, when a component was written.
+  clearMeshMapDirty(state);
+  fillMeshMapColors(state, kMeshMapSourceVertexColor, upload);
+  EXPECT_EQ(refreshMeshMapColors(state, kMeshMapSourceVertexColor, upload), ElementRange{});
+  (void)applyMeshMapUpdate(state, makeUpdate(bytes, Target::kVertex, "red", {99.0F}, {3}));
+  EXPECT_FALSE(refreshMeshMapColors(state, kMeshMapSourceVertexColor, upload).has_value());
+
+  // A patch that turns a categorical channel continuous changes the colour mode.
+  clearMeshMapDirty(state);
+  fillMeshMapColors(state, "face:surface", upload);
+  ASSERT_EQ(upload.color_mode, MeshMapColorMode::kRgba);
+  (void)applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "surface", {1.0F}, {0}));
+  EXPECT_FALSE(refreshMeshMapColors(state, "face:surface", upload).has_value());
+
+  // Solid has nothing to refresh; a source that appeared needs the whole fill.
+  clearMeshMapDirty(state);
+  fillMeshMapColors(state, kMeshMapSourceSolid, upload);
+  EXPECT_EQ(refreshMeshMapColors(state, kMeshMapSourceSolid, upload), ElementRange{});
+  EXPECT_FALSE(refreshMeshMapColors(state, "face:cost", upload).has_value());
+}
+
 TEST(MeshMapViewTest, LinksBecomeCentroidSegmentsColouredByKind) {
   Fixture fixture;
   MeshMapUpload upload;

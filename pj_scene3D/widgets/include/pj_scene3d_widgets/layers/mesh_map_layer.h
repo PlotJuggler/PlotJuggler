@@ -16,6 +16,7 @@
 #include "pj_base/builtin/mesh_map.hpp"
 #include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId, PJ::SequentialUID
 #include "pj_runtime/SessionManager.h"    // PJ::DatasetId
+#include "pj_scene3d_core/mesh_map_reconstructor.h"
 #include "pj_scene3d_core/mesh_map_view.h"
 #include "pj_scene3d_widgets/channel_coloring.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
@@ -27,17 +28,18 @@ class QWidget;
 namespace pj::scene3d {
 
 // Scene3DLayer for an sdk::MeshMap topic and the sdk::MeshMapUpdate topics that
-// patch it. Update topics pair by geometry: every MeshMapUpdate topic in the
-// dataset is read, and an update applies when its geometry_id matches the map's
-// (both set). The `<topic>_updates` sibling (the convention OccupancyGridLayer
-// follows) also applies updates with no geometry_id. At the tracker time the latest map at
-// or before it is decoded once into a MeshMapState, the updates since that map
-// are applied in time order, and the result is de-indexed for the view. Moving
-// forward applies only the new updates; moving back, or an update arriving with
-// an older stamp than one already applied, rebuilds from the map. The requested
-// colour source is kept apart from the effective one so a persisted request is
-// honoured again once its channel reappears. Placed at the tracker time (no
-// renderStamp()): the drawn mesh is a map plus updates with no single stamp.
+// patch it. The layer owns the store side (which entries exist at the tracker
+// time, fetching and decoding them, spotting an update that arrived late) and
+// MeshMapReconstructor the mesh: which update belongs to the map, applying them
+// forward, starting over from the map on a rewind. Every MeshMapUpdate topic of
+// the dataset is a candidate stream; the `<topic>_updates` sibling (the
+// convention OccupancyGridLayer follows) is the one that also applies updates
+// with no geometry_id. The result is de-indexed for the view; an update that
+// only rewrote faces of the coloured channel re-colours that span alone
+// (stagedColorDelta()). The requested colour source is kept apart from the
+// effective one so a persisted request is honoured again once its channel
+// reappears. Placed at the tracker time (no renderStamp()): the drawn mesh is a
+// map plus updates with no single stamp.
 class MeshMapLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -74,6 +76,12 @@ class MeshMapLayer : public Scene3DLayer {
   }
   [[nodiscard]] std::uint64_t stagedRevision() const {
     return staged_revision_;
+  }
+  // Set when the step from revision stagedRevision() - 1 to stagedRevision()
+  // rewrote only this span of colour corners (possibly none: the colormap range
+  // alone moved): a view holding the previous revision uploads just the span.
+  [[nodiscard]] const std::optional<ElementRange>& stagedColorDelta() const {
+    return staged_color_delta_;
   }
   [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
@@ -149,15 +157,19 @@ class MeshMapLayer : public Scene3DLayer {
  private:
   // Decode the first map at attach to learn the source frame + channel list.
   bool bootstrap();
-  // Bring the state to `time_ns` and stage the upload. Cheap no-op when the map
+  // Bring the mesh to `time_ns` and stage the upload. Cheap no-op when the map
   // and the updates at that time are the ones already staged, or that map was
   // refused. Re-stages only when the geometry or the colours changed.
   void renderAt(int64_t time_ns);
-  // (Re)decodes the map at `entry` into state_; false (warning set) when refused.
-  bool loadBase(const PJ::ResolvedObjectEntry& entry);
-  // Applies the updates of every update topic with stamps in (from, to], in
-  // time order. Returns the number applied; sets a soft warning for skipped ones.
-  int applyUpdates(int64_t from, int64_t to);
+  // Decodes the map at `entry` and restarts the reconstruction from it; false
+  // (base_warning_ set, nothing changed) when the map is refused.
+  bool rebase(const PJ::ResolvedObjectEntry& entry);
+  // The reconstructor's UpdatesProvider: the entries of every update topic with
+  // stamps in (lo, hi], merged in time order, fetched and decoded only when the
+  // sink wants them.
+  void feedUpdates(PJ::Timestamp lo, PJ::Timestamp hi, MeshMapReconstructor::Sink& sink);
+  // Turns what a replay skipped into update_warning_.
+  void noteReplay(const MeshMapReplay& replay);
   // Re-lists the dataset's MeshMapUpdate topics when its topic list changed.
   void refreshUpdateTopics();
   // Identifies the set of updates at or before `time_ns`: per topic, the highest
@@ -170,7 +182,10 @@ class MeshMapLayer : public Scene3DLayer {
   [[nodiscard]] bool lateUpdateArrived();
   // Picks the effective colour source from the request and the state's channels.
   void resolveColorSource();
-  void stage(bool geometry_changed);
+  // Stages the reconstructed mesh: the positions when `geometry_changed`, and
+  // the colours whole, or, when only the last replay changed them
+  // (`values_changed`), the span it rewrote. No-op when neither changed.
+  void stage(bool geometry_changed, bool values_changed);
   // A colormap or range edit: persist and repaint (uniforms only, no re-stage).
   void coloringChanged();
   void clearStaged();
@@ -182,25 +197,20 @@ class MeshMapLayer : public Scene3DLayer {
   QString display_name_;
   Scene3DLayerContext ctx_;
   QMetaObject::Connection reload_connection_;
-  // A MeshMapUpdate topic of the dataset. `by_name` is the `<topic>_updates`
-  // sibling, which also applies updates carrying no geometry_id; `matched` is set
-  // once one of its updates applied (its time range then joins the layer's) and
-  // is cleared only with the streaming state (attach, dataset replacement).
+  // A MeshMapUpdate topic of the dataset, a stream of reconstructor_ keyed by
+  // its topic id.
   struct UpdateTopic {
     PJ::ObjectTopicId id;
-    bool by_name = false;
-    bool matched = false;
-    std::uint64_t applied_max_uid = 0;  // newest arrival at or before applied_until_ when applied
+    // Newest arrival at or before the reconstructor's appliedUntil() when it
+    // was last advanced: what arrived later is new to lateUpdateArrived().
+    std::uint64_t applied_max_uid = 0;
   };
   std::vector<UpdateTopic> update_topics_;
   std::vector<PJ::ObjectTopicId> known_topics_;  // the dataset's topics when update_topics_ was listed
 
-  // The decoded map and what has been applied to it. state_ owns its arrays (no
-  // anchor into a plugin DSO), so no binding keepalive is needed.
-  std::optional<MeshMapState> state_;
-  PJ::SequentialUID base_uid_{};
-  int64_t base_timestamp_ = 0;
-  int64_t applied_until_ = 0;  // updates with stamps <= this are in state_
+  // The mesh at the last rendered time. Its state owns its arrays (no anchor
+  // into a plugin DSO), so no binding keepalive is needed.
+  MeshMapReconstructor reconstructor_;
   std::uint64_t staged_update_key_ = 0;
   PJ::SequentialUID staged_base_uid_{};
   bool base_refused_ = false;  // the map at staged_base_uid_ was refused (base_warning_ says why)
@@ -216,7 +226,7 @@ class MeshMapLayer : public Scene3DLayer {
   bool tracker_dirty_ = false;
   bool visible_ = true;
   int rebuild_count_ = 0;
-  int base_decode_count_ = 0;  // loadBase() calls
+  int base_decode_count_ = 0;  // rebase() calls
   int applied_update_count_ = 0;
 
   std::string color_request_;
@@ -230,6 +240,7 @@ class MeshMapLayer : public Scene3DLayer {
 
   std::optional<MeshMapUpload> staged_mesh_;
   std::uint64_t staged_revision_ = 0;
+  std::optional<ElementRange> staged_color_delta_;
   std::optional<PJ::Timepoint> requested_time_;
 };
 

@@ -752,11 +752,17 @@ shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages.
   as a point list; QRHI_NEXT.md).
 - ADS hides floating docks on Wayland, on every backend (§5).
 - Mesh maps (`MeshMapRhiPass`) are capped per layer by `kMaxRenderableMeshMapFaces`
-  but not counted in `kSceneLimits`' per-view budgets. One QRhi render test draws
-  them (`MeshMapDrawsChannelColoursAndNoData`: colours, no data, half opacity);
-  there is no golden, and no test pins the pass's buffer-allocation failure path
-  (no buffer fault hook exists). The layer logic is covered by
-  `mesh_map_layer_test` and the CPU path by `mesh_map_view_test`.
+  but not counted in `kSceneLimits`' per-view budgets. Two QRhi render tests draw
+  them (`MeshMapDrawsChannelColoursAndNoData`: colours, no data, half opacity;
+  `MeshMapUpdateUploadsOnlyTheFacesItWrote`: the partial colour upload, by
+  `MeshMapRhiPass::colorUploadBytes()`); there is no golden, and no test pins
+  the pass's buffer-allocation failure path (no buffer fault hook exists). The
+  layer logic is covered by `mesh_map_layer_test`, the reconstruction by
+  `mesh_map_reconstructor_test` and the CPU colouring by `mesh_map_view_test`.
+- A partial colour upload is only valid on top of the revision it was computed
+  from: `MeshMapLayer::stagedColorDelta()` describes the step from
+  `stagedRevision() - 1`, and a pass that missed a revision (a hidden layer, a
+  second view, buffers rebuilt after a reparent) uploads whole.
 - A vertex-attribute "no data" sentinel needs headroom: `FLT_MAX / w` under
   perspective-correct interpolation overflows to infinity and then NaN for
   `w < 1`, which fails an `abs(v) >= x` test. The mesh map sends 1e30, tests

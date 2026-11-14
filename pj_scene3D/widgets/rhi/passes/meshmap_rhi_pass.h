@@ -73,6 +73,10 @@ class MeshMapRhiPass {
   [[nodiscard]] int colorUploadCount() const {
     return color_upload_count_;
   }
+  /// Bytes of colour attributes uploaded since the pass was created.
+  [[nodiscard]] std::uint64_t colorUploadBytes() const {
+    return color_upload_bytes_;
+  }
 
  private:
   struct LayerGpu {
@@ -96,8 +100,10 @@ class MeshMapRhiPass {
   };
 
   bool ensureLayerGpu(QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu);
-  /// Uploads what changed since the last frame; false (render failure noted, the
-  /// layer's buffers released, no upload recorded) when a buffer cannot be allocated.
+  /// Uploads what changed since the last frame: the whole colour buffer, or only
+  /// the layer's stagedColorDelta() when the pass holds the revision before it.
+  /// False (render failure noted, the layer's buffers released, no upload
+  /// recorded) when a buffer cannot be allocated.
   bool upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu);
   QRhiShaderResourceBindings* createLayerBindings(QRhi* rhi, QRhiBuffer* uniforms) const;
   static void releaseLayerGpu(LayerGpu& gpu);
@@ -119,6 +125,7 @@ class MeshMapRhiPass {
   int last_vertex_count_ = 0;
   int geometry_upload_count_ = 0;
   int color_upload_count_ = 0;
+  std::uint64_t color_upload_bytes_ = 0;
 };
 
 }  // namespace pj::scene3d
