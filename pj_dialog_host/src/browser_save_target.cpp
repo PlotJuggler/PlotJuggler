@@ -8,37 +8,47 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <algorithm>
+#include <pj_plugins/host_qt/browser_file_picker_fallback.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 
 namespace PJ {
 
-QString browserSaveName(const FilePickerStart& start) {
-  return start.name.isEmpty() ? QStringLiteral("export") : start.name;
+QString browserSaveName(const FilePickerStart& start, std::string_view default_suffix) {
+  QString name = start.name.isEmpty() ? QStringLiteral("export") : start.name;
+  if (!default_suffix.empty() && QFileInfo(name).suffix().isEmpty()) {
+    name += u'.' + QString::fromUtf8(default_suffix.data(), static_cast<qsizetype>(default_suffix.size()));
+  }
+  return name;
 }
 
 BrowserSaveTarget::BrowserSaveTarget(const QString& file_name)
     : path_(file_name.isEmpty() ? dir_.path() : dir_.filePath(QFileInfo(file_name).fileName())) {}
 
-std::vector<std::pair<QString, QByteArray>> BrowserSaveTarget::writtenFiles() const {
-  std::vector<std::pair<QString, QByteArray>> files;
+QStringList BrowserSaveTarget::writtenPaths() const {
+  QStringList paths;
   if (!dir_.isValid()) {
-    return files;
+    return paths;
   }
   QDirIterator it(dir_.path(), QDir::Files, QDirIterator::Subdirectories);
   while (it.hasNext()) {
-    QFile file(it.next());
-    if (file.open(QIODevice::ReadOnly)) {
-      files.emplace_back(QFileInfo(file).fileName(), file.readAll());
-    }
+    paths.append(it.next());
   }
-  std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-  return files;
+  std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) {
+    return QFileInfo(a).fileName() < QFileInfo(b).fileName();
+  });
+  return paths;
 }
 
 void BrowserSaveTarget::offerDownloads() const {
 #ifdef Q_OS_WASM
-  for (const auto& [name, bytes] : writtenFiles()) {
-    QFileDialog::saveFileContent(bytes, name);  // NOLINT(pj-canonical-chrome): Qt's browser download API.
+  // Qt's portable download path: see ScopedOpenFilePickerFallback.
+  const ScopedOpenFilePickerFallback fallback;
+  for (const QString& path : writtenPaths()) {
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly)) {
+      QFileDialog::saveFileContent(  // NOLINT(pj-canonical-chrome): Qt's browser download API.
+          file.readAll(), QFileInfo(path).fileName());
+    }
   }
 #endif
 }

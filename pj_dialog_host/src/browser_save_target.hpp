@@ -3,24 +3,26 @@
 
 #pragma once
 
-#include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
-#include <utility>
-#include <vector>
+#include <string_view>
 
 namespace PJ {
 
 // A browser cannot hand a plugin a path to write to. For a save or folder
 // picker the host instead gives the plugin a fresh scratch directory in the
 // app's in-memory file system, lets it write there during its picker event,
-// then offers every file it wrote as a browser download. Plugins write their
-// export synchronously from that event, so the files are complete once it
-// returns. The scratch directory is removed with this object.
+// then offers every file it wrote as a browser download. Only toolboxes (their
+// PanelEngine) get this: their save and folder pickers are export targets.
+// Plugins write their export synchronously from that event, so the files are
+// complete once it returns. The scratch directory is removed with this object.
 struct FilePickerStart;
 
-// The file name a browser save picker writes: the plugin's suggestion, else "export".
-QString browserSaveName(const FilePickerStart& start);
+// The file name a browser save picker writes: the plugin's suggestion, else
+// "export", with the plugin's default suffix appended when it has none (as the
+// desktop save dialog does).
+QString browserSaveName(const FilePickerStart& start, std::string_view default_suffix);
 
 class BrowserSaveTarget {
  public:
@@ -35,11 +37,11 @@ class BrowserSaveTarget {
     return path_;
   }
 
-  // Every regular file under the scratch directory, as (file name, bytes),
-  // sorted by name.
-  [[nodiscard]] std::vector<std::pair<QString, QByteArray>> writtenFiles() const;
+  // Every regular file under the scratch directory, sorted by file name.
+  [[nodiscard]] QStringList writtenPaths() const;
 
-  // Starts one browser download per written file (no-op outside the browser).
+  // Starts one browser download per written file, reading one file at a time
+  // (no-op outside the browser).
   void offerDownloads() const;
 
  private:

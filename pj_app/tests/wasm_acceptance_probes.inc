@@ -459,7 +459,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_widgets() {
     if (dual != nullptr && dual->isVisibleTo(dialog)) {
       const QObjectList radios = dual->property("_pj_dual_options_radios").value<QObjectList>();
       const auto index = radios.indexOf(button);
-      if (index < 0 || radios.isEmpty()) {
+      if (index < 0) {
         continue;
       }
       const QRect rect = dual->rect();
@@ -473,7 +473,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_widgets() {
     const QPoint center = main_window->mapFromGlobal(global);
     entries.push_back(u"%1=%2,%3"_s.arg(button->objectName()).arg(center.x()).arg(center.y()));
   }
-  qInfo("PJ_WASM_DIALOG_WIDGETS %s", qPrintable(entries.join(u";"_s)));
+  const QString report = entries.join(u";"_s);
+  qInfo("PJ_WASM_DIALOG_WIDGETS %s", qPrintable(report));
+  // Read back by the caller in the same evaluate: Firefox can drop the console line.
+  emscripten::val::global().set("pjWasmDialogWidgets", report.toStdString());
 }
 
 // Geometry of the CSV import dialog's delimiter and time-axis controls. The

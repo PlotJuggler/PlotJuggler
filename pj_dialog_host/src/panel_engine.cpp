@@ -531,7 +531,8 @@ QWidget* PanelEngine::openPanel() {
 #ifdef Q_OS_WASM
       // No path to pick in a browser: the plugin writes into a scratch folder,
       // whose files become downloads (see BrowserSaveTarget).
-      const BrowserSaveTarget target(browserSaveName(filePickerStart(picker_view, name)));
+      const BrowserSaveTarget target(browserSaveName(
+          filePickerStart(picker_view, name), picker_view.saveFilePickerDefaultSuffix(name).value_or("")));
       if (target.isValid()) {
         forward(name, PJ::WidgetEventBuilder::fileSelected(target.path().toStdString()));
         target.offerDownloads();

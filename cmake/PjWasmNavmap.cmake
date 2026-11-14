@@ -17,11 +17,13 @@ add_library(pj_wasm_navmap_parser STATIC
     "${_pj_navmap_dir}/navmap_mesh.cpp")
 target_compile_features(pj_wasm_navmap_parser PRIVATE cxx_std_20)
 target_include_directories(pj_wasm_navmap_parser PRIVATE "${_pj_navmap_dir}")
-# The vendored nanocdr is byte-identical to 3rdparty/nanocdr, so the inline
-# definitions it shares with rosx_introspection's copy agree (no ODR conflict).
-# Its constexpr endianness probe reads an inactive union member, which Clang
-# rejects by default.
+# The vendored nanocdr differs from rosx_introspection's copy, which the ROS
+# parser links: same namespace, different Decoder layout. Their inline functions
+# would merge into one definition at link time and run against the wrong class,
+# so this copy gets a namespace of its own. Its constexpr endianness probe reads
+# an inactive union member, which Clang rejects by default.
 target_include_directories(pj_wasm_navmap_parser SYSTEM PRIVATE "${_pj_navmap_dir}/contrib")
+target_compile_definitions(pj_wasm_navmap_parser PRIVATE nanocdr=pj_wasm_navmap_nanocdr)
 target_compile_options(pj_wasm_navmap_parser PRIVATE -Wno-invalid-constexpr)
 target_link_libraries(pj_wasm_navmap_parser PRIVATE
     plotjuggler_sdk::plugin_sdk

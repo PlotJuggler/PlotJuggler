@@ -113,9 +113,10 @@ FetchContent_MakeAvailable(
     glm)
 
 
-if(PJ_WASM_WITH_CSV)
-    # CSV timestamp parsing needs only date/date.h; keep the timezone library,
-    # database, and upstream tests out of the browser binary.
+if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_PARQUET)
+    # CSV timestamp parsing needs only date/date.h, and the Parquet loader
+    # compiles date's tz.cpp itself; keep date's own timezone library, database,
+    # and upstream tests out of the browser binary.
     set(BUILD_TZ_LIB OFF CACHE BOOL "" FORCE)
     set(USE_SYSTEM_TZ_DB OFF CACHE BOOL "" FORCE)
     set(ENABLE_DATE_TESTING OFF CACHE BOOL "" FORCE)

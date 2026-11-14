@@ -11,47 +11,13 @@
 
 #include "BrowserFileStore.h"
 #ifdef Q_OS_WASM
-#include <emscripten/val.h>
+#include <pj_plugins/host_qt/browser_file_picker_fallback.hpp>
 
 #include "BrowserPickedFile.h"
 #endif
 using namespace Qt::StringLiterals;
 
 namespace PJ {
-
-#ifdef Q_OS_WASM
-namespace {
-
-class ScopedOpenFilePickerFallback {
- public:
-  ScopedOpenFilePickerFallback()
-      : window_(emscripten::val::global("window")),
-        picker_(window_["showOpenFilePicker"]),
-        had_own_property_(
-            emscripten::val::global("Object")["prototype"]["hasOwnProperty"].call<bool>(
-                "call", window_, std::string("showOpenFilePicker"))) {
-    window_.set("showOpenFilePicker", emscripten::val::undefined());
-  }
-
-  ~ScopedOpenFilePickerFallback() {
-    if (had_own_property_) {
-      window_.set("showOpenFilePicker", picker_);
-    } else {
-      emscripten::val::global("Reflect").call<bool>("deleteProperty", window_, emscripten::val("showOpenFilePicker"));
-    }
-  }
-
-  ScopedOpenFilePickerFallback(const ScopedOpenFilePickerFallback&) = delete;
-  ScopedOpenFilePickerFallback& operator=(const ScopedOpenFilePickerFallback&) = delete;
-
- private:
-  emscripten::val window_;
-  emscripten::val picker_;
-  bool had_own_property_;
-};
-
-}  // namespace
-#endif
 
 QString FileSelectionService::browserContentFilter(const QString& name_filter) {
   return name_filter.section(u";;"_s, 0, 0);

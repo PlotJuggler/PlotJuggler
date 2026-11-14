@@ -2663,6 +2663,10 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
 
 void FileLoader::logLoadFailure(const QString& identity, const QString& reason, const QString& log_text) const {
   qCWarning(lcFileLoader).noquote() << (log_text.isEmpty() ? reason : log_text);
+#ifdef PJ_WASM_ENABLE_INGRESS_PROBE
+  // So a browser test fails at once with the reason instead of timing out.
+  recordProbeOutcome(u"PJ_FILE_LOAD_FAILED identity="_s + identity + u" reason="_s + reason);
+#endif
   emitDiagnosticTo(
       diagnostic_sink_, DiagnosticLevel::kError, "File Loader", "data-source-load-failed",
       tr("Could not load '%1': %2").arg(identity, reason).toStdString());

@@ -20,45 +20,39 @@ FetchContent_MakeAvailable(arrow)
 
 # Arrow downloads the sources it bundles while it builds, each pinned with a
 # SHA256 in cpp/thirdparty/versions.txt. The ones compiled into the app are
-# fetched here at those same pins too, for their notices and the source offer;
-# the check below fails the configure if an Arrow bump moves one of them.
-# (Boost contributes headers only to Thrift: it is declared for the source offer
-# and never populated.)
+# fetched here at those same pins too, for their notices and the source offer
+# (scripts/wasm_source_offer.mjs reads these declarations as written, so they
+# stay literal); the check below fails the configure if an Arrow bump moves one.
+# Boost contributes headers only to Thrift: it is declared for the source offer
+# and never populated. RapidJSON is left out: only ARROW_JSON, off here, uses it.
+set(_pj_thrift_sha256 e0fa5839a4c5c1d631b0931cf2c554ebbfa4e2fee3a9fb3ffd4f82ce4396c6e4)
+set(_pj_snappy_sha256 90f74bc1fbf78a6c56b3c4a082a05103b3a56bb17bca1a27e052ea11723292dc)
+set(_pj_simdjson_sha256 b091107844fe928158c5c2265c20360fff312889ddf7ebc4528a0f0f8f2ff9cd)
+set(_pj_boost_sha256 f51707c27359a0df0cac1beada86de31bb5eed5e8285592dadec384df99c2984)
 FetchContent_Declare(arrow_thrift
     URL https://dlcdn.apache.org/thrift/0.24.0/thrift-0.24.0.tar.gz
-    URL_HASH SHA256=e0fa5839a4c5c1d631b0931cf2c554ebbfa4e2fee3a9fb3ffd4f82ce4396c6e4
+    URL_HASH SHA256=${_pj_thrift_sha256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 FetchContent_Declare(arrow_snappy
     URL https://github.com/google/snappy/archive/1.2.2.tar.gz
-    URL_HASH SHA256=90f74bc1fbf78a6c56b3c4a082a05103b3a56bb17bca1a27e052ea11723292dc
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    SOURCE_SUBDIR _pj_source_only_no_cmakelists)
-FetchContent_Declare(arrow_rapidjson
-    URL https://github.com/miloyip/rapidjson/archive/232389d4f1012dddec4ef84861face2d2ba85709.tar.gz
-    URL_HASH SHA256=b9290a9a6d444c8e049bd589ab804e0ccf2b05dc5984a19ed5ae75d090064806
+    URL_HASH SHA256=${_pj_snappy_sha256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 FetchContent_Declare(arrow_simdjson
     URL https://github.com/simdjson/simdjson/archive/refs/tags/v4.6.4.tar.gz
-    URL_HASH SHA256=b091107844fe928158c5c2265c20360fff312889ddf7ebc4528a0f0f8f2ff9cd
+    URL_HASH SHA256=${_pj_simdjson_sha256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 FetchContent_Declare(arrow_boost
     URL https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.gz
-    URL_HASH SHA256=f51707c27359a0df0cac1beada86de31bb5eed5e8285592dadec384df99c2984)
-FetchContent_MakeAvailable(arrow_thrift arrow_snappy arrow_rapidjson arrow_simdjson)
+    URL_HASH SHA256=${_pj_boost_sha256})
+FetchContent_MakeAvailable(arrow_thrift arrow_snappy arrow_simdjson)
 
 file(READ "${arrow_SOURCE_DIR}/cpp/thirdparty/versions.txt" _pj_arrow_versions)
-foreach(_pj_pin IN ITEMS
-        "THRIFT;e0fa5839a4c5c1d631b0931cf2c554ebbfa4e2fee3a9fb3ffd4f82ce4396c6e4"
-        "SNAPPY;90f74bc1fbf78a6c56b3c4a082a05103b3a56bb17bca1a27e052ea11723292dc"
-        "RAPIDJSON;b9290a9a6d444c8e049bd589ab804e0ccf2b05dc5984a19ed5ae75d090064806"
-        "SIMDJSON;b091107844fe928158c5c2265c20360fff312889ddf7ebc4528a0f0f8f2ff9cd"
-        "BOOST;f51707c27359a0df0cac1beada86de31bb5eed5e8285592dadec384df99c2984")
-    list(GET _pj_pin 0 _pj_name)
-    list(GET _pj_pin 1 _pj_hash)
-    if(NOT _pj_arrow_versions MATCHES "ARROW_${_pj_name}_BUILD_SHA256_CHECKSUM=${_pj_hash}")
+foreach(_pj_name IN ITEMS THRIFT SNAPPY SIMDJSON BOOST)
+    string(TOLOWER "${_pj_name}" _pj_lower)
+    if(NOT _pj_arrow_versions MATCHES "ARROW_${_pj_name}_BUILD_SHA256_CHECKSUM=${_pj_${_pj_lower}_sha256}")
         message(FATAL_ERROR "Arrow's bundled ${_pj_name} is no longer the one pinned in ${CMAKE_CURRENT_LIST_FILE}")
     endif()
 endforeach()

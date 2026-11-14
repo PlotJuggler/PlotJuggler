@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <pj_plugins/host_qt/widget_binding.hpp>
 
 #include "gtest/gtest.h"
 
@@ -17,6 +18,11 @@ void writeFile(const QString& path, const QByteArray& bytes) {
   file.write(bytes);
 }
 
+QByteArray readFile(const QString& path) {
+  QFile file(path);
+  return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+}
+
 TEST(BrowserSaveTarget, ASavePickerGetsItsSuggestedNameInAScratchDirectory) {
   const PJ::BrowserSaveTarget target(QStringLiteral("/home/user/export.csv"));
   ASSERT_TRUE(target.isValid());
@@ -24,10 +30,10 @@ TEST(BrowserSaveTarget, ASavePickerGetsItsSuggestedNameInAScratchDirectory) {
 
   // The plugin may append its own suffix; whatever it writes there is offered.
   writeFile(target.path() + QStringLiteral(".parquet"), "PAR1");
-  const auto files = target.writtenFiles();
-  ASSERT_EQ(files.size(), 1U);
-  EXPECT_EQ(files[0].first, QStringLiteral("export.csv.parquet"));
-  EXPECT_EQ(files[0].second, QByteArray("PAR1"));
+  const QStringList files = target.writtenPaths();
+  ASSERT_EQ(files.size(), 1);
+  EXPECT_EQ(QFileInfo(files[0]).fileName(), QStringLiteral("export.csv.parquet"));
+  EXPECT_EQ(readFile(files[0]), QByteArray("PAR1"));
 }
 
 TEST(BrowserSaveTarget, AFolderPickerOffersEveryFileWrittenUnderIt) {
@@ -39,12 +45,25 @@ TEST(BrowserSaveTarget, AFolderPickerOffersEveryFileWrittenUnderIt) {
     writeFile(scratch + QStringLiteral("/b.csv"), "2");
     ASSERT_TRUE(QDir(scratch).mkdir(QStringLiteral("sub")));
     writeFile(scratch + QStringLiteral("/sub/a.csv"), "1");
-    const auto files = target.writtenFiles();
-    ASSERT_EQ(files.size(), 2U);
-    EXPECT_EQ(files[0].first, QStringLiteral("a.csv"));
-    EXPECT_EQ(files[1].first, QStringLiteral("b.csv"));
+    const QStringList files = target.writtenPaths();
+    ASSERT_EQ(files.size(), 2);
+    EXPECT_EQ(QFileInfo(files[0]).fileName(), QStringLiteral("a.csv"));
+    EXPECT_EQ(QFileInfo(files[1]).fileName(), QStringLiteral("b.csv"));
   }
   EXPECT_FALSE(QFileInfo::exists(scratch));
+}
+
+// The desktop save dialog appends the plugin's default suffix to a bare name;
+// the browser download name must get it too ("Save rule as..." -> rule.json).
+TEST(BrowserSaveTarget, TheNameGetsThePluginsDefaultSuffixWhenItHasNone) {
+  EXPECT_EQ(
+      PJ::browserSaveName(PJ::FilePickerStart{.dir = {}, .name = QStringLiteral("rule")}, "json"),
+      QStringLiteral("rule.json"));
+  EXPECT_EQ(
+      PJ::browserSaveName(PJ::FilePickerStart{.dir = {}, .name = QStringLiteral("rule.txt")}, "json"),
+      QStringLiteral("rule.txt"));
+  EXPECT_EQ(PJ::browserSaveName(PJ::FilePickerStart{}, "json"), QStringLiteral("export.json"));
+  EXPECT_EQ(PJ::browserSaveName(PJ::FilePickerStart{}, ""), QStringLiteral("export"));
 }
 
 }  // namespace

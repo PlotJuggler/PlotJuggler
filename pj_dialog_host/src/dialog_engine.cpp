@@ -40,7 +40,6 @@
 #include <utility>
 #include <vector>
 
-#include "browser_save_target.hpp"
 #include "host_info.hpp"
 #include "pj_widgets/FrameworkTokens.h"
 
@@ -570,15 +569,16 @@ struct DialogEngine::AsyncRunner {
         return;
       }
 #ifdef Q_OS_WASM
-      // The browser has no folder to pick: the plugin writes into a scratch
-      // folder, whose files become downloads.
-      const BrowserSaveTarget target;
-      const QString path = target.isValid() ? target.path() : QString{};
+      // Only toolbox (PanelEngine) folder pickers become browser downloads: a
+      // dialog's folder picker selects a folder to read (protobuf's include
+      // folders), which a browser cannot provide.
+      Q_UNUSED(target_widget)
+      Q_UNUSED(target_memo)
+      qWarning("DialogEngine: plugin folder pickers are unavailable on WebAssembly");
 #else
       auto title = view.folderPickerTitle(widget_name).value_or("Select Folder");
       QString path = PJ::FileDialog::getExistingDirectory(
           dialog, QString::fromStdString(title), filePickerStart(view, widget_name).dir);
-#endif
       if (!path.isEmpty()) {
         if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()))) {
           std::string raw = handle->widget_data();
@@ -595,8 +595,6 @@ struct DialogEngine::AsyncRunner {
           }
         }
       }
-#ifdef Q_OS_WASM
-      target.offerDownloads();
 #endif
     };
 
@@ -610,10 +608,9 @@ struct DialogEngine::AsyncRunner {
         return;
       }
 #ifdef Q_OS_WASM
-      // The browser has no path to pick: the plugin writes the suggested name
-      // into a scratch folder, whose files become downloads.
-      const BrowserSaveTarget target(browserSaveName(filePickerStart(view, widget_name)));
-      const QString path = target.isValid() ? target.path() : QString{};
+      Q_UNUSED(target_widget)
+      Q_UNUSED(target_memo)
+      qWarning("DialogEngine: path-returning plugin save pickers are unavailable on WebAssembly");
 #else
       auto filter = view.filePickerFilter(widget_name).value_or("");
       auto title = view.filePickerTitle(widget_name).value_or("Save File");
@@ -622,7 +619,6 @@ struct DialogEngine::AsyncRunner {
       QString path = PJ::FileDialog::getSaveFileName(
           dialog, QString::fromStdString(title), start.dir, QString::fromStdString(filter),
           QString::fromStdString(suffix), start.name);
-#endif
       if (!path.isEmpty()) {
         if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()))) {
           std::string raw = handle->widget_data();
@@ -639,8 +635,6 @@ struct DialogEngine::AsyncRunner {
           }
         }
       }
-#ifdef Q_OS_WASM
-      target.offerDownloads();
 #endif
     };
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // The official file loaders built into the wasm app import browser-selected
-// files: Parquet, Arrow IPC (inside MCAP), and the CAN logs (candump with a DBC
+// files: ULog, Parquet, Arrow IPC (inside MCAP), and the CAN logs (candump with a DBC
 // picked from its own dialog, BLF, MF4). Fixtures: fixtures/generate_official_loader_fixtures.py
 // (Parquet, MF4, Arrow MCAP); sample.blf is pj-official-plugins' data_load_blf/test_data/sample.blf.
 const fs = require('fs');
@@ -31,6 +31,32 @@ const SAMPLE_DBC = [
   '',
 ].join('\n');
 
+// The smallest ULog the official loader accepts: header, flag bits, one format,
+// one subscription and one data message per sample (`timestamp` is in µs).
+function makeULog(samples) {
+  const message = (type, body) => {
+    const header = Buffer.alloc(3);
+    header.writeUInt16LE(body.length, 0);
+    header.write(type, 2, 'latin1');
+    return Buffer.concat([header, body]);
+  };
+  const fileHeader = Buffer.from([0x55, 0x4c, 0x6f, 0x67, 0x01, 0x12, 0x35, 0x01, 0, 0, 0, 0, 0, 0, 0, 0]);
+  const parts = [
+    fileHeader,
+    message('B', Buffer.alloc(40)),
+    message('F', Buffer.from('sensor:uint64_t timestamp;float value;', 'latin1')),
+    message('A', Buffer.concat([Buffer.from([0, 0, 0]), Buffer.from('sensor', 'latin1')])),
+  ];
+  for (const [timestampUs, value] of samples) {
+    const data = Buffer.alloc(14);
+    data.writeUInt16LE(0, 0);
+    data.writeBigUInt64LE(BigInt(timestampUs), 2);
+    data.writeFloatLE(value, 10);
+    parts.push(message('D', data));
+  }
+  return Buffer.concat(parts);
+}
+
 async function boot(page, consoleMessages, errors) {
   await page.addInitScript(() => { delete window.showOpenFilePicker; });
   page.on('pageerror', error => errors.push(String(error)));
@@ -42,18 +68,16 @@ async function boot(page, consoleMessages, errors) {
   return screen;
 }
 
-// Named, visible buttons of the active dialog, canvas-relative.
-async function dialogWidgets(page, consoleMessages) {
-  const marker = 'PJ_WASM_DIALOG_WIDGETS ';
-  const previous = consoleMessages.filter(message => message.includes(marker)).length;
-  await page.evaluate(() => window.pjWasmReportDialogWidgetsProbe());
-  await expect.poll(
-    () => consoleMessages.filter(message => message.includes(marker)).length,
-    { timeout: 10000 },
-  ).toBeGreaterThan(previous);
-  const message = consoleMessages.filter(entry => entry.includes(marker)).at(-1);
+// Named, visible buttons of the active dialog, canvas-relative. The probe runs
+// synchronously and also leaves its report on the page (Firefox can drop the
+// console line).
+async function dialogWidgets(page) {
+  const report = await page.evaluate(() => {
+    window.pjWasmReportDialogWidgetsProbe();
+    return globalThis.pjWasmDialogWidgets || '';
+  });
   const widgets = {};
-  for (const entry of message.slice(message.indexOf(marker) + marker.length).split(';')) {
+  for (const entry of report.split(';')) {
     const match = entry.match(/^(.+)=(-?\d+),(-?\d+)$/);
     if (match) {
       widgets[match[1]] = { x: Number(match[2]), y: Number(match[3]) };
@@ -65,7 +89,7 @@ async function dialogWidgets(page, consoleMessages) {
 // Picks SAMPLE_DBC through a loader dialog's own file picker. The import that
 // runs after the dialog closes reads it, so the pick must outlive the dialog.
 async function pickDictionary(page, screen, consoleMessages, button) {
-  const widgets = await dialogWidgets(page, consoleMessages);
+  const widgets = await dialogWidgets(page);
   expect(widgets[button], `dialog has no ${button}`).toBeDefined();
   const dbc = await retryChooser(page, () => page.mouse.click(screen.x + widgets[button].x, screen.y + widgets[button].y));
   await dbc.setFiles({ name: 'engine.dbc', mimeType: 'text/plain', buffer: Buffer.from(SAMPLE_DBC) });
@@ -113,6 +137,20 @@ function seriesSamples(outcome, suffix, consoleMessages = []) {
   const log = consoleMessages.filter(message => message.includes('pj.')).slice(-30).join('\n');
   throw new Error(`no series ending in ${suffix} in: ${list}\nLast app log lines:\n${log}`);
 }
+
+test('official ULog loader imports a browser-selected log', async ({ page }) => {
+  test.setTimeout(90000);
+  const consoleMessages = [];
+  const errors = [];
+  const screen = await boot(page, consoleMessages, errors);
+  const outcome = await importFile(page, screen, consoleMessages, {
+    name: 'flight.ulg',
+    mimeType: 'application/octet-stream',
+    buffer: makeULog([[1_000_000, 1.5], [2_000_000, 2.5], [3_000_000, 4.5]]),
+  });
+  expect(outcome).toContain('series_samples=sensor/value:3@1000000000..3000000000=1.5..4.5');
+  expect(errors).toEqual([]);
+});
 
 test('official Parquet loader imports a browser-selected file', async ({ page }) => {
   test.setTimeout(90000);
@@ -216,7 +254,7 @@ test('official Data Exporter downloads CSV and Parquet exports', async ({ page }
     let widgets;
     try {
       await expect.poll(async () => {
-        widgets = await dialogWidgets(page, consoleMessages);
+        widgets = await dialogWidgets(page);
         return Boolean(widgets.buttonAddAllFiles && widgets.saveButton && widgets[format]);
       }, { timeout: 15000 }).toBe(true);
     } catch (error) {
