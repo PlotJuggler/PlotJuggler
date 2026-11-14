@@ -8,6 +8,7 @@
 //   "topic":"<name>"  the topic it writes (default "layout/stream")
 //   "value":<number>  the value of every sample (default 1)
 //   "gate_file":"<path>"  publish nothing until that file exists (default: no gate)
+//   "end_file":"<path>"   end the stream, as its source closing would, once that file exists
 //   "reject":true     loadConfig() refuses the configuration
 //   "fail_start":true start() fails
 // Each loadConfig/start/stop appends one line ("load <config>", "start",
@@ -136,10 +137,15 @@ class MockLayoutStream : public PJ::StreamSourceBase {
     topic_name_ = stringValue(config_, "topic", "layout/stream");
     value_ = numberValue(config_, "value", 1.0);
     gate_file_ = stringValue(config_, "gate_file", "");
+    end_file_ = stringValue(config_, "end_file", "");
     return PJ::okStatus();
   }
 
   PJ::Status onPoll() override {
+    if (!end_file_.empty() && std::ifstream(end_file_).good()) {
+      runtimeHost().requestStop(PJ::DataSourceState::kStopped, "end of stream");
+      return PJ::okStatus();
+    }
     if (!gate_file_.empty() && !std::ifstream(gate_file_).good()) {
       return PJ::okStatus();
     }
@@ -166,6 +172,7 @@ class MockLayoutStream : public PJ::StreamSourceBase {
   std::string topic_name_;
   double value_ = 1.0;
   std::string gate_file_;
+  std::string end_file_;
   int polls_ = 0;
   std::optional<PJ::sdk::TopicHandle> topic_;
 };

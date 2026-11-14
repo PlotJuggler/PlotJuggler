@@ -3522,6 +3522,8 @@ void MainWindow::removeDatasetData(DatasetId dataset_id) {
   // the dataset's storage is erased below.
   if (streaming_manager_ != nullptr) {
     static_cast<void>(streaming_manager_->stopDatasetAndWait(dataset_id, tr("dataset removed")));
+    // A stream that ended on its own had no session to stop, and may have left paused rows.
+    streaming_manager_->removeSecondaryDataset(dataset_id);
   }
   if (dataset_id == active_streaming_dataset_id_) {
     active_streaming_dataset_id_ = 0;
