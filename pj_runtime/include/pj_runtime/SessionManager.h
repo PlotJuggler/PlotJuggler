@@ -780,6 +780,10 @@ class SessionManager : public QObject {
   void seriesStateChanged(QString key);
   /// Object topics were retired (an on-demand install or removal): the catalog re-lists them.
   void objectTopicsChanged();
+  /// The source path registered for `dataset_id` was added, changed or removed (setDatasetSourcePath).
+  /// Identity resolution that compares paths (a saved object wire names one) gives a new answer, and
+  /// nothing else announces it: an asynchronous file load registers the path only when it commits.
+  void datasetSourcePathChanged(PJ::DatasetId dataset_id);
 
  private:
   // RefillGuard drives the transactional reload through this class's public

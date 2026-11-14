@@ -65,6 +65,9 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   // reverts to the placeholder rather than leaving a blank dock.
   void adoptObjectWidget(IDataWidget* widget);
   void setPlaceholderWidget();
+  // Whether any Custom Widget type is installed; drives the placeholder's Custom Widget icon. Retained and
+  // re-applied whenever the placeholder is recreated. Available by default.
+  void setCustomWidgetsAvailable(bool available);
   DockToolbar* toolBar();
   QString name() const;
   void setName(const QString& name);
@@ -166,6 +169,7 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   std::function<bool()> configuration_panel_visible_;
   QWidget* content_widget_ = nullptr;
   VisualizationPlaceholderWidget* placeholder_widget_ = nullptr;
+  bool custom_widgets_available_ = true;
   PlotWidget* plot_widget_ = nullptr;
   IDataWidget* object_widget_ = nullptr;
   // True between adoptObjectWidget() (empty click-created object widget) and its

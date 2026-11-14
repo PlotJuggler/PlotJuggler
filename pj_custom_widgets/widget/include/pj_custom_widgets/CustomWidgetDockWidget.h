@@ -23,6 +23,7 @@
 #include "pj_datastore/reader.hpp"
 #include "pj_plugins/host/widget_handle.hpp"
 #include "pj_runtime/IDataWidget.h"
+#include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/WidgetRuntimeHost.h"
 
 class QVBoxLayout;
@@ -42,7 +43,8 @@ class SessionManager;
 /// panel) and the dock pushes their values at the tracker time. Persisted as one `<CustomWidget>`
 /// element. A widget that cannot be created, or that was disabled after an error, shows a
 /// placeholder with the reason (isMissing(), missingReason()) and keeps its layout element as it
-/// was. GUI thread only. Lifetime and error policy: pj_custom_widgets/CLAUDE.md.
+/// was. Every widget is offered `pj.playback.v1` over the session's PlaybackEngine. GUI thread only.
+/// Lifetime and error policy: pj_custom_widgets/CLAUDE.md.
 class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   Q_OBJECT
  public:
@@ -58,6 +60,11 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   /// Where the dock records that it runs plugin code: added before the first call into a plugin
   /// instance, removed once that instance is destroyed. Null (the default) records nothing.
   void setActiveWidgetsMarker(std::shared_ptr<ActiveWidgetsMarker> marker);
+  /// The conversions behind `to_display_time` / `to_display_time_for_source` of the `pj.playback.v1`
+  /// the widget is offered. Read at bind time: set them before bindToWidget / xmlLoadState. Unset, the
+  /// widget is told those conversions are not supported.
+  void setPlaybackTimeMappers(
+      PlaybackControlHost::TimeMapper mapper, PlaybackControlHost::SourceTimeMapper source_mapper);
 
   /// Creates the widget `type` of plugin `plugin_id` and mounts it. Returns false when it cannot
   /// (library not installed, no such type, Qt build mismatch, creation failed or threw): the dock then
@@ -71,6 +78,8 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
     return this;
   }
   /// Pushes the values at `time` (display-axis seconds) to the widget when a wired sample changed.
+  /// Besides that, play/pause and new entries on a wired object topic each bring one deferred
+  /// on_update of the unchanged values (requestUpdate).
   void onTrackerTime(double time) override;
   /// Wires a dropped object topic to the first compatible input (see WidgetBindings::pickInput).
   bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
@@ -196,6 +205,17 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   std::optional<std::vector<WidgetInput>> readInputs();
   void reconcileInputs();
   void onInputsChangedFromPlugin();
+  /// Runs `task` once from the event loop, however many times it is asked before it ran: `scheduled`
+  /// is the latch. Used for what must not run inside a call into the plugin.
+  template <typename Task>
+  void deferOnce(bool& scheduled, Task&& task);
+  /// One on_update of the values at currentPushTime() from the event loop, even when no wired sample
+  /// changed. Requests that arrive before it ran collapse into it, and it is dropped when an on_update
+  /// reached the widget meanwhile (the widget already saw the newer state).
+  void requestUpdate();
+  /// Whether an object topic some wire reads changed (an entry added, evicted or rewritten) since the
+  /// last on_update.
+  [[nodiscard]] bool wiredObjectContentChanged() const;
   void reportMessage(DiagnosticLevel level, const QString& message) const;
   void afterBindingsEdited();
   /// For a drop that wired nothing: the app's message box naming the dropped kinds and the widget's
@@ -234,11 +254,17 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   QDomDocument preserved_;  ///< verbatim element of a widget that could not be created
 
   WidgetBindings bindings_;
+  /// Turns a stored object entry into the canonical bytes the widget reads, for pushes and history alike.
+  ObjectPayloadEncoder object_encoder_;
+
+  PlaybackControlHost::TimeMapper time_mapper_;
+  PlaybackControlHost::SourceTimeMapper source_time_mapper_;
 
   // Destruction runs bottom-up: the handle (and with it the plugin's widget) first, then the
-  // registry the plugin may still hold, then the host service it points to, then the reader.
+  // registry the plugin may still hold, then the host services it points to, then the reader.
   DataReader reader_;
   std::unique_ptr<WidgetRuntimeHost> host_;
+  std::unique_ptr<PlaybackControlHost> playback_host_;  ///< null without a PlaybackEngine
   std::unique_ptr<ServiceRegistryBuilder> registry_;
   // mutable: saving the layout asks the plugin for its state (save_config), a non-const call.
   mutable std::optional<WidgetHandle> handle_;
@@ -246,6 +272,10 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   mutable int plugin_call_depth_ = 0;
   std::uint64_t bind_generation_ = 0;  ///< bumped by every bind; a scheduled disable checks it
   bool reconcile_scheduled_ = false;
+  bool update_scheduled_ = false;
+  bool update_wanted_ = false;  ///< a requestUpdate no on_update has answered yet
+  /// Per wire, the content revision of its object topic at the last on_update (0 for other kinds).
+  std::vector<std::uint64_t> object_content_;
   /// Identity of what the widget was last handed (see mixWireSample); unset = push unconditionally.
   std::optional<std::uint64_t> last_render_key_;
   double last_time_ = std::numeric_limits<double>::quiet_NaN();

@@ -10,6 +10,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/host/widget_host_bridge.hpp"
+#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/WireTarget.h"
 
 namespace PJ {
@@ -51,16 +52,21 @@ class WidgetRuntimeHost {
     std::function<void(WidgetMessageLevel level, std::string_view message)> report_message;
   };
 
-  /// Samples delivered when the plugin passes `max_samples == 0`.
+  /// Samples delivered when the plugin passes `max_samples == 0`. An explicit `max_samples` is
+  /// honoured as asked: a widget that wants a whole history (a log) counts it first (`out_total`) and
+  /// asks for that many; the call then delivers every sample on the GUI thread.
   static constexpr uint32_t kDefaultMaxSamples = 10'000;
-  /// Hard cap on one call whatever the plugin asks for, so a widget cannot pull a whole dataset.
-  static constexpr uint32_t kMaxSamplesLimit = 100'000;
 
   /// @param reader   scalar data (must outlive this host).
   /// @param objects  object topics (must outlive this host).
   /// @param resolver wire lookup, called on the main thread inside each history call.
+  /// @param encoder  the bytes of each object sample delivered (canonicalObjectEncoder); an entry it
+  ///                 fails on is skipped like an evicted one. Empty: the stored bytes as they are, which
+  ///                 is wire bytes (e.g. ROS CDR) on a parser-bound topic; required so that no host
+  ///                 hands those to widgets by omission.
   WidgetRuntimeHost(
-      const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks = {});
+      const DataReader& reader, const ObjectStore& objects, WireResolver resolver, Callbacks callbacks,
+      ObjectPayloadEncoder encoder);
 
   WidgetRuntimeHost(const WidgetRuntimeHost&) = delete;
   WidgetRuntimeHost& operator=(const WidgetRuntimeHost&) = delete;
@@ -89,6 +95,7 @@ class WidgetRuntimeHost {
   const DataReader& reader_;
   const ObjectStore& objects_;
   WireResolver resolver_;
+  ObjectPayloadEncoder encoder_;
   WidgetHostBridge bridge_;
 };
 

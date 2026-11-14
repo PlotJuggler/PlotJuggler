@@ -122,8 +122,7 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
        VisualizationKind::kStateTransitions},
       {":/resources/svg/image.svg", QT_TR_NOOP("2D"), "buttonVizScene2D", VisualizationKind::kScene2D},
       {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::kScene3D},
-      // Always offered, even with no Widget plugin installed: the host's picker then says so and
-      // points at the Marketplace, which is how the feature is discovered.
+      // Always shown; the shell enables it (setCustomWidgetsAvailable) according to the installed widget catalog.
       {":/resources/svg/custom_widget.svg", QT_TR_NOOP("Custom Widget"), "buttonVizCustomWidget",
        VisualizationKind::kCustomWidget},
   };
@@ -148,6 +147,30 @@ void VisualizationPlaceholderWidget::setPasteActionEnabled(bool enabled) {
   if (action_paste_ != nullptr) {
     action_paste_->setEnabled(enabled);
   }
+}
+
+void VisualizationPlaceholderWidget::setCustomWidgetsAvailable(bool available) {
+  QToolButton* button = customWidgetButton();
+  if (button == nullptr) {
+    return;
+  }
+  button->setEnabled(available);
+  // A disabled button must not swallow drops: they then reach this widget.
+  button->setAcceptDrops(available);
+  button->setCursor(available ? Qt::PointingHandCursor : Qt::ArrowCursor);
+  if (available) {
+    button->setToolTip(tr("Custom Widget"));
+  } else {
+#ifdef PJ_TARGET_WASM
+    button->setToolTip(tr("No custom widgets installed."));
+#else
+    button->setToolTip(tr("No custom widgets installed. Get them from the Marketplace."));
+#endif
+  }
+}
+
+QToolButton* VisualizationPlaceholderWidget::customWidgetButton() const {
+  return findChild<QToolButton*>(QStringLiteral("buttonVizCustomWidget"));
 }
 
 void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {

@@ -19,9 +19,12 @@
 #include <QLabel>
 #include <QPointer>
 #include <QtGlobal>
+#include <algorithm>
 #include <cstddef>
 #include <functional>
 #include <limits>
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/widget_plugin_base.hpp>
 #include <stdexcept>
 #include <string>
@@ -44,6 +47,26 @@ struct ValueCopy {
   std::string label;
 };
 
+inline ValueCopy copyValue(const PJ_widget_value_t& v) {
+  ValueCopy copy;
+  copy.input = v.input;
+  copy.slot = v.slot;
+  copy.kind = v.kind;
+  copy.time = v.time;
+  copy.number = v.number;
+  if (v.text.data != nullptr) {
+    copy.text.assign(v.text.data, v.text.size);
+  }
+  if (v.bytes.data != nullptr) {
+    copy.bytes.assign(v.bytes.data, v.bytes.data + v.bytes.size);
+  }
+  if (v.type_name.data != nullptr) {
+    copy.type_name.assign(v.type_name.data, v.type_name.size);
+  }
+  copy.label.assign(v.label.data == nullptr ? "" : v.label.data, v.label.size);
+  return copy;
+}
+
 // What the plugin saw, reset by every test fixture.
 struct PluginStats {
   int instances = 0;
@@ -58,10 +81,17 @@ struct PluginStats {
   bool history_ok = false;
   std::string last_config;
   std::vector<ValueCopy> last_values;
+  std::vector<ValueCopy> history_values;   ///< what the last history read delivered
   bool null_widget = false;                ///< createWidget returns null
   bool corrupt_inputs = false;             ///< "faulty_widgets" reports an impossible input name
   bool corrupt_saved_config = false;       ///< "faulty_widgets" reports an impossible save_config length
   std::function<void()> on_create_widget;  ///< runs at the start of createWidget
+  std::function<void()> on_update;         ///< runs inside onUpdate, after the values are copied
+  int update_depth = 0;                    ///< onUpdate calls currently on the stack
+  int max_update_depth = 0;                ///< deepest onUpdate nesting seen (1 = never re-entered)
+  bool values_changed_under_call = false;  ///< the host's value span changed while onUpdate ran
+  bool offered_playback = false;           ///< bind found pj.playback.v1
+  sdk::PlaybackHostView playback;          ///< the live instance's pj.playback.v1; invalid once it is destroyed
 };
 inline PluginStats g;
 
@@ -88,6 +118,7 @@ class TestPlugin : public WidgetPluginBase {
 
   ~TestPlugin() override {
     ++g.destroyed;
+    g.playback = {};
     if (label_ != nullptr) {
       // The host must have taken the widget out of the tree before this runs.
       if (label_->parent() != nullptr) {
@@ -96,6 +127,16 @@ class TestPlugin : public WidgetPluginBase {
       delete label_.data();
       ++g.widgets_deleted_by_plugin;
     }
+  }
+
+  Status bind(sdk::ServiceRegistry services) override {
+    Status bound = WidgetPluginBase::bind(services);
+    if (bound) {
+      const auto playback = services.get<sdk::PlaybackHostService>();
+      g.offered_playback = playback.has_value();
+      g.playback = playback.value_or(sdk::PlaybackHostView{});
+    }
+    return bound;
   }
 
   std::vector<WidgetInput> inputs() const override {
@@ -140,26 +181,24 @@ class TestPlugin : public WidgetPluginBase {
     if (has("throw_on_update")) {
       throw std::runtime_error("on_update failed");
     }
+    ++g.update_depth;
+    g.max_update_depth = std::max(g.max_update_depth, g.update_depth);
     g.last_values.clear();
+    std::vector<double> times;  // this call's own copy: g.last_values is rewritten by a nested call
     for (const PJ_widget_value_t& v : values) {
-      ValueCopy copy;
-      copy.input = v.input;
-      copy.slot = v.slot;
-      copy.kind = v.kind;
-      copy.time = v.time;
-      copy.number = v.number;
-      if (v.text.data != nullptr) {
-        copy.text.assign(v.text.data, v.text.size);
-      }
-      if (v.bytes.data != nullptr) {
-        copy.bytes.assign(v.bytes.data, v.bytes.data + v.bytes.size);
-      }
-      if (v.type_name.data != nullptr) {
-        copy.type_name.assign(v.type_name.data, v.type_name.size);
-      }
-      copy.label.assign(v.label.data == nullptr ? "" : v.label.data, v.label.size);
-      g.last_values.push_back(std::move(copy));
+      g.last_values.push_back(copyValue(v));
+      times.push_back(v.time);
     }
+    if (g.on_update) {
+      g.on_update();
+    }
+    // Read after the hook: a nested on_update would have refilled the host's span under this call.
+    for (std::size_t i = 0; i < values.size() && i < times.size(); ++i) {
+      if (values[i].time != times[i]) {
+        g.values_changed_under_call = true;
+      }
+    }
+    --g.update_depth;
     if (has("history")) {
       readHistory();
     }
@@ -189,8 +228,11 @@ class TestPlugin : public WidgetPluginBase {
  private:
   void readHistory() {
     g.history_samples = 0;
-    const Expected<uint32_t> total =
-        widgetHost().queryHistory(0, 0, 0.0, 100.0, 0, [](const PJ_widget_value_t&) { ++g.history_samples; });
+    g.history_values.clear();
+    const Expected<uint32_t> total = widgetHost().queryHistory(0, 0, 0.0, 100.0, 0, [](const PJ_widget_value_t& v) {
+      ++g.history_samples;
+      g.history_values.push_back(copyValue(v));
+    });
     g.history_ok = total.has_value();
     g.history_total = total ? *total : 0U;
   }
