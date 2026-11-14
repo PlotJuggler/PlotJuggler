@@ -105,7 +105,7 @@ PJ::sdk::ModelPrimitive makeModelPrimitive() {
 PJ::sdk::SceneEntity makeEntity(std::string id, PJ::Timestamp timestamp, std::string frame_id = "base_link") {
   PJ::sdk::SceneEntity entity;
   entity.id = std::move(id);
-  entity.timestamp = timestamp;
+  entity.timestamp_ns = timestamp;
   entity.frame_id = std::move(frame_id);
   entity.models.push_back(makeModelPrimitive());
   return entity;
@@ -158,7 +158,7 @@ void isolateSettings() {
 PJ::sdk::SceneEntity makeUrlEntity(std::string id, PJ::Timestamp timestamp, std::string url, std::string media_type) {
   PJ::sdk::SceneEntity entity;
   entity.id = std::move(id);
-  entity.timestamp = timestamp;
+  entity.timestamp_ns = timestamp;
   entity.frame_id = "base_link";
   PJ::sdk::ModelPrimitive primitive;
   primitive.scale = {.x = 1.0, .y = 1.0, .z = 1.0};
@@ -227,7 +227,7 @@ TEST(SceneEntitiesLayerModelTest, AccumulatesSnapshotsAndReplacesMatchingEntityI
   ASSERT_EQ(layer.currentEntities().size(), 1u);
   const auto it = layer.currentEntities().find("car");
   ASSERT_NE(it, layer.currentEntities().end());
-  EXPECT_EQ(it->second.timestamp, 20);
+  EXPECT_EQ(it->second.timestamp_ns, 20);
   EXPECT_EQ(it->second.frame_id, "new_frame");
 }
 
@@ -238,7 +238,7 @@ TEST(SceneEntitiesLayerModelTest, MatchingIdDeletionRemovesTargetEntity) {
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("delete_me", 10), makeEntity("keep_me", 10)}));
   PJ::sdk::SceneEntityDeletion deletion;
   deletion.type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId;
-  deletion.timestamp = 20;
+  deletion.timestamp_ns = 20;
   deletion.id = "delete_me";
   pushSceneEntities(session, topic_id, 20, batchWithDeletions({deletion}));
 
@@ -378,7 +378,7 @@ TEST(SceneEntitiesLayerModelTest, MatchingIdDeletionGateUsesEntityTimestampNotAn
       session, topic_id, /*store_ts=*/2'000, batchWithEntities({makeEntity("target", /*timestamp=*/1'000)}));
   PJ::sdk::SceneEntityDeletion del_target;
   del_target.type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId;
-  del_target.timestamp = 1'500;
+  del_target.timestamp_ns = 1'500;
   del_target.id = "target";
   PJ::sdk::SceneEntityDeletion del_survivor = del_target;
   del_survivor.id = "survivor";
@@ -405,7 +405,7 @@ TEST(SceneEntitiesLayerModelTest, ReAddAfterDeletionRefreshesAnchor) {
   pushSceneEntities(session, topic_id, /*store_ts=*/100, batchWithEntities({first}));
   PJ::sdk::SceneEntityDeletion del;
   del.type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId;
-  del.timestamp = 20;  // entity.ts 10 <= 20 ⇒ erased
+  del.timestamp_ns = 20;  // entity.ts 10 <= 20 ⇒ erased
   del.id = "blink";
   pushSceneEntities(session, topic_id, /*store_ts=*/200, batchWithDeletions({del}));
   PJ::sdk::SceneEntity again = makeEntity("blink", /*timestamp=*/30);
@@ -437,7 +437,7 @@ TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
   pushSceneEntities(session, topic_id, 20, batchWithEntities({makeEntity("car", 20, "new_frame")}));
   PJ::sdk::SceneEntityDeletion deletion;
   deletion.type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId;
-  deletion.timestamp = 30;
+  deletion.timestamp_ns = 30;
   deletion.id = "ped";
   pushSceneEntities(session, topic_id, 30, batchWithDeletions({deletion}));
   pushSceneEntities(session, topic_id, 40, batchWithEntities({makeEntity("truck", 40)}));
@@ -445,7 +445,7 @@ TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
   const auto snapshot = [](const pj::scene3d::SceneEntitiesLayer& layer) {
     std::map<std::string, std::pair<PJ::Timestamp, std::string>> out;
     for (const auto& [id, entity] : layer.currentEntities()) {
-      out[id] = {entity.timestamp, entity.frame_id};
+      out[id] = {entity.timestamp_ns, entity.frame_id};
     }
     return out;
   };
@@ -1162,7 +1162,7 @@ TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("car", 10, url, "model/gltf-binary")}));
   PJ::sdk::SceneEntityDeletion del;
   del.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
-  del.timestamp = 20;
+  del.timestamp_ns = 20;
   pushSceneEntities(session, topic_id, 20, batchWithDeletions({del}));
 
   pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
@@ -1255,7 +1255,7 @@ TEST(SceneEntitiesLayerModelTest, DeleteAllPlusEntitiesInSameBatchLeavesEntities
   // was incorrectly matching after the old upsert-first order.
   PJ::sdk::SceneEntityDeletion kall;
   kall.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
-  kall.timestamp = 20;
+  kall.timestamp_ns = 20;
 
   PJ::sdk::SceneEntities batch;
   batch.deletions = {kall};
@@ -1289,7 +1289,7 @@ TEST(SceneEntitiesLayerModelTest, CrossBatchDeleteAllErasesOlderBatchEntities) {
   // Batch 1 at t=20: kAll deletion only (no replacement entities).
   PJ::sdk::SceneEntityDeletion kall;
   kall.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
-  kall.timestamp = 20;
+  kall.timestamp_ns = 20;
   pushSceneEntities(session, topic_id, 20, batchWithDeletions({kall}));
 
   pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);

@@ -106,7 +106,7 @@ inline std::vector<uint8_t> serializeTfEdges(
   PJ::sdk::FrameTransforms transforms;
   for (const auto& [child, offset] : children) {
     PJ::sdk::FrameTransform edge;
-    edge.timestamp = t_ns;
+    edge.timestamp_ns = t_ns;
     edge.parent_frame_id = parent;
     edge.child_frame_id = child;
     edge.translation = {offset.x, offset.y, offset.z};

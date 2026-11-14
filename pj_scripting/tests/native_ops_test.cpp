@@ -1088,12 +1088,12 @@ TEST(SceneEntityBuilder, SceneBuilderProducesSnapshotIdiom) {
   const auto full = std::move(*builder).finish();
   ASSERT_EQ(full.value.deletions.size(), 1u);
   EXPECT_EQ(full.value.deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
-  EXPECT_EQ(full.value.deletions[0].timestamp, 0);
+  EXPECT_EQ(full.value.deletions[0].timestamp_ns, 0);
   ASSERT_EQ(full.value.entities.size(), 1u);
   const auto& entity = full.value.entities[0];
   EXPECT_EQ(entity.frame_id, "base_link");
   EXPECT_EQ(entity.id, "witness");
-  EXPECT_EQ(entity.timestamp, 0);  // stamped when the runtime publishes it
+  EXPECT_EQ(entity.timestamp_ns, 0);  // stamped when the runtime publishes it
   ASSERT_EQ(entity.spheres.size(), 1u);
   EXPECT_EQ(entity.spheres[0].pose.position, (Vector3{1, 2, 3}));
   EXPECT_DOUBLE_EQ(entity.spheres[0].pose.orientation.w, 1.0);
@@ -1230,7 +1230,7 @@ TEST(ImageAnnotationsBuilder, AnnotationsBuilderProducesPrimitives) {
   ASSERT_TRUE(builder->addText({1, 2}, "max_z", 20.0, sdk::ColorRGBA{3, 4, 5, 255}));
   const auto out = std::move(*builder).finish();
   EXPECT_EQ(out.value.image_topic, "/camera");
-  EXPECT_EQ(out.value.timestamp, 0);  // the runtime pairs by the result's time
+  EXPECT_EQ(out.value.timestamp_ns, 0);  // the runtime pairs by the result's time
   ASSERT_EQ(out.value.points.size(), 1u);
   const auto& points = out.value.points[0];
   EXPECT_EQ(points.topology, sdk::AnnotationTopology::kLineLoop);

@@ -209,7 +209,7 @@ TEST(ResultHistoryTest, UnavailableOutputPublishesEmptyObject) {
   EXPECT_TRUE(scene.entities.empty());
   ASSERT_EQ(scene.deletions.size(), 1u);
   EXPECT_EQ(scene.deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
-  EXPECT_EQ(scene.deletions[0].timestamp, 20 * kSec);
+  EXPECT_EQ(scene.deletions[0].timestamp_ns, 20 * kSec);
 
   ASSERT_TRUE(fx.history.publish(node, 20 * kSec, 20 * kSec, keyOf(node, 2), cropBundle(3, 1.9)));
   EXPECT_EQ(decodeAt<sdk::PointCloud>(fx.store, cropped, 20 * kSec).width, 3u);
@@ -234,7 +234,7 @@ TEST(ResultHistoryTest, ScriptErrorPublishesEmptyObjectsInTheLastFrame) {
   EXPECT_TRUE(scene.entities.empty());
   ASSERT_EQ(scene.deletions.size(), 1u);
   EXPECT_EQ(scene.deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
-  EXPECT_EQ(scene.deletions[0].timestamp, 20 * kSec);
+  EXPECT_EQ(scene.deletions[0].timestamp_ns, 20 * kSec);
 }
 
 // A run requested earlier lands after the user moved back: the request, not the publication, is the
@@ -351,8 +351,8 @@ TEST(ResultHistoryTest, AnUnavailableOutputOfAnyProducibleTypeWritesAStampedTomb
   EXPECT_EQ(decodeAt<sdk::PointCloud>(fx.store, fx.topic("owner/all/points"), t).timestamp_ns, t);
   const auto scene = decodeAt<sdk::SceneEntities>(fx.store, fx.topic("owner/all/scene"), t);
   ASSERT_EQ(scene.deletions.size(), 1u);
-  EXPECT_EQ(scene.deletions[0].timestamp, t);
-  EXPECT_EQ(decodeAt<sdk::ImageAnnotations>(fx.store, fx.topic("owner/all/annotations"), t).timestamp, t);
+  EXPECT_EQ(scene.deletions[0].timestamp_ns, t);
+  EXPECT_EQ(decodeAt<sdk::ImageAnnotations>(fx.store, fx.topic("owner/all/annotations"), t).timestamp_ns, t);
   const auto image = decodeAt<sdk::Image>(fx.store, fx.topic("owner/all/image"), t);
   EXPECT_EQ(image.width, 0u);
   EXPECT_EQ(image.timestamp_ns, t);

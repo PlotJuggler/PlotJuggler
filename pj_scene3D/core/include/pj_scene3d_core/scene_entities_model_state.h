@@ -33,7 +33,7 @@ bool applySceneEntityDeletions(EntityMap& entities, const PJ::sdk::SceneEntities
   for (const PJ::sdk::SceneEntityDeletion& deletion : snapshot.deletions) {
     if (deletion.type == PJ::sdk::SceneEntityDeletion::Type::kAll) {
       for (auto iterator = entities.begin(); iterator != entities.end();) {
-        if (iterator->second.timestamp <= deletion.timestamp) {
+        if (iterator->second.timestamp_ns <= deletion.timestamp_ns) {
           iterator = erase(iterator);
           changed = true;
         } else {
@@ -43,7 +43,7 @@ bool applySceneEntityDeletions(EntityMap& entities, const PJ::sdk::SceneEntities
       continue;
     }
     const auto iterator = entities.find(deletion.id);
-    if (iterator != entities.end() && iterator->second.timestamp <= deletion.timestamp) {
+    if (iterator != entities.end() && iterator->second.timestamp_ns <= deletion.timestamp_ns) {
       erase(iterator);
       changed = true;
     }

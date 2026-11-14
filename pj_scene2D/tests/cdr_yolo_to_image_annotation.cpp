@@ -126,7 +126,7 @@ PJ::Expected<PJ::ImageAnnotation> cdrYoloDetectionArrayToImageAnnotation(const u
     }
 
     PJ::ImageAnnotation ia;
-    ia.timestamp = top_ts;
+    ia.timestamp_ns = top_ts;
     ia.image_topic = outer_frame_id;
     ia.points = std::move(bboxes);
     ia.texts = std::move(labels);

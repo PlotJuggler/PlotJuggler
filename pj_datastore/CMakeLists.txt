@@ -147,7 +147,6 @@ add_library(pj_datastore STATIC
   src/builtin_transforms.cpp
   src/plugin_data_host.cpp
   src/colormap_registry.cpp
-  src/colormap_registry_host.cpp
   src/sequential_uid.cpp
   src/ordered_entries.cpp
   src/object_store.cpp

@@ -59,7 +59,7 @@ Expected<Charged<sdk::ImageAnnotations>> thresholdKernel(
     return unexpected(grown.error());
   }
   result.value.image_topic = image.image_topic;
-  result.value.timestamp = image.timestamp_ns;
+  result.value.timestamp_ns = image.timestamp_ns;
   if (matched == 0) {
     return result;
   }

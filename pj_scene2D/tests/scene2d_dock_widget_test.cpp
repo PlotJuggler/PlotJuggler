@@ -104,7 +104,7 @@ class TaggedAnnotationParser final : public PJ::MessageParserPluginBase {
               g_annotation_parser_keepalive_refs.store(
                   g_annotation_parser_keepalive.use_count(), std::memory_order_relaxed);
               PJ::sdk::ImageAnnotations annotations;
-              annotations.timestamp = ts;
+              annotations.timestamp_ns = ts;
               annotations.points.resize(point_count);
               return PJ::sdk::ObjectRecord{.ts = ts, .object = annotations};
             },
@@ -1106,10 +1106,10 @@ TEST(Scene2DDockWidget, CanonicalAnnotationsArePairedWithDeliveredImage) {
   ASSERT_TRUE(session.objectStore().pushOwned(
       image, 18'000'000'000, makeImageBytes(2, 2, "rgb8", std::vector<uint8_t>(12, 127), 16'000'000'000)));
   PJ::sdk::ImageAnnotations paired;
-  paired.timestamp = 16'000'000'000;
+  paired.timestamp_ns = 16'000'000'000;
   paired.image_topic = "/cam";
   paired.circles.push_back(PJ::sdk::CircleAnnotation{});
-  ASSERT_TRUE(session.objectStore().pushOwned(annotations, paired.timestamp, PJ::serializeImageAnnotations(paired)));
+  ASSERT_TRUE(session.objectStore().pushOwned(annotations, paired.timestamp_ns, PJ::serializeImageAnnotations(paired)));
   PJ::Scene2DDockWidget dock;
   dock.setSessionManager(&session);
   ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"camera"_s));
@@ -1132,7 +1132,7 @@ TEST(Scene2DDockWidget, CanonicalAnnotationsArePairedWithDeliveredImage) {
   for (const bool wrong_topic : {false, true}) {
     SCOPED_TRACE(wrong_topic);
     PJ::sdk::ImageAnnotations stale = paired;
-    stale.timestamp = wrong_topic ? 16'000'000'000 : 18'000'000'000;  // the entry's stamp is not the image's
+    stale.timestamp_ns = wrong_topic ? 16'000'000'000 : 18'000'000'000;  // the entry's stamp is not the image's
     stale.image_topic = wrong_topic ? "/other_camera" : "/cam";
     const int64_t entry = wrong_topic ? 18'200'000'000 : 18'100'000'000;
     ASSERT_TRUE(session.objectStore().pushOwned(annotations, entry, PJ::serializeImageAnnotations(stale)));
@@ -1152,7 +1152,7 @@ TEST(Scene2DDockWidget, CanonicalAnnotationsArePairedWithDeliveredImage) {
   // Hiding the layer takes its annotations out of the composite, and the reason they were hidden with them, even a
   // reason the last poll posted that the event loop has not delivered yet.
   PJ::sdk::ImageAnnotations later = paired;
-  later.timestamp = 18'000'000'000;
+  later.timestamp_ns = 18'000'000'000;
   ASSERT_TRUE(session.objectStore().pushOwned(annotations, 18'300'000'000, PJ::serializeImageAnnotations(later)));
   dock.onTrackerTime(18.3);
   std::optional<PJ::MediaFrame> polled;
@@ -1179,11 +1179,11 @@ TEST(Scene2DDockWidget, AnnotationsOfAnUnmarkedTopicAreShownWhateverImageTheyNam
   ASSERT_TRUE(session.objectStore().pushOwned(
       image, 18'000'000'000, makeImageBytes(2, 2, "rgb8", std::vector<uint8_t>(12, 127), 18'000'000'000)));
   PJ::sdk::ImageAnnotations detections;
-  detections.timestamp = 1'000'000'000;
+  detections.timestamp_ns = 1'000'000'000;
   detections.image_topic = "frame_7";  // a header frame_id, not a store topic
   detections.circles.push_back(PJ::sdk::CircleAnnotation{});
   ASSERT_TRUE(
-      session.objectStore().pushOwned(annotations, detections.timestamp, PJ::serializeImageAnnotations(detections)));
+      session.objectStore().pushOwned(annotations, detections.timestamp_ns, PJ::serializeImageAnnotations(detections)));
   PJ::Scene2DDockWidget dock;
   dock.setSessionManager(&session);
   ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"camera"_s));

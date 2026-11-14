@@ -237,8 +237,8 @@ void appendEntity(const sdk::SceneEntity& entity, ImageAnnotation& annotation) {
   SceneFrame frame;
   ImageAnnotation annotation;
   if (!entities.entities.empty()) {
-    frame.timestamp = entities.entities.front().timestamp;
-    annotation.timestamp = frame.timestamp;
+    frame.timestamp = entities.entities.front().timestamp_ns;
+    annotation.timestamp_ns = frame.timestamp;
   }
 
   for (const auto& entity : entities.entities) {

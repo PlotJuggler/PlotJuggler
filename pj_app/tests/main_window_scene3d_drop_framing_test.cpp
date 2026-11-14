@@ -15,7 +15,6 @@
 
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
-#include "pj_base/sdk/media_metadata.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"

@@ -13,7 +13,7 @@ namespace {
 PJ::sdk::SceneEntity entity(std::string id, std::int64_t timestamp, std::int64_t lifetime = 0) {
   PJ::sdk::SceneEntity result;
   result.id = std::move(id);
-  result.timestamp = timestamp;
+  result.timestamp_ns = timestamp;
   result.lifetime_ns = lifetime;
   result.models.emplace_back();
   return result;
@@ -38,7 +38,7 @@ TEST(SceneEntitiesModelStateTest, ReplacesByIdAndAnchorsLifetimeOnIngestClock) {
   EXPECT_TRUE(state.applySnapshot(batch({entity("car", 20)}), 2'000));
   EXPECT_TRUE(state.applySnapshot(batch({entity("car", 30)}), 3'000));
   ASSERT_EQ(state.entities().size(), 1U);
-  EXPECT_EQ(state.entities().at("car").timestamp, 30);
+  EXPECT_EQ(state.entities().at("car").timestamp_ns, 30);
 }
 
 // Expiry skips entities that never expire; a replacement or a deletion moves an
@@ -67,7 +67,7 @@ TEST(SceneEntitiesModelStateTest, AppliesDeletionsBeforeSameBatchReAdd) {
   PJ::sdk::SceneEntities replacement = batch({entity("new", 20)});
   PJ::sdk::SceneEntityDeletion deletion;
   deletion.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
-  deletion.timestamp = 20;
+  deletion.timestamp_ns = 20;
   replacement.deletions.push_back(deletion);
   EXPECT_TRUE(state.applySnapshot(replacement, 20));
   EXPECT_FALSE(state.entities().contains("old"));
@@ -80,7 +80,7 @@ TEST(SceneEntitiesModelStateTest, MatchingDeletionUsesEntityTimestampAndNegative
   PJ::sdk::SceneEntities deletion_batch;
   PJ::sdk::SceneEntityDeletion deletion;
   deletion.type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId;
-  deletion.timestamp = 150;
+  deletion.timestamp_ns = 150;
   deletion.id = "drop";
   deletion_batch.deletions.push_back(deletion);
   deletion.id = "keep";
@@ -129,7 +129,7 @@ TEST(SceneEntitiesModelStateTest, RetainsOnlyModelFieldsAndProjectsReplacementOr
   PJ::sdk::SceneEntities deletion_batch;
   PJ::sdk::SceneEntityDeletion deletion;
   deletion.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
-  deletion.timestamp = 20;
+  deletion.timestamp_ns = 20;
   deletion_batch.deletions.push_back(deletion);
   EXPECT_EQ(state.projectedRetainedBytes(deletion_batch), 0U);
   EXPECT_TRUE(state.applySnapshot(deletion_batch, 30));

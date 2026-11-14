@@ -72,7 +72,7 @@ TEST(ResolveObject, DecodesCanonicalPointCloudWithoutParser) {
 TEST(ResolveObject, DecodesCanonicalFrameTransformsWithoutParser) {
   PJ::sdk::FrameTransforms transforms;
   PJ::sdk::FrameTransform edge;
-  edge.timestamp = 5;
+  edge.timestamp_ns = 5;
   edge.parent_frame_id = "odom";
   edge.child_frame_id = "base_link";
   edge.rotation.w = 1.0;

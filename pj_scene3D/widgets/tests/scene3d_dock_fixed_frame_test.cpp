@@ -51,7 +51,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitTfTree(PJ::Timestamp ts, PJ::sdk::Payloa
   PJ::sdk::FrameTransforms ft;
   const auto add = [&](const char* parent, const char* child) {
     PJ::sdk::FrameTransform edge;
-    edge.timestamp = ts;
+    edge.timestamp_ns = ts;
     edge.parent_frame_id = parent;
     edge.child_frame_id = child;
     edge.translation = {0.0, 0.0, 0.0};

@@ -365,10 +365,10 @@ TEST(CompositeMediaSource, PairingUsesDeliveredPixelsAndRechecksCachedAnnotation
   composite.setLayerPairing(annotation_source, "", true, {}, [&](const std::string& text) { warning = text; });
   ImageAnnotation annotation;
   annotation.image_topic = "/cam";
-  annotation.timestamp = 1'000'000'000;
+  annotation.timestamp_ns = 1'000'000'000;
   annotation.circles.emplace_back();
   annotation_source->next.emplace();
-  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp_ns, {annotation}});
   auto result = composite.takeFrame();
   ASSERT_TRUE(result);
   EXPECT_TRUE(result->overlays.empty());  // no image delivered yet: never paired with the tracker's instant
@@ -391,9 +391,9 @@ TEST(CompositeMediaSource, PairingUsesDeliveredPixelsAndRechecksCachedAnnotation
   EXPECT_NE(warning.find("/cam"), std::string::npos) << warning;
 
   annotation.image_topic = "/other";  // another camera's annotations, at the shown image's time
-  annotation.timestamp = 1'200'000'001;
+  annotation.timestamp_ns = 1'200'000'001;
   annotation_source->next.emplace();
-  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp_ns, {annotation}});
   result = composite.takeFrame();
   ASSERT_TRUE(result);
   EXPECT_TRUE(result->overlays.empty());
@@ -402,8 +402,8 @@ TEST(CompositeMediaSource, PairingUsesDeliveredPixelsAndRechecksCachedAnnotation
   // An annotation that names no image is never checked; an empty (cleared) overlay still clears.
   annotation.image_topic.clear();
   annotation_source->next.emplace();
-  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
-  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {}});
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp_ns, {annotation}});
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp_ns, {}});
   result = composite.takeFrame();
   ASSERT_TRUE(result);
   EXPECT_EQ(result->overlays.size(), 2u);
@@ -427,10 +427,10 @@ TEST(CompositeMediaSource, AnnotationsOfALayerNotPairingThemAreNeverChecked) {
   image_source->next->base->pts = 1'000'000'000;
   ImageAnnotation annotation;
   annotation.image_topic = "frame_7";  // a header frame id, not the shown image's topic
-  annotation.timestamp = 9'000'000'000;
+  annotation.timestamp_ns = 9'000'000'000;
   annotation.circles.emplace_back();
   annotation_source->next.emplace();
-  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp, {annotation}});
+  annotation_source->next->overlays.push_back(SceneFrame{annotation.timestamp_ns, {annotation}});
   const auto result = composite.takeFrame();
   ASSERT_TRUE(result);
   EXPECT_EQ(result->overlays.size(), 1u);
@@ -465,7 +465,7 @@ TEST(CompositeMediaSource, PairingComparesTheImagesOwnStampAndLooksUpCadenceAtTh
     SCOPED_TRACE(stamp);
     ImageAnnotation annotation;
     annotation.image_topic = "/cam";
-    annotation.timestamp = stamp;
+    annotation.timestamp_ns = stamp;
     annotation.circles.emplace_back();
     annotation_source->next.emplace();
     annotation_source->next->overlays.push_back(SceneFrame{stamp, {annotation}});

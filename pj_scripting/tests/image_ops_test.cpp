@@ -77,7 +77,7 @@ TEST(ImageOps, CropRetainsPairingAndOriginalCoordinates) {
   auto annotations = native::imageThreshold(*cropped, CompareOp::kGt, 8, 0, limits);
   ASSERT_TRUE(annotations) << annotations.error();
   EXPECT_EQ(annotations->value.image_topic, "/camera");
-  EXPECT_EQ(annotations->value.timestamp, 42);
+  EXPECT_EQ(annotations->value.timestamp_ns, 42);
   ASSERT_EQ(annotations->value.points.size(), 1u);
   ASSERT_EQ(annotations->value.points[0].points.size(), 2u);
   EXPECT_EQ(annotations->value.points[0].points[0], (sdk::Point2{1, 2}));  // the source's coordinates
