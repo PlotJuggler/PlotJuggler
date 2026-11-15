@@ -242,6 +242,17 @@ if(EMSCRIPTEN)
         # The Arrow plugin family as plugins/arrow.wasm, linked on first use (src/wasm/ArrowSideModule.h).
         target_sources(pj_app_shell PRIVATE src/wasm/ArrowSideModule.cpp src/wasm/ArrowSideModule.h)
         target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_ARROW_SIDE_MODULE)
+        # It registers the side module's plugins from their manifest headers before the module loads. The app does
+        # not link those plugins, so it does not inherit the private directory pj_wasm_official_plugin()
+        # (pj-official-plugins cmake/PjWasmPlugin.cmake) writes each plugin's headers into at configure time.
+        get_property(_pj_side_plugins GLOBAL PROPERTY PJ_WASM_ARROW_SIDE_PLUGINS)
+        foreach(_pj_side_plugin IN LISTS _pj_side_plugins)
+            set(_pj_side_generated "${CMAKE_BINARY_DIR}/pj_wasm_plugins/${_pj_side_plugin}")
+            if(NOT IS_DIRECTORY "${_pj_side_generated}")
+                message(FATAL_ERROR "No generated headers for ${_pj_side_plugin} in ${_pj_side_generated}")
+            endif()
+            target_include_directories(pj_app_shell PRIVATE "${_pj_side_generated}")
+        endforeach()
     endif()
     qt_add_executable(pj_app
         src/main.cpp
