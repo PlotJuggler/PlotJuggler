@@ -82,7 +82,6 @@ their registration (the Arrow family builds Apache Arrow C++ through `PjWasmArro
 | `PJ_WASM_WITH_3D_LOADER` | `data_load_3d` (PCD/PLY) |
 | `PJ_WASM_WITH_DUMMY_STREAM` | `data_stream_dummy` |
 | `PJ_WASM_WITH_PJ_BRIDGE` | `data_stream_pj_bridge` (over the browser's WebSocket) |
-| `PJ_WASM_WITH_FOXGLOVE_BRIDGE` | `data_stream_foxglove_bridge` (over the browser's WebSocket; a robot's `ws://` bridge needs TLS in front of it on an `https://` page) |
 | `PJ_WASM_WITH_ROS` | `parser_ros` |
 | `PJ_WASM_WITH_PROTOBUF` | `parser_protobuf` |
 | `PJ_WASM_WITH_JSON` | `parser_json` |

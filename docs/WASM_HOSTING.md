@@ -45,9 +45,6 @@ through Caddy on the page's own origin rather than on its own port.
    packaged Caddy service reads.
 4. **Start the bridge** on its default port, 9090, where Caddy forwards `/bridge`
    (`pj_bridge_ros2`). On another port, set `PJ_BRIDGE_UPSTREAM=127.0.0.1:<port>`.
-   A Foxglove Bridge (`foxglove_bridge`, port 8765) works the same way: set
-   `PJ_BRIDGE_UPSTREAM=127.0.0.1:8765` and connect the Foxglove Bridge source to
-   `wss://robot.local/bridge`.
 5. **Run Caddy** with the robot's settings:
 
    ```bash

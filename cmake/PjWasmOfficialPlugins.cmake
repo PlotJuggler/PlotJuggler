@@ -17,7 +17,6 @@ set(PJ_WASM_OFFICIAL_PLUGIN_DIRS
     toolbox_transform_editor
     data_stream_dummy=DUMMY_STREAM
     data_stream_pj_bridge
-    data_stream_foxglove_bridge
     parser_json
     parser_data_tamer
     data_load_3d=3D_LOADER
