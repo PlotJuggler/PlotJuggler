@@ -20,6 +20,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "pj_marketplace/utf8_path.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 
 namespace {
@@ -61,13 +62,13 @@ nlohmann::json descriptorToJson(const PJ::PluginDescriptor& descriptor) {
   j["min_sdk_required"] = descriptor.min_sdk_required;
   j["min_plotjuggler_version"] = descriptor.min_plotjuggler_version;
   j["suggested_sdk_version"] = descriptor.suggested_sdk_version;
-  j["dso_path"] = descriptor.dso_path.string();
+  j["dso_path"] = PJ::marketplace_internal::pathToUtf8(descriptor.dso_path);
   return j;
 }
 
 nlohmann::json diagnosticToJson(const PJ::PluginDiagnostic& diagnostic) {
   nlohmann::json j;
-  j["path"] = diagnostic.path.string();
+  j["path"] = PJ::marketplace_internal::pathToUtf8(diagnostic.path);
   j["message"] = diagnostic.message;
   return j;
 }
@@ -94,7 +95,7 @@ int main(int argc, char** argv) {
 
   nlohmann::json result;
   result["schema"] = 1;
-  result["directory"] = directory.string();
+  result["directory"] = PJ::marketplace_internal::pathToUtf8(directory);
 
   if (!scanned) {
     result["outcome"] = "rejected";

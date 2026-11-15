@@ -171,6 +171,8 @@ target_link_libraries(pj-plugin-check PRIVATE
   plotjuggler_sdk::plugin_host
   nlohmann_json::nlohmann_json
 )
+# utf8_path.hpp only: the helper must not link the Qt-based library.
+target_include_directories(pj-plugin-check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(pj-plugin-check PRIVATE ${PJ_WARNING_FLAGS})
 
 # ---------------------------------------------------------------------------

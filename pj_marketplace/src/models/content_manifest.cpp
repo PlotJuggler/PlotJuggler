@@ -10,9 +10,9 @@
 #include <string>
 #include <utility>
 
-#include "internal/utf8_path.hpp"
 #include "pj_marketplace/fs_walk.hpp"
 #include "pj_marketplace/sha256.hpp"
+#include "pj_marketplace/utf8_path.hpp"
 
 namespace PJ {
 Expected<std::vector<StoredFile>, ContentManifestRejection> inspectContentManifest(

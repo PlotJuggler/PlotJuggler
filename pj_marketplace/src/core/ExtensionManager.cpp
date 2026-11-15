@@ -22,7 +22,6 @@
 #include <optional>
 #include <utility>
 
-#include "internal/utf8_path.hpp"
 #include "pj_marketplace/artifact_store.hpp"
 #include "pj_marketplace/content_manifest.hpp"
 #include "pj_marketplace/download_manager.hpp"
@@ -33,6 +32,7 @@
 #include "pj_marketplace/plugin_check_runner.hpp"
 #include "pj_marketplace/plugin_compatibility.hpp"
 #include "pj_marketplace/store_session.hpp"
+#include "pj_marketplace/utf8_path.hpp"
 #include "pj_marketplace/version_compare.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 using namespace Qt::StringLiterals;
@@ -467,7 +467,7 @@ QString validateTransactionContents(const QString& transaction_root, const QStri
 
 DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
   DirectoryDiscovery result;
-  const auto scan = scanPluginDsos(std::filesystem::path(ext_root.toStdString()));
+  const auto scan = scanPluginDsos(marketplace_internal::pathFromUtf8(ext_root.toStdString()));
   if (!scan) {
     result.error = QString::fromStdString(scan.error());
     return result;
@@ -475,7 +475,8 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
 
   for (const auto& diag : scan->diagnostics) {
     qWarning(
-        "ExtensionManager: plugin discovery diagnostic for '%s': %s", diag.path.string().c_str(), diag.message.c_str());
+        "ExtensionManager: plugin discovery diagnostic for '%s': %s",
+        marketplace_internal::pathToUtf8(diag.path).c_str(), diag.message.c_str());
   }
 
   if (scan->plugins.empty()) {
