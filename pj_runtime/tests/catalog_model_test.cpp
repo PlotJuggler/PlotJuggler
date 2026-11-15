@@ -1214,10 +1214,16 @@ TEST(CatalogModelTest, ScalarValueAtSkipsRowsWhereTheColumnIsNull) {
   // `b` has no sample yet at 1.5s (its only value is @2s): no value, never a made-up one.
   EXPECT_FALSE(catalog.scalarValueAt(key_b, displayOf(1'500'000'000)).has_value());
 
-  // Once `b`'s first sample is reached it shows.
-  const auto b_first = catalog.scalarValueAt(key_b, displayOf(2'500'000'000));
-  ASSERT_TRUE(b_first.has_value());
-  EXPECT_DOUBLE_EQ(*b_first, 20.0);
+  // Streaming commits each batch as its own chunk: a newer chunk without `a`
+  // still holds the value from the older one.
+  ASSERT_TRUE(writer.beginRow(topic, 3'000'000'000).has_value());
+  writer.setNull(topic, 0);
+  writer.set(topic, 1, 30.0);
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  const auto a_across_chunks = catalog.scalarValueAt(key_a, displayOf(3'500'000'000));
+  ASSERT_TRUE(a_across_chunks.has_value());
+  EXPECT_DOUBLE_EQ(*a_across_chunks, 10.0);
 }
 
 // String-typed fields surface in the catalog as scalar items (so the curve list

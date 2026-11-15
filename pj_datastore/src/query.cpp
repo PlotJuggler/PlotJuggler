@@ -437,20 +437,35 @@ std::optional<std::size_t> SeriesReader::indexAtOrAfterTime(Timestamp t) const {
 
 namespace {
 
+// True when the chunk holds no value of the column at all (its stats count a null
+// in every row), so a sample search can skip it without reading a row.
+bool columnAllNull(const TopicChunk& chunk, std::size_t column_index) {
+  return column_index < chunk.stats.column_stats.size() &&
+         chunk.stats.column_stats[column_index].null_count >= chunk.stats.row_count;
+}
+
 // Latest sample with ts <= t (ts < t when strict), across ALL chunks. Chunk
 // time ranges may overlap after out-of-order ingest, so every chunk is
 // inspected; rows are time-sorted within a chunk, so each chunk contributes
-// via one binary search plus a short backward walk over null/evicted rows.
+// via one binary search plus a backward walk over null/evicted rows. Chunks are
+// visited newest commit first, so once a sample is found any chunk ending at or
+// before it is skipped (a sparse column costs one walk, not one per chunk), and
+// equal timestamps resolve to the later commit, as rows inside a chunk do.
 std::optional<SeriesSample> bestSampleBefore(
     const std::deque<TopicChunk>& chunks, std::size_t column_index, Timestamp retention_floor, Timestamp t,
     bool strict) {
   std::optional<SeriesSample> best;
-  for (const TopicChunk& chunk : chunks) {
-    if (chunk.stats.row_count == 0 || column_index >= chunk.columns.size() || chunk.stats.t_max < retention_floor) {
+  for (auto it = chunks.rbegin(); it != chunks.rend(); ++it) {
+    const TopicChunk& chunk = *it;
+    if (chunk.stats.row_count == 0 || column_index >= chunk.columns.size() || chunk.stats.t_max < retention_floor ||
+        columnAllNull(chunk, column_index)) {
       continue;
     }
     if (strict ? chunk.stats.t_min >= t : chunk.stats.t_min > t) {
       continue;
+    }
+    if (best.has_value() && chunk.stats.t_max <= best->timestamp) {
+      continue;  // an older commit cannot beat the sample found, even on a tie
     }
     // First row past the cut; candidates are the rows before it, newest first.
     std::size_t lo = 0;
@@ -489,7 +504,8 @@ std::optional<SeriesSample> bestSampleAfter(
     bool strict) {
   std::optional<SeriesSample> best;
   for (const TopicChunk& chunk : chunks) {
-    if (chunk.stats.row_count == 0 || column_index >= chunk.columns.size() || chunk.stats.t_max < retention_floor) {
+    if (chunk.stats.row_count == 0 || column_index >= chunk.columns.size() || chunk.stats.t_max < retention_floor ||
+        columnAllNull(chunk, column_index)) {
       continue;
     }
     if (strict ? chunk.stats.t_max <= t : chunk.stats.t_max < t) {

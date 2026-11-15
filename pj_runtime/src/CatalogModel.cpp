@@ -499,20 +499,19 @@ std::optional<double> CatalogModel::scalarValueAt(const QString& key, double dis
   if (scalar == nullptr || !isPlottablePrimitive(scalar->logical_type)) {
     return std::nullopt;  // object topics carry no scalar value; strings → stringValueAt
   }
-  // Display-axis seconds -> raw ns through this dataset's display offset, then the
-  // plot tracker's lookup (zero-order hold) under the engine lock: the newest row
-  // that HAS a value for this column. A topic whose messages leave some columns
-  // null (a /tf TFMessage, variable-length arrays, optional JSON keys) must not
-  // blink to "-" whenever its newest row happens to lack this field; a field with
-  // no sample yet is still nullopt, never a fabricated "0.000".
+  // The plot tracker's lookup, under the engine lock. The type was checked above,
+  // so read the storage directly rather than through DataReader::series, which
+  // copies the topic's column descriptors on every call (per visible row, 10 Hz).
   const DisplayOffset offset = impl_->session->displayOffset(it->second.dataset_id);
   const Timestamp raw_ns = displaySecondsToRaw(DisplaySeconds{display_seconds}, offset);
-  const DataReader reader(impl_->session->dataEngine());
-  const auto series = reader.series(scalar->topic_id, scalar->column_index);
-  if (!series.has_value()) {
-    return std::nullopt;  // read error
+  const DataEngine& engine = impl_->session->dataEngine();
+  const auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(scalar->topic_id);
+  if (storage == nullptr) {
+    return std::nullopt;
   }
-  const auto sample = series->sampleAtOrBeforeTime(raw_ns);
+  const SeriesReader series(storage->sealedChunks(), scalar->column_index, storage->retentionFloor());
+  const auto sample = series.sampleAtOrBeforeTime(raw_ns);
   return sample.has_value() ? std::optional<double>{sample->value} : std::nullopt;
 }
 

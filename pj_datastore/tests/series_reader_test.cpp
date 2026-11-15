@@ -5,6 +5,7 @@
 
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -212,6 +213,62 @@ TEST_F(SeriesReaderTest, SeriesCreationValidatesTopicColumnAndType) {
   EXPECT_FALSE(reader.series(topic_id_ + 9999U, 0).has_value());
   EXPECT_FALSE(reader.series(topic_id_, 99).has_value());
   EXPECT_FALSE(reader.series(topic_id_, 2).has_value());
+}
+
+// A held value can sit chunks behind the cut: every newer chunk leaves the column
+// null. Equal timestamps across commits resolve like rows inside one chunk do
+// (sealing keeps arrival order): the later commit wins.
+TEST(SeriesReaderChunksTest, TimeLookupsHoldAcrossAllNullChunksAndPreferTheLaterCommitOnTies) {
+  DataEngine engine;
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "sparse"});
+  ASSERT_TRUE(dataset_or.has_value());
+
+  DataWriter writer = engine.createWriter();
+  auto schema_or = writer.registerSchema(
+      "row",
+      makeStruct(
+          "row", {makePrimitive("held", PrimitiveType::kFloat64), makePrimitive("other", PrimitiveType::kFloat64)}));
+  ASSERT_TRUE(schema_or.has_value());
+  TopicDescriptor descriptor;
+  descriptor.name = "/topic";
+  descriptor.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset_or, descriptor);
+  ASSERT_TRUE(topic_or.has_value());
+  const TopicId topic_id = *topic_or;
+
+  // One commit (chunk) per row; std::nullopt leaves `held` null in that row.
+  const auto commit_row = [&](Timestamp ts, std::optional<double> held) {
+    ASSERT_TRUE(writer.beginRow(topic_id, ts).has_value());
+    if (held.has_value()) {
+      writer.set(topic_id, 0, *held);
+    } else {
+      writer.setNull(topic_id, 0);
+    }
+    writer.set(topic_id, 1, 0.0);
+    ASSERT_TRUE(writer.finishRow(topic_id).has_value());
+    ASSERT_FALSE(engine.commitChunks(writer.flushAll()).empty());
+  };
+  commit_row(100, 1.0);
+  commit_row(100, 2.0);  // same timestamp, later commit
+  for (Timestamp ts = 200; ts <= 600; ts += 100) {
+    commit_row(ts, std::nullopt);
+  }
+
+  DataReader reader = engine.createReader();
+  auto series_or = reader.series(topic_id, 0);
+  ASSERT_TRUE(series_or.has_value());
+  const SeriesReader& series = *series_or;
+
+  const auto at_tie = series.sampleAtOrBeforeTime(100);
+  ASSERT_TRUE(at_tie.has_value());
+  EXPECT_DOUBLE_EQ(at_tie->value, 2.0);
+
+  const auto held = series.sampleAtOrBeforeTime(650);
+  ASSERT_TRUE(held.has_value());
+  EXPECT_EQ(held->timestamp, 100);
+  EXPECT_DOUBLE_EQ(held->value, 2.0);
+
+  EXPECT_FALSE(series.sampleAtOrAfterTime(101).has_value());
 }
 
 // Out-of-order ingest stores chunks whose time ranges are non-chronological or
