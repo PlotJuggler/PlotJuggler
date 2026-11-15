@@ -2094,8 +2094,9 @@ TEST(IncrementalEngineRetentionTest, ReplayHonoursTheInputRetentionFloor) {
 // ---------------------------------------------------------------------------
 
 // Running sum — stateful, so a slice boundary that dropped, repeated or reordered a
-// row changes every later value. Busy-waits `spin` per sample to give the replay a
-// deterministic wall-time cost; sticky-fails after `fail_after` samples when set.
+// row changes every later value. Busy-waits `spin` per sample, so a row costs at least
+// that much wall time however the scheduler treats the thread; sticky-fails after
+// `fail_after` samples when set. calls() counts calculate() invocations and survives reset().
 class SlowRunningSumTransform : public ISISOTransform {
  public:
   explicit SlowRunningSumTransform(std::chrono::microseconds spin = {}, int fail_after = -1)
@@ -2106,6 +2107,7 @@ class SlowRunningSumTransform : public ISISOTransform {
     failed_ = false;
   }
   bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    ++calls_;
     const auto until = std::chrono::steady_clock::now() + spin_;
     while (std::chrono::steady_clock::now() < until) {}
     if (fail_after_ >= 0 && seen_ >= fail_after_) {
@@ -2125,10 +2127,14 @@ class SlowRunningSumTransform : public ISISOTransform {
     static const std::string kErr = "SlowRunningSumTransform: boom";
     return kErr;
   }
+  [[nodiscard]] std::size_t calls() const {
+    return calls_;
+  }
 
  private:
   std::chrono::microseconds spin_;
   int fail_after_;
+  std::size_t calls_ = 0;
   double sum_ = 0.0;
   int seen_ = 0;
   bool failed_ = false;
@@ -2137,18 +2143,28 @@ class SlowRunningSumTransform : public ISISOTransform {
 constexpr std::chrono::microseconds kSlowRow{20};
 constexpr std::chrono::milliseconds kStepBudget{5};
 
+// The most rows one step can feed. Each row costs at least kSlowRow of wall time, so a step
+// that has fed N rows has spent at least N * kSlowRow: it cannot run past the budget by more
+// than the engine's clock-check stride (a few rows), however long the scheduler stalls the
+// thread. The 64 rows are that stride with headroom. Rows, not elapsed time, because a wall
+// bound on a step is exactly what a loaded machine breaks.
+constexpr std::size_t kMaxRowsPerStep = static_cast<std::size_t>(kStepBudget / kSlowRow) + 64;
+
 struct StepLog {
   int steps = 0;
-  std::chrono::nanoseconds longest{0};
+  std::size_t most_rows = 0;  // calculate() calls of the largest step; 0 without a probe
 };
 
-// Step `node` until it reports done; records the step count and the longest step.
-static StepLog materializeFully(IncrementalEngine& derived, PJ::NodeId node, std::chrono::nanoseconds budget) {
+// Step `node` until it reports done; records the step count and, given the node's transform
+// as `probe`, the rows fed by the largest step.
+static StepLog materializeFully(
+    IncrementalEngine& derived, PJ::NodeId node, std::chrono::nanoseconds budget,
+    const SlowRunningSumTransform* probe = nullptr) {
   StepLog log;
   for (int guard = 0; guard < 100000; ++guard) {
-    const auto start = std::chrono::steady_clock::now();
+    const std::size_t before = probe ? probe->calls() : 0;
     auto done = derived.materializeStep(node, budget);
-    log.longest = std::max<std::chrono::nanoseconds>(log.longest, std::chrono::steady_clock::now() - start);
+    log.most_rows = std::max(log.most_rows, probe ? probe->calls() - before : 0);
     ++log.steps;
     EXPECT_TRUE(done.has_value()) << done.error();
     if (!done.has_value() || *done) {
@@ -2172,7 +2188,9 @@ TEST(IncrementalEngineTimeSliceTest, StepsStayWithinBudgetAndMatchSynchronousRep
   IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 4000);  // four 1024-row chunks
-  auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  auto transform = std::make_unique<SlowRunningSumTransform>(kSlowRow);
+  const SlowRunningSumTransform* probe = transform.get();  // owned by the engine from here on
+  auto node = derived.addSisoTransform(src, "sliced", ds, std::move(transform));
   ASSERT_TRUE(node.has_value());
   const PJ::TopicId out = derived.outputTopics(*node)[0];
 
@@ -2181,7 +2199,7 @@ TEST(IncrementalEngineTimeSliceTest, StepsStayWithinBudgetAndMatchSynchronousRep
   EXPECT_FALSE(*first);
   const std::size_t after_first = collectRows(engine, out).size();
   EXPECT_GT(after_first, 0u);
-  EXPECT_LT(after_first, 4000u);
+  EXPECT_LE(after_first, kMaxRowsPerStep);
   EXPECT_EQ(derived.deferredNodes(), std::vector<PJ::NodeId>{*node});
 
   // A deferred node is the stepper's: a scheduling pass leaves it untouched.
@@ -2189,10 +2207,10 @@ TEST(IncrementalEngineTimeSliceTest, StepsStayWithinBudgetAndMatchSynchronousRep
   ASSERT_TRUE(derived.scheduleAll().has_value());
   EXPECT_EQ(collectRows(engine, out).size(), after_first);
 
-  const StepLog log = materializeFully(derived, *node, kStepBudget);
+  const StepLog log = materializeFully(derived, *node, kStepBudget, probe);
   // 4000 rows x 20 us = 80 ms of work in 5 ms steps.
   EXPECT_GE(log.steps + 1, 8);
-  EXPECT_LT(log.longest, 3 * kStepBudget);
+  EXPECT_LE(log.most_rows, kMaxRowsPerStep);
   EXPECT_EQ(collectRows(engine, out), synchronousRunningSum(engine, derived, src, ds, "sync"));
   EXPECT_TRUE(derived.deferredNodes().empty());
 
