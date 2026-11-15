@@ -54,12 +54,8 @@ build against what RoboStack's ROS packages were built against:
   ships (3.12 and 3.14), since the embedded interpreter links that `libpython`.
 - **Qt 6.11** is also a run pin to that minor: PJ4 builds against Qt's private
   headers (QRhi and others), which change ABI every minor release.
-- **Qt-Advanced-Docking** is conda-forge's `qt6-advanced-docking-system`
-  (`PJ_SYSTEM_ADS=ON`), not the fork in `3rdparty/`. It must carry the fork's
-  tab-parenting fix (PlotJuggler/Qt-Advanced-Docking-System@d713b1f), which
-  conda-forge's 5.1.1 has from build 3 on; without it every dock-tab switch
-  rebuilds the GPU resources of the QRhiWidget in that tab. The recipe asks for
-  `build_number>=3` in host and at run time.
+- **Qt-Advanced-Docking** is conda-forge's `qt6-advanced-docking-system` from
+  build 3 on, which carries the fork's d713b1f (`PJ_SYSTEM_ADS`, see the root `CMakeLists.txt`).
 - **plotjuggler_sdk** and **pocketfft** are on neither channel yet, so the
   configure step downloads them (pinned by SHA-256) and the build cannot run
   with `FETCHCONTENT_FULLY_DISCONNECTED`.

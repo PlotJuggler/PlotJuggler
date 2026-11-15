@@ -446,7 +446,10 @@ bool restoreNode(
 
 PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* catalog, QWidget* parent)
     : ads::CDockManager(parent), state_id_(newStateId()), name_(std::move(name)), session_(session), catalog_(catalog) {
-  setStyleSheet("");  // Disable ADS's built-in stylesheet.
+  // Disable ADS's built-in stylesheet. The flag keeps it off: ADS 5's FollowPalette
+  // re-applies it on every ApplicationPaletteChange, which a theme switch sends.
+  ads::CDockManager::setConfigFlag(ads::CDockManager::DisableStylesheet, true);
+  setStyleSheet("");
   setComponentsFactory(new SplittableComponentsFactory());
 
   connect(this, &ads::CDockManager::dockWidgetRemoved, this, [this](ads::CDockWidget* removed) {

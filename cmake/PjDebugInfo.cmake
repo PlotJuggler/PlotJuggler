@@ -8,8 +8,9 @@
 # on macOS the level only costs compile time and compiler-cache size, and
 # `split` has nothing to add over `full`. MSVC compile-time debug info comes from
 # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT on the command line; only its link is handled
-# here, at the end.
-set(PJ_DEBUG_INFO "full" CACHE STRING "Debug info level: none|lines|full|split")
+# here, at the end. The default, line tables, is build.sh's too, so a direct
+# configure matches it.
+set(PJ_DEBUG_INFO "lines" CACHE STRING "Debug info level: none|lines|full|split")
 set_property(CACHE PJ_DEBUG_INFO PROPERTY STRINGS none lines full split)
 option(PJ_COMPRESS_DEBUG "Compress ELF debug sections with zlib (-gz)" OFF)
 

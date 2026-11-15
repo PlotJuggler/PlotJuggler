@@ -11,8 +11,6 @@
 #   - luau      (pj_scripting's filter engine; not on conda-forge)
 #   - mcap      (C++ header-only reader/writer; the conda-forge `mcap` package
 #                is the *Python* wrapper, not the C++ lib)
-#   - nanoarrow (libnanoarrow 0.7; conda-forge has only 0.9, which
-#                packaging/conda builds against)
 #   - ffmpeg    (NOT a conda-forge gap — a decode-only LGPL-only rebuild
 #                mirroring conanfile.txt's trimmed option set; replaces the
 #                feature-complete lgpl_* build on linux-64 and the GPL-only
@@ -20,8 +18,8 @@
 
 [workspace]
 name = "pj4"
-# local-channel/ holds the packages built from recipes/ (luau, mcap, nanoarrow
-# and the LGPL-lean ffmpeg) via:
+# local-channel/ holds the packages built from recipes/ (4 conda-forge gaps +
+# the LGPL-lean ffmpeg) via:
 # rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 channels = ["conda-forge", "./local-channel"]
 platforms = ["linux-64"]
@@ -43,7 +41,7 @@ tsl_robin_map = "1.4.*"          # conda name uses underscores; CMake config is 
 gtest = "1.17.*"
 glm = "1.0.*"
 benchmark = "1.9.*"
-libnanoarrow = "0.7.*"           # local channel (recipes/libnanoarrow; conda-forge has only 0.9)
+libnanoarrow = "0.7.*"           # local channel (conda-forge `nanoarrow` is the Python binding)
 nlohmann_json = "3.12.*"
 python = "3.12.*"                # embedded CPython for pj_scripting's PythonEngine
 pybind11 = "2.13.*"
@@ -72,8 +70,9 @@ libmcap = "2.1.*"                # C++ header-only mcap (conda-forge `mcap` is t
 # minor it was built against (<6.12 today), so it cannot co-solve with Qt 6.12.
 # Qwt is FetchContent-built statically on every platform instead. Once
 # conda-forge publishes a qwt build for the pinned qt6-main, re-add
-# `qwt = "6.3.*"` to [dependencies] and `-DPJ_SYSTEM_QWT=ON` to the configure
-# task (on Windows, where qwt is a DLL, PJ_SYSTEM_QWT defines QWT_DLL).
+# `qwt = "6.3.*"` here (linux-64 only) and `-DPJ_SYSTEM_QWT=ON` to the
+# configure task (Windows must keep the static build: the DLL collides with
+# our QwtSeriesData<QPointF> subclasses, LNK2005).
 elfutils = "*"
 libgl-devel = "*"
 libopengl-devel = "*"
@@ -102,12 +101,12 @@ sccache = "0.16.*"               # MSVC cache + native GHA backend (see activati
 # conda puts headers/libs/cmake under <prefix>/Library, on Linux under <prefix>.
 # Listing both keeps this one task cross-platform (the missing one is ignored).
 # ccache/sccache are wired via CMAKE_*_COMPILER_LAUNCHER env vars (see the
-# activation.env blocks below). CMP0141=NEW + Embedded switches MSVC to /Z7
-# (debug info embedded per .obj) instead of /Zi's shared .pdb: sccache doesn't
-# preserve MSVC's own /FS synchronization for concurrent writers to one shared
-# PDB, so a parallel build hits C1041 "cannot open program database" without
-# this. Inert on Linux (these are MSVC-only CMake variables).
-configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+# activation.env blocks below). CMP0141=NEW + the format, as windows-ci.yml
+# sets it: Release compiles without debug info (full debug info overflows
+# MainWindow.cpp's object sections, C1128) and Debug uses /Z7 (embedded per
+# .obj) instead of /Zi's shared .pdb, which sccache cannot serialize (C1041).
+# Single-quoted to keep the generator expression intact. Inert on Linux.
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW '-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug>:Embedded>'"
 build = { cmd = "cmake --build build-pixi --parallel", depends-on = ["configure"] }
 # --timeout 120 bounds any single test (a GL test under software rendering /
 # llvmpipe can stall) so a hang fails fast instead of holding the runner — the

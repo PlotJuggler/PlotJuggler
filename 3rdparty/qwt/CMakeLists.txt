@@ -51,12 +51,9 @@ if(PJ_SYSTEM_QWT)
     # SYSTEM: same third-party-header treatment as the FetchContent path below.
     target_include_directories(plotjuggler_qwt SYSTEM INTERFACE ${PJ_QWT_INCLUDE_DIR})
     target_link_libraries(plotjuggler_qwt INTERFACE ${PJ_QWT_LIBRARY} ${PJ_QWT_QT_LIBS})
-    if(WIN32)
-        # conda-forge's qwt is a DLL on Windows. Its consumers define QWT_DLL
-        # (as Qwt's own qwt.prf does) so QWT_EXPORT becomes dllimport: the
-        # QwtSeriesData<QPointF> members that qwt.dll exports through its
-        # exported subclasses are then imported, instead of also being
-        # instantiated in our QwtSeriesData subclasses (LNK2005).
+    option(PJ_SYSTEM_QWT_DLL "System Qwt is a DLL (Windows)" ON)
+    if(WIN32 AND PJ_SYSTEM_QWT_DLL)
+        # dllimport its exports, as qwt.prf does, else QwtSeriesData<QPointF> collides (LNK2005).
         target_compile_definitions(plotjuggler_qwt INTERFACE QWT_DLL)
     endif()
     return()

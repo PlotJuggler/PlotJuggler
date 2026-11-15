@@ -5,11 +5,8 @@
 # Same build type and debug-info level as the AppImage and .deb. A plain
 # configure/build/install: the app's install rules put plotjuggler4 and
 # pj-plugin-check side by side in bin/ (and the desktop entry and icons on
-# Linux); Qt, Python and every library come from the environment.
-#
-# Not FETCHCONTENT_FULLY_DISCONNECTED: plotjuggler_sdk (the pinned release) and
-# pocketfft have no package on conda-forge or the plotjuggler channel yet, so the
-# configure step still downloads both, pinned by SHA-256.
+# Linux); Qt, Python and every library come from the environment. Warnings stay
+# warnings: conda's compiler is newer than CI's.
 set -euo pipefail
 
 # Compiler cache, when the caller sets CCACHE_DIR. Every build runs in a new
@@ -29,12 +26,13 @@ cmake -G Ninja -S . -B build-conda ${CMAKE_ARGS} ${LAUNCHER_ARGS} \
   -DCMAKE_PREFIX_PATH="${PREFIX}" \
   -DPJ_SYSTEM_QWT=ON \
   -DPJ_SYSTEM_ADS=ON \
+  -DPJ_WARNINGS_AS_ERRORS=OFF \
   -DPJ_BUILD_TESTS=OFF \
   -DPJ_BUILD_DEMOS=OFF \
   -DPJ_DEBUG_INFO=none \
   -DPJ_VERSION="${PKG_VERSION}" \
   -DPJ_INSTALLATION=conda \
   -DPJ_QT_MIN_VERSION="${PJ_QT_MIN_VERSION}"
-cmake --build build-conda
+cmake --build build-conda --target pj_app
 if [[ -n "${CCACHE_DIR:-}" ]]; then ccache --show-stats; fi
 cmake --install build-conda

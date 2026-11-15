@@ -294,21 +294,19 @@ if(TARGET pj-plugin-check)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:pj-plugin-check> $<TARGET_FILE_DIR:pj_app>
         COMMENT "Placing pj-plugin-check next to the application binary")
+    install(TARGETS pj-plugin-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # Install layout (`cmake --install`): the app and its admission helper side by
-# side in bin/ (see above), so the app resolves its bundled-plugin seed directory
-# at <prefix>/lib/plotjuggler/plugins (ExtensionCatalogService); on Linux also the
-# desktop entry and icons. Every other dependency is linked in or comes from the
-# prefix, so a plain configure/build/install (conda, distro packages) gives a
-# working install. The bundled plugins, the CPython runtime and Qt's own files stay
-# with the packaging that bundles them (packaging/appimage, deb, installer, macos).
+# side in bin/ (see above); on Linux also the desktop entry and icons. The app
+# seeds bundled plugins from <bindir>/../lib/plotjuggler/plugins (macOS:
+# <bindir>/../Resources/plugins; ExtensionCatalogService), which the install
+# leaves empty. Every other dependency is linked in or comes from the prefix, so
+# a plain configure/build/install (conda, distro packages) gives a working
+# install. The bundled plugins, the CPython runtime and Qt's own files stay with
+# the packaging that bundles them (packaging/appimage, deb, installer, macos).
 if(NOT EMSCRIPTEN)
-    include(GNUInstallDirs)
-    install(TARGETS pj_app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    if(TARGET pj-plugin-check)
-        install(TARGETS pj-plugin-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    endif()
+    install(TARGETS pj_app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} BUNDLE DESTINATION .)
     if(UNIX AND NOT APPLE)
         install(FILES ${CMAKE_SOURCE_DIR}/packaging/appimage/plotjuggler4.desktop
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)

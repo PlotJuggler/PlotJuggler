@@ -140,17 +140,20 @@ when needed, `FETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK`.
   Keep original PJ3 layouts and scripts when validating a migrated analysis.
 - `cmake --install` installs `plotjuggler4` and its `pj-plugin-check` helper side
   by side in `bin/` and, on Linux, the desktop entry and icons. The app seeds
-  bundled plugins from `<prefix>/lib/plotjuggler/plugins`, which the install
-  leaves empty. Qt, Python and the libraries must come from the prefix; bundling
-  them is packaging work, so see the [packaging guides](../packaging/README.md),
-  including the [Debian installation layout](../packaging/deb/README.md#layout).
+  bundled plugins from `<bindir>/../lib/plotjuggler/plugins` (macOS:
+  `<bindir>/../Resources/plugins`), which the install leaves empty. Qt, Python
+  and the libraries must come from the prefix; bundling them is packaging work,
+  so see the [packaging guides](../packaging/README.md), including the
+  [Debian installation layout](../packaging/deb/README.md#layout).
 - Switches for distribution builds, all OFF unless noted: `PJ_SYSTEM_QWT`,
   `PJ_SYSTEM_NANOCDR` and `PJ_SYSTEM_ADS` take Qwt, nanocdr and
-  Qt-Advanced-Docking from the system (`PJ_SYSTEM_ADS` needs 5.1.1 or newer with
-  the fork's d713b1f patch, see `packaging/conda/README.md`), and
+  Qt-Advanced-Docking from the system (`PJ_SYSTEM_ADS` needs a 5.x from 5.1.1
+  on, since its SameMajorVersion package config rejects 6.x, carrying the
+  fork's d713b1f patch; see the root `CMakeLists.txt`), and
   `PJ_WARNINGS_AS_ERRORS` (ON) drops `-Werror` / `/WX` when turned off. An
   installed `plotjuggler_sdk` is used only when its version equals the pin in
-  `conanfile.txt`; otherwise the pinned release is downloaded and built in-tree.
+  `conanfile.txt` (a pre-release pin accepts any installed version); otherwise
+  the pinned release is downloaded and built in-tree.
 
 ## Run tests
 

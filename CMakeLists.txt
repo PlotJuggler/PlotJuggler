@@ -19,6 +19,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# MainWindow.cpp exceeds MSVC's default object section limit (C1128), at least
+# when built with embedded (/Z7) debug info.
+add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+
+include(GNUInstallDirs)
+# `cmake --install` finds the prefix's shared libraries (conda, distro prefixes)
+# from the installed binaries; packagers that relocate set their own.
+if(NOT DEFINED CMAKE_INSTALL_RPATH)
+    if(APPLE)
+        set(CMAKE_INSTALL_RPATH "@loader_path/../lib")
+    else()
+        set(CMAKE_INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+    endif()
+endif()
 
 # Packaging channel stamped into the anonymous telemetry ping. A channel token
 # (like gcc_64/msvc2022_64), not a version — deliberately NOT in versions.env.
@@ -238,17 +252,20 @@ elseif(NOT PJ_SDK_FORCE_SOURCE)
   # EXACT: another installed SDK (a system or conda one) is passed over for the
   # pinned release below rather than linked. A pre-release pin is no CMake
   # version, so only Conan, which installs exactly the pin, vouches for it.
-  if(PJ_SDK_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
-    set(_pj_sdk_find_version ${PJ_SDK_VERSION} EXACT)
+  if(PJ_SDK_VERSION MATCHES "^[0-9.]+$")
+    find_package(plotjuggler_sdk ${PJ_SDK_VERSION} EXACT CONFIG QUIET)
+  else()
+    find_package(plotjuggler_sdk CONFIG QUIET)
   endif()
-  find_package(plotjuggler_sdk ${_pj_sdk_find_version} CONFIG QUIET)
-  unset(_pj_sdk_find_version)
 endif()
 if(PJ_SDK_LOCAL_DIR)
   # Handled above; the blocks below serve the Conan and pinned-release paths.
 elseif(PJ_SDK_FORCE_SOURCE OR NOT plotjuggler_sdk_FOUND)
   if(PJ_SDK_FORCE_SOURCE)
     message(STATUS "PJ_SDK_FORCE_SOURCE=ON: building plotjuggler_sdk v${PJ_SDK_VERSION} sources from GitHub")
+  elseif(plotjuggler_sdk_CONSIDERED_VERSIONS)
+    message(STATUS "plotjuggler_sdk: rejected ${plotjuggler_sdk_CONSIDERED_VERSIONS} at "
+      "${plotjuggler_sdk_CONSIDERED_CONFIGS}, need exactly ${PJ_SDK_VERSION}: building v${PJ_SDK_VERSION} sources from GitHub")
   else()
     message(STATUS "plotjuggler_sdk Conan package not found: building v${PJ_SDK_VERSION} sources from GitHub")
   endif()
@@ -329,11 +346,12 @@ add_subdirectory(3rdparty/qwt)
 # PJ_SYSTEM_NANOCDR / PJ_SYSTEM_ADS: use an installed nanocdr / Qt-Advanced-Docking
 # (e.g. conda-forge's) instead of the vendored copies, as PJ_SYSTEM_QWT does for Qwt.
 option(PJ_SYSTEM_NANOCDR "Use an installed nanocdr (find_package) instead of 3rdparty/nanocdr" OFF)
-# PJ_SYSTEM_ADS needs Qt-Advanced-Docking >= 5.1.1 patched with the fork's d713b1f
-# (inactive tabs keep their parent; conda-forge's 5.1.1 from build 3 on). Upstream
-# unparents a hidden tab, so a QRhiWidget tab rebuilds its GPU resources on every
-# switch; upstream #866 only spares widgets with a native window. The default
-# stays the fork, which also carries the WebAssembly guards.
+# PJ_SYSTEM_ADS needs a Qt-Advanced-Docking 5.x >= 5.1.1 (its package config
+# rejects 6.x) patched with the fork's d713b1f (inactive tabs keep their parent;
+# conda-forge's 5.1.1 from build 3 on). Upstream unparents a hidden tab, so a
+# QRhiWidget tab rebuilds its GPU resources on every switch; upstream #866 only
+# spares widgets with a native window. `plotjuggler4 --selftest-docking` checks
+# it. The default stays the fork, which also carries the WebAssembly guards.
 option(PJ_SYSTEM_ADS "Use an installed Qt-Advanced-Docking >= 5.1.1 carrying the fork's d713b1f tab-parenting patch, instead of the 3rdparty/Qt-Advanced-Docking fork" OFF)
 if(PJ_SYSTEM_NANOCDR)
   find_package(nanocdr CONFIG REQUIRED)
@@ -355,7 +373,6 @@ unset(_pj_nanocdr_target)
 if(PJ_SYSTEM_ADS)
   find_package(qtadvanceddocking-qt6 5.1.1 CONFIG REQUIRED)
   add_library(qt_advanced_docking ALIAS ads::qtadvanceddocking-qt6)
-  message(STATUS "PJ_SYSTEM_ADS: Qt-Advanced-Docking ${qtadvanceddocking-qt6_VERSION}; it must carry the fork's d713b1f")
 else()
   # Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
   # tracking upstream master + the Wayland fix + WASM Unix guards on
@@ -447,7 +464,8 @@ if(PJ_BUILD_RASTER_HELPER)
 endif()
 
 if(TARGET pj-raster-helper)
-    install(TARGETS pj-raster-helper RUNTIME DESTINATION 3rdparty/retro)
+    # Where MainWindow looks for it: applicationDirPath()/3rdparty/retro.
+    install(TARGETS pj-raster-helper RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/3rdparty/retro)
     # GPLv2 / shareware compliance: the helper binary must ship with its license
     # text, the written offer for its corresponding source, and the WAD's
     # shareware terms. These travel next to the binary in the installed bundle.
@@ -456,5 +474,5 @@ if(TARGET pj-raster-helper)
         "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/retro/SOURCE-OFFER.txt"
         "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/retro/SHAREWARE-LICENSE.txt"
         "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/retro/README.md"
-        DESTINATION 3rdparty/retro)
+        DESTINATION ${CMAKE_INSTALL_BINDIR}/3rdparty/retro)
 endif()
