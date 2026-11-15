@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -20,6 +21,7 @@
 #include <utility>
 
 #include "pj_base/sdk/platform.hpp"
+#include "pj_scripting/python_object_script.h"
 #include "pj_scripting/sandbox.h"
 
 #ifdef PJ_WASM_PYTHON_STDLIB
@@ -485,7 +487,7 @@ bool isArmed(const PersistentWatchdog::Slot& slot) {
 // The browser's stdlib is not in the module (cmake/PjWasmPython.cmake): the first Python use downloads it from beside
 // the module script (`locateFile`; scripts/package_wasm.mjs packages it there) with a synchronous request, which only a
 // worker may make. Returns the body in a malloc'ed buffer and its size in `*size`, or null with `*size` -1 when the
-// request failed or timed out, or minus its HTTP status.
+// request failed or timed out, -2 when the heap could not hold the body, or minus its HTTP status.
 // clang-format off
 EM_JS_DEPS(pj_python_stdlib, "malloc");
 EM_JS(char*, pj_python_stdlib_fetch, (int* size), {
@@ -499,11 +501,15 @@ EM_JS(char*, pj_python_stdlib_fetch, (int* size), {
     if (request.status === 200) {
       const body = new Uint8Array(request.response);
       const buffer = _malloc(Math.max(body.length, 1)) >>> 0;
-      HEAPU8.set(body, buffer);
-      HEAP32[size >>> 2] = body.length;
-      return buffer;
+      if (buffer) {
+        HEAPU8.set(body, buffer);
+        HEAP32[size >>> 2] = body.length;
+        return buffer;
+      }
+      result = -2;
+    } else {
+      result = request.status ? -request.status : -1;
     }
-    result = request.status ? -request.status : -1;
   } catch (error) {
   }
   HEAP32[size >>> 2] = result;
@@ -524,8 +530,14 @@ void downloadStdlib() {
     return StdlibDownloadError("Python failed to start: could not download its standard library (" + why + ")");
   };
   if (!body) {
-    if (size == -404) {  // the bundle this page loaded is gone: a deployment replaced it
-      throw failed("HTTP 404: the app was updated since this page was loaded; reload the page");
+    if (size == -404) {  // the bundle this page loaded is gone: a deployment replaced it, and only a reload helps
+      throw StdlibDownloadError(
+          "Python failed to start: could not download its standard library (HTTP 404: the app was updated since this "
+          "page was loaded; reload the page)",
+          true);
+    }
+    if (size == -2) {  // retryable: scripts or data may free memory before the next attempt
+      throw StdlibDownloadError("Python failed to start: not enough memory to download Python's standard library");
     }
     throw failed(size == -1 ? std::string("network error or timeout") : "HTTP " + std::to_string(-size));
   }
@@ -545,6 +557,37 @@ void downloadStdlib() {
         "Python failed to start: could not write its standard library to " + std::string(PJ_WASM_PYTHON_STDLIB));
   }
 }
+
+constexpr std::chrono::seconds kStdlibRetryCooldown{10};
+std::atomic<std::uint64_t> g_retry_cooldown_for_test{0};  ///< 0: kStdlibRetryCooldown
+
+/// Downloads the stdlib once a download succeeds; until then a failure answers every call without a new request, a
+/// 404 for good (the page's bundle is gone) and any other until kStdlibRetryCooldown passed: a playback re-running a
+/// script every frame must not re-download every frame. Serialised by the once_flag, which a throw leaves unset.
+void ensureStdlib() {
+  static std::once_flag downloaded;
+  std::call_once(downloaded, [] {
+    struct Failure {
+      std::string error;
+      std::chrono::steady_clock::time_point at;
+      bool sticky = false;
+    };
+    static std::optional<Failure> last;  // guarded by the once_flag: one caller runs this at a time
+    const auto now = std::chrono::steady_clock::now();
+    const std::uint64_t override_millis = g_retry_cooldown_for_test.load(std::memory_order_relaxed);
+    const auto cooldown = override_millis != 0 ? std::chrono::milliseconds(override_millis)
+                                               : std::chrono::milliseconds(kStdlibRetryCooldown);
+    if (last && (last->sticky || now - last->at < cooldown)) {
+      throw StdlibDownloadError(last->error, last->sticky);
+    }
+    try {
+      downloadStdlib();
+    } catch (const StdlibDownloadError& error) {
+      last = Failure{error.what(), std::chrono::steady_clock::now(), error.sticky};
+      throw;
+    }
+  });
+}
 #endif
 
 }  // namespace
@@ -552,12 +595,9 @@ void downloadStdlib() {
 void ensureInterpreter() {
 #ifdef PJ_WASM_PYTHON_STDLIB
   if (emscripten_is_main_browser_thread()) {  // a synchronous download there would freeze the page
-    throw std::runtime_error("Python never starts on the browser main thread");
+    throw std::runtime_error("Python cannot run on the browser main thread");
   }
-  // Before the once-only boot below, which would keep a failure for good: a throw leaves the flag unset, so the next
-  // call downloads again; concurrent callers wait for the one downloading.
-  static std::once_flag downloaded;
-  std::call_once(downloaded, downloadStdlib);
+  ensureStdlib();  // before the once-only boot below, which would keep a failure for good
 #endif
   // Once per process, failure included: a second start is refused by pybind11 ("already running") or, after CPython
   // failed to start, runs on a half-initialized runtime, either way losing the cause. Leaked like the interpreter: a
@@ -896,3 +936,15 @@ void PersistentWatchdog::run() {
 }
 
 }  // namespace PJ::scripting::detail
+
+namespace PJ::scripting {
+
+void setPythonStdlibRetryCooldownForTest(std::uint64_t millis) {
+#ifdef PJ_WASM_PYTHON_STDLIB
+  detail::g_retry_cooldown_for_test.store(millis, std::memory_order_relaxed);
+#else
+  (void)millis;
+#endif
+}
+
+}  // namespace PJ::scripting

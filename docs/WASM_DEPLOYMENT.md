@@ -333,9 +333,11 @@ What to know before changing it:
   The budget leaves it out. A failed download (the network, an HTTP error,
   a body that is not a zip; a 404 means the app was redeployed since the page
   loaded, so it says to reload) fails that use with the reason and is not
-  kept: the next run of any script, the same recipe included, downloads again,
-  and a validate meanwhile reports the script unchecked, not invalid
-  (`tests/wasm/python.spec.js`).
+  kept by the script: uses within 10 s of the failure get the same error
+  without a new request (a playback re-runs scripts every frame), the first
+  use after downloads again, the same recipe included; a 404 is answered
+  without a request for the rest of the session. A validate meanwhile reports
+  the script unchecked, not invalid (`tests/wasm/python.spec.js`).
 - **The stdlib zip** holds only the modules that importing the roots in
   `stdlib_zip.py` loads (68 of them). A module the stdlib imports
   lazily is missed unless a root names it, and even one in the zip cannot be
