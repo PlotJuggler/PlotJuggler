@@ -403,7 +403,7 @@ TEST(LogicalBrowserSideFiles, RefusesASideFileWithoutFingerprintAndPassesNonObje
   QString error;
   const auto unfingerprinted = PJ::layout_xml::logicalBrowserSideFiles(
       R"({"filepath":"/d/run.log","dbc":"/d/2/x.dbc"})", u"/d/run.log"_s, u"run.log"_s,
-      [](const QString&) { return std::optional<PJ::layout_xml::StagedFileInfo>({.name = u"x.dbc"_s}); }, &error);
+      [](const QString&) { return std::optional(PJ::layout_xml::StagedFileInfo{.name = u"x.dbc"_s}); }, &error);
   EXPECT_FALSE(unfingerprinted.has_value());
   EXPECT_TRUE(error.contains(u"x.dbc"_s)) << error.toStdString();
 
