@@ -52,31 +52,44 @@ jobs:
       matrix:
         include:
           - name: linux-64
-            os: depot-ubuntu-22.04-4
+            os: ubuntu-22.04
           - name: win-64
             # windows-2022, not a newer image: the sccache object store is
             # shared with windows-ci.yml and windows-release.yml, which pin
             # windows-2022 — an image drift means a different MSVC and a
             # polluted/cold object cache.
-            os: depot-windows-2022-4
+            os: windows-2022
     # Windows gap-package builds + Qt link are slow; give headroom over the
     # 6-hour GitHub default so a hang is caught by the job, not the runner.
     timeout-minutes: 120
 
-    # Explicit cache locations for package downloads and Linux ccache. Windows
-    # sccache uses the same Depot Cache backend as the Conan workflows.
+    # Explicit cache locations for package downloads and Linux ccache.
     env:
+      # sccache's GitHub Actions cache backend (the action exports the cache
+      # token). Every object is one cache entry in the repo's shared 10 GB.
+      SCCACHE_GHA_ENABLED: "true"
       PIXI_CACHE_DIR: ${{ github.workspace }}/.pixi_cache
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       # Bound the Linux compiler cache. Read straight from the environment by
       # ccache itself, so it applies without invoking the binary before the
-      # pixi env is solved. Unset, ccache defaults to 5 G — the largest single
-      # writer into per-GB-month billed Depot Cache storage. 2 G matches
+      # pixi env is solved. Unset, ccache defaults to 5 G, half the repo's
+      # shared 10 GB Actions cache. 2 G matches
       # linux-ci.yml, which holds PJ4's whole warm object set.
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPRESS: "1"
 
     steps:
+      - name: Free up runner disk space
+        # GitHub-hosted Ubuntu runners leave ~14 GB free, which the Conan
+        # closure, Qt and the build tree can exceed ("No space left on
+        # device"). Reclaim the preinstalled toolchains no job here uses.
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Use HTTPS for github.com submodules
         shell: bash
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -159,8 +172,7 @@ jobs:
         run: sed -i 's/platforms = \["linux-64"\]/platforms = ["win-64"]/' pixi.toml
 
       - name: Install sccache (Windows)
-        # Only installs the binary; the backend is Depot Cache via the
-        # SCCACHE_WEBDAV_* env vars the Depot runner pre-sets. If installation
+        # Backed by the Actions cache (SCCACHE_GHA_ENABLED on the job). If installation
         # flakes, the build falls back to an ephemeral local cache and remains
         # correct.
         if: runner.os == 'Windows'
@@ -172,8 +184,7 @@ jobs:
 
       # Linux keeps its compact ccache archive. Windows shares its sccache
       # object store with windows-ci.yml and windows-release.yml through
-      # Depot Cache. On Depot runners actions/cache is Depot-backed (not the
-      # shared 10 GB GitHub quota).
+      # the Actions cache.
       - name: Restore compiler objects (Linux)
         if: runner.os == 'Linux'
         id: ccache_restore
@@ -190,8 +201,8 @@ jobs:
 
       - name: Save compiler objects (Linux)
         # Scheduled runs only: the key carries the SHA (cache keys are
-        # immutable), so every saving run writes a new blob that nothing ever
-        # deletes, into per-GB-month billed Depot Cache storage. PR runs still
+        # immutable), so every saving run writes a new blob into the repo's
+        # shared 10 GB Actions cache. PR runs still
         # restore via the prefix restore-keys above. See linux-ci.yml's "Save ccache".
         if: always() && runner.os == 'Linux' && github.event_name == 'schedule' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5

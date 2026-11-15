@@ -13,8 +13,8 @@
 #      QRhi capability probe and functional browser suite (with python.spec.js
 #      and python_layout.spec.js) run against the same source graph used by the
 #      packaged application, in Chromium (wasm-chromium job, three Playwright
-#      workers) and Firefox (wasm-firefox, two shards of one worker), which run
-#      in parallel on this job's package.
+#      workers) and Firefox (wasm-firefox, two shards of one worker; nightly
+#      and manual runs only), which run in parallel on this job's package.
 #      It is packaged twice: without presets (deploy/, every spec) and with the
 #      samples (deploy-presets/, which presets.spec.js serves itself).
 #
@@ -67,12 +67,22 @@ jobs:
     if: >-
       ${{ !cancelled() && !github.event.pull_request.draft &&
       (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
-    runs-on: depot-ubuntu-22.04-4
+    runs-on: ubuntu-22.04
     # Generous first-run ceiling (cold Qt+emsdk+ccache); warm runs are expected
     # in the 20-30 minute band. Tighten once real timings accumulate.
     timeout-minutes: 120
 
     steps:
+      - name: Free up runner disk space
+        # GitHub-hosted Ubuntu runners leave ~14 GB free, which the Conan
+        # closure, Qt and the build tree can exceed ("No space left on
+        # device"). Reclaim the preinstalled toolchains no job here uses.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -154,7 +164,7 @@ jobs:
         # restore/save split rather than actions/cache: the implicit post-job
         # save fires on every run and the SHA-keyed entry is never an exact
         # hit, so each run persisted a new blob of up to max_size (4 G below)
-        # into billed Depot Cache storage. See linux-ci.yml's "Save ccache".
+        # into the repo's shared 10 GB Actions cache. See linux-ci.yml's "Save ccache".
         id: ccache_restore
         uses: actions/cache/restore@v5
         with:
@@ -267,8 +277,8 @@ jobs:
         # Re-seed only when the restore found nothing at all. This workflow has
         # no push trigger, so a push-only gate would let the cache decay to
         # permanently cold; conversely saving every run persisted a fresh blob
-        # of up to 4 G into billed Depot Cache storage. Cold-only bounds it to
-        # roughly one blob per Depot retention period while staying
+        # of up to 4 G into the repo's shared 10 GB Actions cache. Cold-only
+        # bounds it to one blob until LRU eviction drops it, while staying
         # self-healing: whichever run finds an empty cache repopulates it.
         # always(): the browser suites below are irrelevant to object validity.
         if: always() && steps.ccache_restore.outputs.cache-matched-key == ''
@@ -324,7 +334,7 @@ jobs:
   wasm-chromium:
     # The acceptance package of the wasm job, in Chromium (SwiftShader WebGL),
     # including the robot hosting spec, which runs docs/wasm/Caddyfile in Caddy.
-    # Skipped, like wasm-firefox, on PRs into release-* while the repo variable
+    # Skipped on PRs into release-* while the repo variable
     # PJ_CI_RELEASE_PR_LITE is 'true'; the wasm build itself still runs.
     needs: wasm
     # Explicit result check: the implicit success() also fails on the skipped
@@ -332,7 +342,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.wasm.result == 'success' &&
       !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
-    runs-on: depot-ubuntu-22.04-4
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
       PJ_WASM_URL: http://127.0.0.1:6931/
@@ -434,17 +444,20 @@ jobs:
     # and headless Firefox gets no WebGL at all without a display (Xvfb).
     # One Playwright worker (playwright.config.js), so the suite is split
     # across two jobs instead.
+    # Nightly and manual runs only: its single llvmpipe worker makes it the
+    # costliest part of a PR run, and Chromium already gates the PR. A nightly failure
+    # emails whoever last edited the `schedule:` cron (GitHub's own scheduled-
+    # workflow notification); dispatch the workflow on a branch to run Firefox
+    # before merging a Firefox-sensitive change.
     needs: wasm
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2]
     # Explicit result check: the implicit success() also fails on the skipped
-    # `changed` gate two levels up, which would skip this job on every PR run.
-    if: >-
-      ${{ !cancelled() && needs.wasm.result == 'success' &&
-      !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
-    runs-on: depot-ubuntu-22.04-4
+    # `changed` gate two levels up, which would skip this job on every manual run.
+    if: ${{ !cancelled() && needs.wasm.result == 'success' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
       LIBGL_ALWAYS_SOFTWARE: '1'

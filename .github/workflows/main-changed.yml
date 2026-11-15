@@ -2,7 +2,7 @@ name: Changed since last nightly
 
 # Reusable gate for scheduled workflows: reports whether the default branch has
 # moved since the caller's previous scheduled run, so a quiet night costs one
-# GitHub-hosted minute instead of a full Depot build. Compares against the
+# runner minute instead of a full build. Compares against the
 # previous scheduled run (not "commits in the last 24 h"), so a missed night is
 # never silently skipped, and a red night is not rebuilt until something lands.
 # Fails open: if the lookup errors, the caller builds.

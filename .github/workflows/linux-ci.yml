@@ -26,7 +26,7 @@ concurrency:
 jobs:
   build:
     if: github.event.pull_request.draft == false
-    runs-on: depot-ubuntu-22.04-4
+    runs-on: ubuntu-22.04
     # Backstop against hangs (a deadlocked test otherwise holds the runner for
     # GitHub's 6-hour default). Worst observed legitimate run — cold Conan +
     # cold ccache — is ~28 min.
@@ -35,6 +35,16 @@ jobs:
       contents: read
 
     steps:
+      - name: Free up runner disk space
+        # GitHub-hosted Ubuntu runners leave ~14 GB free, which the Conan
+        # closure, Qt and the build tree can exceed ("No space left on
+        # device"). Reclaim the preinstalled toolchains no job here uses.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -57,7 +67,7 @@ jobs:
 
       - uses: conan-io/setup-conan@v1
         with:
-          # Binaries come from the Depot-backed Actions cache below, with
+          # Binaries come from the Actions cache below, with
           # ConanCenter source builds as the fallback. Do not also archive
           # ~/.conan2 through setup-conan itself.
           cache_packages: false
@@ -75,9 +85,8 @@ jobs:
           echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
 
       - name: Restore Conan cache
-        # On Depot runners actions/cache is backed by Depot Cache storage —
-        # the authoritative Conan binary store; ConanCenter source builds are
-        # the fallback.
+        # The Actions cache is the authoritative Conan binary store;
+        # ConanCenter source builds are the fallback.
         id: conan-gha-cache
         uses: actions/cache/restore@v5
         with:
@@ -160,8 +169,7 @@ jobs:
         # Keep the regular-build namespace disjoint from TSan. The former
         # `ccache-linux-` catch-all selected the newer ccache-linux-tsan-* entry
         # and produced 0/810 hits because sanitizer objects are incompatible.
-        # On Depot runners actions/cache is backed by Depot Cache storage (not
-        # GitHub's shared 10 GB quota). Only pushes save (see Save ccache); a pull
+        # Only pushes save (see Save ccache); a pull
         # request restores its head branch's newest cache (there is one when the
         # head is itself a pushed branch, e.g. a release-* merged into main: main's
         # cache hit 3.5% there), then its target branch's, then main's, since a
@@ -238,9 +246,9 @@ jobs:
         # so skip only on an exact-key hit.
         #
         # Not from pull requests, the same rule the ccache save below follows:
-        # Depot Cache is repo-wide with no branch isolation, and this namespace
-        # is what the release restores from, so only trusted refs (push,
-        # dispatch) may write it. PR runs still RESTORE via the prefix key.
+        # every entry counts against the repo's shared, LRU-evicted 10 GB
+        # Actions cache, and a PR-scoped entry is readable only by that PR.
+        # PR runs still RESTORE via the prefix key.
         #
         # conan_install must have succeeded: an install that died partway
         # leaves an incomplete closure, and the immutable exact key would then
@@ -258,10 +266,10 @@ jobs:
         # always(): a failed build's objects are still valid.
         #
         # push-to-main only. The key carries the SHA (cache keys are immutable),
-        # so every run that saves writes a *new* ~2 GB blob that nothing ever
-        # deletes — and Depot Cache is billed per GB-month, unlike GitHub's
-        # free-but-LRU-evicted 10 GB quota. Saving from PR runs at this repo's
-        # velocity wrote ~40 GB/day of never-reclaimed storage. PR runs still
+        # so every run that saves writes a *new* ~2 GB blob into the repo's
+        # shared 10 GB Actions cache, whose LRU eviction would otherwise push out
+        # the entries other jobs need warm (cache-cleanup.yml prunes the
+        # superseded ones). PR runs still
         # RESTORE (their target branch's, else main's: restore-keys above), and
         # hash_dir=false + base_dir make that restore hit across workspace paths, so
         # the cost is a few minutes on repeat pushes to the same PR.

@@ -18,13 +18,23 @@ on:
 jobs:
   build:
     if: ${{ !github.event.pull_request.draft }}
-    runs-on: depot-ubuntu-22.04-4
+    runs-on: ubuntu-22.04
     # A cold Nix store builds FFmpeg, Luau and the app from source.
     timeout-minutes: 120
     permissions:
       contents: read
 
     steps:
+      - name: Free up runner disk space
+        # GitHub-hosted Ubuntu runners leave ~14 GB free, which the Conan
+        # closure, Qt and the build tree can exceed ("No space left on
+        # device"). Reclaim the preinstalled toolchains no job here uses.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       # Full history: Nix rejects a shallow Git checkout as a flake source.
       - uses: actions/checkout@v6
         with:

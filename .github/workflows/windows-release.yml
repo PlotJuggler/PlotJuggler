@@ -9,8 +9,8 @@ name: Release Windows Packages
 #
 # Cache/repository layers shared with windows-ci.yml:
 #   - Qt kit via actions/cache
-#   - compiler objects via sccache on Depot Cache
-#   - Conan packages via the shared Depot-backed Actions cache, then ConanCenter
+#   - compiler objects via sccache on the Actions cache
+#   - Conan packages via the shared Actions cache, then ConanCenter
 #
 # Triggers:
 #   - workflow_dispatch     -> build both packages from any branch (artifacts only);
@@ -55,7 +55,7 @@ concurrency:
 jobs:
   windows-installer:
     # Match windows-ci.yml and the toolchain used for the published plugin artifacts.
-    runs-on: depot-windows-2022-4
+    runs-on: windows-2022
     # Backstop against hangs — app build plus registry download/validation/packaging.
     # Plugins are not compiled here.
     timeout-minutes: 180
@@ -64,14 +64,17 @@ jobs:
       update_url: ${{ env.PJ_WINDOWS_UPDATE_URL }}
 
     env:
+      # sccache's GitHub Actions cache backend (the action exports the cache
+      # token). Every object is one cache entry in the repo's shared 10 GB.
+      SCCACHE_GHA_ENABLED: "true"
       # The one URL the installer is built against and the repository is
       # published to: the production variable on a tag push, the staging input
       # on a dispatch (even one started from a tag), empty otherwise. Both steps read it, so they cannot disagree.
       PJ_WINDOWS_UPDATE_URL: ${{ github.event_name == 'push' && vars.PJ4_WINDOWS_UPDATE_URL || (github.event_name == 'workflow_dispatch' && inputs.update_url || '') }}
 
-    # sccache uses Depot Cache via the SCCACHE_WEBDAV_* env vars the Depot
-    # runner pre-sets — the same org-wide object store as Windows CI and the
-    # Pixi win-64 leg, so the release reuses identical MSVC compilation results.
+    # sccache (SCCACHE_GHA_ENABLED above) shares its Actions-cache object store
+    # with Windows CI and the Pixi win-64 leg, so the release reuses identical
+    # MSVC compilation results.
     steps:
       - name: Use HTTPS for github.com submodules
         shell: bash
@@ -145,7 +148,7 @@ jobs:
           arch: x64
 
       # ─────────────────────────── Conan binaries ───────────────────────────
-      # The Depot-backed Actions cache closure maintained by windows-ci.yml is
+      # The Actions cache closure maintained by windows-ci.yml is
       # the Conan binary store (same windows-2022 MSVC/RelWithDebInfo graph,
       # same key). ConanCenter source builds cover any residual miss.
 

@@ -22,10 +22,10 @@ on:
         type: boolean
         default: true
       runner:
-        description: Runner label (macos-15 when Depot's macOS capacity is queued)
+        description: GitHub-hosted macOS runner label
         type: choice
-        options: [depot-macos-14, macos-15]
-        default: depot-macos-14
+        options: [macos-15, macos-14]
+        default: macos-15
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
@@ -43,9 +43,12 @@ concurrency:
 
 jobs:
   macos-dmg:
-    runs-on: ${{ inputs.runner || 'depot-macos-14' }}
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 150
     env:
+      # sccache's GitHub Actions cache backend (the action exports the cache
+      # token). Every object is one cache entry in the repo's shared 10 GB.
+      SCCACHE_GHA_ENABLED: "true"
       PJ_SIGN: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.sign) }}
 
     steps:

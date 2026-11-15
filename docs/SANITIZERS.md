@@ -66,7 +66,7 @@ test time too.
 CI runs the three lanes as one matrix job in `.github/workflows/sanitizers.yml`,
 off the pull-request path: nightly on the default branch, skipped when it has
 not moved since the previous nightly run (`main-changed.yml`), and on manual
-dispatch. It uses the same `depot-ubuntu-22.04-4` runner as `linux-ci.yml`,
+dispatch. It uses the same `ubuntu-22.04` runner as `linux-ci.yml`,
 restoring its Qt and Conan caches; each lane has its own ccache key so
 instrumented objects cannot seed another lane, and only nightly runs save it.
 

@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   build-push:
-    runs-on: depot-ubuntu-22.04-4
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
