@@ -106,16 +106,10 @@ Bridge needs none of them: it connects with the browser's own WebSocket, so a pa
 served over HTTPS reaches only `wss://` bridges (mixed content), and the browser
 reports a failed connection without its cause. Its stream presets are described
 in [`WASM_PRESETS.md`](./WASM_PRESETS.md#streaming-sources). Adding another
-plugin takes a `wasm.cmake` in its directory of `pj-official-plugins` (one
-`pj_wasm_official_plugin()` call naming its sources, manifest, `.ui` files, export
-symbols and links), a pin of `cmake/PjWasmDependencies.cmake` that contains it, and
-one line in `PJ_WASM_OFFICIAL_PLUGIN_DIRS`; a third-party library it needs that this
-build does not provide yet goes into `PjWasmDependencies.cmake` under the name the
-contract gives. Its export macros must name an unqualified class (or use the
-`_NAMED` variants) so the static getter symbol is valid. Every new static archive
-also needs the symbol-collision audit described in the root `CLAUDE.md`. To try a
-plugins checkout before pinning it, configure with
-`-DFETCHCONTENT_SOURCE_DIR_PJ_OFFICIAL_PLUGINS=<checkout>`.
+plugin is described in the "WebAssembly build" section of the
+[pj-official-plugins README](https://github.com/PlotJuggler/pj-official-plugins#webassembly-build):
+a `wasm.cmake` in its directory there, one line in `PJ_WASM_OFFICIAL_PLUGIN_DIRS`
+here, and a pin that contains it.
 
 The packaging command refuses missing, invalid, or single-threaded build
 outputs. To prevent a mistyped `--output` from deleting unrelated data, it

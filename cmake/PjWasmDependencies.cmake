@@ -307,8 +307,14 @@ if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_W
         add_library(LZ4::lz4_static ALIAS lz4_static)
     endif()
     if(NOT TARGET zstd::libzstd_static AND TARGET libzstd_static)
+        # Zstd's build/cmake target does not publish its source-tree include directory.
+        target_include_directories(libzstd_static SYSTEM INTERFACE "${zstd_SOURCE_DIR}/lib")
         add_library(zstd::libzstd_static ALIAS libzstd_static)
     endif()
+endif()
+
+if(PJ_WASM_WITH_FFT)
+    include(${CMAKE_SOURCE_DIR}/pj_scripting/cmake/PjPocketfft.cmake)
 endif()
 
 if(PJ_WASM_WITH_SCENE3D)

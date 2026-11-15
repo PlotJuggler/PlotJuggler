@@ -54,9 +54,6 @@ endforeach()
 # Includes the enabled plugins' wasm.cmake, after the dependencies they link exist. A macro:
 # a plugin may call enable_language(), which must run at file scope.
 macro(pj_wasm_include_official_plugins)
-    if(PJ_WASM_WITH_FFT)
-        include(${CMAKE_SOURCE_DIR}/pj_scripting/cmake/PjPocketfft.cmake)
-    endif()
     foreach(_pj_wasm_entry IN LISTS _pj_wasm_enabled_plugins)
         string(REGEX REPLACE "=.*" "" _pj_wasm_dir "${_pj_wasm_entry}")
         include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/${_pj_wasm_dir}/wasm.cmake")

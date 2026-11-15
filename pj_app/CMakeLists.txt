@@ -186,14 +186,11 @@ if(EMSCRIPTEN)
                 tests/wasm_scene3d_acceptance_probes.h)
             target_link_libraries(pj_app_shell PRIVATE pj_scene3d_widgets_testing)
         endif()
-        if(TARGET pj_wasm_mcap_source AND NOT TARGET pj_wasm_ros_parser)
+        if(PJ_WASM_WITH_MCAP AND NOT PJ_WASM_WITH_ROS)
             target_sources(pj_app_shell PRIVATE tests/wasm_mcap_probe_parser.cpp)
             target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_ENABLE_MCAP_PROBE_PARSER)
         endif()
         target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_ENABLE_INGRESS_PROBE)
-        if(TARGET pj_wasm_ros_parser)
-            target_compile_definitions(pj_wasm_ros_parser PRIVATE PJ_WASM_ENABLE_INGRESS_PROBE)
-        endif()
         target_link_libraries(pj_app_shell PUBLIC plotjuggler_sdk::plugin_sdk)
     endif()
 endif()
@@ -241,9 +238,6 @@ if(EMSCRIPTEN)
     # The official plugins built into the module (cmake/PjWasmOfficialPlugins.cmake), registered
     # by BuiltinPlugins.cpp through the generated include.
     pj_wasm_register_official_plugins(pj_app_shell "${CMAKE_BINARY_DIR}/generated/pj_wasm_official_plugins.inc")
-endif()
-
-if(EMSCRIPTEN)
     qt_add_executable(pj_app
         src/main.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
