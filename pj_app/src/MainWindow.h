@@ -190,6 +190,8 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] std::size_t wasmProbeResidentPoolCapacity() const;
   void wasmProbeReportFilterResult() const;
   void wasmProbeReportToolboxTransformResult() const;
+  // Opens a toolbox as its Toolbox-menu entry does.
+  void wasmProbeLaunchToolbox(const QString& plugin_id);
   // Reports streaming controls, catalog/tree state, playback range, and the
   // first plotted curve without triggering any application action.
   void wasmProbeReportStreamingState() const;

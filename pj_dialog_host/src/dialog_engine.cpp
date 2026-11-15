@@ -569,6 +569,9 @@ struct DialogEngine::AsyncRunner {
         return;
       }
 #ifdef Q_OS_WASM
+      // Only toolbox (PanelEngine) folder pickers become browser downloads: a
+      // dialog's folder picker selects a folder to read (protobuf's include
+      // folders), which a browser cannot provide.
       Q_UNUSED(target_widget)
       Q_UNUSED(target_memo)
       qWarning("DialogEngine: plugin folder pickers are unavailable on WebAssembly");
@@ -1033,6 +1036,9 @@ struct DialogEngine::AsyncRunner {
       } else {
         parser_config_.clear();
       }
+      for (auto& [key, lease] : selected_file_leases) {
+        self.selected_files_.push_back(std::move(lease));
+      }
       dr = DialogResult::kAccepted;
     } else {
       handle_.reject();
@@ -1062,6 +1068,7 @@ void DialogEngine::openDialog(QWidget* parent, Completion completion) {
     return;
   }
   dialog_open_ = true;
+  selected_files_.clear();
   AsyncRunner::run(*this, parent, std::move(completion));
 }
 
@@ -1124,6 +1131,10 @@ std::string DialogEngine::savedConfig() const {
 
 std::string DialogEngine::parserConfig() const {
   return parser_config_;
+}
+
+std::vector<std::shared_ptr<void>> DialogEngine::takeSelectedFiles() {
+  return std::exchange(selected_files_, {});
 }
 
 std::string DialogEngine::runHeadless(int max_ticks) {

@@ -65,12 +65,17 @@ here) under `presets/`; see [Presets](#presets).
 The browser cannot `dlopen` extensions, so a fixed set of official plugins is
 compiled from a pinned `pj-official-plugins` commit (`cmake/PjWasmDependencies.cmake`)
 and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
-`cmake/PjWasm<Name>.cmake` recipe and an option, all `ON` by default:
+`cmake/PjWasm<Name>.cmake` recipe (the CAN and Arrow families share `PjWasmCan` and `PjWasmArrow`; the last three build Apache Arrow C++ through `PjWasmArrowDependencies`) and an option, all `ON` by default:
 
 | Option | Plugin |
 |---|---|
 | `PJ_WASM_WITH_CSV` | `data_load_csv` |
 | `PJ_WASM_WITH_MCAP` | `data_load_mcap` |
+| `PJ_WASM_WITH_ULOG` | `data_load_ulog` (PX4 ULog) |
+| `PJ_WASM_WITH_PARQUET` | `data_load_parquet` (named non-UTC time zones stay unadjusted: the browser has no tz database) |
+| `PJ_WASM_WITH_CANDUMP` | `data_load_candump` (SocketCAN logs) |
+| `PJ_WASM_WITH_BLF` | `data_load_blf` (Vector BLF) |
+| `PJ_WASM_WITH_MF4` | `data_load_mf4` (ASAM MDF4) |
 | `PJ_WASM_WITH_3D_LOADER` | `data_load_3d` (PCD/PLY) |
 | `PJ_WASM_WITH_DUMMY_STREAM` | `data_stream_dummy` |
 | `PJ_WASM_WITH_PJ_BRIDGE` | `data_stream_pj_bridge` (over the browser's WebSocket) |
@@ -78,9 +83,13 @@ and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
 | `PJ_WASM_WITH_PROTOBUF` | `parser_protobuf` |
 | `PJ_WASM_WITH_JSON` | `parser_json` |
 | `PJ_WASM_WITH_DATA_TAMER` | `parser_data_tamer` |
+| `PJ_WASM_WITH_INFLUX` | `parser_influx` (InfluxDB line protocol) |
+| `PJ_WASM_WITH_NAVMAP` | `parser_navmap` |
+| `PJ_WASM_WITH_ARROW_PARSER` | `parser_arrow` (Arrow IPC) |
 | `PJ_WASM_WITH_TRANSFORM_EDITOR` | `toolbox_transform_editor` |
 | `PJ_WASM_WITH_QUATERNION` | `toolbox_quaternion` |
 | `PJ_WASM_WITH_FFT` | `toolbox_fft` |
+| `PJ_WASM_WITH_DATA_EXPORTER` | `toolbox_data_exporter` (the exported files download from the browser) |
 | `PJ_WASM_WITH_ANOMALY_DETECTOR` | `toolbox_anomaly_detector` (the host runs its rules) |
 | `PJ_WASM_WITH_LOG_WIDGET` | `widget_log` (the log viewer Custom Widget) |
 

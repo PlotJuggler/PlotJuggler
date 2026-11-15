@@ -26,6 +26,9 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#if defined(PJ_WASM_ENABLE_INGRESS_PROBE) && defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <coroutine>
@@ -314,6 +317,20 @@ QString normalizeExtension(const QString& path) {
   return suffix.isEmpty() ? QString() : u"."_s + suffix.toLower();
 }
 
+// Logs a load-outcome marker and, in the browser probe build, also appends it
+// to globalThis.pjWasmLoadOutcomes. Firefox can drop a console line before it
+// reaches the test runner (the load completes, its marker never arrives), so
+// the browser tests read the outcome from the page rather than the console.
+void recordProbeOutcome(const QString& line) {
+  qCInfo(lcFileLoader).noquote() << line;
+#if defined(PJ_WASM_ENABLE_INGRESS_PROBE) && defined(__EMSCRIPTEN__)
+  const QByteArray utf8 = line.toUtf8();
+  EM_ASM(
+      { (globalThis.pjWasmLoadOutcomes = globalThis.pjWasmLoadOutcomes || []).push(UTF8ToString($0)); },
+      utf8.constData());
+#endif
+}
+
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
 void logSuccessfulLoad(
     const DataEngine& engine, const CatalogModel& catalog, const QString& source_identity, const QString& plugin_name,
@@ -370,11 +387,10 @@ void logSuccessfulLoad(
   }
   scalar_series.sort();
   series_samples.sort();
-  qCInfo(lcFileLoader).noquote() << "PJ_FILE_LOAD_OK" << u"plugin=%1"_s.arg(plugin_name)
-                                 << u"identity=%1"_s.arg(source_identity) << u"catalog_items=%1"_s.arg(catalog_items)
-                                 << u"scalar_count=%1"_s.arg(scalar_count)
-                                 << u"scalar_series=%1"_s.arg(scalar_series.join(u","_s))
-                                 << u"series_samples=%1"_s.arg(series_samples.join(u","_s));
+  recordProbeOutcome(
+      u"PJ_FILE_LOAD_OK plugin="_s + plugin_name + u" identity="_s + source_identity + u" catalog_items="_s +
+      QString::number(catalog_items) + u" scalar_count="_s + QString::number(scalar_count) + u" scalar_series="_s +
+      scalar_series.join(u","_s) + u" series_samples="_s + series_samples.join(u","_s));
 }
 #endif
 #if defined(PJ_WASM_ENABLE_INGRESS_PROBE) && (defined(PJ_WASM_WITH_ROS_PLUGIN) || defined(PJ_WASM_WITH_PROTOBUF_PLUGIN))
@@ -934,6 +950,9 @@ struct FileLoader::LoadContext {
   int file_total = 1;
   DataSourceHandle handle;
   std::unique_ptr<DataSourceRuntimeHost> ingest;
+  // Files picked in the plugin's dialog (a DBC, say): the worker's import reads
+  // their browser-staged copies after this prologue's frame is gone.
+  std::vector<std::shared_ptr<void>> dialog_selected_files;
   IngestToken ingest_token{};
   // Worker-owned: started on the GUI before the thread runs, then only the
   // worker touches it (elapsed/restart) to pace flush+notify.
@@ -1505,6 +1524,11 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   }
 
+  // Files the user picked in the dialog (a DBC, say) that the plugin reads
+  // during import: their browser-staged copies must outlive the dialog. The
+  // fan-out path awaits its imports in this frame; the single-instance path
+  // hands them to ctx_, which outlives the frame.
+  std::vector<std::shared_ptr<void>> dialog_selected_files;
   if (!skip_dialog) {
     // Extract parser config saved from a previous session so DialogEngine can
     // restore the embedded parser dialog to its last state.
@@ -1532,7 +1556,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         .title_prefix = hints.dialog_title_prefix,
         .on_dialog = hints.on_dialog,
     });
-    const auto dlg = co_await std::move(dialog_awaiter);
+    auto dlg = co_await std::move(dialog_awaiter);
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
       (void)fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
                      .arg(QString::fromStdString(dlg.error)));
@@ -1541,8 +1565,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
       // Diagnostic marker: the reject path completed with no dataset committed
       // (automation greps for it on every platform).
-      qCInfo(lcFileLoader).noquote() << "PJ_FILE_LOAD_REJECTED" << u"plugin=%1"_s.arg(source_name)
-                                     << u"identity=%1"_s.arg(source_identity);
+      recordProbeOutcome(u"PJ_FILE_LOAD_REJECTED plugin="_s + source_name + u" identity="_s + source_identity);
       // The user declined the load: a terminal cancel for the ticket, while
       // the legacy signals stay silent as they always have on this exit.
       // Clean up before emitting so a slot observing the terminal sees the
@@ -1557,6 +1580,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
     if (dlg.payload.has_value()) {
       config = dlg.payload->saved_config;
+      dialog_selected_files = std::move(dlg.payload->selected_files);
       // If the dialog had an embedded parser slot, embed the parser config in the
       // saved config so it survives across sessions and reaches the source via
       // loadConfig(). The source extracts it under the "_parser_config" key.
@@ -1675,6 +1699,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // this prologue into the worker. The `ingest_session` reference stays valid
     // (the move transfers ownership without relocating the heap object).
     ctx_ = std::make_unique<LoadContext>(std::move(handle), std::move(ingest_session_ptr));
+    ctx_->dialog_selected_files = std::move(dialog_selected_files);
     ctx_->path = source_identity;
     ctx_->dialog_parent = request.dialog_parent;
     ctx_->source_name = source_name;
@@ -2638,6 +2663,10 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
 
 void FileLoader::logLoadFailure(const QString& identity, const QString& reason, const QString& log_text) const {
   qCWarning(lcFileLoader).noquote() << (log_text.isEmpty() ? reason : log_text);
+#ifdef PJ_WASM_ENABLE_INGRESS_PROBE
+  // So a browser test fails at once with the reason instead of timing out.
+  recordProbeOutcome(u"PJ_FILE_LOAD_FAILED identity="_s + identity + u" reason="_s + reason);
+#endif
   emitDiagnosticTo(
       diagnostic_sink_, DiagnosticLevel::kError, "File Loader", "data-source-load-failed",
       tr("Could not load '%1': %2").arg(identity, reason).toStdString());

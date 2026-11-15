@@ -180,7 +180,12 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
 
   return {
       .outcome = Outcome::kAccepted,
-      .payload = AcceptedPayload{.saved_config = engine->savedConfig(), .parser_config = engine->parserConfig()},
+      .payload =
+          AcceptedPayload{
+              .saved_config = engine->savedConfig(),
+              .parser_config = engine->parserConfig(),
+              .selected_files = engine->takeSelectedFiles(),
+          },
   };
 }
 
@@ -215,6 +220,7 @@ DialogCancelFn showDataSourceDialogAsync(const DataSourceRequest& req, DataSourc
                 AcceptedPayload{
                     .saved_config = engine->savedConfig(),
                     .parser_config = engine->parserConfig(),
+                    .selected_files = engine->takeSelectedFiles(),
                 },
         });
       });

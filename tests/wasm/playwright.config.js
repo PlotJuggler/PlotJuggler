@@ -6,6 +6,7 @@ module.exports = defineConfig({
   // The one list of functional specs, shared by both browser projects.
   testMatch: [
     'ingress_file_selection.spec.js',
+    'official_loaders.spec.js',
     'persistence_layout.spec.js',
     'plotting.spec.js',
     'scene2d.spec.js',

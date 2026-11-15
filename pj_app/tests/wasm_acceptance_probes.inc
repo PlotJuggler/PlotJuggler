@@ -10,6 +10,7 @@
 #include <emscripten/val.h>
 #include <malloc.h>
 
+#include <QAbstractButton>
 #include <QCheckBox>
 #include <QDirIterator>
 #include <qwt_plot.h>
@@ -416,6 +417,66 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_buttons() {
       "PJ_WASM_DIALOG_BUTTONS ok=%d,%d cancel=%d,%d ok_enabled=%d cancel_enabled=%d", ok_center.x(), ok_center.y(),
       cancel_center.x(), cancel_center.y(), ok != nullptr && ok->isEnabled() ? 1 : 0,
       cancel != nullptr && cancel->isEnabled() ? 1 : 0);
+}
+
+// Every named, visible button of the active dialog (or, with none open, of the
+// main window and the toolbox panels it hosts) with its canvas center, so a
+// test can press a plugin's own controls (a file picker, a save button).
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_widgets() {
+  PJ::MainWindow* main_window = nullptr;
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* candidate = qobject_cast<PJ::MainWindow*>(widget)) {
+      main_window = candidate;
+      break;
+    }
+  }
+  QWidget* dialog = QApplication::activeModalWidget();
+  if (dialog == nullptr) {
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+      if (qobject_cast<QDialog*>(widget) != nullptr && widget->isVisible()) {
+        dialog = widget;
+        break;
+      }
+    }
+  }
+  if (main_window == nullptr) {
+    qWarning("PJ_WASM_DIALOG_WIDGETS_FAILED no main window");
+    return;
+  }
+  if (dialog == nullptr) {
+    // No dialog: a toolbox panel hosted in the main window.
+    dialog = main_window;
+  }
+  QStringList entries;
+  for (auto* button : dialog->findChildren<QAbstractButton*>()) {
+    if (button->objectName().isEmpty()) {
+      continue;
+    }
+    // A radio pair the host shows as a two-segment switch stays in the tree,
+    // hidden: report the center of its segment, where a user clicks.
+    auto* dual = qobject_cast<QWidget*>(button->property("_pj_dual_options_widget").value<QObject*>());
+    QPoint global;
+    if (dual != nullptr && dual->isVisibleTo(dialog)) {
+      const QObjectList radios = dual->property("_pj_dual_options_radios").value<QObjectList>();
+      const auto index = radios.indexOf(button);
+      if (index < 0) {
+        continue;
+      }
+      const QRect rect = dual->rect();
+      const int segment = rect.width() / static_cast<int>(radios.size());
+      global = dual->mapToGlobal(QPoint(rect.left() + segment * static_cast<int>(index) + segment / 2, rect.center().y()));
+    } else if (button->isVisibleTo(dialog)) {
+      global = button->mapToGlobal(button->rect().center());
+    } else {
+      continue;
+    }
+    const QPoint center = main_window->mapFromGlobal(global);
+    entries.push_back(u"%1=%2,%3"_s.arg(button->objectName()).arg(center.x()).arg(center.y()));
+  }
+  const QString report = entries.join(u";"_s);
+  qInfo("PJ_WASM_DIALOG_WIDGETS %s", qPrintable(report));
+  // Read back by the caller in the same evaluate: Firefox can drop the console line.
+  emscripten::val::global().set("pjWasmDialogWidgets", report.toStdString());
 }
 
 // Geometry of the CSV import dialog's delimiter and time-axis controls. The
@@ -913,6 +974,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
         "PJ_WASM_TRANSFORM_PREVIEW title_b64=%s samples=%llu first=%.17g last=%.17g dashed=%d", title.constData(),
         static_cast<unsigned long long>(count), first, last, curve->pen().style() == Qt::DashLine ? 1 : 0);
   }
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_open_data_exporter() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    if (auto* main_window = qobject_cast<PJ::MainWindow*>(widget)) {
+      main_window->wasmProbeLaunchToolbox(u"toolbox-data-exporter"_s);
+      return;
+    }
+  }
+  qWarning("PJ_WASM_OPEN_DATA_EXPORTER_FAILED no main window");
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_toolbox_transform_result() {
@@ -1713,6 +1784,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_preferences_dialog() {
 // clang-format off
 EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmOpenLoadProbe = () => Module._pj_wasm_test_open_load();
+  globalThis.pjWasmOpenDataExporterProbe = () => Module._pj_wasm_test_open_data_exporter();
   globalThis.pjWasmOpenRobotPickerProbe = () => Module._pj_wasm_test_open_robot_picker();
   globalThis.pjWasmOpenLayoutProbe = () => Module._pj_wasm_test_open_layout();
   globalThis.pjWasmReportFileMenuProbe = () => Module._pj_wasm_test_report_file_menu();
@@ -1735,6 +1807,7 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportPresetsDialogProbe = () => Module._pj_wasm_test_report_presets_dialog();
   globalThis.pjWasmOpenPresetsProbe = () => Module._pj_wasm_test_open_presets();
   globalThis.pjWasmReportDialogButtonsProbe = () => Module._pj_wasm_test_report_dialog_buttons();
+  globalThis.pjWasmReportDialogWidgetsProbe = () => Module._pj_wasm_test_report_dialog_widgets();
   globalThis.pjWasmReportPreferencesActionProbe = () => Module._pj_wasm_test_report_preferences_action();
   globalThis.pjWasmReportMenuButtonsProbe = () => Module._pj_wasm_test_report_menu_buttons();
   globalThis.pjWasmReportMessageBoxProbe = () => Module._pj_wasm_test_report_message_box();

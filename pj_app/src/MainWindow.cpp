@@ -2824,6 +2824,10 @@ void MainWindow::wasmProbeReportFilterResult() const {
   qInfo("PJ_WASM_FILTER_RESULT visible_plots=%d visible_curves=%d", visible_plots, visible_curves);
 }
 
+void MainWindow::wasmProbeLaunchToolbox(const QString& plugin_id) {
+  launchToolbox(plugin_id);
+}
+
 void MainWindow::wasmProbeReportToolboxTransformResult() const {
   const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
   const auto recipes = processors.transformRecipes();

@@ -62,16 +62,17 @@ endfunction()
 
 # One FetchContent dependency, its licence files relative to its source tree (an absolute path, such as a text of
 # cmake/wasm_notices/ for a header that only names its licence, is used as is). Nothing when this configuration does
-# not populate it (its option is off).
+# not populate it (its option is off) and a licence file is relative to its tree. A dependency declared only for the
+# source offer (never populated) names absolute texts and is guarded by its caller instead.
 function(pj_wasm_notice output name title spdx)
   FetchContent_GetProperties(${name} POPULATED populated SOURCE_DIR source)
-  if(NOT populated)
-    return()
-  endif()
   set(specs "")
   foreach(spec IN LISTS ARGN)
     string(REGEX MATCH "[^|]+$" file "${spec}")
     if(NOT IS_ABSOLUTE "${file}")
+      if(NOT populated)
+        return()
+      endif()
       string(REGEX REPLACE "([^|]+)$" "${source}/\\1" spec "${spec}")
     endif()
     list(APPEND specs "${spec}")
@@ -203,6 +204,8 @@ function(pj_wasm_write_notices output python_notices)
   pj_wasm_notice("${output}" pj_official_plugins "liblzf decompressor (in the PCD/PLY loader)" "BSD-2-Clause"
       data_load_3d/contrib/liblzf/LICENSE)
   pj_wasm_notice("${output}" pj_official_plugins "mcap (in the MCAP loader)" "MIT" data_load_mcap/contrib/mcap/LICENSE)
+  pj_wasm_notice("${output}" pj_official_plugins "nanocdr (in the NavMap parser)" "Apache-2.0"
+      parser_navmap/contrib/nanocdr/LICENSE)
   pj_wasm_notice("${output}" qwt_upstream "Qwt 6.3.0" "LGPL-2.1-only WITH Qwt-exception-1.0" COPYING)
   pj_wasm_notice("${output}" nlohmann_json "nlohmann/json" "MIT" LICENSE.MIT)
   pj_wasm_notice("${output}" fmt "{fmt}" "MIT" LICENSE)
@@ -223,6 +226,22 @@ function(pj_wasm_write_notices output python_notices)
   pj_wasm_notice("${output}" rosx_introspection "nanocdr (in rosx_introspection)" "Apache-2.0"
       "HEADER|include/rosx_introspection/contrib/nanocdr.hpp")
   pj_wasm_notice("${output}" data_tamer "Data Tamer" "MIT" LICENSE)
+  pj_wasm_notice("${output}" ulog_cpp "ulog_cpp (PX4)" "BSD-3-Clause" LICENSE)
+  pj_wasm_notice("${output}" dbc_parser_cpp "dbc_parser_cpp (in the CAN loaders)" "MIT" LICENSE)
+  pj_wasm_notice("${output}" dbc_fast_float "fast_float 3.8 (in dbc_parser_cpp)" "MIT OR Apache-2.0 OR BSL-1.0" LICENSE-MIT)
+  pj_wasm_notice("${output}" lblf "lblf (in the BLF loader)" "MIT" LICENSE)
+  pj_wasm_notice("${output}" mdflib "mdflib (in the MF4 loader)" "MIT" LICENSE)
+  pj_wasm_notice("${output}" expat "Expat" "MIT" COPYING)
+  # Arrow's LICENSE.txt also carries the code it vendors (fast_float, double-conversion, flatbuffers...).
+  pj_wasm_notice("${output}" arrow "Apache Arrow C++ and Parquet" "Apache-2.0" LICENSE.txt NOTICE.txt)
+  pj_wasm_notice("${output}" arrow_thrift "Apache Thrift (in Parquet)" "Apache-2.0" LICENSE NOTICE)
+  pj_wasm_notice("${output}" arrow_snappy "Snappy (in Arrow)" "BSD-3-Clause" COPYING)
+  pj_wasm_notice("${output}" arrow_simdjson "simdjson (in Arrow)" "Apache-2.0" LICENSE)
+  if(PJ_WASM_WITH_ARROW)
+    # Headers only, through Thrift; declared for the source offer and never populated.
+    pj_wasm_notice("${output}" arrow_boost "Boost (headers, in Thrift)" "BSL-1.0"
+                   "${CMAKE_SOURCE_DIR}/cmake/wasm_notices/BSL-1.0.txt")
+  endif()
   pj_wasm_notice("${output}" lz4 "LZ4 library" "BSD-2-Clause" lib/LICENSE)
   pj_wasm_notice("${output}" zstd "Zstandard" "BSD-3-Clause" LICENSE)
   pj_wasm_notice("${output}" Luau "Luau" "MIT" LICENSE.txt)
