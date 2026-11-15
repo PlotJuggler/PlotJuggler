@@ -14,7 +14,7 @@ const { clickActiveDialogButton } = require('./support/dialogs');
 const { startHostedAssetMirror } = require('./support/hosted_assets');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { elementAttributes, setElementAttributeAt } = require('./support/layout_xml');
-const { loadOutcomes } = require('./support/load_outcomes');
+const { loadOutcomes, loadOutcomeCount } = require('./support/load_outcomes');
 const { openFileChooser } = require('./support/pickers');
 const { requestMultiPlotState } = require('./support/plot_probes');
 const { datasetCount, dismissDialogs, openPreset, startPresetServer } = require('./support/preset_server');
@@ -28,12 +28,12 @@ const left = Buffer.from('time,value\n0,1\n1,2\n2,3\n');
 const right = Buffer.from('time,value\n0,8\n1,9\n2,10\n');
 
 async function loadCsv(page, screen, messages, bytes) {
-  const loaded = (await loadOutcomes(page, 'PJ_FILE_LOAD_OK')).length;
+  const loaded = await loadOutcomeCount(page);
   const chooser = await openFileChooser(page, screen);
   await chooser.setFiles({ name: 'duplicate.csv', mimeType: 'text/csv', buffer: bytes });
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, messages, 'ok');
-  await expect.poll(async () => (await loadOutcomes(page, 'PJ_FILE_LOAD_OK')).length, { timeout: 15000 })
+  await expect.poll(() => loadOutcomeCount(page), { timeout: 15000 })
     .toBeGreaterThan(loaded);
 }
 
@@ -148,7 +148,7 @@ test('a preset that fails anywhere leaves the workspace as it was', async ({ pag
     expect(await openPreset(fresh.page, messages, server.url('good/layout.pj4.xml'))).toContain('PJ_WASM_LAYOUT_LOAD_OK');
     expect(await datasetCount(fresh.page, messages)).toBe(2);
     const workspace = await workspaceSnapshot(fresh.page, messages);
-    const loadsBefore = (await loadOutcomes(fresh.page, 'PJ_FILE_LOAD_OK')).length;
+    const loadsBefore = await loadOutcomeCount(fresh.page);
 
     for (const [folder, reason] of [
       ['missing', 'download'],
@@ -168,7 +168,7 @@ test('a preset that fails anywhere leaves the workspace as it was', async ({ pag
     expect(server.requests).not.toContain('GET /presets/malformed/pj4-sources/0/duplicate.csv');
     // Only the import case (its first source) and the apply case (both) got as
     // far as importing, and every one of those datasets is gone again.
-    expect((await loadOutcomes(fresh.page, 'PJ_FILE_LOAD_OK')).length - loadsBefore).toBe(3);
+    expect(await loadOutcomeCount(fresh.page) - loadsBefore).toBe(3);
     expect(errors).toEqual([]);
   } finally {
     await server.close();
@@ -336,11 +336,11 @@ test('the welcome dialog lists the presets, keeps broken thumbnails on a placeho
     await click(run, dialog.upload);
     const chooser = await chooserPromise;
     expect((await presetsDialog(run.page, run.messages)).visible).toBe(false);
-    const loaded = (await loadOutcomes(run.page, 'PJ_FILE_LOAD_OK')).length;
+    const loaded = await loadOutcomeCount(run.page);
     await chooser.setFiles({ name: 'upload.csv', mimeType: 'text/csv', buffer: left });
     await run.page.waitForTimeout(1000);
     await clickActiveDialogButton(run.page, run.screen, run.messages, 'ok');
-    await expect.poll(async () => (await loadOutcomes(run.page, 'PJ_FILE_LOAD_OK')).length, { timeout: 15000 })
+    await expect.poll(() => loadOutcomeCount(run.page), { timeout: 15000 })
       .toBeGreaterThan(loaded);
     expect(await datasetCount(run.page, run.messages)).toBe(3);
     expect(count(run.messages, 'PJ_PRESET_INDEX_INVALID')).toBe(0);

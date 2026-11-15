@@ -8,7 +8,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <algorithm>
+#include <QMultiMap>
 #include <pj_plugins/host_qt/browser_file_picker_fallback.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 
@@ -34,18 +34,18 @@ QString BrowserSaveTarget::downloadName(const QString& written_path) const {
 }
 
 QStringList BrowserSaveTarget::writtenPaths() const {
-  QStringList paths;
   if (!dir_.isValid()) {
-    return paths;
+    return {};
   }
+  // Keyed by download name, so the paths come out in that order (a multimap:
+  // two names that flatten alike, sub/a.csv and sub_a.csv, are both kept).
+  QMultiMap<QString, QString> by_name;
   QDirIterator it(dir_.path(), QDir::Files, QDirIterator::Subdirectories);
   while (it.hasNext()) {
-    paths.append(it.next());
+    const QString path = it.next();
+    by_name.insert(downloadName(path), path);
   }
-  std::sort(paths.begin(), paths.end(), [this](const QString& a, const QString& b) {
-    return downloadName(a) < downloadName(b);
-  });
-  return paths;
+  return by_name.values();
 }
 
 void BrowserSaveTarget::offerDownloads() const {

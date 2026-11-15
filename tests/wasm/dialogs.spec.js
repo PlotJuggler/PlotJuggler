@@ -5,7 +5,7 @@ const { test, expect } = require('@playwright/test');
 const { waitForQtApp } = require('./support/app');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { curveRowCenter } = require('./support/geometry');
-const { loadOutcomes } = require('./support/load_outcomes');
+const { loadOutcomeCount } = require('./support/load_outcomes');
 const { openFileChooser } = require('./support/pickers');
 
 async function probeLines(page, consoleMessages, trigger, doneMarker) {
@@ -58,7 +58,7 @@ async function loadCsv(page, screen, consoleMessages, name) {
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    async () => (await loadOutcomes(page, 'PJ_FILE_LOAD_OK')).length,
+    () => loadOutcomeCount(page),
     { timeout: 15000 },
   ).toBeGreaterThan(0);
 }

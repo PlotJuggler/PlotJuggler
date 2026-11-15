@@ -140,8 +140,8 @@ if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PRO
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.
     FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/6aed8bb299cfb0dcfcfb9a188f218ca0f1a247da
-        URL_HASH SHA256=0db52576ca9b06faa32032f4e78231d770ac01264634048f693b9c458a0b9847
+        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/f1e2e5ee3fb0c52fbd5463ad3cf07db09e4b6424
+        URL_HASH SHA256=2fcaa7bee34b80f9063ffb53f6b36c9dd86885fab61c6d436e88ac3a4d38e658
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists)
     FetchContent_MakeAvailable(pj_official_plugins)

@@ -47,16 +47,6 @@ PJ::MainWindow* wasmTestMainWindow() {
   return nullptr;
 }
 
-/// Launches the toolbox `id`; false when there is no main window to launch it from.
-bool openToolbox(const QString& id) {
-  auto* main_window = wasmTestMainWindow();
-  if (main_window == nullptr) {
-    return false;
-  }
-  main_window->wasmProbeLaunchToolbox(id);
-  return true;
-}
-
 }  // namespace
 
 /// Whether this build has the on-demand Python lane. Unlike the smoke probe it starts no Python work, so a spec can
@@ -891,9 +881,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_open_data_exporter() {
-  if (!openToolbox(u"toolbox-data-exporter"_s)) {
-    qWarning("PJ_WASM_OPEN_DATA_EXPORTER_FAILED no main window");
+  if (auto* main_window = wasmTestMainWindow()) {
+    main_window->wasmProbeLaunchToolbox(u"toolbox-data-exporter"_s);
+    return;
   }
+  qWarning("PJ_WASM_OPEN_DATA_EXPORTER_FAILED no main window");
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_toolbox_transform_result() {
