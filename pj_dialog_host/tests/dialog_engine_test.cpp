@@ -364,9 +364,8 @@ const PJ_dialog_vtable_t* filePickerDialogVtable() {
 // Top-level host with a parser slot AND its own top-level "pick_file" file
 // picker button — the SAME widget name the injected parser dialog
 // (FilePickerDialog, see filePickerDialogVtable()) also uses for its picker.
-// Exists to prove selected_file_leases scope-qualifies its key: a top-level
-// pick and a parser-scoped pick sharing a bare widget name must not replace
-// (and thus free) each other's still-needed staging lease.
+// Proves a top-level pick and a parser-scoped pick sharing a bare widget name
+// do not release each other's still-needed staging lease.
 class TopLevelAndParserFilePickerHostDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -1107,10 +1106,33 @@ TEST_F(DialogEngineTest, AsyncFileSelectorStaleParserGenerationRejected) {
   EXPECT_FALSE(engine.isDialogOpen());
 }
 
-// Two consecutive selections for the same widget must retain only the second
-// lease — the first's staged MEMFS copy is freed the moment it is superseded,
-// not pinned until dialog close.
-TEST_F(DialogEngineTest, AsyncFileSelectorReSelectionReplacesLease) {
+namespace {
+// Clicks the dialog's "pick_file" button twice and completes each pick with a fresh lease.
+std::vector<std::weak_ptr<int>> pickTwice(QDialog* dialog, PJ::DialogFileSelectionCompletion& picker_completion) {
+  std::vector<std::weak_ptr<int>> weak;
+  auto* pick = dialog->findChild<QPushButton*>(QStringLiteral("pick_file"));
+  if (pick == nullptr) {
+    ADD_FAILURE() << "no pick_file button";
+    return weak;
+  }
+  for (const char* path : {"/staged/can0.dbc", "/staged/can1.dbc"}) {
+    picker_completion = nullptr;  // so a click that never reaches the selector is caught
+    pick->click();
+    if (!picker_completion) {
+      ADD_FAILURE() << "the file selector was not invoked";
+      return weak;
+    }
+    auto lease = std::make_shared<int>(0);
+    weak.push_back(lease);
+    picker_completion(PJ::DialogSelectedFile{.backing_path = path, .lease = std::move(lease)});
+  }
+  return weak;
+}
+}  // namespace
+
+// One picker can fill several entries of the config (a CAN loader picks one DBC per interface with the same
+// button), so a re-pick must not release the earlier pick: every accepted pick is handed over on accept.
+TEST_F(DialogEngineTest, AsyncFileSelectorReSelectionKeepsEveryPick) {
   PJ::DialogFileSelectionCompletion picker_completion;
   PJ::DialogEngineConfig config;
   config.file_selector = [&](QWidget*, const std::string&, const std::string&,
@@ -1119,45 +1141,48 @@ TEST_F(DialogEngineTest, AsyncFileSelectorReSelectionReplacesLease) {
   };
   PJ::DialogEngine engine{PJ::DialogHandle(filePickerDialogVtable()), std::move(config)};
   engine.openDialog(nullptr, [](PJ::DialogResult) {});
-
   QDialog* dialog = visibleDialog();
   ASSERT_NE(dialog, nullptr);
-  auto* pick = dialog->findChild<QPushButton*>(QStringLiteral("pick_file"));
-  ASSERT_NE(pick, nullptr);
 
-  // First selection.
-  pick->click();
-  ASSERT_TRUE(picker_completion);
-  auto first_lease = std::make_shared<int>(1);
-  std::weak_ptr<int> weak_first = first_lease;
-  picker_completion(PJ::DialogSelectedFile{.backing_path = "/staged/first.proto", .lease = first_lease});
-  first_lease.reset();
-  EXPECT_FALSE(weak_first.expired()) << "the first staged file lives until superseded";
-
-  // Second selection for the SAME widget: replaces the first lease.
-  pick->click();
-  ASSERT_TRUE(picker_completion);
-  auto second_lease = std::make_shared<int>(2);
-  std::weak_ptr<int> weak_second = second_lease;
-  picker_completion(PJ::DialogSelectedFile{.backing_path = "/staged/second.proto", .lease = second_lease});
-  second_lease.reset();
-
-  EXPECT_TRUE(weak_first.expired()) << "re-selecting the same widget must free the previous staged copy";
-  EXPECT_FALSE(weak_second.expired()) << "the current selection's lease must stay alive until dialog close";
+  auto weak = pickTwice(dialog, picker_completion);
+  ASSERT_EQ(weak.size(), 2U);
+  EXPECT_FALSE(weak[0].expired()) << "a re-pick must not release the earlier pick";
 
   dialog->accept();
-  EXPECT_EQ(nlohmann::json::parse(engine.savedConfig())["path"], "/staged/second.proto");
-  EXPECT_EQ(engine.takeSelectedFiles().size(), 1U) << "only the current pick is handed over";
-  EXPECT_TRUE(weak_second.expired()) << "the retained lease should release once the caller drops it";
+  auto selected_files = engine.takeSelectedFiles();
+  EXPECT_EQ(selected_files.size(), 2U);
+  EXPECT_FALSE(weak[0].expired());
+  EXPECT_FALSE(weak[1].expired());
+  selected_files.clear();
+  EXPECT_TRUE(weak[0].expired());
+  EXPECT_TRUE(weak[1].expired());
+}
+
+TEST_F(DialogEngineTest, AsyncFileSelectorRejectReleasesEveryPick) {
+  PJ::DialogFileSelectionCompletion picker_completion;
+  PJ::DialogEngineConfig config;
+  config.file_selector = [&](QWidget*, const std::string&, const std::string&,
+                             PJ::DialogFileSelectionCompletion completion) {
+    picker_completion = std::move(completion);
+  };
+  PJ::DialogEngine engine{PJ::DialogHandle(filePickerDialogVtable()), std::move(config)};
+  engine.openDialog(nullptr, [](PJ::DialogResult) {});
+  QDialog* dialog = visibleDialog();
+  ASSERT_NE(dialog, nullptr);
+
+  auto weak = pickTwice(dialog, picker_completion);
+  ASSERT_EQ(weak.size(), 2U);
+  dialog->reject();
+  EXPECT_TRUE(engine.takeSelectedFiles().empty());
+  EXPECT_TRUE(weak[0].expired());
+  EXPECT_TRUE(weak[1].expired());
 }
 
 // A top-level dialog's own file picker and its injected parser sub-dialog's
 // file picker can be authored (by independent plugins) with the SAME widget
-// name — "pick_file" here. Before the scope-qualified key fix, the second
-// pick's completion would find the first lease's bare-name entry in
-// selected_file_leases and REPLACE it, freeing a lease the top-level plugin
-// might still need before dialog close. Assert both leases survive.
-TEST_F(DialogEngineTest, AsyncFileSelectorScopesLeaseKeyAcrossTopLevelAndParserDialogs) {
+// name — "pick_file" here. A pick in one scope must not release the other
+// scope's lease. Assert both leases survive.
+TEST_F(DialogEngineTest, AsyncFileSelectorKeepsLeasesAcrossTopLevelAndParserDialogs) {
   PJ::DialogFileSelectionCompletion picker_completion;
   int picker_calls = 0;
   PJ::DialogEngineConfig config;

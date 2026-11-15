@@ -126,8 +126,9 @@ class DialogEngine {
   /// Only valid after showDialog() returns kAccepted.
   [[nodiscard]] std::string parserConfig() const;
 
-  /// Hand over the staged copies of the files picked in an accepted dialog
-  /// (browser builds stage each pick into MEMFS). A plugin that reads those
+  /// Hand over the leases of every file picked in an accepted dialog, including
+  /// re-picks and picks of a replaced parser sub-dialog (browser builds mount each
+  /// pick read-only in MEMFS, backed by the picked File). A plugin that reads those
   /// paths after the dialog, e.g. a DBC opened during import, needs them until
   /// it is done: the caller keeps the returned owners for that long. Empty after
   /// a rejected dialog and after the first call.
