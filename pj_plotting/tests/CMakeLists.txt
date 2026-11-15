@@ -24,6 +24,7 @@ pj_add_test_runner(pj_plotting_widget_tests
         dock_widget_context_menu_test.cpp
         dock_widget_discard_test.cpp
         dock_fullscreen_test.cpp
+        plot_docker_palette_test.cpp
         tabbed_widget_tab_test.cpp
         plot_widget_replace_curve_test.cpp
         plot_scale_draw_test.cpp

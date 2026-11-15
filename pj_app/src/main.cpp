@@ -13,6 +13,7 @@
 #include <QGuiApplication>
 #include <QIcon>
 #include <QImage>
+#include <QMainWindow>
 #include <QPixmap>
 #include <QScreen>
 #include <QSettings>
@@ -24,6 +25,9 @@
 #include <QUrlQuery>
 #include <Qt>
 #ifndef PJ_TARGET_WASM
+#include <DockManager.h>
+#include <DockWidget.h>
+
 #include <backward.hpp>
 #else
 #include <emscripten/val.h>
@@ -168,6 +172,35 @@ class T:
   return EXIT_SUCCESS;
 }
 
+// Checks the docking library the binary links (the 3rdparty fork, or a system one
+// under PJ_SYSTEM_ADS) keeps a hidden tab parented to its dock area (the fork's
+// d713b1f). Upstream ADS unparents it, which makes a QRhiWidget tab rebuild its
+// GPU resources on every tab switch; nothing else would catch a system ADS
+// without the patch.
+int selftestDocking(int argc, char* argv[]) {
+  if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+  }
+  QApplication app(argc, argv);
+  QMainWindow window;
+  auto* manager = new ads::CDockManager(&window);
+  auto* first = new ads::CDockWidget(manager, u"first"_s);
+  first->setWidget(new QWidget());
+  auto* second = new ads::CDockWidget(manager, u"second"_s);
+  second->setWidget(new QWidget());
+  auto* area = manager->addDockWidget(ads::CenterDockWidgetArea, first);
+  manager->addDockWidgetTabToArea(second, area);
+  window.show();
+  first->setAsCurrentTab();
+  QApplication::processEvents();
+  if (second->parentWidget() == nullptr || second->window() != &window) {
+    std::fprintf(stderr, "[selftest-docking] FAILED: the hidden dock tab lost its parent (ADS without d713b1f)\n");
+    return EXIT_FAILURE;
+  }
+  std::fprintf(stdout, "[selftest-docking] OK\n");
+  return EXIT_SUCCESS;
+}
+
 int validatePlugins(const QString& plugin_dir, const QStringList& expected_specs) {
   if (expected_specs.isEmpty()) {
     std::fprintf(stderr, "[plugin-validation] no --expect-plugin values were provided\n");
@@ -276,6 +309,9 @@ int main(int argc, char* argv[]) {
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--selftest-python") == 0) {
       return selftestPython();
+    }
+    if (std::strcmp(argv[i], "--selftest-docking") == 0) {
+      return selftestDocking(argc, argv);
     }
     if (std::strcmp(argv[i], "--mcp-bridge") == 0) {  // MCP over stdio for agents, needs no display
       return PJ::mcp::runBridge(argc, argv, QStringLiteral(PJ_VERSION_STRING));
@@ -392,6 +428,8 @@ int main(int argc, char* argv[]) {
   // Registered only so --help lists it; handled at the top of main().
   parser.addOption(
       QCommandLineOption(u"selftest-python"_s, u"Compile and run a Python Data Processor headlessly, then exit."_s));
+  parser.addOption(QCommandLineOption(
+      u"selftest-docking"_s, u"Check that hidden dock tabs keep their parent (offscreen by default), then exit."_s));
 #endif
   const QCommandLineOption layout_option(
       QStringList{u"l"_s, u"layout"_s}, u"Load a layout on startup. Explicit data files replace its saved sources."_s,
