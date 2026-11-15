@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <system_error>
 #ifndef _WIN32
 #include <sys/wait.h>
 #endif
@@ -155,7 +156,12 @@ TEST(PluginCheckRunnerTest, ANonUtf8DirectoryNameStillYieldsValidJson) {
   QTemporaryDir parent;
   ASSERT_TRUE(parent.isValid());
   const std::string directory = parent.path().toStdString() + "/bad\xff";
-  ASSERT_TRUE(std::filesystem::create_directory(directory));
+  std::error_code created;
+  std::filesystem::create_directory(directory, created);
+  if (created == std::errc::illegal_byte_sequence) {
+    GTEST_SKIP() << "this filesystem (macOS APFS) only stores UTF-8 names, so the case cannot arise";
+  }
+  ASSERT_FALSE(created) << created.message();
 
   const std::string command = std::string("'") + kHelperPath + "' '" + directory + "'";
   FILE* pipe = popen(command.c_str(), "r");

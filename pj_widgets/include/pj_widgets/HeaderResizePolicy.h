@@ -31,6 +31,13 @@ namespace PJ {
  * view's viewport width stands in for the header width and its resizes drive
  * the rebalance.
  *
+ * A header whose columns cannot fit the view even at their label floors (a wide
+ * data grid) has no width to trade, so splitter semantics would freeze every
+ * divider. There the policy falls back to the stock behaviour: a drag resizes
+ * the dragged column alone (still never under its label) and the horizontal
+ * scrollbar absorbs the change. A width the user gives the fill section in
+ * that state is kept until the columns fit the view again.
+ *
  * Install once per header; a second install on the same header is a no-op. The
  * policy owns itself as a child of the header and dies with it.
  */
@@ -120,6 +127,9 @@ class HeaderResizePolicy : public QObject {
   /// First visible section, preferring fill_section_, or -1 when all are hidden.
   [[nodiscard]] int fillSection() const;
 
+  /// Summed width of every visible section except @p section.
+  [[nodiscard]] int visibleWidthExcept(int section) const;
+
   QHeaderView* header_;
   /// Owning view viewport, watched so a hidden header still rebalances; null without a view.
   QWidget* viewport_ = nullptr;
@@ -128,6 +138,13 @@ class HeaderResizePolicy : public QObject {
   /// Guards the programmatic resizes this class issues from re-entering
   /// onSectionResized as if they were user drags.
   bool adjusting_ = false;
+  /// Width the user dragged the fill section to while the columns overflowed
+  /// the view; rebalance() keeps it instead of shrinking the section back to
+  /// its floor. 0 = none. Cleared once the columns fit the view again.
+  int user_fill_width_ = 0;
+  /// The section user_fill_width_ belongs to; the pin is dropped when another
+  /// section becomes the fill (setFillSection, or the fill being hidden).
+  int user_fill_section_ = -1;
 };
 
 }  // namespace PJ
