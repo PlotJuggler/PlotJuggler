@@ -39,6 +39,31 @@ if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)
         "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
 endif()
 
+if(PJ_WASM_WITH_PROTOBUF OR PJ_WASM_WITH_FOXGLOVE_BRIDGE)
+    # Header-only base64 decoder shared by parser_protobuf and the Foxglove Bridge.
+    add_library(pj_wasm_base64 INTERFACE)
+    target_include_directories(pj_wasm_base64 INTERFACE "${_pj_wasm_common_dir}/base64/include")
+endif()
+
+if(PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_FOXGLOVE_BRIDGE)
+    # The browser backend of the shared WebSocket client (common/websocket), compiled ONCE for
+    # every WebSocket streamer: each one compiling it would define PJ::WebSocket::Client and its
+    # EM_JS entry twice. The native IXWebSocket backend is never compiled here. Symbol audit
+    # (as in PjWasmPjBridge.cmake): PJ::WebSocket::Client::* and the
+    # pj_websocket_client_new_guarded EM_JS entries are defined by this archive only.
+    if(NOT EXISTS "${_pj_wasm_common_dir}/websocket/websocket_client_wasm.cpp")
+        message(FATAL_ERROR "Pinned common/websocket source is missing websocket_client_wasm.cpp")
+    endif()
+    add_library(pj_wasm_websocket STATIC "${_pj_wasm_common_dir}/websocket/websocket_client_wasm.cpp")
+    target_compile_features(pj_wasm_websocket PUBLIC cxx_std_20)
+    target_include_directories(pj_wasm_websocket PUBLIC "${_pj_wasm_common_dir}/websocket/include")
+    target_link_libraries(pj_wasm_websocket PUBLIC plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
+    # Emscripten links its WebSocket JS library only when asked; the final executable inherits
+    # this, or emscripten_websocket_* stays undefined.
+    target_link_options(pj_wasm_websocket INTERFACE "-lwebsocket.js")
+    pj_wasm_finalize_official_plugin_targets(pj_wasm_websocket)
+endif()
+
 if(PJ_WASM_WITH_ANOMALY_DETECTOR)
     # UI-free "preview a plot + run a generator" engine of the generator toolboxes.
     add_library(pj_wasm_toolbox_preview STATIC

@@ -22,10 +22,6 @@ set(_pj_common_dir "${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/common")
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedUi.cmake")
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedManifest.cmake")
 
-add_library(pj_wasm_base64 INTERFACE)
-target_include_directories(pj_wasm_base64 INTERFACE
-    "${_pj_common_dir}/base64/include")
-
 add_library(pj_wasm_protobuf_parser STATIC
     "${_pj_protobuf_dir}/protobuf_parser.cpp"
     "${_pj_protobuf_dir}/foxglove_pointcloud_codec.cpp"

@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # The official PlotJuggler Bridge streaming source (data_stream_pj_bridge) in the
-# browser. It connects through the browser's own WebSocket
-# (pj_bridge_websocket_wasm.cpp on <emscripten/websocket.h>); the native
-# IXWebSocket backend is never compiled here, so no socket library enters the
-# module. Data frames are zstd-compressed and reuse the pinned Zstd target.
+# browser. It connects through the browser's own WebSocket (the shared
+# pj_wasm_websocket target, common/websocket on <emscripten/websocket.h>); the
+# native IXWebSocket backend is never compiled here, so no socket library enters
+# the module. Data frames are zstd-compressed and reuse the pinned Zstd target.
 #
 # Symbol audit (root CLAUDE.md), emsdk llvm-nm -A --defined-only --extern-only
 # on libpj_wasm_pj_bridge.a against every archive and object of pj_app's link
 # plus the multithread sysroot archives: its strong definitions (the two static
-# getters, PJ::BridgeProtocol::*, the pj_bridge_websocket EM_JS entries) exist
-# nowhere else, and the few hundred symbols it shares are weak instantiations of
+# getters, PJ::BridgeProtocol::*) exist nowhere else (the WebSocket client is
+# pj_wasm_websocket's), and the few hundred symbols it shares are weak instantiations of
 # the libc++, nlohmann_json and SDK headers every plugin compiles alike; a shared weak symbol from a plugin's own
 # inline variable or function would be a silent ODR merge, so those must stay
 # uniquely named. Zstd stays one copy (libzstd.a), and no IXWebSocket symbol is
@@ -26,8 +26,8 @@ if(NOT TARGET zstd::libzstd_static OR NOT EXISTS "${zstd_SOURCE_DIR}/lib/zstd.h"
 endif()
 
 pj_wasm_require_official_plugin_sources(_pj_bridge_dir data_stream_pj_bridge
-    pj_bridge_source.cpp pj_bridge_protocol.cpp pj_bridge_websocket_wasm.cpp
-    pj_bridge_websocket.hpp pj_bridge_dialog.hpp pj_bridge_topic_subscription.hpp pj_bridge_protocol.hpp
+    pj_bridge_source.cpp pj_bridge_protocol.cpp
+    pj_bridge_dialog.hpp pj_bridge_topic_subscription.hpp pj_bridge_protocol.hpp
     websocket_client.ui manifest.json)
 
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedUi.cmake")
@@ -35,8 +35,7 @@ include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedManifest.cmake")
 
 add_library(pj_wasm_pj_bridge STATIC
     "${_pj_bridge_dir}/pj_bridge_source.cpp"
-    "${_pj_bridge_dir}/pj_bridge_protocol.cpp"
-    "${_pj_bridge_dir}/pj_bridge_websocket_wasm.cpp")
+    "${_pj_bridge_dir}/pj_bridge_protocol.cpp")
 target_compile_features(pj_wasm_pj_bridge PRIVATE cxx_std_20)
 target_include_directories(pj_wasm_pj_bridge PRIVATE "${_pj_bridge_dir}")
 # The same Zstd include workaround as PjWasmMcap.cmake.
@@ -44,10 +43,8 @@ target_include_directories(pj_wasm_pj_bridge SYSTEM PRIVATE "${zstd_SOURCE_DIR}/
 target_link_libraries(pj_wasm_pj_bridge PRIVATE
     plotjuggler_sdk::plugin_sdk
     nlohmann_json::nlohmann_json
-    zstd::libzstd_static)
-# Emscripten links its WebSocket JS library only when asked; the final
-# executable inherits this, or emscripten_websocket_* stays undefined.
-target_link_options(pj_wasm_pj_bridge INTERFACE "-lwebsocket.js")
+    zstd::libzstd_static
+    pj_wasm_websocket)
 
 pj_embed_manifest(pj_wasm_pj_bridge
     MANIFEST_FILE "${_pj_bridge_dir}/manifest.json"

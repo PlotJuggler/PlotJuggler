@@ -22,6 +22,7 @@ option(PJ_WASM_WITH_PROTOBUF "Build the official Protobuf/Foxglove parser into t
 option(PJ_WASM_WITH_TRANSFORM_EDITOR "Build the official Transform Editor toolbox into the wasm app" ON)
 option(PJ_WASM_WITH_DUMMY_STREAM "Build the official Dummy Streamer into the wasm app" ON)
 option(PJ_WASM_WITH_PJ_BRIDGE "Build the official PlotJuggler Bridge WebSocket streamer into the wasm app" ON)
+option(PJ_WASM_WITH_FOXGLOVE_BRIDGE "Build the official Foxglove Bridge WebSocket streamer into the wasm app" ON)
 option(PJ_WASM_WITH_JSON "Build the official JSON message parser into the wasm app" ON)
 option(PJ_WASM_WITH_DATA_TAMER "Build the official DataTamer message parser into the wasm app" ON)
 option(PJ_WASM_WITH_INFLUX "Build the official InfluxDB line-protocol parser into the wasm app" ON)
@@ -131,7 +132,8 @@ if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_PARQUET)
 endif()
 
 if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF OR
-   PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_JSON OR
+   PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR
+   PJ_WASM_WITH_FOXGLOVE_BRIDGE OR PJ_WASM_WITH_JSON OR
    PJ_WASM_WITH_DATA_TAMER OR PJ_WASM_WITH_3D_LOADER OR PJ_WASM_WITH_QUATERNION OR
    PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR OR PJ_WASM_WITH_LOG_WIDGET OR
    PJ_WASM_WITH_INFLUX OR PJ_WASM_WITH_NAVMAP OR PJ_WASM_WITH_ULOG OR PJ_WASM_WITH_CANDUMP OR PJ_WASM_WITH_BLF OR
@@ -140,8 +142,8 @@ if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PRO
     # targets. Pin the reviewed upstream integration commit by immutable archive
     # and hash so PJ4 consumes the official sources without a local patch layer.
     FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/f1e2e5ee3fb0c52fbd5463ad3cf07db09e4b6424
-        URL_HASH SHA256=2fcaa7bee34b80f9063ffb53f6b36c9dd86885fab61c6d436e88ac3a4d38e658
+        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/62c33eec97d24f70806bc082e7cdcdc36298f938
+        URL_HASH SHA256=e21d619c05375a56a579e0ef867b2d40a6eebd7e77f33b50752905778e19e5ca
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists)
     FetchContent_MakeAvailable(pj_official_plugins)

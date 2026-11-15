@@ -46,6 +46,11 @@ extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_PjBridgeS
 extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_PjBridgeDialog() noexcept;
 #endif
 
+#ifdef PJ_WASM_WITH_FOXGLOVE_BRIDGE_PLUGIN
+extern const PJ_data_source_vtable_t* pj_static_get_data_source_vtable_FoxgloveSource() noexcept;
+extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_FoxgloveDialog() noexcept;
+#endif
+
 #ifdef PJ_WASM_WITH_JSON_PLUGIN
 extern const PJ_message_parser_vtable_t* pj_static_get_message_parser_vtable_JsonParser() noexcept;
 extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_JsonParserDialog() noexcept;
@@ -157,6 +162,10 @@ PJ::StaticPluginSet builtInPlugins() {
 #ifdef PJ_WASM_WITH_PJ_BRIDGE_PLUGIN
   plugins.data_sources.emplace_back(
       pj_static_get_data_source_vtable_PjBridgeSource(), pj_static_get_dialog_vtable_PjBridgeDialog());
+#endif
+#ifdef PJ_WASM_WITH_FOXGLOVE_BRIDGE_PLUGIN
+  plugins.data_sources.emplace_back(
+      pj_static_get_data_source_vtable_FoxgloveSource(), pj_static_get_dialog_vtable_FoxgloveDialog());
 #endif
 #ifdef PJ_WASM_WITH_JSON_PLUGIN
   plugins.message_parsers.emplace_back(
