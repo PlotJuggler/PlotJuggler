@@ -12,6 +12,7 @@
 #include <string>
 
 #include "pj_marketplace/sha256.hpp"
+#include "pj_marketplace/utf8_path.hpp"
 
 namespace {
 
@@ -178,6 +179,37 @@ TEST(ContentManifestTest, ASymbolicLinkIsRefused) {
 TEST(ContentManifestTest, AMissingTreeIsReportedNotAssumedEmpty) {
   const auto files = PJ::inspectContentManifest(std::filesystem::temp_directory_path() / "pj-does-not-exist");
   EXPECT_FALSE(files.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// Paths outside the Windows code page
+// ---------------------------------------------------------------------------
+
+// "資料-🚀" as UTF-8 bytes, so the literal does not depend on the compiler's source charset.
+// No legacy Windows code page holds these characters: path::string() throws for them there,
+// so the cases below fail on Windows if a path is narrowed instead of encoded as UTF-8.
+const std::string kUnicodeName = "\xE8\xB3\x87\xE6\x96\x99-\xF0\x9F\x9A\x80";
+
+std::filesystem::path missingUnicodePath() {
+  return std::filesystem::temp_directory_path() / PJ::pathFromUtf8(kUnicodeName + "-missing");
+}
+
+TEST(Utf8PathTest, ANameOutsideTheCodePageRoundTripsAsUtf8) {
+  const std::filesystem::path path = PJ::pathFromUtf8(kUnicodeName);
+  EXPECT_EQ(PJ::pathToUtf8(path), kUnicodeName);
+  EXPECT_EQ(PJ::genericUtf8(path), kUnicodeName);
+}
+
+TEST(ContentManifestTest, AMissingTreeIsReportedByItsUnicodeName) {
+  const auto files = PJ::inspectContentManifest(missingUnicodePath());
+  ASSERT_FALSE(files.has_value());
+  EXPECT_NE(files.error().message.find(kUnicodeName), std::string::npos) << files.error().message;
+}
+
+TEST(ContentManifestTest, AMissingFileIsReportedByItsUnicodeName) {
+  const auto digest = PJ::sha256File(missingUnicodePath());
+  ASSERT_FALSE(digest.has_value());
+  EXPECT_NE(digest.error().find(kUnicodeName), std::string::npos) << digest.error();
 }
 
 }  // namespace

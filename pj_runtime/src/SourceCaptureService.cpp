@@ -5,6 +5,7 @@
 
 #include <QByteArrayView>
 #include <QCryptographicHash>
+#include <fstream>
 #include <limits>
 #include <mcap/reader.hpp>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "pj_marketplace/utf8_path.hpp"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/McapRecordingWriter.h"
 #include "pj_runtime/Recorder.h"
@@ -48,6 +50,17 @@ std::string sourceCacheIdentityDigest(std::string_view provider_id, std::string_
 }
 
 namespace {
+
+/// Opens `path` for `reader` through `stream`, which must outlive the reader's use of it.
+/// Not reader.open(path.string()): mcap's filename overload calls std::fopen on a narrow
+/// string, which on Windows goes through the active code page and cannot name every file.
+mcap::Status openMcap(mcap::McapReader& reader, std::ifstream& stream, const fs::path& path) {
+  stream.open(path, std::ios::binary);
+  if (!stream) {
+    return mcap::Status{mcap::StatusCode::OpenFailed, "failed to open \"" + pathToUtf8(path) + "\""};
+  }
+  return reader.open(stream);
+}
 
 /// Coverage ledger shared between the counting tap (push threads) and
 /// finalize (owner thread, after producers quiesced). Keyed by binding id so
@@ -434,8 +447,9 @@ std::optional<SourceCaptureService::Resolved> SourceCaptureService::resolve(
   // sharing violation Linux does not surface).
   std::string mismatch;
   {
+    std::ifstream stream;  // declared first: outlives the reader that reads through it
     mcap::McapReader reader;
-    if (const auto opened = reader.open(pinned->path.string()); !opened.ok()) {
+    if (const auto opened = openMcap(reader, stream, pinned->path); !opened.ok()) {
       mismatch = "artifact unreadable: " + opened.message;
     } else if (const auto summary = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan); !summary.ok()) {
       mismatch = "artifact summary unreadable: " + summary.message;
@@ -474,8 +488,9 @@ std::optional<SourceCaptureService::Resolved> SourceCaptureService::resolve(
 }
 
 Expected<CaptureManifest> SourceCaptureService::readManifest(const std::filesystem::path& artifact) {
+  std::ifstream stream;  // declared first: outlives the reader that reads through it
   mcap::McapReader reader;
-  if (const auto opened = reader.open(artifact.string()); !opened.ok()) {
+  if (const auto opened = openMcap(reader, stream, artifact); !opened.ok()) {
     return unexpected("cannot open the artifact: " + opened.message);
   }
   if (const auto summary = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan); !summary.ok()) {

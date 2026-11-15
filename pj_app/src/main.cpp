@@ -188,11 +188,7 @@ int validatePlugins(const QString& plugin_dir, const QStringList& expected_specs
         diagnostic.id.c_str(), diagnostic.id.empty() ? "" : ": ", diagnostic.message.c_str());
   });
 
-#if defined(_WIN32)
-  catalog.setPluginDir(std::filesystem::path(plugin_dir.toStdWString()));
-#else
-  catalog.setPluginDir(std::filesystem::path(plugin_dir.toStdString()));
-#endif
+  catalog.setPluginDir(std::filesystem::path(plugin_dir.toStdU16String()));
   catalog.scanDirectory();
 
   std::map<std::string, std::string> loaded;

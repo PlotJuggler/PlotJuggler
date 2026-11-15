@@ -107,10 +107,10 @@ bool hasFreshPartial(const std::filesystem::path& artifact) {
   if (ec) {
     return false;
   }
-  const std::string prefix = artifact.filename().string() + ".partial.";
+  const std::u8string prefix = artifact.filename().u8string() + u8".partial.";
   const auto now = std::filesystem::file_time_type::clock::now();
   for (const auto& entry : dir) {
-    if (entry.path().filename().string().rfind(prefix, 0) != 0) {
+    if (!entry.path().filename().u8string().starts_with(prefix)) {
       continue;
     }
     const auto mtime = std::filesystem::last_write_time(entry.path(), ec);

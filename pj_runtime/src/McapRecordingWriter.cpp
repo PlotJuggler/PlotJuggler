@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "pj_marketplace/utf8_path.hpp"
 #include "pj_runtime/RecordingFormat.h"
 
 #ifdef _WIN32
@@ -66,7 +67,7 @@ class CheckedFileSink final : public mcap::IWritable {
     stream_ = std::fopen(path.c_str(), "wbx");
 #endif
     if (stream_ == nullptr) {
-      latch("could not exclusively create '" + path.string() + "'");
+      latch("could not exclusively create '" + pathToUtf8(path) + "'");
       return false;
     }
     return true;
@@ -276,7 +277,7 @@ Status McapRecordingWriter::open(const std::filesystem::path& path, const Record
     if (const std::error_code remove_error = guard.discard(); remove_error) {
       // "No file left behind" would be a lie when the removal fails (read-only
       // remount, permission flip), so name the stray instead.
-      message += " (a stray file remains at '" + path.string() + "': " + remove_error.message() + ")";
+      message += " (a stray file remains at '" + pathToUtf8(path) + "': " + remove_error.message() + ")";
     }
     return unexpected(std::move(message));
   };

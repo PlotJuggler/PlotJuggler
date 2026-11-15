@@ -14,8 +14,11 @@
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
+#include <algorithm>
+#include <initializer_list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "mock_data_source_vtable.h"
 #include "pj_base/plugin_data_api.h"
@@ -382,6 +385,70 @@ TEST_F(ExtensionCatalogSeedTest, SeedRunsOnceTheStoreLeaseIsFree) {
 
   EXPECT_TRUE(service->extensionManager().hasStoreWriteAccess());
   EXPECT_TRUE(QDir(seededDir()).exists()) << "the seed must resume for the session that owns the store";
+}
+
+// -----------------------------------------------------------------------------
+// Folder names outside the Windows code page
+// -----------------------------------------------------------------------------
+
+// "資料-🚀" as UTF-8 bytes, so the literal does not depend on the compiler's source charset.
+// No legacy Windows code page holds these characters, so reading the UTF-8 bytes of a QString
+// as the code page loses the name and path::string() throws for it. Linux converts both ways
+// byte for byte: these cases guard the conversion path (scan roots, seed root, messages) and
+// are the ones that fail on the Windows leg if a conversion regresses.
+const QString kUnicodeFolder = QString::fromUtf8("\xE8\xB3\x87\xE6\x96\x99-\xF0\x9F\x9A\x80");
+
+// The catalog's messages as UTF-8, for asserting a folder name survives into them.
+struct MessageLog {
+  [[nodiscard]] DiagnosticSink sink() {
+    return [this](const Diagnostic& diagnostic) { messages.push_back(diagnostic.message); };
+  }
+  // True when one message holds every needle.
+  [[nodiscard]] bool anyContainsAll(std::initializer_list<std::string> needles) const {
+    return std::ranges::any_of(messages, [&](const std::string& message) {
+      return std::ranges::all_of(
+          needles, [&](const std::string& needle) { return message.find(needle) != std::string::npos; });
+    });
+  }
+  std::vector<std::string> messages;
+};
+
+TEST_F(ExtensionCatalogSeedTest, SeedsAndLoadsThroughFoldersNamedOutsideTheCodePage) {
+  const QString bundled = bundled_.path() + "/" + kUnicodeFolder + "-bundled";
+  const QString marketplace = marketplace_.path() + "/" + kUnicodeFolder + "-market";
+  placePlugin(bundled, PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
+  ASSERT_TRUE(QDir().mkpath(marketplace));
+
+  MessageLog log;
+  const ExtensionCatalogService service(ExtensionCatalogService::Paths{{}, marketplace, bundled}, log.sink(), nullptr);
+
+  EXPECT_TRUE(QDir(marketplace + "/" + kMockId).exists()) << "the bundled plugin must be seeded under the folder";
+  const LoadedDataSource* mock = findMock(service);
+  ASSERT_NE(mock, nullptr) << "the seeded plugin must load from the folder";
+  EXPECT_EQ(mock->version, "1.0.0");
+  // The catalog reports where it loaded the plugin from; that path carries the name as UTF-8.
+  EXPECT_TRUE(log.anyContainsAll({"Loaded DataSource", kUnicodeFolder.toStdString() + "-market"}))
+      << "the load message lost the folder name";
+}
+
+TEST_F(ExtensionCatalogSeedTest, ScansAnOverrideFolderNamedOutsideTheCodePage) {
+  const QString override_dir = override_.path() + "/" + kUnicodeFolder + "-override";
+  placePlugin(override_dir, PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
+  // An empty file with the DSO suffix: the SDK scanner reports it with its path, which on
+  // Windows it once narrowed through the code page and threw on, aborting the whole scan.
+  QFile broken(override_dir + "/" + pluginFileName("broken"));
+  ASSERT_TRUE(broken.open(QIODevice::WriteOnly));
+  broken.close();
+
+  MessageLog log;
+  const ExtensionCatalogService service(
+      ExtensionCatalogService::Paths{override_dir, marketplace_.path(), bundled_.path()}, log.sink(), nullptr);
+
+  const LoadedDataSource* mock = findMock(service);
+  ASSERT_NE(mock, nullptr) << "a plugin in the --plugin-dir override folder must load";
+  EXPECT_EQ(mock->version, "1.0.0");
+  EXPECT_TRUE(log.anyContainsAll({kUnicodeFolder.toStdString() + "-override", pluginFileName("broken").toStdString()}))
+      << "the broken file's diagnostic lost the folder name";
 }
 
 // -----------------------------------------------------------------------------

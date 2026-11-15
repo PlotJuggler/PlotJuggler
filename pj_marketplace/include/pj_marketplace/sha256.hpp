@@ -19,6 +19,7 @@
 #include <string_view>
 
 #include "pj_base/expected.hpp"
+#include "pj_marketplace/utf8_path.hpp"
 
 namespace PJ {
 
@@ -168,7 +169,7 @@ class Sha256 {
 [[nodiscard]] inline Expected<std::string> sha256File(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input) {
-    return unexpected("cannot open file for SHA-256: " + path.string());
+    return unexpected("cannot open file for SHA-256: " + pathToUtf8(path));
   }
   Sha256 hash;
   std::array<char, 64U * 1024U> buffer{};
@@ -180,7 +181,7 @@ class Sha256 {
     }
   }
   if (!input.eof()) {
-    return unexpected("failed while reading file for SHA-256: " + path.string());
+    return unexpected("failed while reading file for SHA-256: " + pathToUtf8(path));
   }
   return hash.finishHex();
 }

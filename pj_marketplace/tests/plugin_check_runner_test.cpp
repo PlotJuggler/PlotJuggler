@@ -14,9 +14,18 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcessEnvironment>
 #include <QString>
 #include <QTemporaryDir>
+#include <array>
+#include <cstdio>
+#include <filesystem>
+#include <string>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 using namespace Qt::StringLiterals;
 
 // ThreadSanitizer-active detection: GCC defines __SANITIZE_THREAD__; Clang
@@ -135,6 +144,36 @@ TEST(PluginCheckRunnerTest, ReportsWidgetFamily) {
   ASSERT_EQ(result.plugins.size(), 1);
   EXPECT_EQ(result.plugins[0].family, u"widget"_s);
   EXPECT_EQ(result.plugins[0].id, u"test-widgets"_s);
+}
+#endif
+
+#ifndef _WIN32
+// A directory name that is not valid UTF-8 (possible on POSIX, where names are bytes) still
+// yields one valid JSON document: the helper replaces the bad bytes instead of aborting in
+// nlohmann::json::dump. Run through popen, since QProcess arguments cannot carry such bytes.
+TEST(PluginCheckRunnerTest, ANonUtf8DirectoryNameStillYieldsValidJson) {
+  QTemporaryDir parent;
+  ASSERT_TRUE(parent.isValid());
+  const std::string directory = parent.path().toStdString() + "/bad\xff";
+  ASSERT_TRUE(std::filesystem::create_directory(directory));
+
+  const std::string command = std::string("'") + kHelperPath + "' '" + directory + "'";
+  FILE* pipe = popen(command.c_str(), "r");
+  ASSERT_NE(pipe, nullptr);
+  std::string output;
+  std::array<char, 4096> buffer{};
+  for (size_t n = 0; (n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0;) {
+    output.append(buffer.data(), n);
+  }
+  const int status = pclose(pipe);
+  std::filesystem::remove(directory);  // QTemporaryDir cannot name it, so it cannot remove it
+
+  ASSERT_TRUE(WIFEXITED(status)) << "the helper must not abort; raw status " << status;
+  EXPECT_EQ(WEXITSTATUS(status), 4) << "an empty directory is a clean no-valid-plugin rejection";
+  QJsonParseError error{};
+  const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(output), &error);
+  ASSERT_EQ(error.error, QJsonParseError::NoError) << output;
+  EXPECT_TRUE(document.object().value(u"directory"_s).toString().endsWith(u"/bad�"_s)) << output;
 }
 #endif
 

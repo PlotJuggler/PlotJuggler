@@ -73,11 +73,7 @@ std::unique_ptr<RecordingSink> makeDefaultSink() {
 }
 
 std::filesystem::path toNativePath(const QString& path) {
-#ifdef _WIN32
-  return std::filesystem::path(path.toStdWString());
-#else
-  return std::filesystem::path(path.toStdString());
-#endif
+  return std::filesystem::path(path.toStdU16String());
 }
 
 /// Installs (or, with a null tap, removes) one source's tap. A plugin-side

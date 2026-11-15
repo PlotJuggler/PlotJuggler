@@ -10,9 +10,9 @@
 #include <string>
 #include <utility>
 
-#include "internal/utf8_path.hpp"
 #include "pj_marketplace/fs_walk.hpp"
 #include "pj_marketplace/sha256.hpp"
+#include "pj_marketplace/utf8_path.hpp"
 
 namespace PJ {
 Expected<std::vector<StoredFile>, ContentManifestRejection> inspectContentManifest(
@@ -23,7 +23,7 @@ Expected<std::vector<StoredFile>, ContentManifestRejection> inspectContentManife
     if (failure.has_value()) {
       return;
     }
-    const std::string relative_path = marketplace_internal::genericUtf8(path.lexically_relative(root));
+    const std::string relative_path = genericUtf8(path.lexically_relative(root));
     if (!options.skipped_relative_path.empty() && relative_path == options.skipped_relative_path) {
       return;
     }
