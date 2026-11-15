@@ -154,7 +154,7 @@ Theme::Theme(QObject* parent) : QObject(parent), name_(QSettings().value(kThemeS
     name_ = u"light"_s;
     // Rewrite stale or corrupt persisted name so subsequent readers
     // (e.g. SvgUtil::currentTheme) see the same value Theme is using.
-    QSettings().setValue(kThemeSettingsKey, name_);
+    writeCachedSetting(QString::fromLatin1(kThemeSettingsKey), name_);
   }
   rebuildQss();
 }
@@ -180,7 +180,7 @@ void Theme::setTheme(const QString& name) {
     return;
   }
   name_ = name;
-  QSettings().setValue(kThemeSettingsKey, name_);
+  writeCachedSetting(QString::fromLatin1(kThemeSettingsKey), name_);
   rebuildQss();
   emit themeChanged(name_);
   emit qssChanged();

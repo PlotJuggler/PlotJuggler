@@ -4,6 +4,7 @@
 #include <pj_plotting/PlotWidget.h>
 #include <pj_runtime/AppSession.h>
 #include <pj_widgets/Dialog.h>
+#include <pj_widgets/SettingsCache.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_map.h>
 
@@ -512,7 +513,7 @@ TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
   // resources linked), so we prove the re-apply fires by watching a plain widget
   // value get restored from the plugin's last data on a StyleChange.
   const QString saved_theme = QSettings().value(u"StyleSheet::theme"_s).toString();
-  QSettings().setValue(u"StyleSheet::theme"_s, u"light"_s);
+  PJ::writeCachedSetting(u"StyleSheet::theme"_s, u"light"_s);
 
   mockPanelState().label = "FromPlugin";
   PJ::PanelEngine engine(makeMockHandle());
@@ -528,7 +529,7 @@ TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
 
   // Theme changes, then the app re-polishes the panel (StyleChange): the engine
   // re-applies the plugin's last data, restoring the label.
-  QSettings().setValue(u"StyleSheet::theme"_s, u"dark"_s);
+  PJ::writeCachedSetting(u"StyleSheet::theme"_s, u"dark"_s);
   QEvent style_change(QEvent::StyleChange);
   QApplication::sendEvent(panel, &style_change);
   EXPECT_EQ(label->text(), u"FromPlugin"_s);
@@ -542,15 +543,16 @@ TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
 
   if (saved_theme.isEmpty()) {
     QSettings().remove(u"StyleSheet::theme"_s);
+    PJ::invalidateCachedSettings();
   } else {
-    QSettings().setValue(u"StyleSheet::theme"_s, saved_theme);
+    PJ::writeCachedSetting(u"StyleSheet::theme"_s, saved_theme);
   }
   delete panel;
 }
 
 TEST_F(PanelEngineTest, ThemeChangeKeepsSessionBackedChart) {
   const QString saved_theme = QSettings().value(u"StyleSheet::theme"_s).toString();
-  QSettings().setValue(u"StyleSheet::theme"_s, u"light"_s);
+  PJ::writeCachedSetting(u"StyleSheet::theme"_s, u"light"_s);
 
   PJ::AppSession session;
   mockPanelState().chart_enabled = true;
@@ -566,7 +568,7 @@ TEST_F(PanelEngineTest, ThemeChangeKeepsSessionBackedChart) {
   ASSERT_EQ(frame->findChildren<PJ::PlotWidget*>().size(), 1);
   ASSERT_TRUE(frame->findChildren<PJ::ChartPreviewWidget*>().isEmpty());
 
-  QSettings().setValue(u"StyleSheet::theme"_s, u"dark"_s);
+  PJ::writeCachedSetting(u"StyleSheet::theme"_s, u"dark"_s);
   QEvent style_change(QEvent::StyleChange);
   QApplication::sendEvent(panel, &style_change);
 
@@ -575,8 +577,9 @@ TEST_F(PanelEngineTest, ThemeChangeKeepsSessionBackedChart) {
 
   if (saved_theme.isEmpty()) {
     QSettings().remove(u"StyleSheet::theme"_s);
+    PJ::invalidateCachedSettings();
   } else {
-    QSettings().setValue(u"StyleSheet::theme"_s, saved_theme);
+    PJ::writeCachedSetting(u"StyleSheet::theme"_s, saved_theme);
   }
   delete panel;
 }

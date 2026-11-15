@@ -44,6 +44,7 @@ pj_add_test_runner(pj_widgets_tests
         # the stylesheets are readable as `:/resources/...` at runtime.
         framework_tokens_test.cpp
         scrollbar_test.cpp
+        settings_cache_test.cpp
         search_test.cpp
         section_header_band_test.cpp
         header_divider_highlight_test.cpp

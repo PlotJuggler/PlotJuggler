@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "LoadInput.h"
+#include "pj_widgets/SettingsCache.h"
 
 #if defined(PJ_TARGET_WASM) && defined(PJ_WASM_ENABLE_INGRESS_PROBE)
 #include <emscripten/emscripten.h>
@@ -426,6 +427,7 @@ BrowserPersistence::BrowserPersistence(QObject* parent) : QObject(parent), impl_
   }
   impl_->last_preferences = std::move(restored_preferences);
   session.sync();
+  invalidateCachedSettings();
   impl_->durable->sync();
   if (impl_->durable->status() != QSettings::NoError) {
     qCWarning(lcBrowserPersistence)
@@ -684,6 +686,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_seed_browser_persistence() {
   session.setValue(u"FileLoader/lastDir"_s, u"/pj_uploads/dead-token"_s);
   session.setValue(u"PluginConfig/secret-source"_s, u"{\"token\":\"secret-token\"}"_s);
   session.setValue(u"File/recent"_s, QStringList{u"/home/user/private.csv"_s});
+  invalidateCachedSettings();
   persistence->syncPreferences();
 
   // Simulate keys left by the pre-W9d NativeFormat backend. They intentionally
@@ -726,6 +729,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_clear_browser_persistence() {
   QSettings session;
   session.remove(u"StyleSheet::theme"_s);
   session.remove(u"Preferences::precision"_s);
+  invalidateCachedSettings();
   persistence->clearRecentLayouts();
   persistence->syncPreferences();
   qInfo("PJ_WASM_PERSISTENCE_CLEARED");

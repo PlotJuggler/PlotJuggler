@@ -15,13 +15,14 @@
 #include <map>
 
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/SettingsCache.h"
 
 namespace PJ {
 
 constexpr const char* kThemeSettingsKey = "StyleSheet::theme";
 
 inline QString currentTheme() {
-  return QSettings().value(kThemeSettingsKey, "light").toString();
+  return cachedSetting(QString::fromLatin1(kThemeSettingsKey), QStringLiteral("light")).toString();
 }
 
 // Asset-encoding contract for monochrome SVGs (the "find" side of recolorSvgInk).

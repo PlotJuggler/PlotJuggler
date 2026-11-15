@@ -42,6 +42,7 @@ add_library(pj_widgets STATIC
     src/RecentFilesMenu.cpp
     src/RenderingWarningLabel.cpp
     src/ScrubberBase.cpp
+    src/SettingsCache.cpp
     src/SectionHeaderBand.cpp
     src/SideDrawer.cpp
     src/StateTransitionsView.cpp
@@ -98,6 +99,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/StateTransitionsView.h
     include/pj_widgets/Style.h
     include/pj_widgets/SvgButton.h
+    include/pj_widgets/SettingsCache.h
     include/pj_widgets/SvgUtil.h
     include/pj_widgets/Scrollbar.h
     include/pj_widgets/TailFollowOverlay.h

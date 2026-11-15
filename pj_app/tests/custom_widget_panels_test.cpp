@@ -133,7 +133,7 @@ Widget* withProperty(QWidget* root, const char* object_name, const char* propert
 /// Dark theme for the captures, as the app applies it.
 void applyDarkTheme() {
   QApplication::setStyle(new PJ::Style(u"Fusion"_s));
-  QSettings().setValue(PJ::kThemeSettingsKey, u"dark"_s);
+  PJ::writeCachedSetting(QString::fromLatin1(PJ::kThemeSettingsKey), u"dark"_s);
   PJ::Theme theme;
   theme.setTheme(u"dark"_s);
   qApp->setStyleSheet(theme.expandedQss());

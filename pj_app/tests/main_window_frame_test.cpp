@@ -123,7 +123,7 @@ TEST(WindowFrameTest, ThemeSwitchRequestsTheMatchingColorScheme) {
 }
 
 TEST(WindowFrameTest, SavedDarkThemeStartsWithTheDarkColorScheme) {
-  QSettings().setValue(QString::fromLatin1(PJ::kThemeSettingsKey), u"dark"_s);
+  PJ::writeCachedSetting(QString::fromLatin1(PJ::kThemeSettingsKey), u"dark"_s);
   PJ::Theme theme;
   EXPECT_EQ(theme.colorScheme(), Qt::ColorScheme::Dark);
 }
