@@ -165,7 +165,7 @@ TEST(PluginCheckRunnerTest, ANonUtf8DirectoryNameStillYieldsValidJson) {
   for (size_t n = 0; (n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0;) {
     output.append(buffer.data(), n);
   }
-  const int status = pclose(pipe);
+  int status = pclose(pipe);           // not const: macOS WIFEXITED casts it to int* (-Wcast-qual)
   std::filesystem::remove(directory);  // QTemporaryDir cannot name it, so it cannot remove it
 
   ASSERT_TRUE(WIFEXITED(status)) << "the helper must not abort; raw status " << status;
