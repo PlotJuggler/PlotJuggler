@@ -364,9 +364,8 @@ const PJ_dialog_vtable_t* filePickerDialogVtable() {
 // Top-level host with a parser slot AND its own top-level "pick_file" file
 // picker button — the SAME widget name the injected parser dialog
 // (FilePickerDialog, see filePickerDialogVtable()) also uses for its picker.
-// Exists to prove selected_file_leases scope-qualifies its key: a top-level
-// pick and a parser-scoped pick sharing a bare widget name must not replace
-// (and thus free) each other's still-needed staging lease.
+// Proves a top-level pick and a parser-scoped pick sharing a bare widget name
+// do not release each other's still-needed staging lease.
 class TopLevelAndParserFilePickerHostDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -1117,6 +1116,7 @@ std::vector<std::weak_ptr<int>> pickTwice(QDialog* dialog, PJ::DialogFileSelecti
     return weak;
   }
   for (const char* path : {"/staged/can0.dbc", "/staged/can1.dbc"}) {
+    picker_completion = nullptr;  // so a click that never reaches the selector is caught
     pick->click();
     if (!picker_completion) {
       ADD_FAILURE() << "the file selector was not invoked";
@@ -1182,7 +1182,7 @@ TEST_F(DialogEngineTest, AsyncFileSelectorRejectReleasesEveryPick) {
 // file picker can be authored (by independent plugins) with the SAME widget
 // name — "pick_file" here. A pick in one scope must not release the other
 // scope's lease. Assert both leases survive.
-TEST_F(DialogEngineTest, AsyncFileSelectorScopesLeaseKeyAcrossTopLevelAndParserDialogs) {
+TEST_F(DialogEngineTest, AsyncFileSelectorKeepsLeasesAcrossTopLevelAndParserDialogs) {
   PJ::DialogFileSelectionCompletion picker_completion;
   int picker_calls = 0;
   PJ::DialogEngineConfig config;

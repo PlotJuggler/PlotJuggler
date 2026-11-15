@@ -458,11 +458,11 @@ struct DialogEngine::AsyncRunner {
     QWidget* parser_dialog_widget = nullptr;
     std::unique_ptr<PJ::DialogHandle> parser_dialog_handle;
     PayloadMemo parser_memo;
-    // Staged-file leases of every pick the plugin accepted. A lease keeps the picked file readable at its
+    // Staged-file leases of every pick delivered to the plugin. A lease keeps the picked file readable at its
     // backing_path, which the plugin may re-read any time until the dialog completes and the host until the import
     // ends. A re-pick does not release the earlier one: one picker can fill several entries of the config (a CAN
     // loader's DBC per interface), and a browser lease is only a reference to the picked File, not a copy. All are
-    // handed over on accept; reject releases them. A pick the plugin rejects retains nothing.
+    // handed over on accept; reject releases them.
     std::vector<std::shared_ptr<void>> selected_file_leases;
     bool file_picker_active = false;
     std::uint64_t parser_dialog_generation = 0;
@@ -477,11 +477,10 @@ struct DialogEngine::AsyncRunner {
       if (!view.isFilePicker(widget_name)) {
         return;
       }
-      // Returns true iff the plugin accepted the path (onFileSelected returned
-      // true); the async completion retains the staging lease only on acceptance.
-      auto apply_selected_path = [&, widget_name, handle, target_widget](const std::string& path) -> bool {
+      // Delivers the pick and, when the plugin asks for it (onFileSelected returned true), re-reads its widget data.
+      auto apply_selected_path = [&, widget_name, handle, target_widget](const std::string& path) {
         if (!handle->sendEvent(widget_name, PJ::WidgetEventBuilder::fileSelected(path))) {
-          return false;
+          return;
         }
         std::string raw = handle->widget_data();
         nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
@@ -495,7 +494,6 @@ struct DialogEngine::AsyncRunner {
           // commands, so the next poll must inspect this payload once.
           target_memo.raw.clear();
         }
-        return true;
       };
       auto filter = view.filePickerFilter(widget_name).value_or("");
       auto title = view.filePickerTitle(widget_name).value_or("Select File");
@@ -518,10 +516,10 @@ struct DialogEngine::AsyncRunner {
               if (!selected.has_value() || (targets_parser && target_generation != parser_dialog_generation)) {
                 return;
               }
-              // Only retain the lease if the plugin accepts the path; a rejected pick frees it at once.
-              if (apply_selected_path(selected->backing_path)) {
-                selected_file_leases.push_back(std::move(selected->lease));
-              }
+              apply_selected_path(selected->backing_path);
+              // Retained whatever onFileSelected returned: that return means "re-read my widget data", not
+              // "path accepted", so a plugin may keep the path and still return false.
+              selected_file_leases.push_back(std::move(selected->lease));
             });
         return;
       }
