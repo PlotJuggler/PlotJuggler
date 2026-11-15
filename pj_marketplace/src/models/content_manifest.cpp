@@ -23,7 +23,7 @@ Expected<std::vector<StoredFile>, ContentManifestRejection> inspectContentManife
     if (failure.has_value()) {
       return;
     }
-    const std::string relative_path = marketplace_internal::genericUtf8(path.lexically_relative(root));
+    const std::string relative_path = genericUtf8(path.lexically_relative(root));
     if (!options.skipped_relative_path.empty() && relative_path == options.skipped_relative_path) {
       return;
     }

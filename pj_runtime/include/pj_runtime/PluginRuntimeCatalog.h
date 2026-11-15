@@ -305,6 +305,9 @@ class PluginRuntimeCatalog {
   // Emits one diagnostic through the optional sink.
   void report(DiagnosticLevel level, const std::string& id, std::string message) const;
 
+  // report() for one plugin, prefixed with its DSO path ("<path>: <message>").
+  void reportAt(DiagnosticLevel level, const PluginDescriptor& descriptor, const std::string& message) const;
+
   // Emits diagnostics produced by DSO discovery.
   void reportScanDiagnostics(const PluginScanResult& scan) const;
 

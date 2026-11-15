@@ -27,35 +27,34 @@ Expected<void> forEachRegularFile(const std::filesystem::path& root, Sink&& sink
   std::error_code error;
   const bool is_directory = std::filesystem::is_directory(root, error);
   if (error) {
-    return unexpected("cannot inspect directory " + marketplace_internal::pathToUtf8(root) + ": " + error.message());
+    return unexpected("cannot inspect directory " + pathToUtf8(root) + ": " + error.message());
   }
   if (!is_directory) {
-    return unexpected("path is not a directory: " + marketplace_internal::pathToUtf8(root));
+    return unexpected("path is not a directory: " + pathToUtf8(root));
   }
 
   std::filesystem::recursive_directory_iterator iterator(root, error);
   const std::filesystem::recursive_directory_iterator end;
   if (error) {
-    return unexpected("cannot iterate directory " + marketplace_internal::pathToUtf8(root) + ": " + error.message());
+    return unexpected("cannot iterate directory " + pathToUtf8(root) + ": " + error.message());
   }
   while (iterator != end) {
     const std::filesystem::directory_entry entry = *iterator;
     const std::filesystem::file_status status = entry.symlink_status(error);
     if (error) {
-      return unexpected(
-          "cannot inspect path " + marketplace_internal::pathToUtf8(entry.path()) + ": " + error.message());
+      return unexpected("cannot inspect path " + pathToUtf8(entry.path()) + ": " + error.message());
     }
     if (std::filesystem::is_symlink(status)) {
-      return unexpected("filesystem tree contains a symbolic link: " + marketplace_internal::pathToUtf8(entry.path()));
+      return unexpected("filesystem tree contains a symbolic link: " + pathToUtf8(entry.path()));
     }
     if (std::filesystem::is_regular_file(status)) {
       std::invoke(sink, entry.path());
     } else if (!std::filesystem::is_directory(status)) {
-      return unexpected("filesystem tree contains a special entry: " + marketplace_internal::pathToUtf8(entry.path()));
+      return unexpected("filesystem tree contains a special entry: " + pathToUtf8(entry.path()));
     }
     iterator.increment(error);
     if (error) {
-      return unexpected("cannot iterate directory " + marketplace_internal::pathToUtf8(root) + ": " + error.message());
+      return unexpected("cannot iterate directory " + pathToUtf8(root) + ": " + error.message());
     }
   }
   return {};

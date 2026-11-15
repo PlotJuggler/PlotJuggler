@@ -191,13 +191,13 @@ TEST(ContentManifestTest, AMissingTreeIsReportedNotAssumedEmpty) {
 const std::string kUnicodeName = "\xE8\xB3\x87\xE6\x96\x99-\xF0\x9F\x9A\x80";
 
 std::filesystem::path missingUnicodePath() {
-  return std::filesystem::temp_directory_path() / PJ::marketplace_internal::pathFromUtf8(kUnicodeName + "-missing");
+  return std::filesystem::temp_directory_path() / PJ::pathFromUtf8(kUnicodeName + "-missing");
 }
 
 TEST(Utf8PathTest, ANameOutsideTheCodePageRoundTripsAsUtf8) {
-  const std::filesystem::path path = PJ::marketplace_internal::pathFromUtf8(kUnicodeName);
-  EXPECT_EQ(PJ::marketplace_internal::pathToUtf8(path), kUnicodeName);
-  EXPECT_EQ(PJ::marketplace_internal::genericUtf8(path), kUnicodeName);
+  const std::filesystem::path path = PJ::pathFromUtf8(kUnicodeName);
+  EXPECT_EQ(PJ::pathToUtf8(path), kUnicodeName);
+  EXPECT_EQ(PJ::genericUtf8(path), kUnicodeName);
 }
 
 TEST(ContentManifestTest, AMissingTreeIsReportedByItsUnicodeName) {

@@ -62,36 +62,42 @@ nlohmann::json descriptorToJson(const PJ::PluginDescriptor& descriptor) {
   j["min_sdk_required"] = descriptor.min_sdk_required;
   j["min_plotjuggler_version"] = descriptor.min_plotjuggler_version;
   j["suggested_sdk_version"] = descriptor.suggested_sdk_version;
-  j["dso_path"] = PJ::marketplace_internal::pathToUtf8(descriptor.dso_path);
+  j["dso_path"] = PJ::pathToUtf8(descriptor.dso_path);
   return j;
 }
 
 nlohmann::json diagnosticToJson(const PJ::PluginDiagnostic& diagnostic) {
   nlohmann::json j;
-  j["path"] = PJ::marketplace_internal::pathToUtf8(diagnostic.path);
+  j["path"] = PJ::pathToUtf8(diagnostic.path);
   j["message"] = diagnostic.message;
   return j;
 }
 
 int printResultAndExit(const nlohmann::json& result, int exit_code) {
-  std::cout << result.dump() << '\n';
+  // replace, not the default strict handler: a POSIX file name need not be valid UTF-8, and
+  // strict dump() would throw on it and abort instead of printing the document.
+  std::cout << result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
   return exit_code;
 }
 
-int usage() {
-  nlohmann::json result;
-  result["schema"] = 1;
-  result["outcome"] = "rejected";
-  result["error"] = "usage: pj-plugin-check <extension-directory>";
-  return printResultAndExit(result, kExitUsage);
-}
+// Char is char for main and wchar_t for wmain: std::filesystem::path takes either as is.
+template <class Char>
+int run(int argc, Char** argv) {
+  if (argc != 2) {
+    nlohmann::json usage;
+    usage["schema"] = 1;
+    usage["outcome"] = "rejected";
+    usage["error"] = "usage: pj-plugin-check <extension-directory>";
+    return printResultAndExit(usage, kExitUsage);
+  }
 
-int check(const std::filesystem::path& directory) {
+  std::filesystem::path directory(argv[1]);
+
   auto scanned = PJ::scanPluginDsos(directory);
 
   nlohmann::json result;
   result["schema"] = 1;
-  result["directory"] = PJ::marketplace_internal::pathToUtf8(directory);
+  result["directory"] = PJ::pathToUtf8(directory);
 
   if (!scanned) {
     result["outcome"] = "rejected";
@@ -125,10 +131,10 @@ int check(const std::filesystem::path& directory) {
 // std::filesystem::path takes as is. (MSVC selects wmainCRTStartup for it; a MinGW build
 // would need -municode.)
 int wmain(int argc, wchar_t** argv) {
-  return argc == 2 ? check(std::filesystem::path(argv[1])) : usage();
+  return run(argc, argv);
 }
 #else
 int main(int argc, char** argv) {
-  return argc == 2 ? check(std::filesystem::path(argv[1])) : usage();
+  return run(argc, argv);
 }
 #endif

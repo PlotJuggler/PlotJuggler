@@ -2,8 +2,9 @@
 """
 Pre-commit hook to detect forbidden patterns in source code.
 
-Checks for patterns that should never be committed (e.g., std::getenv, or identifiers
-named near/far, which windows.h defines as macros).
+Checks for patterns that should never be committed (e.g., std::getenv, identifiers
+named near/far, which windows.h defines as macros, or path::string(), which narrows through
+the Windows code page).
 Exit code: 0 if no violations found, 1 if violations found.
 """
 
@@ -14,13 +15,15 @@ from typing import List, Tuple
 
 CPP_EXTENSIONS = {'.cpp', '.h', '.hpp', '.cxx', '.cc', '.c'}
 
-# Pattern definitions: (regex, message, file_extensions, code_only). A code_only
-# pattern ignores comments and string literals, for words that also occur in prose.
+# Pattern definitions: (regex, message, file_extensions, code_only, skip_tests). A code_only
+# pattern ignores comments and string literals, for words that also occur in prose. A
+# skip_tests pattern does not apply under a tests/ directory.
 FORBIDDEN_PATTERNS = [
     (
         r'\bstd::getenv\s*\(',
         "std::getenv is not portable (Windows MSVC C4996); use sdk::getEnv instead",
         CPP_EXTENSIONS,
+        False,
         False,
     ),
     (
@@ -28,6 +31,24 @@ FORBIDDEN_PATTERNS = [
         "near/far are empty macros on Windows (windows.h, pulled in transitively), so an "
         "identifier with that name breaks the MSVC build; use e.g. near_plane / far_image",
         CPP_EXTENSIONS,
+        True,
+        False,
+    ),
+    (
+        r'\.string\(\)',
+        "path::string() narrows through the ANSI code page on Windows and throws for a name "
+        "outside it; use PJ::pathToUtf8 (pj_marketplace/utf8_path.hpp) for text, or "
+        "u16string() / QString::fromStdU16String for a QString",
+        CPP_EXTENSIONS,
+        True,
+        True,
+    ),
+    (
+        r'(?<![.>])\bpath(?:\s+\w+)?\s*[({][^;]*toStdString\s*\(\)',
+        "std::filesystem::path(qstring.toStdString()) decodes the UTF-8 bytes through the ANSI "
+        "code page on Windows; use std::filesystem::path(qstring.toStdU16String())",
+        CPP_EXTENSIONS,
+        True,
         True,
     ),
 ]
@@ -54,9 +75,11 @@ def check_file(filepath: str) -> List[Tuple[int, str, str]]:
     path = Path(filepath)
 
     # Check if file extension matches any pattern
+    in_tests = 'tests' in path.parts
     applicable_patterns = [
-        (pattern, message, code_only) for pattern, message, extensions, code_only in FORBIDDEN_PATTERNS
-        if path.suffix in extensions
+        (pattern, message, code_only)
+        for pattern, message, extensions, code_only, skip_tests in FORBIDDEN_PATTERNS
+        if path.suffix in extensions and not (skip_tests and in_tests)
     ]
 
     if not applicable_patterns:
