@@ -72,10 +72,12 @@ std::vector<uint8_t> makeGrayPng(int width, int height, int bit_depth, const std
   std::vector<uint8_t> samples;
   if constexpr (std::is_same_v<Sample, uint16_t>) {
     if (bit_depth == 16) {
-      samples.resize(pixel_count * 2);
+      // push_back, not indexed stores: GCC 15 at -O3 reports a false
+      // -Wstringop-overflow on samples[i * 2 + 1] after resize().
+      samples.reserve(pixel_count * 2);
       for (size_t i = 0; i < pixel_count; ++i) {
-        samples[i * 2 + 0] = static_cast<uint8_t>((values[i] >> 8) & 0xFF);
-        samples[i * 2 + 1] = static_cast<uint8_t>(values[i] & 0xFF);
+        samples.push_back(static_cast<uint8_t>((values[i] >> 8) & 0xFF));
+        samples.push_back(static_cast<uint8_t>(values[i] & 0xFF));
       }
     } else {
       samples.resize(pixel_count);

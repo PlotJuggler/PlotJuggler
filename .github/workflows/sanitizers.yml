@@ -90,9 +90,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
+          key: conan-linux-gcc-release-v2-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
-            conan-linux-gcc-relwithdebinfo-v2-
+            conan-linux-gcc-release-v2-
 
       - name: Seed Conan source download cache
         shell: bash

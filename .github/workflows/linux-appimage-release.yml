@@ -70,7 +70,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
       # Bind-mount the host's fat preinstalled-toolchain dirs so the first step
       # can empty them: a container job cannot run the usual host-side
-      # `sudo rm -rf`, and the RelWithDebInfo app build needs the space
+      # `sudo rm -rf`, and the Release app build needs the space
       # (linux-ci hit "ld: No space left on device" without the equivalent
       # cleanup).
       options: >-
@@ -137,14 +137,14 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-appimage-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+          key: conan-appimage-release-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
           # Prefix fallbacks: an older appimage closure first, else seed from
           # linux-ci's saved closure — same ubuntu-22.04 / gcc-11 /
-          # RelWithDebInfo / cppstd=20 profile, so its packages are directly
+          # Release / cppstd=20 profile, so its packages are directly
           # reusable here (ConanCenter source builds cover any residual miss).
           restore-keys: |
-            conan-appimage-
-            conan-linux-gcc-relwithdebinfo-v2-
+            conan-appimage-release-
+            conan-linux-gcc-release-v2-
 
       - name: Restore ccache
         # Explicit restore/save split: the plain action's post-job save is
@@ -219,7 +219,7 @@ jobs:
           scripts/configure_conan_remote.sh
           conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20
+            -s build_type=Release -s compiler.cppstd=20
 
       - name: Link pinned linuxdeploy/appimagetool into packaging/appimage/
         # build_appimage.sh uses a pre-existing packaging/appimage/<tool>.AppImage instead
@@ -332,7 +332,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-appimage-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+          key: conan-appimage-release-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
 
       - name: Save ccache
         # always(): keep the objects even when a late step fails.

@@ -47,7 +47,7 @@
           pj-configure() {
             cmake -S . -B build/nix -G Ninja \
               ${pkgs.lib.escapeShellArgs package.cmakeFlags} \
-              -DCMAKE_BUILD_TYPE=RelWithDebInfo "$@"
+              -DCMAKE_BUILD_TYPE=Release "$@"
           }
           export -f pj-configure
         '';

@@ -95,12 +95,12 @@ jobs:
           # pre-#30610 assimp/5.4.3 recipe revision (which still pins draco/1.5.6
           # and clashes with our new draco/1.5.7 pin). Fold this suffix out once
           # everyone has moved past the transition.
-          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
+          key: conan-linux-gcc-release-v2-${{ steps.conan_cache.outputs.hash }}
           # Partial reuse when conanfile.txt changes: an older closure for the
           # same OS/compiler still seeds most packages, so only the changed dep
           # (and its dependents) rebuild rather than the whole graph.
           restore-keys: |
-            conan-linux-gcc-relwithdebinfo-v2-
+            conan-linux-gcc-release-v2-
 
       - name: Seed Conan source download cache
         # minizip/1.2.13 has a single zlib.net source URL that rejects GitHub
@@ -216,7 +216,7 @@ jobs:
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -s build_type=Release -s compiler.cppstd=20 \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
             echo "::notice::Conan built missing Linux binaries; the cache saves below persist them."
@@ -260,7 +260,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
+          key: conan-linux-gcc-release-v2-${{ steps.conan_cache.outputs.hash }}
 
       - name: Save ccache
         # always(): a failed build's objects are still valid.

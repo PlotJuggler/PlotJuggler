@@ -118,8 +118,8 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-macos-arm64-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
-          restore-keys: conan-macos-arm64-relwithdebinfo-v1-
+          key: conan-macos-arm64-release-${{ steps.conan_cache.outputs.hash }}
+          restore-keys: conan-macos-arm64-release-v1-
 
       - name: Seed Conan source download cache
         shell: bash
@@ -175,7 +175,7 @@ jobs:
           scripts/configure_conan_remote.sh
           conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -s build_type=Release -s compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja
 
       - name: Trim Conan cache before saving
@@ -188,7 +188,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-macos-arm64-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          key: conan-macos-arm64-release-${{ steps.conan_cache.outputs.hash }}
 
       - name: Build PlotJuggler 4 (app)
         shell: bash
@@ -202,7 +202,7 @@ jobs:
           # PJ_BUILD_TESTS=OFF keeps the test-only fault injection out of the shipped binaries.
           cmake -S . -B build -G Ninja \
             "-DCMAKE_TOOLCHAIN_FILE=${PWD}/build/conan_toolchain.cmake" \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_BUILD_TYPE=Release \
             "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/macos" \
             -DPJ_INSTALLATION=macos \
             -DPJ_DEBUG_INFO=lines \

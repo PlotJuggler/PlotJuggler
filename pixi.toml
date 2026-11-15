@@ -106,7 +106,7 @@ sccache = "0.16.*"               # MSVC cache + native GHA backend (see activati
 # preserve MSVC's own /FS synchronization for concurrent writers to one shared
 # PDB, so a parallel build hits C1041 "cannot open program database" without
 # this. Inert on Linux (these are MSVC-only CMake variables).
-configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
 build = { cmd = "cmake --build build-pixi --parallel", depends-on = ["configure"] }
 # --timeout 120 bounds any single test (a GL test under software rendering /
 # llvmpipe can stall) so a hang fails fast instead of holding the runner — the

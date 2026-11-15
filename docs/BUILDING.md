@@ -93,12 +93,12 @@ configure CMake directly while network access is available:
 ./scripts/configure_conan_remote.sh
 conan install . --output-folder=build --build=missing \
   --lockfile=conan.lock --lockfile-partial \
-  -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+  -s build_type=Release -s compiler.cppstd=20 \
   -r plotjuggler-conan -r conancenter
 source versions.env
 cmake -S . -B build -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$PWD/.qt/$PJ_QT_VERSION/gcc_64" \
   -DPJ_BUILD_TESTS=OFF
 ```
@@ -236,9 +236,11 @@ open windows.
 **Build tree size and debug info.** `./build.sh --minimal` builds what the packaging
 pipeline compiles (app closure only, no tests, demos or debug info); `--no-tests`,
 `--no-demos`, `--target NAME`, `--debug-info LEVEL` and `--no-compress-debug` select the
-pieces individually. For Linux RelWithDebInfo builds, `PJ_DEBUG_INFO=none|lines|full|split`
-selects no debug info, line/backtrace info, full DWARF, or DWARF in `.dwo` sidecars, and
-`PJ_COMPRESS_DEBUG=ON|OFF` controls zlib compression
+pieces individually. Every build, the app and its Conan dependencies alike, uses the stock
+`Release` flags (`-O3`; `/O2 /Ob2` on MSVC, whose Release links also get `/DEBUG` for a
+public-symbol PDB); debug info is the only addition. For Linux builds,
+`PJ_DEBUG_INFO=none|lines|full|split` selects no debug info, line/backtrace info, full
+DWARF, or DWARF in `.dwo` sidecars, and `PJ_COMPRESS_DEBUG=ON|OFF` controls zlib compression
 ([`cmake/PjDebugInfo.cmake`](../cmake/PjDebugInfo.cmake)). `build.sh` defaults to `lines`
 (`-g1`: function names, file:line and inlined frames, enough for `perf` and backtraces;
 use `split` or `full` when gdb must show variables) and `ON` on Linux; its options, or
@@ -339,12 +341,12 @@ Windows builds use the same Conan + CMake flow through three root entry points,
 with Windows and share `scripts\windows\PjWindowsCommon.ps1`. They mirror `build.sh` / `run.sh` / `test.sh` (same options, same
 `PJ_*` variables, same `build\` tree) and reproduce the Windows CI job: VS 2022
 MSVC 14.4x, Conan with every profile setting pinned (`compiler.version=194`),
-Ninja Multi-Config, RelWithDebInfo with `/Z7` embedded debug info (CI and the
+Ninja Multi-Config, Release with `/Z7` embedded debug info (CI and the
 release build compile that configuration without debug info). A local
 `build\` therefore accepts the exact commands from
 [`windows-ci.yml`](../.github/workflows/windows-ci.yml) (`cmake -S . -B build
--G "Ninja Multi-Config" ...`, `cmake --build build --config RelWithDebInfo`,
-`ctest --test-dir build --build-config RelWithDebInfo`) and vice versa.
+-G "Ninja Multi-Config" ...`, `cmake --build build --config Release`,
+`ctest --test-dir build --build-config Release`) and vice versa.
 
 `plotjuggler4.exe` is a GUI-subsystem program, so it opens no console window.
 Started from a terminal it attaches to that terminal for its output (`--help`,
@@ -405,7 +407,7 @@ lines of Conan's `global.conf` to point there and at ConanCenter's source
 mirror, and printing the edit; `core.*` settings cannot be passed on the
 command line), runs `conan install` with the CI settings, configures with
 `-G "Ninja Multi-Config"` into `build\`, copies `build\compile_commands.json` to
-the repository root, and builds the `RelWithDebInfo` configuration. The first
+the repository root, and builds the `Release` configuration. The first
 build compiles any dependency the remotes have no binary for (FFmpeg, CPython,
 assimp, ...) from source and can take well over an hour; later builds are
 incremental. `build.bat --help` lists the options; they are the ones `build.sh`
@@ -414,7 +416,7 @@ accepts, except that `--sanitize`, `--tsan`, `--debug-info` and
 Conan and CMake command lines without building. `sccache` is used as the
 compiler launcher when it is on `PATH`.
 
-The application is `build\pj_app\RelWithDebInfo\plotjuggler4.exe` (Ninja
+The application is `build\pj_app\Release\plotjuggler4.exe` (Ninja
 Multi-Config puts each configuration's binaries in a subdirectory). It needs the
 Qt, FFmpeg and CPython DLLs at load time; `run.bat` prepends the pinned Qt `bin\`
 and the Conan bin directories recorded at configure time in
@@ -425,7 +427,7 @@ than double-clicking the exe. Arguments are forwarded to the application
 a notice and launch normally.
 
 `test.bat` sets up the same `PATH`, forces `QT_QPA_PLATFORM=offscreen`, and runs
-`ctest --test-dir build --build-config RelWithDebInfo --output-on-failure
+`ctest --test-dir build --build-config Release --output-on-failure
 --no-tests=error --timeout 120` followed by your arguments; `--test-dir DIR`
 selects another tree, `--sanitize` accepts only `none`, and the exit code is
 ctest's.

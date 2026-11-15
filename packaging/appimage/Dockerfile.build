@@ -110,7 +110,7 @@ RUN conan profile detect --force \
         --lockfile=/opt/conan-ctx/conan.lock --lockfile-partial \
         --output-folder=/tmp/conan-warm --build=missing \
         -cc core.sources:download_urls='["origin", "https://c3i.jfrog.io/artifactory/conan-center-backup-sources/"]' \
-        -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+        -s build_type=Release -s compiler.cppstd=20 \
  && rm -rf /tmp/conan-warm \
  && { conan cache clean "*" --build --source --temp || true; } \
  && find /root/.conan2/p -type f -name '*.a' -exec sh -c \

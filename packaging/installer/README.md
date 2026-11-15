@@ -60,12 +60,12 @@ modules there too.
 
 ## Prerequisites on the Windows build host
 
-- **PJ4 already built** (RelWithDebInfo) with CPython enabled:
+- **PJ4 already built** (Release) with CPython enabled:
   ```powershell
   conan install . --output-folder=build --build=missing `
-      -s build_type=RelWithDebInfo -s compiler.cppstd=20 `
-      -o "cpython/*:shared=True" -s "cpython/*:build_type=Release"
-  cmake --preset ... ; cmake --build build --config RelWithDebInfo
+      -s build_type=Release -s compiler.cppstd=20 `
+      -o "cpython/*:shared=True"
+  cmake --preset ... ; cmake --build build --config Release
   ```
   The `cpython/*:shared=True` override matches Windows CI and produces
   `python3XX.dll` — the local default is static on MSVC and the installer
