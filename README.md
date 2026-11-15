@@ -1,5 +1,7 @@
 ![](docs/plotjuggler_banner.svg)
 
+[![Linux CI](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/linux-ci.yml/badge.svg?branch=main)](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/linux-ci.yml?query=branch%3Amain) [![Windows CI](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/windows-ci.yml/badge.svg?branch=main)](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/windows-ci.yml?query=branch%3Amain) [![macOS CI](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/macos-ci.yml/badge.svg?branch=main)](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/macos-ci.yml?query=branch%3Amain) [![WASM CI](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/wasm-ci.yml/badge.svg?branch=main)](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/wasm-ci.yml?query=branch%3Amain) [![Pixi CI](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/pixi-ci.yml/badge.svg?branch=main)](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/pixi-ci.yml?query=branch%3Amain)
+
 
 PlotJuggler 4 is an extensible, performant and open-source multi-modal visualization platform.
 
