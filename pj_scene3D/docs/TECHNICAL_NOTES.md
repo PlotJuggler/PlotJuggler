@@ -226,12 +226,15 @@ shader's correctly rounded float add equals the float of the double subtraction.
   re-initialize when shown) and die with it, as upstream's never-shown tabs
   always did. The cost: a hidden tab keeps its GPU resources (§9, note ⁷). `rhi_dock_lifecycle_test` covers reorder, close/reopen, restore,
   float of the whole area, moving and destroying a hidden tab.
-- **ADS hides floating docks on Wayland.** Its Linux stays-on-top emulation calls
+- **ADS can hide floating docks on non-xcb Linux platforms.** Its Linux
+  stays-on-top emulation (`CDockManager::eventFilter`) runs when the main window
+  is activated or deactivated. On xcb it sets X11 properties, and since ADS 5.1
+  it is skipped on Wayland. Any other Linux QPA gets
   `setWindowFlag(Qt::WindowStaysOnTopHint, ...)` on every visible floating
-  container when the main window is activated or deactivated. Off xcb that is a
-  real flag change, and Qt hides a window whose flags change; ADS does not show it
-  again. It affects every backend. `rhi_dock_lifecycle_test` removes that event
-  filter. The fix belongs in the ADS fork (skip the call, or re-show the window).
+  container instead, a real flag change: Qt hides the window and ADS does not
+  show it again. `rhi_dock_lifecycle_test` and the mixed-layout fixture still
+  remove that event filter; whether they still need to on xcb and Wayland is
+  unverified.
 - **Vulkan on Wayland: hiding and re-showing a window within about a frame of a
   present is a protocol error.** Mesa queues the present behind its FIFO
   barrier; the unmap commit waits behind it, and Qt's immediate `get_xdg_surface`

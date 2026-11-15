@@ -1,7 +1,7 @@
 [submodule "3rdparty/Qt-Advanced-Docking"]
 	path = 3rdparty/Qt-Advanced-Docking
 	url = https://github.com/PlotJuggler/Qt-Advanced-Docking-System.git
-	branch = feature/wasm-unix-guards
+	branch = pj/5.1.1
 [submodule "3rdparty/doomgeneric"]
 	path = 3rdparty/doomgeneric
 	url = https://github.com/ozkl/doomgeneric.git

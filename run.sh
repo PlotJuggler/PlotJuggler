@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/versions.env"
 # install (often an older major version) and can segfault under the pinned Qt.
 export QT_IM_MODULE=""
 
-# Native Wayland for ADS drag is patched in 3rdparty/Qt-Advanced-Docking/.
+# Qt-Advanced-Docking 5.1 supports native Wayland (drag, drop overlays, floating windows).
 # Uncomment the next line to fall back to XWayland if a regression appears.
 # export QT_QPA_PLATFORM=xcb
 

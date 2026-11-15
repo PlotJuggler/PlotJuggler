@@ -140,10 +140,10 @@ class RhiDockFixture : public ::testing::Test {
     PJ_SKIP_ON_HEADLESS_QPA();
     window_ = std::make_unique<QMainWindow>();
     manager_ = new ads::CDockManager(window_.get());
-    // On Wayland, ADS's stays-on-top emulation calls setWindowFlag() on every
-    // visible floating container when the main window's activation changes, which
-    // hides it (pj_scene3D/docs/TECHNICAL_NOTES.md, ADS quirks); a floated dock can then vanish
-    // mid-test. Not what these tests are about.
+    // Off xcb and Wayland, ADS's stays-on-top emulation calls setWindowFlag() on
+    // every visible floating container when the main window's activation changes,
+    // which hides it (pj_scene3D/docs/TECHNICAL_NOTES.md, ADS quirks); a floated dock
+    // can then vanish mid-test. Not what these tests are about.
     window_->removeEventFilter(manager_);
     red_dock_ = addStandIn(u"red"_s, Qt::red, red_, ads::LeftDockWidgetArea);
     green_dock_ = addStandIn(u"green"_s, Qt::green, green_, ads::RightDockWidgetArea);

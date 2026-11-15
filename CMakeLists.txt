@@ -381,19 +381,16 @@ if(PJ_SYSTEM_ADS)
   find_package(qtadvanceddocking-qt6 5.1.1 CONFIG REQUIRED)
   add_library(qt_advanced_docking ALIAS ads::qtadvanceddocking-qt6)
 else()
-  # Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
-  # tracking upstream master + the Wayland fix + WASM Unix guards on
-  # feature/wasm-unix-guards). Pin the
-  # version to skip the upstream root CMake's git_describe call (which fails in
-  # a submodule checkout), build static, and skip examples/demos.
-  set(ADS_VERSION "4.5.0" CACHE STRING "" FORCE)
+  # Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork,
+  # branch pj/5.1.1: upstream v5.1.1 + the WASM Unix guards + inactive tabs kept
+  # parented to their dock area). Build static and skip examples/demos.
   set(BUILD_STATIC ON CACHE BOOL "" FORCE)
   set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   # EXCLUDE_FROM_ALL: linked statically into the app, so its own install rules
   # (headers, static library, CMake package) stay out of `cmake --install`.
   add_subdirectory(3rdparty/Qt-Advanced-Docking EXCLUDE_FROM_ALL)
   add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
-  # Qt 6.12 deprecates Q_ENUMS, which the fork's ads_globals.h still uses; as a
+  # Qt 6.12 deprecates Q_ENUMS, which ADS's ads_globals.h still uses; as a
   # system include its warnings stay out of our -Werror targets.
   get_target_property(_pj_ads_includes qtadvanceddocking-qt6 INTERFACE_INCLUDE_DIRECTORIES)
   set_target_properties(qtadvanceddocking-qt6 PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pj_ads_includes}")
