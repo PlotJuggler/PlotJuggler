@@ -64,8 +64,11 @@ here) under `presets/`; see [Presets](#presets).
 
 The browser cannot `dlopen` extensions, so a fixed set of official plugins is
 compiled from a pinned `pj-official-plugins` commit (`cmake/PjWasmDependencies.cmake`)
-and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
-`cmake/PjWasm<Name>.cmake` recipe (the CAN and Arrow families share `PjWasmCan` and `PjWasmArrow`; the last three build Apache Arrow C++ through `PjWasmArrowDependencies`) and an option, all `ON` by default:
+and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each plugin describes
+its own WebAssembly build in a `wasm.cmake` next to its sources (the contract with this
+build is in that repository's `cmake/PjWasmPlugin.cmake`); `cmake/PjWasmOfficialPlugins.cmake`
+lists the plugins, creates one option per entry, all `ON` by default, and generates
+their registration (the Arrow family builds Apache Arrow C++ through `PjWasmArrowDependencies`):
 
 | Option | Plugin |
 |---|---|
@@ -104,11 +107,16 @@ Bridge needs none of them: it connects with the browser's own WebSocket, so a pa
 served over HTTPS reaches only `wss://` bridges (mixed content), and the browser
 reports a failed connection without its cause. Its stream presets are described
 in [`WASM_PRESETS.md`](./WASM_PRESETS.md#streaming-sources). Adding another
-plugin needs a recipe, a link block in `pj_app/CMakeLists.txt` and a
-registration in `BuiltinPlugins.cpp`; its export macros must name an
-unqualified class (or use the `_NAMED` variants) so the static getter symbol is
-valid. Every new static archive also needs the symbol-collision audit described
-in the root `CLAUDE.md`.
+plugin takes a `wasm.cmake` in its directory of `pj-official-plugins` (one
+`pj_wasm_official_plugin()` call naming its sources, manifest, `.ui` files, export
+symbols and links), a pin of `cmake/PjWasmDependencies.cmake` that contains it, and
+one line in `PJ_WASM_OFFICIAL_PLUGIN_DIRS`; a third-party library it needs that this
+build does not provide yet goes into `PjWasmDependencies.cmake` under the name the
+contract gives. Its export macros must name an unqualified class (or use the
+`_NAMED` variants) so the static getter symbol is valid. Every new static archive
+also needs the symbol-collision audit described in the root `CLAUDE.md`. To try a
+plugins checkout before pinning it, configure with
+`-DFETCHCONTENT_SOURCE_DIR_PJ_OFFICIAL_PLUGINS=<checkout>`.
 
 The packaging command refuses missing, invalid, or single-threaded build
 outputs. To prevent a mistyped `--output` from deleting unrelated data, it
