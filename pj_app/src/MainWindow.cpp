@@ -10998,11 +10998,16 @@ void MainWindow::launchToolbox(
   // pinned launch comes from a layout restore (an already-pinned toolbox is loaded): it lands where the restore
   // would have put it, and stays in the layout while it loads.
   const bool pinned = target == ToolboxLaunchTarget::kPinnedTab;
+  std::vector<QPointer<QWidget>> predecessors;  // a pin's slot: after the tabs before it, those still there
+  if (pinned && deferred_toolbox_load_) {
+    for (QWidget* page : ui_->tabbedPlotWidget->tabPages()) {
+      predecessors.emplace_back(page);
+    }
+  }
   if (deferred_toolbox_load_ &&
       deferred_toolbox_load_(
-          plugin_id, [this, plugin_id, initial_config, target, pin_tab_name, report_error, pinned,
-                      tab_index = ui_->tabbedPlotWidget->tabCount(), restore = pinned_restore_generation_,
-                      takeover = takeover_generation_](const QString& error) {
+          plugin_id, [this, plugin_id, initial_config, target, pin_tab_name, report_error, pinned, predecessors,
+                      restore = pinned_restore_generation_, takeover = takeover_generation_](const QString& error) {
             // Superseded: a newer layout restore replaced the pinned set this launch belonged to, or something newer
             // took the chart area this takeover would cover (a second launch of this toolbox, too).
             const bool stale = pinned ? restore != pinned_restore_generation_ : takeover != takeover_generation_;
@@ -11018,21 +11023,38 @@ void MainWindow::launchToolbox(
               }
               return;
             }
-            if (!stale) {
-              if (pinned) {
-                pending_pinned_toolboxes_.erase(plugin_id);  // a failed one stays in the layout
-              }
-              launchToolbox(
-                  plugin_id, initial_config, target, pin_tab_name, pinned ? std::optional(tab_index) : std::nullopt);
+            if (stale) {
+              return;
             }
+            std::optional<int> slot;
+            if (pinned) {
+              const std::vector<QWidget*> pages = ui_->tabbedPlotWidget->tabPages();
+              slot = 0;
+              for (auto it = predecessors.rbegin(); it != predecessors.rend(); ++it) {
+                if (const auto page = std::ranges::find(pages, it->data()); !it->isNull() && page != pages.end()) {
+                  slot = static_cast<int>(page - pages.begin()) + 1;
+                  break;
+                }
+              }
+            }
+            launchToolbox(plugin_id, initial_config, target, pin_tab_name, slot);
           })) {
     if (pinned) {
       pending_pinned_toolboxes_[plugin_id] = {.config = initial_config, .tab_name = pin_tab_name};
     }
     return;
   }
-  if (late_pin_index.has_value() && findToolbox(plugin_id) != nullptr) {
-    return;  // launched meanwhile, the newer launch wins
+  if (ToolboxPresenter* live = late_pin_index.has_value() ? findToolbox(plugin_id) : nullptr; live != nullptr) {
+    // Launched meanwhile: that instance takes the pin, as it would have focused the pinned tab had the restore
+    // landed first. A takeover or a background fold is not in the layout until then.
+    const bool takeover = live->presentation() == ToolboxPresenter::Presentation::kTakeover;
+    if (takeover || (live->presentation() == ToolboxPresenter::Presentation::kTab && live->transient())) {
+      live->moveToTab(/*transient=*/false, *late_pin_index, /*select=*/takeover);
+      if (!pin_tab_name.isEmpty()) {
+        ui_->tabbedPlotWidget->setWidgetTabName(live->container(), pin_tab_name);
+      }
+    }
+    return;
   }
 
   // 0. One live instance per toolbox id. A takeover relaunch keeps the
@@ -11224,6 +11246,7 @@ void MainWindow::launchToolbox(
                        return QString::fromStdString(config_json);
                      },
                      .apply_chrome = std::move(wrapped.apply_chrome)});
+  pending_pinned_toolboxes_.erase(plugin_id);  // launched: a restored pin still loading, or failed, is this one now
 
   if (late_pin_index.has_value()) {
     presenter.moveToTab(/*transient=*/false, *late_pin_index, /*select=*/false);
@@ -11280,13 +11303,35 @@ void MainWindow::teardownAllToolboxes() {
 
 QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
   QDomElement root = doc.createElement(u"pinned_toolboxes"_s);
-  // By plugin id, so identical workspaces produce identical layout files.
-  std::map<QString, PendingPinnedToolbox> saved;
-  // The one <toolbox> source, shared by the pinned and floating passes below.
-  const auto append_toolbox = [&saved](const QString& plugin_id, const ToolboxPresenter& toolbox) {
-    saved[plugin_id] = {.config = toolbox.saveConfig(), .tab_name = toolbox.title()};
+  // The one <toolbox> emitter.
+  const auto append_element = [&doc, &root](const QString& plugin_id, const QString& tab_name, const QString& config) {
+    QDomElement element = doc.createElement(u"toolbox"_s);
+    element.setAttribute(u"plugin_id"_s, plugin_id);
+    if (!tab_name.isEmpty()) {
+      element.setAttribute(u"tab_name"_s, tab_name);
+    }
+    if (!config.isEmpty()) {
+      // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
+      // layout site — a plain text node entity-escapes on each round trip.
+      appendJsonAsCdata(doc, element, config);
+    }
+    root.appendChild(element);
+  };
+  // A restored pin still loading (or failed) keeps its place: merged in by plugin id, a live toolbox winning.
+  std::map<QString, PendingPinnedToolbox> merged;
+  // Shared by the pinned and floating passes below.
+  const auto append_toolbox = [this, &append_element, &merged](
+                                  const QString& plugin_id, const ToolboxPresenter& toolbox) {
+    if (pending_pinned_toolboxes_.empty()) {
+      const QString tab_name = toolbox.title();  // read before saveConfig(), as ever
+      append_element(plugin_id, tab_name, toolbox.saveConfig());
+    } else {
+      merged[plugin_id] = {.config = toolbox.saveConfig(), .tab_name = toolbox.title()};
+    }
   };
 
+  // std::map iteration is ordered, so identical workspaces produce identical
+  // layout files.
   for (const auto& [plugin_id, toolbox] : toolboxes_) {
     switch (toolbox->presentation()) {
       case ToolboxPresenter::Presentation::kTab:
@@ -11307,19 +11352,11 @@ QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
         break;  // the chart-area takeover is not part of the layout
     }
   }
-  saved.insert(pending_pinned_toolboxes_.begin(), pending_pinned_toolboxes_.end());  // live ones win
-  for (const auto& [plugin_id, toolbox] : saved) {
-    QDomElement element = doc.createElement(u"toolbox"_s);
-    element.setAttribute(u"plugin_id"_s, plugin_id);
-    if (!toolbox.tab_name.isEmpty()) {
-      element.setAttribute(u"tab_name"_s, toolbox.tab_name);
+  if (!pending_pinned_toolboxes_.empty()) {
+    merged.insert(pending_pinned_toolboxes_.begin(), pending_pinned_toolboxes_.end());
+    for (const auto& [plugin_id, toolbox] : merged) {
+      append_element(plugin_id, toolbox.tab_name, toolbox.config);
     }
-    if (!toolbox.config.isEmpty()) {
-      // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
-      // layout site — a plain text node entity-escapes on each round trip.
-      appendJsonAsCdata(doc, element, toolbox.config);
-    }
-    root.appendChild(element);
   }
   return root;
 }

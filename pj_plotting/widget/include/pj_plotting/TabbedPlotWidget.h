@@ -119,6 +119,8 @@ class TabbedPlotWidget : public QWidget {
   [[nodiscard]] int dockerCount() const;
   PlotDocker* dockerAt(int index);
   [[nodiscard]] int tabCount() const;
+  // Every tab's page in tab order: the PlotDocker of a plot tab, the content of a widget tab.
+  [[nodiscard]] std::vector<QWidget*> tabPages() const;
   // Visits every PlotDocker tab in tab order, in one pass over the tab vector
   // (dockerCount()/dockerAt() are each a linear scan, so an index loop over
   // them is quadratic). `operation` must not add or close tabs.

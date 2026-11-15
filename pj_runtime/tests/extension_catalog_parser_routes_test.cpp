@@ -537,10 +537,11 @@ OffMainResolution resolveOffMain(ExtensionCatalogService& service) {
   return {.bound = result.get(), .prompt = prompt};
 }
 
-// A registration that lands after a resolution found no parser, but before it started waiting, still ends the wait.
-// The load registers inside the start (on another thread, as the browser's main thread would): a resolution that
-// took its snapshot of the events after starting the load would miss it and wait until its source stops.
-TEST(ExtensionCatalogParserRoutes, DeferredParserRegistrationJustAfterTheLookupEndsTheWait) {
+// A registration made inside the start (on another thread, as the browser's main thread would) ends the wait. This
+// guards the order "snapshot the events, then start": a snapshot taken after starting would miss this registration
+// and wait until its source stops. It does not cover the window between the first lookup and the snapshot, which the
+// second lookup closes: nothing can be made to run inside it deterministically.
+TEST(ExtensionCatalogParserRoutes, DeferredParserRegistrationDuringTheStartEndsTheWait) {
   PJ::test::HermeticCatalog catalog(staticParsers({&kWildcardParser}));
   catalog.service.setDeferredParsers({"custom_enc"}, [&catalog]() {
     std::thread registrar(

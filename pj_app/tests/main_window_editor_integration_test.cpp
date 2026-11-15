@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "MainWindow.h"
+#include "ToolboxPresenter.h"
 #include "dataset_test_helpers.h"
 #include "event_pump_test_utils.h"
 #include "pj_base/sdk/object_topic_metadata.hpp"
@@ -75,6 +76,17 @@ class MainWindowEditorIntegrationTestPeer {
   }
   [[nodiscard]] static QWidget* currentPanel(const MainWindow& window) {
     return window.current_panel_;
+  }
+  static void launchTakeover(MainWindow& window, const QString& plugin_id) {
+    window.launchToolbox(plugin_id);
+  }
+  // The banner's pin button: the takeover moves to a tab.
+  static void pin(MainWindow& window, const QString& plugin_id) {
+    window.findToolbox(plugin_id)->moveToTab(/*transient=*/false);
+  }
+  [[nodiscard]] static QWidget* toolboxContainer(const MainWindow& window, const QString& plugin_id) {
+    const ToolboxPresenter* toolbox = window.findToolbox(plugin_id);
+    return toolbox != nullptr ? toolbox->container() : nullptr;
   }
   [[nodiscard]] static int toolboxErrors(const MainWindow& window, const QString& plugin_id) {
     const auto records = window.diagnostic_history_->snapshot();
@@ -226,6 +238,10 @@ class DeferredFixtureLoad {
       return true;
     });
   }
+  // Loaded, but the launches waiting for it not yet told: one that starts now does not wait.
+  void markLoaded() {
+    loaded_ = true;
+  }
   void complete(const QString& error = {}) {
     loaded_ = error.isEmpty();
     for (auto& done : std::exchange(pending_, {})) {
@@ -263,7 +279,10 @@ QStringList tabNames(PJ::TabbedPlotWidget& tabs) {
   std::vector<std::pair<int, QString>> ordered;
   for (QFrame* frame : tabs.findChildren<QFrame*>(u"plotTabFrame"_s)) {
     const QLabel* label = frame->findChild<QLabel*>();
-    ordered.emplace_back(frame->parentWidget()->layout()->indexOf(frame), label != nullptr ? label->text() : QString());
+    const int index = frame->parentWidget()->layout()->indexOf(frame);
+    if (index >= 0) {  // a closed tab's frame lingers until its deferred delete
+      ordered.emplace_back(index, label != nullptr ? label->text() : QString());
+    }
   }
   std::ranges::sort(ordered);
   QStringList names;
@@ -341,6 +360,74 @@ TEST(MainWindowEditorIntegrationTest, ARestoredPinWhoseLoadFailsStaysInTheLayout
   EXPECT_FALSE(modal.shown());
   EXPECT_EQ(Peer::toolboxErrors(window, QString::fromLatin1(kFixtureId)), 1);
   EXPECT_TRUE(Peer::savedPinnedToolboxes(window).contains(QLatin1StringView(kFixtureId)));
+}
+
+// A launch that lands while a restored pin still waits (here, between the load and the waiting pin) takes the pin, as
+// it would have focused the pinned tab had the restore landed first: the toolbox stays in the layout.
+TEST(MainWindowEditorIntegrationTest, ALaunchThatOvertakesARestoredPinTakesItsPlace) {
+  QTemporaryDir extensions_dir;
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
+  PJ::MainWindow window(extensions_dir.path());
+  DeferredFixtureLoad load(window);
+  const QString id = QString::fromLatin1(kFixtureId);
+
+  restoreLayoutPinningTheFixture(window);
+  load.markLoaded();
+  Peer::launchTakeover(window, id);
+  ASSERT_NE(Peer::currentPanel(window), nullptr) << "the launch is a takeover";
+  load.complete();
+
+  EXPECT_TRUE(tabNames(tabs(window)).contains(u"Pinned"_s));
+  EXPECT_EQ(Peer::currentPanel(window), nullptr);
+  EXPECT_TRUE(Peer::savedPinnedToolboxes(window).contains(QLatin1StringView(kFixtureId)))
+      << "the toolbox vanished from the layout";
+}
+
+// A restored pin that failed stays in the layout only until a launch of that toolbox lands: pinned and closed after
+// that, it is gone, and a save does not bring it back.
+TEST(MainWindowEditorIntegrationTest, AFailedRestoredPinIsRetiredByALaunchThatLands) {
+  QTemporaryDir extensions_dir;
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
+  PJ::MainWindow window(extensions_dir.path());
+  DeferredFixtureLoad load(window);
+  const QString id = QString::fromLatin1(kFixtureId);
+  restoreLayoutPinningTheFixture(window);
+  load.complete(u"HTTP 503"_s);
+  ASSERT_TRUE(Peer::savedPinnedToolboxes(window).contains(QLatin1StringView(kFixtureId)));
+
+  Peer::launchTakeover(window, id);
+  load.complete();
+  ASSERT_NE(Peer::toolboxContainer(window, id), nullptr);
+  Peer::pin(window, id);
+  tabs(window).closeWidgetTab(Peer::toolboxContainer(window, id));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+  EXPECT_EQ(Peer::toolboxContainer(window, id), nullptr);
+  EXPECT_FALSE(Peer::savedPinnedToolboxes(window).contains(QLatin1StringView(kFixtureId)))
+      << "the failed pin came back";
+}
+
+// A late pin lands right after the nearest tab that preceded it at restore time and is still open, wherever the tabs
+// have moved since: as the restore itself would have placed it.
+TEST(MainWindowEditorIntegrationTest, ARestoredPinLandsAfterTheTabsBeforeItThatRemain) {
+  QTemporaryDir extensions_dir;
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
+  PJ::MainWindow window(extensions_dir.path());
+  DeferredFixtureLoad load(window);
+  ASSERT_EQ(tabs(window).tabCount(), 1);
+  PJ::PlotDocker* first = tabs(window).dockerAt(0);
+  tabs(window).addTab(u"B"_s);
+
+  restoreLayoutPinningTheFixture(window);
+  tabs(window).closeTab(first);
+  tabs(window).addTab(u"Later"_s);
+  load.complete();
+
+  const QStringList expected{u"B"_s, u"Pinned"_s, u"Later"_s};
+  EXPECT_EQ(tabNames(tabs(window)), expected);
 }
 
 }  // namespace

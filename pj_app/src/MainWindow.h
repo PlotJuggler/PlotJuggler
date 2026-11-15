@@ -663,7 +663,8 @@ class MainWindow : public QMainWindow {
   // restore re-creates a renamed tab born with its saved name. `late_pin_index`
   // (kPinnedTab only) is a restore's pin landing after its plugin loaded
   // (deferred_toolbox_load_): the tab goes where the restore would have put it,
-  // leaving the current tab and any takeover alone.
+  // leaving the current tab and any takeover alone; an instance launched
+  // meanwhile takes the pin instead.
   void launchToolbox(
       const QString& plugin_id, const QString& initial_config = QString(),
       ToolboxLaunchTarget target = ToolboxLaunchTarget::kTakeover, const QString& pin_tab_name = QString(),
@@ -1621,7 +1622,8 @@ class MainWindow : public QMainWindow {
   // still waiting for its plugin is dropped once something newer took the chart area, which it would otherwise cover.
   quint64 takeover_generation_ = 0;
   // The restore's pinned toolboxes still waiting for their plugin, or whose load failed, by id: savePinnedToolboxes
-  // keeps them in the layout, as the restored layout named them, until the next restore replaces the pinned set.
+  // keeps them in the layout, as the restored layout named them, until a launch of that toolbox lands or the next
+  // restore replaces the pinned set.
   struct PendingPinnedToolbox {
     QString config;
     QString tab_name;

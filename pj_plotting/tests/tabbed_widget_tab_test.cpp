@@ -13,6 +13,8 @@
 #include <QLabel>
 #include <QPointer>
 #include <QPushButton>
+#include <QStackedWidget>
+#include <QVBoxLayout>
 #include <QtGlobal>
 
 #include "pj_plotting/DockWidget.h"
@@ -139,6 +141,28 @@ TEST(TabbedWidgetTab, TakeInactiveWidgetTabRestoresSizePolicyAndKeepsSelection) 
   EXPECT_TRUE(foreground->isVisibleTo(&tabbed));
   EXPECT_EQ(tabbed.tabCount(), 2);
   delete content;
+}
+
+// A tab added without selecting it is a background page from the start: its size policy is Ignored, so its own
+// minimum size does not inflate the stack's.
+TEST(TabbedWidgetTab, UnselectedWidgetTabIsABackgroundPage) {
+  PJ::TabbedPlotWidget tabbed;
+  auto* stack = tabbed.findChild<QStackedWidget*>(QString(), Qt::FindDirectChildrenOnly);
+  ASSERT_NE(stack, nullptr);
+  const QSize minimum_before = stack->minimumSizeHint();
+  QWidget* current = stack->currentWidget();
+  // A large minimum size HINT (from its layout), which an Ignored policy discounts.
+  auto* content = new QWidget;
+  auto* large = new QWidget(content);
+  large->setMinimumSize(4000, 3000);
+  (new QVBoxLayout(content))->addWidget(large);
+
+  tabbed.addWidgetTab(u"Background"_s, content, {}, /*index=*/0, /*select=*/false);
+
+  EXPECT_EQ(stack->currentWidget(), current);
+  EXPECT_EQ(content->sizePolicy().horizontalPolicy(), QSizePolicy::Ignored);
+  EXPECT_EQ(content->sizePolicy().verticalPolicy(), QSizePolicy::Ignored);
+  EXPECT_EQ(stack->minimumSizeHint(), minimum_before);
 }
 
 TEST(TabbedWidgetTab, ClosingLastPlotTabSpawnsFreshOneDespiteWidgetTab) {

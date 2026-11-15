@@ -169,10 +169,14 @@ Rules the mechanism depends on:
   thread may be joining it. Every start of the load ends in a registration or a
   failure, so such a wait never outlives the load; once the module is linked,
   a start reports a failure at once (a stale module lacking an encoding).
-  A resolution on the main thread only starts the load: no source the browser
-  ships binds a parser there, and the one that advertises topics there (PJ
-  Bridge, from `start()`) gets the same classification either way, the Arrow
-  IPC parser declaring no object route. `FileLoader` resumes its `.parquet` load
+  A resolution on the main thread only starts the load and resolves without
+  the parser: no source the browser ships binds a parser there. The one that
+  advertises topics there (PJ Bridge, from `start()`, with the topics its dialog
+  found) would classify an `arrow-ipc` topic before the load without the Arrow
+  IPC parser's object routes (Mosaico ontologies, video frames). It forwards the
+  server's encoding, and no bridge backend sends `arrow-ipc`: ROS 2 sends
+  `ros2msg`, FastDDS and RTI `omgidl` (only the MCAP test player forwards a
+  file's own encoding). `FileLoader` resumes its `.parquet` load
   from the loader's callback instead of running it on its worker. The handle is never
   closed (Emscripten 5.0.5 deadlocks re-opening a module).
 - **What the side module must not link:** the sysroot's zlib is not position

@@ -392,6 +392,15 @@ int TabbedPlotWidget::tabCount() const {
   return static_cast<int>(tabs_.size());
 }
 
+std::vector<QWidget*> TabbedPlotWidget::tabPages() const {
+  std::vector<QWidget*> pages;
+  pages.reserve(tabs_.size());
+  for (const TabEntry& entry : tabs_) {
+    pages.push_back(contentOf(entry));
+  }
+  return pages;
+}
+
 void TabbedPlotWidget::forEachDocker(const std::function<void(PlotDocker*)>& operation) const {
   for (const TabEntry& entry : tabs_) {
     if (entry.docker != nullptr) {
@@ -449,6 +458,7 @@ void TabbedPlotWidget::addWidgetTab(
   tabs_.insert(tabs_.begin() + insert_index, std::move(entry));
 
   if (!select) {
+    adaptWidgetTabPagePolicies();  // no currentChanged to do it: the page starts in the background
     return;
   }
   stack_->setCurrentWidget(content);

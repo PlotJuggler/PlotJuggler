@@ -332,6 +332,9 @@ class ToolboxPanelFoldTest : public ::testing::Test {
   }
 
   void SetUp() override {
+    if (window_ == nullptr) {  // destroyed by an earlier test of this run (destroyMainWindow)
+      SetUpTestSuite();
+    }
     PJ::ToolboxPanelFoldTestPeer::setSeams(
         mainWindow(),
         [this](QString /*label*/) {
