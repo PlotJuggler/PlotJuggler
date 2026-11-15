@@ -33,10 +33,6 @@ function hostedAssetsMissing() {
 async function startHostedAssetMirror() {
   const { CONTENT_TYPES } = await import('../../../scripts/package_wasm.mjs');
   const contentTypes = new Map([...CONTENT_TYPES, ...HOSTED_CONTENT_TYPES]);
-  const missing = hostedAssetsMissing();
-  if (missing) {
-    throw new Error(missing);
-  }
   const server = http.createServer((request, response) => {
     const file = decodeURIComponent(new URL(request.url, 'http://mirror').pathname.slice(1));
     if (!Object.hasOwn(MANIFEST.files, file)) {

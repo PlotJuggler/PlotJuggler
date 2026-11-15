@@ -182,7 +182,8 @@ async function startCaddy(env) {
 // The robot: the fake bridge, and Caddy in front of it and of the site.
 async function startRobot() {
   // A workstation may have no Caddy; CI installs it (wasm-ci.yml), so there a missing one fails.
-  test.skip(!process.env.CI && Boolean(spawnSync(CADDY, ['version']).error),
+  // An explicit PJ_CADDY that does not run is a misconfiguration, so it fails rather than skips.
+  test.skip(!process.env.CI && !process.env.PJ_CADDY && Boolean(spawnSync(CADDY, ['version']).error),
     'Caddy is not installed: set PJ_CADDY or put caddy on PATH (CI always runs these cases)');
   const bridge = track(await startBridgeServer());
   const [httpsPort, httpPort, adminPort] = await freePorts(3);
