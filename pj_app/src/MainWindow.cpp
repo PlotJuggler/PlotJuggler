@@ -22,6 +22,7 @@
 #include <QProcess>
 #endif
 #include <QDomDocument>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontMetrics>
@@ -7054,7 +7055,13 @@ bool MainWindow::applyBrowserRestoredLayout(
   // kExact turns an unresolved curve/scene into failure. restoreWorkspaceState
   // rolls any failed application back to the captured workspace, so a browser
   // layout can never silently drop incompatible content.
-  if (restoreWorkspaceState(doc, MissingCurvePolicy::kExact) != RestoreResult::kApplied) {
+  // The restore runs as one main-thread task; its duration is logged for the
+  // WASM responsiveness test (tests/wasm/presets.spec.js).
+  QElapsedTimer restore_timer;
+  restore_timer.start();
+  const RestoreResult restored = restoreWorkspaceState(doc, MissingCurvePolicy::kExact);
+  qInfo("PJ_WASM_LAYOUT_RESTORE_MS ms=%lld", static_cast<long long>(restore_timer.elapsed()));
+  if (restored != RestoreResult::kApplied) {
     showBrowserLayoutWarning(
         this, tr("Load Layout"),
         tr("Layout was parsed but could not be applied to the currently loaded data. Open matching data sources "

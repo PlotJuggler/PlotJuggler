@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDomDocument>
 #include <QDomElement>
 #include <QSettings>
@@ -237,3 +238,28 @@ class FixedFrameEnvironment : public ::testing::Environment {
 static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new FixedFrameEnvironment);
 
 }  // namespace
+
+// The frame overlay keeps its rows when the frame list is unchanged, and still
+// follows the fixed frame.
+TEST(Scene3DDockFixedFrame, OverlayComboFollowsFixedFrameOverUnchangedFrames) {
+  PJ::SessionManager session;
+  PJ::TransformService tf(session);
+  pj::scene3d::FixedFrameMemory memory(session);
+  const DatasetTopic ds = makeTfDataset(session, tf, "overlay.dat", "/tf");
+
+  PJ::Scene3DDockWidget dock;
+  attachTfTopic(dock, session, tf, memory, ds.topic_id);
+  dock.sceneView()->refreshAvailableFrames();
+  auto* combo = dock.findChild<QComboBox*>(u"scene3dFixedFrameCombo"_s);
+  ASSERT_NE(combo, nullptr);
+  ASSERT_EQ(combo->count(), 3);
+  EXPECT_EQ(combo->currentData().toString(), u"map"_s);
+
+  dock.setFixedFrame(u"base_link"_s);
+  dock.sceneView()->refreshAvailableFrames();  // same frames again
+  EXPECT_EQ(combo->count(), 3);
+  EXPECT_EQ(combo->currentData().toString(), u"base_link"_s);
+
+  dock.setFixedFrame(u"odom"_s);
+  EXPECT_EQ(combo->currentData().toString(), u"odom"_s);
+}
