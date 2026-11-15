@@ -90,6 +90,24 @@ async function requestPlotStylePixels(consoleMessages, previousCount) {
   };
 }
 
+const countMessages = (consoleMessages, marker) => consoleMessages.filter(message => message.includes(marker)).length;
+
+// A click reaches Qt as a queued DOM event, while the state probe is a direct call that can run first: probe until
+// the plot shows the clicked style and width, then take the pixel readback of that last probe (each probe emits
+// one, in order).
+async function requestStyledPlot(page, consoleMessages, expected) {
+  const pixelsBefore = countMessages(consoleMessages, 'PJ_WASM_PLOT_STYLE_PIXELS');
+  let state = null;
+  let probes = 0;
+  await expect.poll(async () => {
+    state = await requestPlotState(page, consoleMessages, countMessages(consoleMessages, 'PJ_WASM_PLOT_STATE count='));
+    probes += 1;
+    return { style: state.style, width: state.width };
+  }, { timeout: 10000 }).toEqual(expected);
+  const readback = await requestPlotStylePixels(consoleMessages, pixelsBefore + probes - 1);
+  return { state, readback };
+}
+
 async function requestPlotGridPixels(consoleMessages, previousCount) {
   await expect.poll(
     () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_GRID_PIXELS')).length,
@@ -574,18 +592,11 @@ test('real curve-style and width controls render every app-exposed QRhi variant'
   }
   expect(controls.open).toBe(true);
 
-  let stateMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STATE count=')).length;
-  let pixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STYLE_PIXELS')).length;
   const styleSignatures = new Set();
   for (let style = 0; style < controls.styles.length; ++style) {
     const button = controls.styles[style];
     await page.mouse.click(screen.x + button.x, screen.y + button.y);
-    const state = await requestPlotState(page, consoleMessages, stateMessages);
-    stateMessages += 1;
-    const readback = await requestPlotStylePixels(consoleMessages, pixelMessages);
-    pixelMessages += 1;
-    expect(state.style).toBe(style);
-    expect(state.width).toBe(0);
+    const { state, readback } = await requestStyledPlot(page, consoleMessages, { style, width: 0 });
     expect(state.xy).toBe(false);
     expect(readback.style).toBe(style);
     expect(readback.width).toBe(0);
@@ -601,12 +612,7 @@ test('real curve-style and width controls render every app-exposed QRhi variant'
   for (let width = 0; width < controls.widths.length; ++width) {
     const button = controls.widths[width];
     await page.mouse.click(screen.x + button.x, screen.y + button.y);
-    const state = await requestPlotState(page, consoleMessages, stateMessages);
-    stateMessages += 1;
-    const readback = await requestPlotStylePixels(consoleMessages, pixelMessages);
-    pixelMessages += 1;
-    expect(state.style).toBe(0);
-    expect(state.width).toBe(width);
+    const { state, readback } = await requestStyledPlot(page, consoleMessages, { style: 0, width });
     expect(readback.style).toBe(0);
     expect(readback.width).toBe(width);
     expect(readback.pixels).toBeGreaterThan(0);
@@ -632,20 +638,21 @@ test('real curve-style and width controls render every app-exposed QRhi variant'
   expect(bevelImage).toMatchSnapshot('wasm-rhi-thick-line-bevel.png', { maxDiffPixels: 4 });
 
   await page.mouse.click(screen.x + controls.styles[1].x, screen.y + controls.styles[1].y);
-  const dotState = await requestPlotState(page, consoleMessages, stateMessages);
-  stateMessages += 1;
-  const dotReadback = await requestPlotStylePixels(consoleMessages, pixelMessages);
-  pixelMessages += 1;
-  expect(dotState.style).toBe(1);
-  expect(dotState.width).toBe(3);
+  const { state: dotState, readback: dotReadback } = await requestStyledPlot(
+    page, consoleMessages, { style: 1, width: 3 });
   expect(dotReadback.pixels).toBeGreaterThan(0);
   const dotImage = await tightSampleImage(dotState, 1, 4);
   expect(dotImage).toMatchSnapshot('wasm-rhi-square-dot.png', { maxDiffPixels: 4 });
 
-  const gridMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_GRID_PIXELS')).length;
   await page.mouse.click(screen.x + controls.grid.x, screen.y + controls.grid.y);
-  await requestPlotState(page, consoleMessages, stateMessages);
-  const grid = await requestPlotGridPixels(consoleMessages, gridMessages);
+  // The grid is not in the plot state: probe until the readback shows it (the click may land after a probe).
+  let grid = null;
+  await expect.poll(async () => {
+    const gridMessages = countMessages(consoleMessages, 'PJ_WASM_PLOT_GRID_PIXELS');
+    await requestPlotState(page, consoleMessages, countMessages(consoleMessages, 'PJ_WASM_PLOT_STATE count='));
+    grid = await requestPlotGridPixels(consoleMessages, gridMessages);
+    return grid.major.pixels > 0;
+  }, { timeout: 10000 }).toBe(true);
   expect(grid.major.pixels).toBeGreaterThan(0);
   expect(grid.major.column).toBeGreaterThanOrEqual(0);
   expect(grid.major.period).toBe(6);
