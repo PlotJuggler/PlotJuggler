@@ -360,11 +360,9 @@ int main(int argc, char* argv[]) {
   PJ::scripting::prestartPythonHelper();
 #endif
 
-  // Register the bundled PlotJuggler Sans (Noto Sans under its own family name, so a system-installed Noto Sans
-  // cannot replace it) and apply it as the application font, before any window is built so every widget — and
-  // every plugin dialog, which inherits the app font — uses it. Its Bold face is Noto Sans SemiBold, so every
-  // emphasis (setBold, <b>, font-weight bold or 600, QFont::DemiBold) renders a real 600, never synthesized bold
-  // (resources/fonts/PlotJugglerSans/README.md). The QSS never declares a font-family; only font-size is styled.
+  // Register the bundled PlotJuggler Sans (its Bold is a 600, see resources/fonts/PlotJugglerSans/README.md) and
+  // apply it as the application font, before any window is built so every widget — and every plugin dialog, which
+  // inherits the app font — uses it. The QSS never declares a font-family; only font-size is styled.
   for (const auto& face :
        {u":/resources/fonts/PlotJugglerSans/PlotJugglerSans-Regular.ttf"_s,
         u":/resources/fonts/PlotJugglerSans/PlotJugglerSans-Bold.ttf"_s}) {

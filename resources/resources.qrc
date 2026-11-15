@@ -11,9 +11,8 @@
     <!-- Bundled UI font (SIL OFL 1.1). Loaded at startup via
          QFontDatabase::addApplicationFont and set as the application font, so
          typography is controlled and consistent across machines instead of
-         relying on the host's default sans-serif. Two static faces: Regular,
-         and a Bold that is Noto Sans SemiBold, so every emphasis renders a real
-         600 (resources/fonts/PlotJugglerSans/README.md). -->
+         relying on the host's default sans-serif. See
+         fonts/PlotJugglerSans/README.md. -->
     <file alias="fonts/PlotJugglerSans/PlotJugglerSans-Regular.ttf">fonts/PlotJugglerSans/PlotJugglerSans-Regular.ttf</file>
     <file alias="fonts/PlotJugglerSans/PlotJugglerSans-Bold.ttf">fonts/PlotJugglerSans/PlotJugglerSans-Bold.ttf</file>
     <!-- Built-in features and known limitations served to plugins by the
