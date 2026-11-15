@@ -121,6 +121,13 @@ else()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         list(APPEND PJ_WARNING_FLAGS -Wno-sign-conversion -Wno-unused-const-variable)
     endif()
+    # GCC 12-14 at -O3 (Release, #1561) report false stringop-overflow /
+    # array-bounds errors inside inlined std::vector range inserts (conda's
+    # GCC 14 on depth_pipeline_source.cpp). Keep them visible as warnings, as
+    # pj-official-plugins does; Clang has neither diagnostic.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        list(APPEND PJ_WARNING_FLAGS -Wno-error=stringop-overflow -Wno-error=array-bounds)
+    endif()
     # wasm32 makes size_t 32-bit and surfaces the SDK's explicitly tracked
     # uint64_t ABI conversions. Keep the warnings visible, but do not turn the
     # cross-compile bring-up into an unrelated warning-cleanup project.
