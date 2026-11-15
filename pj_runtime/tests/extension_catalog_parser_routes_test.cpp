@@ -517,29 +517,64 @@ TEST(ExtensionCatalogParserRoutes, DeferredParserResolutionWaitsForRegistrationO
   EXPECT_EQ(bound, true);
 }
 
-// A registration that lands after a resolution found no parser, but before it started waiting, still ends the wait:
-// the start it then makes is a no-op, so a missed registration would leave it waiting until its source stops.
+// Resolves "custom_enc" on a thread of its own, as a source's poll thread does, and reports whether it bound and
+// whether it returned within two seconds; a resolution that misses the event ending its wait returns only when the
+// watchdog stops it.
+struct OffMainResolution {
+  bool bound = false;
+  bool prompt = false;
+};
+OffMainResolution resolveOffMain(ExtensionCatalogService& service) {
+  std::atomic<bool> stop = false;
+  std::promise<bool> bound;
+  std::future<bool> result = bound.get_future();
+  std::thread waiting([&]() {
+    bound.set_value(service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {}, &stop).scalar.has_value());
+  });
+  const bool prompt = result.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  stop = true;
+  waiting.join();
+  return {.bound = result.get(), .prompt = prompt};
+}
+
+// A registration that lands after a resolution found no parser, but before it started waiting, still ends the wait.
+// The load registers inside the start (on another thread, as the browser's main thread would): a resolution that
+// took its snapshot of the events after starting the load would miss it and wait until its source stops.
 TEST(ExtensionCatalogParserRoutes, DeferredParserRegistrationJustAfterTheLookupEndsTheWait) {
   PJ::test::HermeticCatalog catalog(staticParsers({&kWildcardParser}));
-  catalog.service.setDeferredParsers({"custom_enc"}, []() {});
-  catalog.service.setDeferredLookupHookForTest([&catalog]() {
+  catalog.service.setDeferredParsers({"custom_enc"}, [&catalog]() {
     std::thread registrar(
         [&catalog]() { EXPECT_TRUE(catalog.service.registerLatePlugins(staticParsers({&kCustomEncodingParser}))); });
     registrar.join();
   });
 
-  std::atomic<bool> stop = false;
-  std::promise<bool> bound;
-  std::future<bool> result = bound.get_future();
-  std::thread waiting([&]() {
-    bound.set_value(
-        catalog.service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {}, &stop).scalar.has_value());
+  const OffMainResolution resolution = resolveOffMain(catalog.service);
+  EXPECT_TRUE(resolution.prompt) << "the resolution missed the registration and waited until its stop";
+  EXPECT_TRUE(resolution.bound);
+}
+
+// A load that links plugins but not the encoding (a stale side module) ends the waits, and so does every later start
+// once the load has run: the loader reports deferredParsersFailed() instead of starting nothing.
+TEST(ExtensionCatalogParserRoutes, DeferredParserLoadThatRegistersNothingEndsTheWait) {
+  PJ::test::HermeticCatalog catalog(staticParsers({&kWildcardParser}));
+  bool loaded = false;
+  catalog.service.setDeferredParsers({"custom_enc"}, [&catalog, &loaded]() {
+    std::thread main_thread([&catalog, &loaded]() {
+      if (loaded) {
+        catalog.service.deferredParsersFailed();
+      } else {
+        loaded = true;
+        EXPECT_TRUE(catalog.service.registerLatePlugins(staticParsers({&kLegacyObjectParser})));
+      }
+    });
+    main_thread.join();
   });
-  const bool ended = result.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
-  stop = true;  // the watchdog: a missed registration waits until here
-  waiting.join();
-  EXPECT_TRUE(ended) << "the resolution missed the registration and waited until its stop";
-  EXPECT_TRUE(result.get());
+
+  for (int resolution_index = 0; resolution_index < 2; ++resolution_index) {
+    const OffMainResolution resolution = resolveOffMain(catalog.service);
+    EXPECT_TRUE(resolution.prompt) << "resolution " << resolution_index << " waited until its stop";
+    EXPECT_FALSE(resolution.bound);
+  }
 }
 
 TEST(ExtensionCatalogParserRoutes, EmptyTypeNameStaysOnLegacyPath) {

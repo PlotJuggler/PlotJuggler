@@ -433,18 +433,24 @@ PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
   return docker;
 }
 
-void TabbedPlotWidget::addWidgetTab(const QString& tab_name, QWidget* content, std::function<void()> on_close) {
+void TabbedPlotWidget::addWidgetTab(
+    const QString& tab_name, QWidget* content, std::function<void()> on_close, int index, bool select) {
   if (content == nullptr || findEntry(content) != nullptr) {
     return;
   }
   PlotTabFrame* frame = createTabFrame(tab_name);
 
   stack_->addWidget(content);
-  const int insert_index = static_cast<int>(tabs_.size());
+  const int count = static_cast<int>(tabs_.size());
+  const int insert_index = index >= 0 && index < count ? index : count;
   tabs_bar_layout_->insertWidget(insert_index, frame, 0, Qt::AlignVCenter);
-  tabs_.push_back(
-      {.frame = frame, .widget = content, .on_close = std::move(on_close), .original_policy = content->sizePolicy()});
+  TabEntry entry{
+      .frame = frame, .widget = content, .on_close = std::move(on_close), .original_policy = content->sizePolicy()};
+  tabs_.insert(tabs_.begin() + insert_index, std::move(entry));
 
+  if (!select) {
+    return;
+  }
   stack_->setCurrentWidget(content);
   updateSelectionStyle();
   emit currentTabChanged(nullptr);

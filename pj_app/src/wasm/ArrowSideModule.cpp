@@ -47,6 +47,8 @@ struct Manifests {
   std::vector<std::string> encodings;
   QString toolbox_id;
   QString toolbox_name;
+  QString toolbox_description;
+  std::vector<PJ::PluginDescriptor> plugins;
 };
 
 // The SDK's decoder, as the catalog reads a plugin's manifest: a malformed one fails here, not in the user's hands.
@@ -61,8 +63,16 @@ PJ::PluginDescriptor decode(PJ::PluginFamily family, const char* manifest_json) 
 const Manifests& manifests() {
   static const Manifests kManifests = []() {
     Manifests m;
+    m.plugins = {
+        decode(PJ::PluginFamily::kDataSource, kParquetManifest),
+        decode(PJ::PluginFamily::kMessageParser, kArrowManifest),
+        decode(PJ::PluginFamily::kToolbox, kDataExporterManifest),
+    };
+    const PJ::PluginDescriptor& parquet = m.plugins[0];
+    const PJ::PluginDescriptor& arrow = m.plugins[1];
+    const PJ::PluginDescriptor& exporter = m.plugins[2];
     QStringList patterns;
-    for (const auto& ext : decode(PJ::PluginFamily::kDataSource, kParquetManifest).file_extensions) {
+    for (const auto& ext : parquet.file_extensions) {
       // As the catalog normalises it (leading '.', ASCII case fold): what FileLoader looks up.
       QString normalised = QString::fromStdString(ext).toLower();
       if (!normalised.startsWith(u'.')) {
@@ -72,10 +82,10 @@ const Manifests& manifests() {
       patterns << u"*"_s + normalised;
     }
     m.file_patterns = patterns.join(u' ');
-    m.encodings = decode(PJ::PluginFamily::kMessageParser, kArrowManifest).encoding;
-    const auto exporter = decode(PJ::PluginFamily::kToolbox, kDataExporterManifest);
+    m.encodings = arrow.encoding;
     m.toolbox_id = QString::fromStdString(exporter.id);
     m.toolbox_name = QString::fromStdString(exporter.name);
+    m.toolbox_description = QString::fromStdString(exporter.description);
     return m;
   }();
   return kManifests;
@@ -189,6 +199,14 @@ const QString& toolboxName() {
   return manifests().toolbox_name;
 }
 
+const QString& toolboxDescription() {
+  return manifests().toolbox_description;
+}
+
+const std::vector<PJ::PluginDescriptor>& plugins() {
+  return manifests().plugins;
+}
+
 bool isRegistered() {
   return g_registered;
 }
@@ -256,10 +274,16 @@ void finishLoad(PJ::ExtensionCatalogService& catalog, const QString& error) {
   }
 }
 
-// Starts the self-ending loader thread, unless the module is registered or loading. Nothing joins that thread:
-// its dlopen() finishes only once the main thread is back in the browser's event loop.
+// Starts the self-ending loader thread, unless the module is loading. Nothing joins that thread: its dlopen()
+// finishes only once the main thread is back in the browser's event loop.
 void startLoad(PJ::ExtensionCatalogService& catalog) {
-  if (g_registered || g_loading) {
+  if (g_registered) {
+    // Already linked: an encoding the catalog still lacks is not coming (a stale module), so end the resolution
+    // waiting for it (setDeferredParsers).
+    catalog.deferredParsersFailed();
+    return;
+  }
+  if (g_loading) {
     return;
   }
   g_loading = true;
@@ -269,6 +293,13 @@ void startLoad(PJ::ExtensionCatalogService& catalog) {
   QObject::connect(
       thread, &QThread::finished, &catalog, [&catalog, error]() { finishLoad(catalog, *error); }, Qt::QueuedConnection);
   thread->start();
+  if (!thread->isRunning() && !thread->isFinished()) {
+    // Could not start (no thread available): not cached, the next use tries again. Queued, as a load ends, so no
+    // waiter's callback runs inside ensureLoaded().
+    delete thread;
+    QMetaObject::invokeMethod(
+        &catalog, [&catalog]() { finishLoad(catalog, u"could not start its loader thread"_s); }, Qt::QueuedConnection);
+  }
 }
 
 }  // namespace
@@ -283,7 +314,9 @@ void ensureLoaded(PJ::ExtensionCatalogService& catalog, QObject* context, std::f
 }
 
 void installDeferredParsers(PJ::ExtensionCatalogService& catalog) {
-  // A poll thread only asks the main thread to start the load: it must never wait on it (setDeferredParsers).
+  // A poll thread only asks the main thread to start the load: it must never wait on it (setDeferredParsers). A
+  // resolution on the main thread only starts it: no source the browser ships binds there, and PJ Bridge's
+  // advertising from start() classifies arrow-ipc topics the same before the load (the parser has no object route).
   catalog.setDeferredParsers(parserEncodings(), [&catalog]() {
     if (QThread::isMainThread()) {
       startLoad(catalog);

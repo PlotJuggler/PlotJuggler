@@ -80,9 +80,9 @@ void ToolboxPresenter::moveToDock() {
   }
 }
 
-void ToolboxPresenter::moveToTab(bool transient) {
+void ToolboxPresenter::moveToTab(bool transient, int index, bool select) {
   if (QWidget* content = releasableContent()) {
-    attachAsTab(content, transient);
+    attachAsTab(content, transient, index, select);
   }
 }
 
@@ -148,7 +148,7 @@ QString ToolboxPresenter::title() const {
   return title_;
 }
 
-void ToolboxPresenter::attachAsTab(QWidget* content, bool transient) {
+void ToolboxPresenter::attachAsTab(QWidget* content, bool transient, int index, bool select) {
   transient_ = transient;
   presentation_ = Presentation::kTab;
   if (apply_chrome_) {
@@ -157,7 +157,7 @@ void ToolboxPresenter::attachAsTab(QWidget* content, bool transient) {
   MainWindow& shell = shell_;
   const QString id = plugin_id_;
   TabbedPlotWidget& tabs = *shell_.ui_->tabbedPlotWidget;
-  tabs.addWidgetTab(title_, content, [&shell, id]() { shell.teardownToolbox(id, Teardown::kDeferred); });
+  tabs.addWidgetTab(title_, content, [&shell, id]() { shell.teardownToolbox(id, Teardown::kDeferred); }, index, select);
   // Rules 3-4: an idle folded panel closes like any tab; one with a job in
   // flight confirms first, because the teardown above cancels that job. The
   // presenter's own host is what makes the cancellation land on THIS panel.

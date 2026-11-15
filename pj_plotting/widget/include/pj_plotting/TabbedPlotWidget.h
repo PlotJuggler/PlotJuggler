@@ -59,7 +59,8 @@ class TabbedPlotWidget : public QWidget {
 
   // Hosts an arbitrary non-plot widget as a whole tab (a heterogeneous,
   // VSCode-style tab — e.g. a pinned toolbox panel). Takes ownership of
-  // `content` (reparented into the tab stack) and selects the new tab.
+  // `content` (reparented into the tab stack) and, when `select`, selects the
+  // new tab. It goes at tab `index`, or last when that is out of range.
   // `on_close` runs exactly once when the tab closes (its X button or
   // closeWidgetTab), BEFORE `content` is deleted, so the owner can tear
   // down whatever drives the widget. Widget tabs are never serialized and
@@ -67,7 +68,8 @@ class TabbedPlotWidget : public QWidget {
   // is the owner's concern, including the tab name: the in-place rename
   // edits only the strip label (read it back via widgetTabName), and is
   // not undoable. Adding a widget tab is not an undoable change either.
-  void addWidgetTab(const QString& tab_name, QWidget* content, std::function<void()> on_close);
+  void addWidgetTab(
+      const QString& tab_name, QWidget* content, std::function<void()> on_close, int index = -1, bool select = true);
   // Selects the tab hosting `content` (added via addWidgetTab). No-op if absent.
   void focusWidgetTab(QWidget* content);
   // Closes the tab hosting `content` exactly like its X button: honours any

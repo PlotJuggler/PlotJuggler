@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "pj_plugins/host/plugin_catalog.hpp"
+
 class QObject;
 
 namespace PJ {
@@ -26,11 +28,14 @@ namespace pj_app::arrow_side_module {
 [[nodiscard]] const QString& filePatterns();
 // Encodings of the parsers the module carries.
 [[nodiscard]] const std::vector<std::string>& parserEncodings();
-// Toolbox the module carries: its id and display name.
+// Toolbox the module carries: its id, display name and description.
 [[nodiscard]] const QString& toolboxId();
 [[nodiscard]] const QString& toolboxName();
+[[nodiscard]] const QString& toolboxDescription();
+// The module's plugins as their manifests describe them, for the menus that list them before it loads.
+[[nodiscard]] const std::vector<PJ::PluginDescriptor>& plugins();
 
-// Whether registerWith() has run: the catalog then has the family. Main thread.
+// Whether the module is linked and its plugins registered with the catalog. Main thread.
 [[nodiscard]] bool isRegistered();
 
 // Main thread. Calls done(error) on the main thread, unless `context` was destroyed first, once the module is

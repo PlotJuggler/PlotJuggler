@@ -55,9 +55,10 @@ class ToolboxPresenter {
   // Presentation changes. Each releases the container from where it is and
   // attaches it elsewhere; the plugin session, drawer and actions ride along.
   // Each is a no-op when there is no container to place. moveToTab's
-  // `transient` marks a host-chosen fold, excluded from layout save.
+  // `transient` marks a host-chosen fold, excluded from layout save; `index`
+  // and `select` are TabbedPlotWidget::addWidgetTab's.
   void moveToDock();
-  void moveToTab(bool transient);
+  void moveToTab(bool transient, int index = -1, bool select = true);
   void moveToFloating();
 
   // Detaches the container from its presentation without teardown and returns
@@ -133,7 +134,7 @@ class ToolboxPresenter {
   // The container to attach next: what release() gives back, or the container
   // itself when it was never presented (a fresh launch).
   QWidget* releasableContent();
-  void attachAsTab(QWidget* content, bool transient);
+  void attachAsTab(QWidget* content, bool transient, int index = -1, bool select = true);
   void attachAsFloating(QWidget* content);
 
   MainWindow& shell_;

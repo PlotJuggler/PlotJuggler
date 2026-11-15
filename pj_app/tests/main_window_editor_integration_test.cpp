@@ -5,28 +5,40 @@
 // `custom_topics_editor` capability is the editor, the panel's "+" opens it, and the scene view its preview frame asks
 // for is embedded in its panel with the requested topic attached, and a curve-tree drop onto the panel hands the plugin
 // names it can address. The toolbox is a test fixture (custom_topics_editor_fixture.cpp), staged into the extensions
-// directory before the window scans it.
+// directory before the window scans it. The same fixture stands in for a toolbox whose plugin loads after a layout
+// restore pinned it (the browser's Arrow side module): it must land as if it had loaded at once.
 
 #include <gtest/gtest.h>
 
+#include <QApplication>
+#include <QDomDocument>
 #include <QDropEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QFrame>
 #include <QLabel>
+#include <QLayout>
 #include <QMimeData>
+#include <QStackedWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
+#include <algorithm>
+#include <functional>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
 #include "event_pump_test_utils.h"
 #include "pj_base/sdk/object_topic_metadata.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_plugins/host_qt/drop_event_filter.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene_common/scene_dock_widget.h"
@@ -45,6 +57,30 @@ class MainWindowEditorIntegrationTestPeer {
  public:
   [[nodiscard]] static AppSession& session(MainWindow& window) {
     return *window.session_;
+  }
+  static void setDeferredToolboxLoad(
+      MainWindow& window, std::function<bool(const QString&, std::function<void(const QString&)>)> load) {
+    window.deferred_toolbox_load_ = std::move(load);
+  }
+  static void restorePinnedToolboxes(MainWindow& window, const QDomElement& root) {
+    (void)window.restorePinnedToolboxes(root, MainWindow::MissingCurvePolicy::kPrompt);
+  }
+  [[nodiscard]] static QString savedPinnedToolboxes(const MainWindow& window) {
+    QDomDocument doc;
+    doc.appendChild(window.savePinnedToolboxes(doc));
+    return doc.toString();
+  }
+  static void presentPanel(MainWindow& window, QWidget* panel) {
+    window.presentPanel(panel);
+  }
+  [[nodiscard]] static QWidget* currentPanel(const MainWindow& window) {
+    return window.current_panel_;
+  }
+  [[nodiscard]] static int toolboxErrors(const MainWindow& window, const QString& plugin_id) {
+    const auto records = window.diagnostic_history_->snapshot();
+    return static_cast<int>(std::ranges::count_if(records, [&plugin_id](const DiagnosticRecord& record) {
+      return record.level == DiagnosticLevel::kError && record.source == plugin_id;
+    }));
   }
 };
 
@@ -173,6 +209,138 @@ TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversNamesAndDataSources)
   const QString expected = u"/cloud@%1\n/speed/value@%1\n/speed/value@%2"_s.arg(dataset).arg(other_dataset);
   PJ::test::pumpUntil([&] { return target->text() == expected; });
   EXPECT_EQ(target->text().toStdString(), expected.toStdString());
+}
+
+constexpr auto kFixtureId = "custom-topics-editor-fixture";
+
+// The fixture's plugin "loads later": until complete(), a launch of it waits; after a successful one it launches as
+// usual (deferred_toolbox_load_ returns false once loaded).
+class DeferredFixtureLoad {
+ public:
+  explicit DeferredFixtureLoad(PJ::MainWindow& window) {
+    Peer::setDeferredToolboxLoad(window, [this](const QString& plugin_id, std::function<void(const QString&)> done) {
+      if (plugin_id != QLatin1StringView(kFixtureId) || loaded_) {
+        return false;
+      }
+      pending_.push_back(std::move(done));
+      return true;
+    });
+  }
+  void complete(const QString& error = {}) {
+    loaded_ = error.isEmpty();
+    for (auto& done : std::exchange(pending_, {})) {
+      done(error);
+    }
+  }
+
+ private:
+  bool loaded_ = false;
+  std::vector<std::function<void(const QString&)>> pending_;
+};
+
+// A layout whose pinned set is the fixture alone, its tab renamed "Pinned".
+void restoreLayoutPinningTheFixture(PJ::MainWindow& window) {
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"root"_s);
+  QDomElement pinned = doc.createElement(u"pinned_toolboxes"_s);
+  QDomElement toolbox = doc.createElement(u"toolbox"_s);
+  toolbox.setAttribute(u"plugin_id"_s, QString::fromLatin1(kFixtureId));
+  toolbox.setAttribute(u"tab_name"_s, u"Pinned"_s);
+  pinned.appendChild(toolbox);
+  root.appendChild(pinned);
+  doc.appendChild(root);
+  Peer::restorePinnedToolboxes(window, root);
+}
+
+PJ::TabbedPlotWidget& tabs(PJ::MainWindow& window) {
+  auto* tabs = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  Q_ASSERT(tabs != nullptr);
+  return *tabs;
+}
+
+// The strip's labels, in tab order.
+QStringList tabNames(PJ::TabbedPlotWidget& tabs) {
+  std::vector<std::pair<int, QString>> ordered;
+  for (QFrame* frame : tabs.findChildren<QFrame*>(u"plotTabFrame"_s)) {
+    const QLabel* label = frame->findChild<QLabel*>();
+    ordered.emplace_back(frame->parentWidget()->layout()->indexOf(frame), label != nullptr ? label->text() : QString());
+  }
+  std::ranges::sort(ordered);
+  QStringList names;
+  for (const auto& [index, name] : ordered) {
+    names << name;
+  }
+  return names;
+}
+
+QWidget* currentTab(PJ::TabbedPlotWidget& tabs) {
+  return tabs.findChild<QStackedWidget*>(QString(), Qt::FindDirectChildrenOnly)->currentWidget();
+}
+
+// Closes any modal that opens within 300 ms of the call, and reports whether one did.
+class ModalWatch {
+ public:
+  ModalWatch() {
+    QTimer::singleShot(200, &guard_, [this]() {
+      if (QWidget* modal = QApplication::activeModalWidget()) {
+        shown_ = true;
+        modal->close();
+      }
+    });
+  }
+  [[nodiscard]] bool shown() {
+    PJ::test::pumpFor(300);
+    return shown_;
+  }
+
+ private:
+  QObject guard_;
+  bool shown_ = false;
+};
+
+// A restored pin that loads late lands where the restore put it, and leaves what the user did meanwhile alone: the
+// tab they added and selected stays current, the panel they opened stays open. Until then the layout keeps it.
+TEST(MainWindowEditorIntegrationTest, ARestoredPinThatLoadsLateLandsInPlaceWithoutTakingOver) {
+  QTemporaryDir extensions_dir;
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
+  PJ::MainWindow window(extensions_dir.path());
+  DeferredFixtureLoad load(window);
+  const QStringList before = tabNames(tabs(window));
+
+  restoreLayoutPinningTheFixture(window);
+  EXPECT_TRUE(Peer::savedPinnedToolboxes(window).contains(QLatin1StringView(kFixtureId)))
+      << "a save while it loads drops it from the layout";
+  tabs(window).addTab(u"Later"_s);
+  QWidget* later = currentTab(tabs(window));
+  auto* panel = new QWidget;
+  Peer::presentPanel(window, panel);
+
+  load.complete();
+
+  const QStringList expected = before + QStringList{u"Pinned"_s, u"Later"_s};
+  EXPECT_EQ(tabNames(tabs(window)), expected);
+  EXPECT_EQ(currentTab(tabs(window)), later) << "the late tab took the selection";
+  EXPECT_EQ(Peer::currentPanel(window), panel) << "the late tab dismissed the open panel";
+  EXPECT_TRUE(Peer::savedPinnedToolboxes(window).contains(QLatin1StringView(kFixtureId)));
+}
+
+// A restored pin whose plugin fails to load raises no dialog (the restore is over, the user is elsewhere): the reason
+// goes to the diagnostics, and the layout still names it.
+TEST(MainWindowEditorIntegrationTest, ARestoredPinWhoseLoadFailsStaysInTheLayoutAndRaisesNoDialog) {
+  QTemporaryDir extensions_dir;
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
+  PJ::MainWindow window(extensions_dir.path());
+  DeferredFixtureLoad load(window);
+
+  restoreLayoutPinningTheFixture(window);
+  ModalWatch modal;
+  load.complete(u"HTTP 503"_s);
+
+  EXPECT_FALSE(modal.shown());
+  EXPECT_EQ(Peer::toolboxErrors(window, QString::fromLatin1(kFixtureId)), 1);
+  EXPECT_TRUE(Peer::savedPinnedToolboxes(window).contains(QLatin1StringView(kFixtureId)));
 }
 
 }  // namespace

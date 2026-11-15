@@ -72,6 +72,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -174,6 +175,7 @@
 #endif
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_plugins/host/dialog_handle.hpp"
+#include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_plugins/host/toolbox_handle.hpp"
 #include "pj_plugins/host_qt/panel_engine.hpp"
@@ -5390,9 +5392,26 @@ void MainWindow::onRebuildExtensionsMenu() {
       added_any = true;
     }
   };
+  // The side module's plugins are listed before their first use links them in.
+  const auto side_module = [](PluginFamily family) {
+    std::vector<PluginDescriptor> listed;
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+    if (!pj_app::arrow_side_module::isRegistered()) {
+      std::ranges::copy_if(
+          pj_app::arrow_side_module::plugins(), std::back_inserter(listed),
+          [family](const PluginDescriptor& plugin) { return plugin.family == family; });
+    }
+#else
+    static_cast<void>(family);
+#endif
+    return listed;
+  };
   append_plugins(catalog.dataSources());
+  append_plugins(side_module(PluginFamily::kDataSource));
   append_plugins(catalog.messageParsers());
+  append_plugins(side_module(PluginFamily::kMessageParser));
   append_plugins(catalog.toolboxes());
+  append_plugins(side_module(PluginFamily::kToolbox));
 
   if (!added_any) {
     QAction* placeholder = menu->addAction(tr("(no extensions installed)"));
@@ -5524,9 +5543,9 @@ void MainWindow::onRebuildToolboxMenu() {
   // The side module's toolbox is listed before its first launch links it (launchToolbox).
   if (!pj_app::arrow_side_module::isRegistered()) {
     const QString id = pj_app::arrow_side_module::toolboxId();
-    connect(menu->addAction(pj_app::arrow_side_module::toolboxName()), &QAction::triggered, this, [this, id]() {
-      launchToolbox(id);
-    });
+    QAction* action = menu->addAction(pj_app::arrow_side_module::toolboxName());
+    action->setToolTip(pj_app::arrow_side_module::toolboxDescription());
+    connect(action, &QAction::triggered, this, [this, id]() { launchToolbox(id); });
     added_any = true;
   }
 #endif
@@ -10327,7 +10346,6 @@ void MainWindow::presentPanel(QWidget* panel) {
   // A panel is already presented: dismiss it so launching a new toolbox/panel
   // replaces the open one instead of refusing.
   dismissTakeoverPanel();
-  ++takeover_generation_;
 
   ui_->centralAreaStack->addWidget(panel);
   ui_->centralAreaStack->setCurrentWidget(panel);
@@ -10358,6 +10376,7 @@ void MainWindow::restoreCentralArea() {
 }
 
 void MainWindow::dismissTakeoverPanel() {
+  ++takeover_generation_;  // a takeover launch still waiting for its plugin would cover what comes next
   if (current_panel_ == nullptr) {
     return;
   }
@@ -10962,7 +10981,8 @@ bool MainWindow::connectMcpRelay(const QUrl& relay) {
 }
 
 void MainWindow::launchToolbox(
-    const QString& plugin_id, const QString& initial_config, ToolboxLaunchTarget target, const QString& pin_tab_name) {
+    const QString& plugin_id, const QString& initial_config, ToolboxLaunchTarget target, const QString& pin_tab_name,
+    std::optional<int> late_pin_index) {
   // Surface every failure on the diagnostic channel (the same sink the toolbox's
   // own on_message uses below), not just stderr, so a user-initiated launch that
   // fails is visible in the UI instead of silently doing nothing.
@@ -10974,28 +10994,45 @@ void MainWindow::launchToolbox(
     MessageBox::warning(this, tr("Toolbox"), detail);  // a click that did nothing needs an answer on screen
   };
 
-  // A toolbox whose plugin is linked in later loads it first, off the main thread, then launches as usual.
+  // A toolbox whose plugin is linked in later loads it first, off the main thread, then launches as usual. A
+  // pinned launch comes from a layout restore (an already-pinned toolbox is loaded): it lands where the restore
+  // would have put it, and stays in the layout while it loads.
+  const bool pinned = target == ToolboxLaunchTarget::kPinnedTab;
   if (deferred_toolbox_load_ &&
       deferred_toolbox_load_(
-          plugin_id, [this, plugin_id, initial_config, target, pin_tab_name, report_error,
-                      restore = pinned_restore_generation_, takeover = takeover_generation_](const QString& error) {
-            // Superseded: a newer layout restore replaced the pinned set this launch belonged to, or the user
-            // presented a newer panel, which this takeover would replace (a second launch of this toolbox, too).
-            const bool stale = target == ToolboxLaunchTarget::kPinnedTab ? restore != pinned_restore_generation_
-                                                                         : takeover != takeover_generation_;
-            const QString failure = tr("Could not load %1: %2").arg(plugin_id, error);
-            if (!error.isEmpty() && !stale) {
-              report_error(plugin_id, failure);
-            } else if (!error.isEmpty() && diagnostic_history_ != nullptr) {
-              // The user moved on: keep the reason, but raise nothing over what they are doing now.
-              diagnostic_history_->record(DiagnosticLevel::kError, plugin_id, u"toolbox"_s, failure);
-            }
-            if (!error.isEmpty() || stale) {
+          plugin_id, [this, plugin_id, initial_config, target, pin_tab_name, report_error, pinned,
+                      tab_index = ui_->tabbedPlotWidget->tabCount(), restore = pinned_restore_generation_,
+                      takeover = takeover_generation_](const QString& error) {
+            // Superseded: a newer layout restore replaced the pinned set this launch belonged to, or something newer
+            // took the chart area this takeover would cover (a second launch of this toolbox, too).
+            const bool stale = pinned ? restore != pinned_restore_generation_ : takeover != takeover_generation_;
+            if (!error.isEmpty()) {
+              const QString failure = tr("Could not load %1: %2").arg(plugin_id, error);
+              if (pinned || stale) {
+                // A restore, or a launch the user moved on from: keep the reason, raise nothing over their work.
+                if (diagnostic_history_ != nullptr) {
+                  diagnostic_history_->record(DiagnosticLevel::kError, plugin_id, u"toolbox"_s, failure);
+                }
+              } else {
+                report_error(plugin_id, failure);
+              }
               return;
             }
-            launchToolbox(plugin_id, initial_config, target, pin_tab_name);
+            if (!stale) {
+              if (pinned) {
+                pending_pinned_toolboxes_.erase(plugin_id);  // a failed one stays in the layout
+              }
+              launchToolbox(
+                  plugin_id, initial_config, target, pin_tab_name, pinned ? std::optional(tab_index) : std::nullopt);
+            }
           })) {
+    if (pinned) {
+      pending_pinned_toolboxes_[plugin_id] = {.config = initial_config, .tab_name = pin_tab_name};
+    }
     return;
+  }
+  if (late_pin_index.has_value() && findToolbox(plugin_id) != nullptr) {
+    return;  // launched meanwhile, the newer launch wins
   }
 
   // 0. One live instance per toolbox id. A takeover relaunch keeps the
@@ -11059,10 +11096,11 @@ void MainWindow::launchToolbox(
     // a detached remnant): retire it before binding a fresh instance.
     teardownToolbox(plugin_id, ToolboxPresenter::Teardown::kDeferred);
   }
-  if (target == ToolboxLaunchTarget::kPinnedTab) {
+  if (target == ToolboxLaunchTarget::kPinnedTab && !late_pin_index.has_value()) {
     // Pinning directly (layout restore): the takeover surface must not
     // survive — it hides the tab strip the new tab lives in, and it may BE
-    // this same plugin, which must not end up with two live instances.
+    // this same plugin, which must not end up with two live instances. A late
+    // pin (not live, checked above) leaves whatever the user opened since.
     dismissTakeoverPanel();
   }
 
@@ -11187,7 +11225,9 @@ void MainWindow::launchToolbox(
                      },
                      .apply_chrome = std::move(wrapped.apply_chrome)});
 
-  if (target == ToolboxLaunchTarget::kPinnedTab) {
+  if (late_pin_index.has_value()) {
+    presenter.moveToTab(/*transient=*/false, *late_pin_index, /*select=*/false);
+  } else if (target == ToolboxLaunchTarget::kPinnedTab) {
     presenter.moveToTab(/*transient=*/false);
   } else {
     presenter.moveToDock();
@@ -11240,23 +11280,13 @@ void MainWindow::teardownAllToolboxes() {
 
 QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
   QDomElement root = doc.createElement(u"pinned_toolboxes"_s);
-  // The one <toolbox> emitter, shared by the pinned and floating passes below.
-  const auto append_toolbox = [&doc, &root](const QString& plugin_id, const ToolboxPresenter& toolbox) {
-    QDomElement element = doc.createElement(u"toolbox"_s);
-    element.setAttribute(u"plugin_id"_s, plugin_id);
-    if (const QString tab_name = toolbox.title(); !tab_name.isEmpty()) {
-      element.setAttribute(u"tab_name"_s, tab_name);
-    }
-    if (const QString config = toolbox.saveConfig(); !config.isEmpty()) {
-      // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
-      // layout site — a plain text node entity-escapes on each round trip.
-      appendJsonAsCdata(doc, element, config);
-    }
-    root.appendChild(element);
+  // By plugin id, so identical workspaces produce identical layout files.
+  std::map<QString, PendingPinnedToolbox> saved;
+  // The one <toolbox> source, shared by the pinned and floating passes below.
+  const auto append_toolbox = [&saved](const QString& plugin_id, const ToolboxPresenter& toolbox) {
+    saved[plugin_id] = {.config = toolbox.saveConfig(), .tab_name = toolbox.title()};
   };
 
-  // std::map iteration is ordered, so identical workspaces produce identical
-  // layout files.
   for (const auto& [plugin_id, toolbox] : toolboxes_) {
     switch (toolbox->presentation()) {
       case ToolboxPresenter::Presentation::kTab:
@@ -11276,6 +11306,20 @@ QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
       case ToolboxPresenter::Presentation::kDetached:
         break;  // the chart-area takeover is not part of the layout
     }
+  }
+  saved.insert(pending_pinned_toolboxes_.begin(), pending_pinned_toolboxes_.end());  // live ones win
+  for (const auto& [plugin_id, toolbox] : saved) {
+    QDomElement element = doc.createElement(u"toolbox"_s);
+    element.setAttribute(u"plugin_id"_s, plugin_id);
+    if (!toolbox.tab_name.isEmpty()) {
+      element.setAttribute(u"tab_name"_s, toolbox.tab_name);
+    }
+    if (!toolbox.config.isEmpty()) {
+      // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
+      // layout site — a plain text node entity-escapes on each round trip.
+      appendJsonAsCdata(doc, element, toolbox.config);
+    }
+    root.appendChild(element);
   }
   return root;
 }
@@ -11348,6 +11392,7 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
   // set (they persist as tabs), so they go down with it. Synchronous: a
   // relaunch of the same plugin needs the engine gone first.
   ++pinned_restore_generation_;
+  pending_pinned_toolboxes_.clear();
   for (const QString& plugin_id : replaced_ids) {
     teardownToolbox(plugin_id, ToolboxPresenter::Teardown::kImmediate);
   }

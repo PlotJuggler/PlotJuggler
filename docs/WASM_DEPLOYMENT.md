@@ -146,7 +146,9 @@ Rules the mechanism depends on:
   refuses a non-PIC object that takes the table index of a symbol the dynamic
   linker may resolve (protobuf and Abseil do, through `__cxa_end_catch`), so the
   option turns on `CMAKE_POSITION_INDEPENDENT_CODE` for every target
-  (`cmake/PjWasmDependencies.cmake`).
+  (`cmake/PjWasmDependencies.cmake`) and passes `--enable-pic` to FFmpeg's
+  configure (`cmake/PjWasmFfmpeg.cmake`). With the option off, FFmpeg stays
+  absolute-addressed, as before the side module existed.
 - **Every JS function whose address the main module takes has a signature.**
   JS exception handling calls anything that can throw through `invoke_*`, which
   takes the callee's address; the startup linker wraps it with
@@ -163,8 +165,14 @@ Rules the mechanism depends on:
   and the main thread then registers it. A source's poll or import thread that
   needs an `arrow-ipc` parser only starts that load and waits for it until its
   source is stopped (`ExtensionCatalogService::setDeferredParsers`): the main
-  thread may be joining it. `FileLoader` resumes its `.parquet` load from the
-  loader's callback instead of running it on its worker. The handle is never
+  thread may be joining it. Every start of the load ends in a registration or a
+  failure, so such a wait never outlives the load; once the module is linked,
+  a start reports a failure at once (a stale module lacking an encoding).
+  A resolution on the main thread only starts the load: no source the browser
+  ships binds a parser there, and the one that advertises topics there (PJ
+  Bridge, from `start()`) gets the same classification either way, the Arrow
+  IPC parser declaring no object route. `FileLoader` resumes its `.parquet` load
+  from the loader's callback instead of running it on its worker. The handle is never
   closed (Emscripten 5.0.5 deadlocks re-opening a module).
 - **What the side module must not link:** the sysroot's zlib is not position
   independent, so Arrow's zlib dependency resolves to the main module's.

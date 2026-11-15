@@ -1579,6 +1579,42 @@ TEST_F(ToolboxPanelFoldTest, LaunchingADeferredToolboxTwiceWhileItLoadsOpensOne)
   EXPECT_EQ(deferred.launches(), 1);
 }
 
+// Focusing an already-pinned toolbox (launching it again) takes the chart area back: the takeover still loading must
+// not cover the tab the user just focused, as it would not have when it opened at once.
+TEST_F(ToolboxPanelFoldTest, FocusingAPinnedToolboxWhileADeferredToolboxLoadsWins) {
+  pinPanel();
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId()));
+  DeferredToolboxLaunch deferred(mainWindow());
+  deferred.launch();
+  PJ::ToolboxPanelFoldTestPeer::launchToolbox(mainWindow(), pluginId());
+  deferred.complete();
+  EXPECT_EQ(deferred.launches(), 0) << "the late takeover covered the pinned tab the user focused";
+  auto* stack = tabbedWidget().findChild<QStackedWidget*>(QString(), Qt::FindDirectChildrenOnly);
+  ASSERT_NE(stack, nullptr);
+  EXPECT_EQ(stack->currentWidget(), panelContainer());
+}
+
+// The failure of a launch the user is still waiting for answers on screen, as any failed launch does.
+TEST_F(ToolboxPanelFoldTest, ADeferredToolboxFailureTheUserWaitsForRaisesADialog) {
+  DeferredToolboxLaunch deferred(mainWindow());
+  deferred.launch();
+  bool modal_shown = false;
+  QObject modal_guard;
+  QTimer::singleShot(200, &modal_guard, [&modal_shown]() {
+    if (QWidget* modal = QApplication::activeModalWidget()) {
+      modal_shown = true;
+      modal->close();
+    }
+  });
+  deferred.complete(u"HTTP 503"_s);
+  QElapsedTimer waited;
+  waited.start();
+  while (waited.elapsed() < 400) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+  }
+  EXPECT_TRUE(modal_shown);
+}
+
 // The failure of a launch the user has moved on from is kept in the diagnostics, not raised over the newer panel.
 TEST_F(ToolboxPanelFoldTest, AStaleDeferredToolboxFailureRaisesNoDialog) {
   DeferredToolboxLaunch deferred(mainWindow());

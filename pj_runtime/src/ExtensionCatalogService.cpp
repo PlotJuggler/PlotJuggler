@@ -727,21 +727,22 @@ void ExtensionCatalogService::loadDeferredParser(std::string_view encoding, cons
       std::ranges::find(deferred_parser_encodings_, encoding) == deferred_parser_encodings_.end()) {
     return;
   }
-  // Snapshot the events BEFORE looking the parser up. registerLatePlugins changes the catalog, then signals: a
-  // registration signalled after this snapshot wakes the wait below, and one signalled before it is already in the
-  // catalog the lookup reads. Taken after the lookup, a registration landing in between would be missed, and the
-  // wait would last until the source stops (the start below being a no-op by then).
+  const auto loaded = [this, encoding]() {
+    const std::shared_lock catalog_lock(catalog_mutex_);
+    return plugin_catalog_->findParserByEncoding(encoding) != nullptr;
+  };
+  if (loaded()) {
+    return;
+  }
+  // Snapshot the events, THEN look again. registerLatePlugins changes the catalog, then signals: a registration
+  // signalled after the snapshot wakes the wait below, and one signalled before it is in the catalog the second
+  // lookup reads. Without that second lookup, a registration landing just after the first one would be missed, and
+  // the wait would last until the source stops.
   std::unique_lock lock(deferred_mutex_);
   const uint64_t seen = deferred_events_;
   lock.unlock();
-  {
-    const std::shared_lock catalog_lock(catalog_mutex_);
-    if (plugin_catalog_->findParserByEncoding(encoding) != nullptr) {
-      return;
-    }
-  }
-  if (deferred_lookup_hook_for_test_) {
-    deferred_lookup_hook_for_test_();
+  if (loaded()) {
+    return;
   }
   deferred_parser_load_();
   if (QThread::isMainThread()) {

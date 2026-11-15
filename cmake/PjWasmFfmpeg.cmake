@@ -93,7 +93,7 @@ ExternalProject_Add(pj_wasm_dav1d_build
 
 # dav1d is already position independent (meson's b_staticpic defaults to true); FFmpeg's configure is not.
 set(_pj_wasm_ffmpeg_pic "")
-if(CMAKE_POSITION_INDEPENDENT_CODE)
+if(PJ_WASM_ARROW_SIDE_MODULE)
     set(_pj_wasm_ffmpeg_pic --enable-pic)
 endif()
 set(_pj_wasm_ffmpeg_libs avcodec swscale avutil)

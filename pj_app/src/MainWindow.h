@@ -660,10 +660,14 @@ class MainWindow : public QMainWindow {
   // its dialog is built — used to open the Transform Editor pre-populated for an
   // in-place edit of an existing derived series. `pin_tab_name` (kPinnedTab
   // only) overrides the plugin display name as the tab label, so a layout
-  // restore re-creates a renamed tab born with its saved name.
+  // restore re-creates a renamed tab born with its saved name. `late_pin_index`
+  // (kPinnedTab only) is a restore's pin landing after its plugin loaded
+  // (deferred_toolbox_load_): the tab goes where the restore would have put it,
+  // leaving the current tab and any takeover alone.
   void launchToolbox(
       const QString& plugin_id, const QString& initial_config = QString(),
-      ToolboxLaunchTarget target = ToolboxLaunchTarget::kTakeover, const QString& pin_tab_name = QString());
+      ToolboxLaunchTarget target = ToolboxLaunchTarget::kTakeover, const QString& pin_tab_name = QString(),
+      std::optional<int> late_pin_index = std::nullopt);
 
   void onThemeChanged(const QString& theme);
 
@@ -1613,9 +1617,16 @@ class MainWindow : public QMainWindow {
   // `plugin_id` is not one, or is loaded already; otherwise loads it and calls done(error) on this thread. Empty on
   // the desktop. launchToolbox relaunches from `done`.
   std::function<bool(const QString& plugin_id, std::function<void(const QString& error)> done)> deferred_toolbox_load_;
-  // Bumped by every presentPanel: a takeover launch still waiting for its plugin is dropped once the user presented
-  // a newer panel, which it would otherwise replace.
+  // Bumped by every dismissTakeoverPanel (each presentPanel, each focus of a pinned tab, ...): a takeover launch
+  // still waiting for its plugin is dropped once something newer took the chart area, which it would otherwise cover.
   quint64 takeover_generation_ = 0;
+  // The restore's pinned toolboxes still waiting for their plugin, or whose load failed, by id: savePinnedToolboxes
+  // keeps them in the layout, as the restored layout named them, until the next restore replaces the pinned set.
+  struct PendingPinnedToolbox {
+    QString config;
+    QString tab_name;
+  };
+  std::map<QString, PendingPinnedToolbox> pending_pinned_toolboxes_;
 
   // The single commit boundary of a layout open: runs what must happen only
   // once every abort/rollback path has returned — replacing the pinned
