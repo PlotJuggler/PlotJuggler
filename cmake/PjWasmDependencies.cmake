@@ -15,29 +15,8 @@ set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 option(PJ_WASM_WITH_LUAU "Build Luau Data Processors in the wasm app" ON)
-option(PJ_WASM_WITH_CSV "Build the official CSV importer into the wasm app" ON)
-option(PJ_WASM_WITH_MCAP "Build the official MCAP container importer into the wasm app" ON)
-option(PJ_WASM_WITH_ROS "Build the official ROS1/ROS2 message parser into the wasm app" ON)
-option(PJ_WASM_WITH_PROTOBUF "Build the official Protobuf/Foxglove parser into the wasm app" ON)
-option(PJ_WASM_WITH_TRANSFORM_EDITOR "Build the official Transform Editor toolbox into the wasm app" ON)
-option(PJ_WASM_WITH_DUMMY_STREAM "Build the official Dummy Streamer into the wasm app" ON)
-option(PJ_WASM_WITH_PJ_BRIDGE "Build the official PlotJuggler Bridge WebSocket streamer into the wasm app" ON)
-option(PJ_WASM_WITH_JSON "Build the official JSON message parser into the wasm app" ON)
-option(PJ_WASM_WITH_DATA_TAMER "Build the official DataTamer message parser into the wasm app" ON)
-option(PJ_WASM_WITH_INFLUX "Build the official InfluxDB line-protocol parser into the wasm app" ON)
-option(PJ_WASM_WITH_NAVMAP "Build the official NavMap message parser into the wasm app" ON)
-option(PJ_WASM_WITH_ULOG "Build the official PX4 ULog importer into the wasm app" ON)
-option(PJ_WASM_WITH_CANDUMP "Build the official candump (SocketCAN log) importer into the wasm app" ON)
-option(PJ_WASM_WITH_BLF "Build the official Vector BLF importer into the wasm app" ON)
-option(PJ_WASM_WITH_MF4 "Build the official ASAM MDF4 importer into the wasm app" ON)
-option(PJ_WASM_WITH_ARROW_PARSER "Build the official Arrow IPC message parser into the wasm app" ON)
-option(PJ_WASM_WITH_PARQUET "Build the official Parquet importer into the wasm app" ON)
-option(PJ_WASM_WITH_DATA_EXPORTER "Build the official Data Exporter toolbox (CSV and Parquet) into the wasm app" ON)
-option(PJ_WASM_WITH_3D_LOADER "Build the official PCD/PLY point-cloud and mesh importer into the wasm app" ON)
-option(PJ_WASM_WITH_QUATERNION "Build the official Quaternion toolbox into the wasm app" ON)
-option(PJ_WASM_WITH_FFT "Build the official FFT toolbox into the wasm app" ON)
-option(PJ_WASM_WITH_ANOMALY_DETECTOR "Build the official Anomaly Detector toolbox into the wasm app" ON)
-option(PJ_WASM_WITH_LOG_WIDGET "Build the official log viewer Custom Widget into the wasm app" ON)
+# The official plugins' PJ_WASM_WITH_<NAME> options.
+include(${CMAKE_CURRENT_LIST_DIR}/PjWasmOfficialPlugins.cmake)
 option(PJ_WASM_WITH_SCENE2D "Build the accelerated Scene2D wasm port" ON)
 option(PJ_WASM_WITH_SCENE3D "Build the accelerated Scene3D wasm port" ON)
 option(PJ_WASM_WITH_VIDEO
@@ -130,23 +109,17 @@ if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_PARQUET)
     FetchContent_MakeAvailable(date)
 endif()
 
-if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_ROS OR PJ_WASM_WITH_PROTOBUF OR
-   PJ_WASM_WITH_TRANSFORM_EDITOR OR PJ_WASM_WITH_DUMMY_STREAM OR PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_JSON OR
-   PJ_WASM_WITH_DATA_TAMER OR PJ_WASM_WITH_3D_LOADER OR PJ_WASM_WITH_QUATERNION OR
-   PJ_WASM_WITH_FFT OR PJ_WASM_WITH_ANOMALY_DETECTOR OR PJ_WASM_WITH_LOG_WIDGET OR
-   PJ_WASM_WITH_INFLUX OR PJ_WASM_WITH_NAVMAP OR PJ_WASM_WITH_ULOG OR PJ_WASM_WITH_CANDUMP OR PJ_WASM_WITH_BLF OR
-   PJ_WASM_WITH_MF4 OR PJ_WASM_WITH_ARROW_PARSER OR PJ_WASM_WITH_PARQUET OR PJ_WASM_WITH_DATA_EXPORTER)
-    # Source-only population shared by the narrowly-scoped static plugin
-    # targets. Pin the reviewed upstream integration commit by immutable archive
-    # and hash so PJ4 consumes the official sources without a local patch layer.
-    FetchContent_Declare(pj_official_plugins
-        URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/f1e2e5ee3fb0c52fbd5463ad3cf07db09e4b6424
-        URL_HASH SHA256=2fcaa7bee34b80f9063ffb53f6b36c9dd86885fab61c6d436e88ac3a4d38e658
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        SOURCE_SUBDIR _pj_source_only_no_cmakelists)
-    FetchContent_MakeAvailable(pj_official_plugins)
-    set(PJ_OFFICIAL_PLUGINS_SOURCE_DIR "${pj_official_plugins_SOURCE_DIR}" CACHE INTERNAL "")
-endif()
+# The official plugins' sources and their wasm.cmake files (PjWasmOfficialPlugins.cmake): a
+# source-only tarball, fetched whatever plugins are enabled.
+# Pin the reviewed upstream commit by immutable archive and hash so PJ4 consumes the official
+# sources without a local patch layer.
+FetchContent_Declare(pj_official_plugins
+    URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/598e966243ef6e75b29cadd5d145559d3eb504c2
+    URL_HASH SHA256=039cae0272d4f5f889c938f87573af7d89add9ccb8888de3082ba8f1d5c896c9
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR _pj_source_only_no_cmakelists)
+FetchContent_MakeAvailable(pj_official_plugins)
+set(PJ_OFFICIAL_PLUGINS_SOURCE_DIR "${pj_official_plugins_SOURCE_DIR}" CACHE INTERNAL "")
 
 if(PJ_WASM_WITH_PROTOBUF)
     # Match the official plugin's native dependency pin. The runtime parser uses
@@ -226,6 +199,11 @@ if(PJ_WASM_WITH_CANDUMP OR PJ_WASM_WITH_BLF OR PJ_WASM_WITH_MF4)
     FetchContent_MakeAvailable(dbc_parser_cpp dbc_fast_float)
 endif()
 
+if(PJ_WASM_WITH_BLF OR PJ_WASM_WITH_MF4)
+    # Emscripten's sysroot zlib, as for Scene2D's libpng.
+    find_package(ZLIB 1.3.1 EXACT REQUIRED)
+endif()
+
 if(PJ_WASM_WITH_BLF)
     # data_load_blf's pinned BLF reader, hardened by the plugin's own function.
     FetchContent_Declare(lblf
@@ -273,6 +251,8 @@ if(PJ_WASM_WITH_ROS OR PJ_WASM_WITH_DATA_TAMER)
         SOURCE_SUBDIR _pj_source_only_no_cmakelists
         SYSTEM)
     FetchContent_MakeAvailable(data_tamer)
+    add_library(data_tamer_parser INTERFACE)
+    target_include_directories(data_tamer_parser SYSTEM INTERFACE "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
 endif()
 
 set(PJ_WASM_WITH_ARROW OFF)
@@ -327,8 +307,15 @@ if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_W
         add_library(LZ4::lz4_static ALIAS lz4_static)
     endif()
     if(NOT TARGET zstd::libzstd_static AND TARGET libzstd_static)
+        # Zstd's build/cmake target does not publish its source-tree include directory (build
+        # interface only: the target is in zstd's install export).
+        target_include_directories(libzstd_static SYSTEM INTERFACE "$<BUILD_INTERFACE:${zstd_SOURCE_DIR}/lib>")
         add_library(zstd::libzstd_static ALIAS libzstd_static)
     endif()
+endif()
+
+if(PJ_WASM_WITH_FFT)
+    include(${CMAKE_SOURCE_DIR}/pj_scripting/cmake/PjPocketfft.cmake)
 endif()
 
 if(PJ_WASM_WITH_SCENE3D)
@@ -337,6 +324,9 @@ endif()
 
 if(PJ_WASM_WITH_ARROW)
     include(${CMAKE_CURRENT_LIST_DIR}/PjWasmArrowDependencies.cmake)
+    # The Arrow and Parquet names the plugins link natively.
+    add_library(Arrow::arrow_static ALIAS pj_wasm_arrow)
+    add_library(Parquet::parquet_static ALIAS pj_wasm_arrow)
 endif()
 
 if(PJ_WASM_WITH_LUAU)

@@ -216,10 +216,11 @@ test('dummy stream runs, plots, pauses, resumes, stops, and shuts down cleanly',
     quit: typeof window.pjWasmReportQuitActionProbe,
   }))).toEqual({ stream: 'function', quit: 'function' });
 
-  // The built-in streams are the Dummy Streamer, selected first, and the PlotJuggler Bridge.
+  // The built-in streams are the Dummy Streamer, selected first, the PlotJuggler Bridge and the
+  // Foxglove Bridge.
   let state = await requestStreamingState(page, consoleMessages);
   expect(state).toMatchObject({
-    sources: 2,
+    sources: 3,
     source: 'Dummy Streamer',
     active: false,
     datasets: 0,
@@ -241,7 +242,7 @@ test('dummy stream runs, plots, pauses, resumes, stops, and shuts down cleanly',
     consoleMessages,
     value => value.active && value.datasets === 1 && value.catalog === 11 && value.range.max > value.range.min,
   );
-  expect(state).toMatchObject({ sources: 2, source: 'Dummy Streamer', active: true, datasets: 1, catalog: 11 });
+  expect(state).toMatchObject({ sources: 3, source: 'Dummy Streamer', active: true, datasets: 1, catalog: 11 });
   expect(state.tree.datasetName).toBe('[stream] Dummy Streamer');
   expect(state.tree.topicName).toBe('dummy/sin_cos');
   expect(state.tree.fieldName).toBe('sin');
@@ -310,7 +311,7 @@ test('dummy stream runs, plots, pauses, resumes, stops, and shuts down cleanly',
     consoleMessages,
     value => !value.active && value.datasets === 0 && value.catalog === 0 && !value.curve.plotted,
   );
-  expect(state.sources).toBe(2);
+  expect(state.sources).toBe(3);
 
   // Start once more, then close through the real File -> Quit action. The
   // WASM close boundary must cooperatively stop and join the worker even

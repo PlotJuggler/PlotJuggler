@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 const { test, expect } = require('@playwright/test');
 const { bootApp } = require('./support/app');
-const { COUNTER_AND_SINE, drawnPlots, robotPreset, startBridgeServer } = require('./support/bridge');
+const { COUNTER_AND_SINE, drawnPlots, foxglovePreset, robotPreset, startBridgeServer } = require('./support/bridge');
 const { count, latest } = require('./support/console');
 const { datasetCount, openPreset, startPresetServer, streamPreset } = require('./support/preset_server');
 
@@ -58,6 +58,33 @@ test('compressed frames populate saved views', async ({ page }) => {
   } finally {
     await presets.close();
     bridge.close();
+  }
+});
+
+test('foxglove bridge preset streams saved views', async ({ page }) => {
+  test.setTimeout(120000);
+  const { messages, errors } = await bootApp(page);
+  const server = await startBridgeServer([], 'foxglove_server.py');
+  const presets = await startPresetServer({ 'robot/layout.pj4.xml': foxglovePreset(server.url, COUNTER_AND_SINE) });
+  try {
+    expect(await openPreset(page, messages, presets.url('robot/layout.pj4.xml'))).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    // The browser offers both Foxglove subprotocols; the server has to pick one or the browser fails the handshake.
+    await expect.poll(() => server.seen('connect').map(event => event.subprotocols), { timeout: 15000 })
+      .toEqual([['foxglove.sdk.v1', 'foxglove.websocket.v1']]);
+    expect(server.seen('open').map(event => event.subprotocol)).toEqual(['foxglove.sdk.v1']);
+    // Each saved curve demands its topic, decoded by the JSON parser; the unused channel is never subscribed.
+    const drawnTitles = async () => (await drawnPlots(page, messages)).map(plot => plot.titles);
+    await expect.poll(drawnTitles, { timeout: 30000 }).toEqual([['robot/counter/value'], ['robot/sine/value']]);
+    await expect.poll(() => server.subscribed(), { timeout: 15000 }).toEqual(['/robot/counter', '/robot/sine']);
+
+    const [counter] = await drawnPlots(page, messages);
+    await expect.poll(async () => (await drawnPlots(page, messages))[0].view.top, { timeout: 15000 })
+      .toBeGreaterThan(counter.view.top);
+    expect(count(messages, 'PJ_WASM_SOURCE_LAYOUT_DECISION')).toBe(0);
+    expect(errors).toEqual([]);
+  } finally {
+    await presets.close();
+    server.close();
   }
 });
 
