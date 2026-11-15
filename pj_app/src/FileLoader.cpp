@@ -1139,8 +1139,9 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
 }
 
 void FileLoader::selectBrowserInput(
-    QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint) {
-  const QString filter = extensions_.buildFileFilter();
+    QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint,
+    const QString& name_filter) {
+  const QString filter = name_filter.isEmpty() ? extensions_.buildFileFilter() : name_filter;
   qCInfo(lcFileLoader).noquote() << "Opening browser file picker with filter:" << filter;
   FileSelectionService::selectAndStageFile(
       dialog_parent, filter, browser_file_store_,
@@ -1157,6 +1158,23 @@ void FileLoader::selectBrowserInput(
 
 QString FileLoader::browserContentSha256(const QString& source_identity) const {
   return browser_content_sha256_.value(source_identity);
+}
+
+void FileLoader::rememberBrowserUpload(const LoadInput& input) {
+  if (!input.content_sha256.isEmpty()) {
+    browser_content_sha256_.insert(input.source_identity, input.content_sha256);
+  }
+  if (isBrowserUploadIdentity(input.source_identity)) {
+    browser_identity_by_path_.insert(input.backing_path, input.source_identity);
+  }
+}
+
+QString FileLoader::browserIdentityForPath(const QString& backing_path) const {
+  return browser_identity_by_path_.value(backing_path);
+}
+
+QString FileLoader::browserPathForIdentity(const QString& source_identity) const {
+  return browser_identity_by_path_.key(source_identity);
 }
 
 FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
@@ -1555,6 +1573,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         .browser_file_store = browser_file_store_,
         .title_prefix = hints.dialog_title_prefix,
         .on_dialog = hints.on_dialog,
+        .on_browser_file_staged =
+            [self = QPointer<FileLoader>(this)](const LoadInput& picked) {
+              if (self) {
+                self->rememberBrowserUpload(picked);
+              }
+            },
     });
     auto dlg = co_await std::move(dialog_awaiter);
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
@@ -2278,12 +2302,9 @@ LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_pare
     emit fileLoadFailed(path, reason);
     return 0;
   }
-  if (!input.content_sha256.isEmpty()) {
-    browser_content_sha256_.insert(input.source_identity, input.content_sha256);
-  }
+  rememberBrowserUpload(input);
 #ifdef PJ_TARGET_WASM
   if (isBrowserUploadIdentity(input.source_identity)) {
-    browser_identity_by_path_.insert(input.backing_path, input.source_identity);
     // Only a lazily read pick arrives unfingerprinted (a copied or downloaded file is hashed as it is written); an
     // empty result means its File changed since the pick, which its reads report.
     if (input.content_sha256.isEmpty()) {

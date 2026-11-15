@@ -512,6 +512,9 @@ Lazy picks, what they cost and how they fail:
   open (`FileLoader::loadFromBrowserPicker`) hashes in the background (`Fingerprint::kInBackground`; the loader
   keeps the result) and "Save Layout with Sources" reads it then, refusing to save while it is still running; layout
   replay reselection and `DialogPresenter` picks wait for it (`kBeforeSelection`), because they compare it.
+  A dialog pick is also recorded in `FileLoader` (`rememberBrowserUpload`, by backing path), which is how
+  the save names and fingerprints the side files a plugin configuration holds
+  (`layout_xml::logicalBrowserSideFiles`; format in `docs/WASM_DEPLOYMENT.md`, "Browser-local state").
 - **A file changed on disk after the pick.** The browser then fails every read of it (`NotReadableError`),
   surfaced as `EIO`. A `pread`-based source gets the error; a `std::istream`-based one takes it for the end of
   the file. Either way the first failed read of a node raises one `kWarning` diagnostic

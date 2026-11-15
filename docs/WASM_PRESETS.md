@@ -42,6 +42,10 @@ The layout is what **File → Save Layout with sources** writes
   pinned recording is also kept by each visitor's browser, so a revisit loads
   it without the network (`docs/WASM_DEPLOYMENT.md`); an unpinned one downloads
   on every visit.
+- `<sideFile filename="…" content_sha256="…">` — a file the source's plugin read
+  besides its data (a dictionary picked in its dialog), written by a browser
+  save ([`WASM_DEPLOYMENT.md`](./WASM_DEPLOYMENT.md#browser-local-state)). A preset
+  cannot download side files yet: a layout opened by URL with one fails to load.
 - `<plugin ID="…" manifest_id="…" filepath_mode="source">` — every replay rewrites
   the plugin configuration's `filepath` to the file it loads (here, the downloaded
   file), so the same layout also opens on the desktop next to its data. The marker

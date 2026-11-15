@@ -617,6 +617,11 @@ struct MainWindow::BrowserLayoutRuntime {
     std::vector<DatasetId> stream_datasets;
     // Captured just before the first stream starts; empty while none has.
     std::optional<Transport> transport_before_streams;
+    // Every source's side files (its index in `sources`, the file), selected after all data files: selection
+    // slot sources.size() + n is side_files[n].
+    QList<std::pair<int, layout_xml::SideFileRef>> side_files = {};
+    // Their staged copies, in side_files order.
+    std::vector<LoadInput> staged_side_files = {};
   };
 
   // What one preset load brought: its files' source identities (their save-ledger entries) and
@@ -2721,10 +2726,36 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
         plugin.setAttribute(u"manifest_id"_s, record.plugin_manifest_id);
       }
       plugin.setAttribute(u"filepath_mode"_s, u"source"_s);
+      // Files the plugin reads besides the data file (one picked in its dialog) are saved like the data file: a
+      // logical name and a fingerprint, reselected on replay.
+      QString side_error;
+      const std::optional<layout_xml::LogicalSideFiles> side_files = layout_xml::logicalBrowserSideFiles(
+          record.plugin_config_json.toStdString(), file_loader_->browserPathForIdentity(source.identity),
+          [this, &source](const QString& path) -> std::optional<layout_xml::StagedFileInfo> {
+            const QString identity = file_loader_->browserIdentityForPath(path);
+            if (identity.isEmpty() || identity == source.identity) {
+              return std::nullopt;
+            }
+            return layout_xml::StagedFileInfo{
+                .name = BrowserFileStore::sanitizedBasename(BrowserFileStore::displayNameForIdentity(identity)),
+                .content_sha256 = file_loader_->browserContentSha256(identity),
+            };
+          },
+          &side_error);
+      if (!side_files.has_value()) {
+        error = side_error;
+        return std::nullopt;
+      }
+      for (const layout_xml::SideFileRef& side_file : side_files->side_files) {
+        QDomElement side = doc.createElement(u"sideFile"_s);
+        side.setAttribute(u"filename"_s, side_file.filename);
+        side.setAttribute(u"content_sha256"_s, side_file.content_sha256);
+        file_info.appendChild(side);
+      }
       // A config that is not a JSON object cannot be rebound; fall back to the
       // minimal `{"filepath": logical}` rather than persist it unrewritten.
-      std::optional<std::string> logical_config = detail::rewriteReplayFilepaths(
-          record.plugin_config_json.toStdString(), logical_path, detail::SavedFilepath::kOmit);
+      std::optional<std::string> logical_config =
+          detail::rewriteReplayFilepaths(side_files->config, logical_path, detail::SavedFilepath::kOmit);
       if (!logical_config.has_value()) {
         logical_config = detail::rewriteReplayFilepaths({}, logical_path, detail::SavedFilepath::kOmit);
       }
@@ -5895,6 +5926,11 @@ void MainWindow::beginBrowserSourceReplay(
       });
 
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  for (int index = 0; index < replay.sources.size(); ++index) {
+    for (const layout_xml::SideFileRef& side_file : replay.sources[index].side_files) {
+      replay.side_files.push_back({index, side_file});
+    }
+  }
   if (replay.sources.isEmpty()) {
     if (replay.streams.empty()) {
       finishBrowserLayoutLoad(browser_name, false, u"source-list"_s);
@@ -5918,6 +5954,17 @@ void MainWindow::beginBrowserSourceReplay(
     basename_counts.insert(basename, basename_counts.value(basename) + 1);
   }
   if (layout_url.isValid()) {
+    // ponytail: a downloaded layout does not fetch side files yet; download them like sources when a preset needs one.
+    if (!replay.side_files.isEmpty()) {
+      showBrowserLayoutWarning(
+          this, tr("Load Layout"),
+          tr("Data source '%1' reads '%2' besides its data file, which a layout opened by URL cannot download yet.")
+              .arg(
+                  replay.sources[replay.side_files.front().first].serialized_path,
+                  replay.side_files.front().second.filename));
+      finishBrowserLayoutLoad(browser_name, false, u"side-files"_s);
+      return;
+    }
     // Downloaded: every source is named by its URL, so equal basenames are not
     // ambiguous. Refuse what cannot be fetched or checked before any request.
     for (const layout_xml::DataSourceRef& source : replay.sources) {
@@ -5959,15 +6006,20 @@ void MainWindow::beginBrowserSourceReplay(
       replay.sources.front().plugin_id.isEmpty()
           ? replay.sources.front().serialized_path
           : tr("%1 (plugin: %2)").arg(replay.sources.front().serialized_path, replay.sources.front().plugin_id);
+  const QString side_files_note =
+      replay.side_files.isEmpty()
+          ? QString()
+          : tr(" Its plugin also reads %1 more file(s), which you select next.").arg(replay.side_files.size());
   dialog->setText(
-      replay.sources.size() == 1
-          ? tr("This layout was saved with data source '%1'. Reselect that file to reload it, or apply the layout "
-               "to compatible data already open in this page.")
-                .arg(first_name)
-          : tr("This layout was saved with %1 data sources. Select source 1 of %1: '%2' for saved slot '%3'. "
-               "Every file will be staged before any import begins.")
-                .arg(replay.sources.size())
-                .arg(first_name, first_context));
+      (replay.sources.size() == 1
+           ? tr("This layout was saved with data source '%1'. Reselect that file to reload it, or apply the layout "
+                "to compatible data already open in this page.")
+                 .arg(first_name)
+           : tr("This layout was saved with %1 data sources. Select source 1 of %1: '%2' for saved slot '%3'. "
+                "Every file will be staged before any import begins.")
+                 .arg(replay.sources.size())
+                 .arg(first_name, first_context)) +
+      side_files_note);
   QPushButton* reselect_button = dialog->addButton(
       replay.sources.size() == 1 ? tr("Reselect source") : tr("Select source 1 of %1").arg(replay.sources.size()),
       MessageBox::kPrimaryRole, /*close_on_click=*/false);
@@ -6127,14 +6179,26 @@ void MainWindow::selectBrowserReplaySource() {
   if (generation == 0) {
     return;
   }
+  // A side file is picked with a filter for its own extension: the data-file filter would hide it.
+  QString filter;
+  const BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  if (const int side_index = replay.selection_index - static_cast<int>(replay.sources.size());
+      side_index >= 0 && side_index < replay.side_files.size()) {
+    const QString name = BrowserFileStore::sanitizedBasename(replay.side_files[side_index].second.filename);
+    const QString suffix = QFileInfo(name).suffix();
+    filter = suffix.isEmpty() ? tr("All files (*)") : u"%1 (*.%2)"_s.arg(name, suffix);
+  }
   QPointer<MainWindow> self(this);
-  file_loader_->selectBrowserInput(this, [self, generation](FileLoader::BrowserSelectionResult selection) mutable {
-    if (self.isNull()) {
-      return;
-    }
-    self->loadBrowserReplaySource(
-        generation, std::move(selection.browser_name), std::move(selection.input), std::move(selection.error));
-  });
+  file_loader_->selectBrowserInput(
+      this,
+      [self, generation](FileLoader::BrowserSelectionResult selection) mutable {
+        if (self.isNull()) {
+          return;
+        }
+        self->loadBrowserReplaySource(
+            generation, std::move(selection.browser_name), std::move(selection.input), std::move(selection.error));
+      },
+      FileSelectionService::Fingerprint::kBeforeSelection, filter);
 #endif
 }
 
@@ -6155,7 +6219,7 @@ void MainWindow::loadBrowserReplaySource(
   // token is stale even if it arrives synchronously before the next click.
   replay.active_picker_generation = 0;
   const QString layout_name = replay.layout_name;
-  if (replay.selection_index < 0 || replay.selection_index >= replay.sources.size()) {
+  if (replay.selection_index < 0 || replay.selection_index >= replay.sources.size() + replay.side_files.size()) {
     finishBrowserLayoutLoad(layout_name, false, u"selection-index"_s);
     return;
   }
@@ -6166,6 +6230,10 @@ void MainWindow::loadBrowserReplaySource(
     }
     showBrowserLayoutWarning(this, tr("Load source-bound layout"), error);
     finishBrowserLayoutLoad(layout_name, false, u"staging"_s);
+    return;
+  }
+  if (replay.selection_index >= replay.sources.size()) {
+    stageBrowserReplaySideFile(std::move(*input), browser_name);
     return;
   }
 
@@ -6220,7 +6288,72 @@ void MainWindow::loadBrowserReplaySource(
     }
     return;
   }
+  if (!promptBrowserReplaySideFile()) {
+    finishBrowserReplaySelection();
+  }
+}
 
+bool MainWindow::promptBrowserReplaySideFile() {
+  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  const int side_index = replay.selection_index - static_cast<int>(replay.sources.size());
+  if (side_index < 0 || side_index >= replay.side_files.size()) {
+    return false;
+  }
+  const auto& [source_index, side_file] = replay.side_files[side_index];
+  const QString name = BrowserFileStore::sanitizedBasename(side_file.filename);
+  if (!browser_layout_runtime_->decision_dialog.isNull()) {
+    browser_layout_runtime_->decision_dialog->setText(
+        tr("Every data source is staged. Select '%1', which data source '%2' reads (file %3 of %4). No import has "
+           "started yet.")
+            .arg(name, replay.sources[source_index].serialized_path)
+            .arg(side_index + 1)
+            .arg(replay.side_files.size()));
+  }
+  if (!replay.selection_button.isNull()) {
+    replay.selection_button->setText(tr("Select '%1'").arg(name));
+  }
+  return true;
+}
+
+void MainWindow::stageBrowserReplaySideFile(LoadInput input, const QString& browser_name) {
+  BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
+  const int side_index = replay.selection_index - static_cast<int>(replay.sources.size());
+  const layout_xml::SideFileRef& side_file = replay.side_files[side_index].second;
+  const QString expected_name = BrowserFileStore::sanitizedBasename(side_file.filename);
+  const QString selected_name = BrowserFileStore::sanitizedBasename(browser_name);
+  if (selected_name != expected_name) {
+    showBrowserLayoutWarning(
+        this, tr("Load source-bound layout"),
+        tr("Select '%1' to replay this layout (selected '%2').").arg(expected_name, selected_name));
+    qInfo("PJ_WASM_SOURCE_LAYOUT_SELECTION_REJECTED index=%d reason=name", replay.selection_index);
+    return;
+  }
+  // Like a data file: the fingerprint tells same-named files apart.
+  const bool name_is_ambiguous =
+      std::count_if(replay.side_files.cbegin(), replay.side_files.cend(), [&expected_name](const auto& candidate) {
+        return BrowserFileStore::sanitizedBasename(candidate.second.filename) == expected_name;
+      }) > 1;
+  if (name_is_ambiguous && input.content_sha256 != side_file.content_sha256) {
+    showBrowserLayoutWarning(
+        this, tr("Load source-bound layout"),
+        tr("The selected '%1' is not the file this layout was saved with. Select the original file.")
+            .arg(expected_name));
+    qInfo("PJ_WASM_SOURCE_LAYOUT_SELECTION_REJECTED index=%d reason=content", replay.selection_index);
+    return;
+  }
+  // A later "Save Layout with Sources" finds this copy's name and fingerprint by its path, as for a dialog pick.
+  file_loader_->rememberBrowserUpload(input);
+  replay.staged_side_files.push_back(std::move(input));
+  ++replay.selection_index;
+  qInfo(
+      "PJ_WASM_SOURCE_LAYOUT_SIDE_FILE_STAGED index=%d total=%d name=%s", side_index + 1,
+      static_cast<int>(replay.side_files.size()), qPrintable(selected_name));
+  if (!promptBrowserReplaySideFile()) {
+    finishBrowserReplaySelection();
+  }
+}
+
+void MainWindow::finishBrowserReplaySelection() {
   if (!browser_layout_runtime_->decision_dialog.isNull()) {
     QPointer<MessageBox> decision = browser_layout_runtime_->decision_dialog;
     browser_layout_runtime_->decision_dialog.clear();
@@ -6351,7 +6484,8 @@ void MainWindow::startBrowserReplayImports() {
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
   const QString layout_name = replay.layout_name;
   if (replay.sources.size() != replay.selected_identities.size() ||
-      replay.sources.size() != static_cast<int>(replay.staged_inputs.size())) {
+      replay.sources.size() != static_cast<int>(replay.staged_inputs.size()) ||
+      replay.side_files.size() != static_cast<int>(replay.staged_side_files.size())) {
     finishBrowserLayoutLoad(layout_name, false, u"staging-shape"_s);
     return;
   }
@@ -6385,9 +6519,25 @@ void MainWindow::startBrowserReplayImports() {
 
   for (int index = 0; index < replay.sources.size() && !replay.load_failed; ++index) {
     const layout_xml::DataSourceRef& source = replay.sources[index];
-    const LoadHints hints = layoutReplayHints(source, /*prefer_reuse=*/false);
-    const quint64 ticket =
-        file_loader_->loadFileTicketed(std::move(replay.staged_inputs[static_cast<std::size_t>(index)]), this, hints);
+    LoadHints hints = layoutReplayHints(source, /*prefer_reuse=*/false);
+    LoadInput& input = replay.staged_inputs[static_cast<std::size_t>(index)];
+    // Point the saved side-file names at their staged copies, which then live as long as the data file's.
+    QHash<QString, QString> side_paths;
+    std::vector<StorageLease> leases{input.lease};
+    for (int side = 0; side < replay.side_files.size(); ++side) {
+      if (replay.side_files[side].first == index) {
+        const LoadInput& staged = replay.staged_side_files[static_cast<std::size_t>(side)];
+        side_paths.insert(replay.side_files[side].second.filename, staged.backing_path);
+        leases.push_back(staged.lease);
+      }
+    }
+    if (!side_paths.isEmpty()) {
+      const std::string config = hints.preset_config_json.toStdString();
+      hints.preset_config_json =
+          QString::fromStdString(detail::replaceConfigStringValues(config, side_paths).value_or(config));
+      input.lease = std::make_shared<std::vector<StorageLease>>(std::move(leases));
+    }
+    const quint64 ticket = file_loader_->loadFileTicketed(std::move(input), this, hints);
     if (ticket == 0) {
       replay.load_failed = true;
       replay.load_failure = tr("A staged source could not be queued for import.");

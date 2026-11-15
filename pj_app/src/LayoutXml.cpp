@@ -7,6 +7,7 @@
 #include <QDomNodeList>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSet>
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "FanoutConfig.h"
 #include "LoadInput.h"
 #include "pj_plotting/PlotXml.h"
 #include "pj_runtime/HttpUrl.h"
@@ -265,6 +267,55 @@ bool containsEphemeralBrowserPath(const QByteArray& serialized) {
   return serialized.contains(kBrowserUploadScheme) || serialized.contains("/pj_uploads");
 }
 
+std::optional<LogicalSideFiles> logicalBrowserSideFiles(
+    std::string_view config, const QString& data_path,
+    const std::function<std::optional<StagedFileInfo>(const QString&)>& staged_file, QString* error) {
+  const auto fail = [error](const QString& reason) -> std::optional<LogicalSideFiles> {
+    if (error != nullptr) {
+      *error = reason;
+    }
+    return std::nullopt;
+  };
+  if (!QJsonDocument::fromJson(QByteArray(config.data(), static_cast<qsizetype>(config.size()))).isObject()) {
+    return LogicalSideFiles{.config = std::string(config)};
+  }
+  const QString data_dir = data_path.isEmpty() ? QString() : QFileInfo(data_path).path();
+  const QStringList values = detail::configStringValues(config);
+  QSet<QString> taken(values.cbegin(), values.cend());
+  QHash<QString, QString> replacements;
+  LogicalSideFiles result;
+  for (const QString& value : values) {
+    if (value.isEmpty() || value == data_path) {
+      continue;
+    }
+    if (value == data_dir) {
+      replacements.insert(value, QString());
+      continue;
+    }
+    const std::optional<StagedFileInfo> staged = staged_file(value);
+    if (!staged.has_value()) {
+      continue;
+    }
+    if (staged->name.isEmpty() || !isCanonicalSha256(staged->content_sha256)) {
+      return fail(
+          QCoreApplication::translate(
+              "LayoutXml",
+              "'%1', which the source's plugin reads, has no content fingerprint: the file changed since it "
+              "was picked. Open the source again.")
+              .arg(staged->name));
+    }
+    QString logical = staged->name;
+    if (taken.contains(logical)) {
+      logical = u"pj4-side/%1/%2"_s.arg(result.side_files.size()).arg(staged->name);
+    }
+    taken.insert(logical);
+    replacements.insert(value, logical);
+    result.side_files.push_back({.filename = logical, .content_sha256 = staged->content_sha256});
+  }
+  result.config = detail::replaceConfigStringValues(config, replacements).value_or(std::string(config));
+  return result;
+}
+
 QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
   QList<DataSourceRef> sources;
   const QDomElement root = doc.documentElement();
@@ -327,6 +378,21 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     for (QDomElement dataset = file_info.firstChildElement(u"dataset"_s); !dataset.isNull();
          dataset = dataset.nextSiblingElement(u"dataset"_s)) {
       info.datasets.push_back(readDatasetRef(dataset, schema_version));
+    }
+
+    for (QDomElement side = file_info.firstChildElement(u"sideFile"_s); !side.isNull();
+         side = side.nextSiblingElement(u"sideFile"_s)) {
+      SideFileRef side_file{.filename = side.attribute(u"filename"_s)};
+      if (side_file.filename.isEmpty()) {
+        continue;
+      }
+      const QString side_sha256 = side.attribute(u"content_sha256"_s);
+      if (isCanonicalSha256(side_sha256)) {
+        side_file.content_sha256 = side_sha256;
+      } else {
+        side_file.content_sha256_malformed = !side_sha256.isEmpty();
+      }
+      info.side_files.push_back(std::move(side_file));
     }
 
     const QDomElement plugin = file_info.firstChildElement(u"plugin"_s);

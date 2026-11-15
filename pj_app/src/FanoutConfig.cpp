@@ -84,6 +84,37 @@ QJsonObject stripSavedFilepath(QJsonObject object) {
   object.remove(kSavedFilepathKey);
   return mapFanoutChildren(std::move(object), [](QJsonObject child) { return stripSavedFilepath(std::move(child)); });
 }
+
+using StringMap = std::function<QString(const QString&)>;
+
+QJsonValue mapStringValues(const QJsonValue& value, const StringMap& fn);
+
+QJsonObject mapObjectStringValues(QJsonObject object, const StringMap& fn) {
+  for (auto it = object.begin(); it != object.end(); ++it) {
+    if (it.key() != u"__pj_fanout"_s || !it.value().isArray()) {
+      it.value() = mapStringValues(it.value(), fn);
+    }
+  }
+  // A fan-out child is its own config inside a JSON string: walk the parsed object, never the string itself.
+  return mapFanoutChildren(std::move(object), [&fn](QJsonObject child) { return mapObjectStringValues(child, fn); });
+}
+
+QJsonValue mapStringValues(const QJsonValue& value, const StringMap& fn) {
+  if (value.isString()) {
+    return fn(value.toString());
+  }
+  if (value.isObject()) {
+    return mapObjectStringValues(value.toObject(), fn);
+  }
+  if (value.isArray()) {
+    QJsonArray array = value.toArray();
+    for (auto it = array.begin(); it != array.end(); ++it) {
+      *it = mapStringValues(*it, fn);
+    }
+    return array;
+  }
+  return value;
+}
 }  // namespace
 
 std::vector<std::string> extractFanout(std::string_view config) {
@@ -177,6 +208,34 @@ std::string stripHostReplayKeys(std::string_view config) {
     return std::string(config);
   }
   return compactJson(stripSavedFilepath(*object));
+}
+
+QStringList configStringValues(std::string_view config) {
+  const std::optional<QJsonObject> object = parseObject(config);
+  if (!object.has_value()) {
+    return {};
+  }
+  QStringList values;
+  (void)mapObjectStringValues(*object, [&values](const QString& value) {
+    if (!values.contains(value)) {
+      values.push_back(value);
+    }
+    return value;
+  });
+  return values;
+}
+
+std::optional<std::string> replaceConfigStringValues(
+    std::string_view config, const QHash<QString, QString>& replacements) {
+  if (config.empty()) {
+    return std::string();
+  }
+  const std::optional<QJsonObject> object = parseObject(config);
+  if (!object.has_value()) {
+    return std::nullopt;
+  }
+  return compactJson(mapObjectStringValues(
+      *object, [&replacements](const QString& value) { return replacements.value(value, value); }));
 }
 
 }  // namespace PJ::detail

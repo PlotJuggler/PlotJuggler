@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "DialogWatch.h"
+#include "LoadInput.h"
 #include "pj_plugins/dialog_protocol.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_widgets/ChromeMetrics.h"
@@ -80,6 +81,9 @@ struct DataSourceRequest {
   // Put before the plugin dialog's own title (who asked for it); empty leaves it alone.
   QString title_prefix{};
   DialogWatch on_dialog{};
+  // Browser builds: told of every file staged by the dialog's own file picker
+  // (path, name, fingerprint), before the plugin sees it.
+  std::function<void(const LoadInput&)> on_browser_file_staged{};
 };
 
 // Caller decides what to persist and whether to re-loadConfig before start().

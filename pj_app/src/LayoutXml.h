@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -73,6 +75,46 @@ struct DataSourceDatasetRef {
     const QList<DataSourceDatasetRef>& saved, const std::vector<std::uint32_t>& candidates,
     const std::function<QString(std::uint32_t)>& source_name_of);
 
+// A file a source's plugin read besides its data file (a dictionary picked in
+// the plugin's own dialog, say), from an optional <sideFile> child of
+// <fileInfo>. `filename` is the exact string the saved plugin configuration
+// holds in its place, a name relative to the data file's directory; browser
+// replay asks for a file of that basename and rewrites every configuration
+// string equal to it to the newly staged copy. Fingerprint rules are the data
+// file's (DataSourceRef::content_sha256).
+struct SideFileRef {
+  QString filename = {};
+  QString content_sha256 = {};
+  bool content_sha256_malformed = false;
+};
+
+// What a browser source-bound save knows of one staged file: its sanitized
+// browser name and content fingerprint (empty while unknown).
+struct StagedFileInfo {
+  QString name = {};
+  QString content_sha256 = {};
+};
+
+// A browser source's plugin configuration with its side files made logical.
+struct LogicalSideFiles {
+  std::string config = {};
+  QList<SideFileRef> side_files = {};
+};
+
+// Prepares a browser source's plugin configuration for a source-bound save.
+// Every string value (FanoutConfig's configStringValues) other than
+// `data_path` (the data file's staged path) that `staged_file` knows as a
+// staged file is a side file: it is replaced by its sanitized name (or
+// `pj4-side/<n>/<name>` when that string is already taken in the
+// configuration) and listed with its fingerprint. A string equal to the data
+// file's directory becomes empty: the staging folder means nothing outside
+// this page. Fails, with `error` set, when a side file has no fingerprint. A
+// configuration that is not a JSON object comes back verbatim, with no side
+// files. The data file's own path is left for rewriteReplayFilepaths.
+[[nodiscard]] std::optional<LogicalSideFiles> logicalBrowserSideFiles(
+    std::string_view config, const QString& data_path,
+    const std::function<std::optional<StagedFileInfo>(const QString&)>& staged_file, QString* error);
+
 // Data-source reference extracted from <previouslyLoaded_Datafiles>.
 // serialized_path preserves the filename attribute exactly as written so a
 // browser source-bound layout can match it to a newly selected upload without
@@ -130,6 +172,8 @@ struct DataSourceRef {
   // into. Empty means an older (≤v3) layout whose single legacy timeline state
   // lives in the flat fields above.
   QList<DataSourceDatasetRef> datasets;
+  // Browser-saved side files, in document order; empty for every other layout.
+  QList<SideFileRef> side_files;
 };
 
 // True when `ref` carries a provider <materialize> record (any of the three
