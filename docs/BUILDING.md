@@ -250,7 +250,7 @@ executable keeps its symbol table, so crash backtraces name its frames), and the
 static archives in the builder image are stripped of DWARF; pass `--with-tests` to it to
 build the full suite and demos, then filter a module inside the builder image with
 `ctest -R '^pj_runtime_tests\.' --test-dir build`. Linux GNU/Clang builds use thin
-archives, and `resources.qrc` is compiled once as `pj_resources`.
+archives, and `resources.qrc` plus the splash memes in `memes.qrc` are compiled once as `pj_resources`.
 [`scripts/build_tree_size.sh`](../scripts/build_tree_size.sh) `<build-dir>` reports bytes
 by artifact class in decimal GB.
 

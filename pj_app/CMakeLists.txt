@@ -528,7 +528,7 @@ if(PJ_BUILD_TESTS)
     endif()
 
     # Guards the meme splash pool against its two silent failure modes: a meme
-    # present in resources/memes/ but absent from resources.qrc is invisible at
+    # present in resources/memes/ but absent from memes.qrc is invisible at
     # runtime (rcc has no globbing), and an oversized meme must be bounded on
     # both axes, not just width. Links pj_resources so the test inspects the
     # real shipped pool, and is handed the source directory to compare against.

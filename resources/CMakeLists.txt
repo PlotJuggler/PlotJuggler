@@ -4,7 +4,9 @@
 # 0.25 GB of repeated objects per tree. An OBJECT library includes the
 # qInitResources initializer in every consumer's link; a static archive member
 # with no referenced symbols would be discarded by the linker.
-add_library(pj_resources OBJECT resources.qrc)
+# The splash memes are desktop only: the browser app compiles resources.qrc
+# alone (pj_app/CMakeLists.txt), saving about 2.7 MB of its download.
+add_library(pj_resources OBJECT resources.qrc memes.qrc)
 set_target_properties(pj_resources PROPERTIES AUTORCC ON)
 target_link_libraries(pj_resources PRIVATE Qt6::Core)
 # Debug info for a byte array has no value; keep the object small under every

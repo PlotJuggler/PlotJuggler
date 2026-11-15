@@ -1,0 +1,46 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+  <qresource prefix="/resources">
+    <!-- Funny splashscreen pool. The startup splash enumerates this directory
+         at runtime (QDir(":/resources/memes")), so adding a meme is a pure
+         resource change: add memes/meme_NN.jpg and list it below. Desktop only:
+         the browser build leaves this file out, and its splash is the serious one. -->
+    <file alias="memes/meme_01.jpg">memes/meme_01.jpg</file>
+    <file alias="memes/meme_02.jpg">memes/meme_02.jpg</file>
+    <file alias="memes/meme_03.jpg">memes/meme_03.jpg</file>
+    <file alias="memes/meme_04.jpg">memes/meme_04.jpg</file>
+    <file alias="memes/meme_05.jpg">memes/meme_05.jpg</file>
+    <file alias="memes/meme_06.jpg">memes/meme_06.jpg</file>
+    <file alias="memes/meme_07.jpg">memes/meme_07.jpg</file>
+    <file alias="memes/meme_08.jpg">memes/meme_08.jpg</file>
+    <file alias="memes/meme_09.jpg">memes/meme_09.jpg</file>
+    <file alias="memes/meme_10.jpg">memes/meme_10.jpg</file>
+    <file alias="memes/meme_11.jpg">memes/meme_11.jpg</file>
+    <file alias="memes/meme_12.jpg">memes/meme_12.jpg</file>
+    <file alias="memes/meme_13.jpg">memes/meme_13.jpg</file>
+    <file alias="memes/meme_14.jpg">memes/meme_14.jpg</file>
+    <file alias="memes/meme_15.jpg">memes/meme_15.jpg</file>
+    <file alias="memes/meme_16.jpg">memes/meme_16.jpg</file>
+    <file alias="memes/meme_17.jpg">memes/meme_17.jpg</file>
+    <file alias="memes/meme_18.jpg">memes/meme_18.jpg</file>
+    <file alias="memes/meme_19.jpg">memes/meme_19.jpg</file>
+    <file alias="memes/meme_20.jpg">memes/meme_20.jpg</file>
+    <file alias="memes/meme_21.jpg">memes/meme_21.jpg</file>
+    <file alias="memes/meme_22.jpg">memes/meme_22.jpg</file>
+    <file alias="memes/meme_23.jpg">memes/meme_23.jpg</file>
+    <file alias="memes/meme_24.jpg">memes/meme_24.jpg</file>
+    <file alias="memes/meme_25.jpg">memes/meme_25.jpg</file>
+    <file alias="memes/meme_26.jpg">memes/meme_26.jpg</file>
+    <file alias="memes/meme_27.jpg">memes/meme_27.jpg</file>
+    <file alias="memes/meme_28.jpg">memes/meme_28.jpg</file>
+    <file alias="memes/meme_29.jpg">memes/meme_29.jpg</file>
+    <file alias="memes/meme_30.jpg">memes/meme_30.jpg</file>
+    <file alias="memes/meme_31.jpg">memes/meme_31.jpg</file>
+    <file alias="memes/meme_32.jpg">memes/meme_32.jpg</file>
+    <file alias="memes/meme_33.jpg">memes/meme_33.jpg</file>
+    <file alias="memes/meme_34.jpg">memes/meme_34.jpg</file>
+    <file alias="memes/meme_35.jpg">memes/meme_35.jpg</file>
+    <file alias="memes/meme_36.jpg">memes/meme_36.jpg</file>
+    <file alias="memes/meme_37.jpg">memes/meme_37.jpg</file>
+  </qresource>
+</RCC>

@@ -293,6 +293,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     // The browser has no raster canvas: plots always render through WebGL.
     ui_->labelOpenGL->hide();
     ui_->openglToggle->hide();
+    // The browser build carries no memes: its splash is always the serious one.
+    ui_->labelSplashscreen->hide();
+    ui_->splashMode->hide();
     // A page cannot listen on a socket.
     ui_->labelMcpServer->hide();
     ui_->mcpServerToggle->hide();
