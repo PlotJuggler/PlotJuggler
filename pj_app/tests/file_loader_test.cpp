@@ -4235,7 +4235,8 @@ TEST_F(FileLoaderTest, ReplayPointsSideFileNamesBesideTheDataFileOrAtTheGivenPat
   ASSERT_EQ(probe.configs.size(), 1u);
   const QJsonObject received = pj_app_test::parseJsonObject(probe.configs.front());
   EXPECT_EQ(received.value(u"filepath"_s).toString(), path);
-  EXPECT_EQ(received.value(u"dbc"_s).toString(), QDir(root_ + u"/new"_s).filePath(u"engine.dbc"_s));
+  // Beside the file the loader opened, which it resolves canonically (on macOS the temp root /var is /private/var).
+  EXPECT_EQ(received.value(u"dbc"_s).toString(), QDir(QFileInfo(path).canonicalPath()).filePath(u"engine.dbc"_s));
   EXPECT_EQ(received.value(u"other"_s).toString(), u"/staged/7/engine.dbc"_s);
   EXPECT_EQ(received.value(u"label"_s).toString(), u"engine.dbc.bak"_s) << "only exact names are side files";
 }
