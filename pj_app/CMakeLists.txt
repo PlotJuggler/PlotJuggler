@@ -310,6 +310,10 @@ if(DEFINED PJ_WARNING_FLAGS)
     # MSVC warning options such as /W4.
     target_compile_options(pj_app PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${PJ_WARNING_FLAGS}>")
 endif()
+# MainWindow.cpp outgrows COFF's default section limit (C1128 in the pixi win-64 build).
+if(MSVC)
+    target_compile_options(pj_app_shell PRIVATE /bigobj)
+endif()
 
 # Don't re-export symbols pulled in from static archive members. Without
 # this, Conan-built libpng/libjpeg/etc. symbols are exported globally from

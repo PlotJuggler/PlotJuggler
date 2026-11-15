@@ -16,7 +16,6 @@
         "plotjuggler_sdk/1.0.0#5320062f9174aef85c690e7af0e7abf8",
         "openssl/3.6.4#bc460bf37686ccae86a15bfdce71be11%1787920038.176",
         "nlohmann_json/3.12.0#2d634ab0ec8d9f56353e5ccef6d6612c%1784130346.411",
-        "nanoarrow/0.7.0#ca9751ce5eaf71ccb47bc38cc90f3940%1784130335.355",
         "mpdecimal/2.5.1#cad87046d76460b8e2fc159194e50e7e%1784130333.32",
         "minizip/1.2.13#36a63ce67bc469165d8811cd5249044c%1784569254.405",
         "mcap/2.1.1#d11539f5735a4ba67cdc3192406a4be3%1784130329.102",

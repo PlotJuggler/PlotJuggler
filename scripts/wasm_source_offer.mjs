@@ -81,6 +81,8 @@ export async function declaredDependencies() {
     '3rdparty/qwt/CMakeLists.txt',
     // Shared with the desktop build, which prefers an installed pocketfft over this fetch.
     'pj_scripting/cmake/PjPocketfft.cmake',
+    // Shared with the desktop builds, which prefer an installed nanoarrow 0.9.0 over this fetch.
+    'pj_datastore/cmake/PjNanoarrow.cmake',
   ];
   // The root CMakeLists.txt derives the SDK version from the conanfile.
   const sdkVersion = (await read('conanfile.txt')).match(/^plotjuggler_sdk\/([0-9][0-9A-Za-z.-]*)/m)?.[1];
