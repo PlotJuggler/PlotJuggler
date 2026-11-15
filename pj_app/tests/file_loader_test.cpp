@@ -4212,6 +4212,34 @@ TEST_F(FileLoaderTest, DesktopReplayPointsThePresetAtTheLoadedFileAndRecordsTheO
   EXPECT_EQ(singleTopicValues(datasetNamed("run.echo")), (std::vector<double>{1, 2, 3}));
 }
 
+// A layout's <sideFile> names reach the plugin as the files beside the loaded data file on the desktop, and as
+// the paths the caller names (the browser's staged copies) when it names them.
+TEST_F(FileLoaderTest, ReplayPointsSideFileNamesBesideTheDataFileOrAtTheGivenPath) {
+  installEcho();
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"1"_s});
+  PJ::layout_xml::DataSourceRef ref;
+  ref.plugin_id = u"Filepath Echo Source"_s;
+  ref.plugin_config_json = pj_app_test::compactJson(
+      {{u"filepath"_s, u"run.echo"_s},
+       {u"dbc"_s, u"engine.dbc"_s},
+       {u"other"_s, u"pj4-side/1/engine.dbc"_s},
+       {u"label"_s, u"engine.dbc.bak"_s}});
+  ref.side_files = {{.filename = u"engine.dbc"_s}, {.filename = u"pj4-side/1/engine.dbc"_s}};
+  PJ::LoadHints hints = PJ::layoutReplayHints(ref, /*prefer_reuse=*/false);
+  EXPECT_EQ(hints.side_file_paths.size(), 2);
+  hints.side_file_paths.insert(u"pj4-side/1/engine.dbc"_s, u"/staged/7/engine.dbc"_s);
+
+  QString reason;
+  ASSERT_TRUE(pj_app_test::loadAndWait(*loader_, path, hints, nullptr, &reason)) << reason.toStdString();
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_EQ(probe.configs.size(), 1u);
+  const QJsonObject received = pj_app_test::parseJsonObject(probe.configs.front());
+  EXPECT_EQ(received.value(u"filepath"_s).toString(), path);
+  EXPECT_EQ(received.value(u"dbc"_s).toString(), QDir(root_ + u"/new"_s).filePath(u"engine.dbc"_s));
+  EXPECT_EQ(received.value(u"other"_s).toString(), u"/staged/7/engine.dbc"_s);
+  EXPECT_EQ(received.value(u"label"_s).toString(), u"engine.dbc.bak"_s) << "only exact names are side files";
+}
+
 // The reuse short-circuit runs no plugin, but what it emits is what the session
 // records and a later Reload replays, so it follows the fresh path's rewrite.
 TEST_F(FileLoaderTest, ReuseHitEmitsTheLoadedFileAndNoHostReplayKey) {

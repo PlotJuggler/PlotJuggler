@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLoggingCategory>
+#include <QSet>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -97,6 +98,42 @@ QJsonObject mapObjectStringValues(QJsonObject object, const StringMap& fn) {
   }
   // A fan-out child is its own config inside a JSON string: walk the parsed object, never the string itself.
   return mapFanoutChildren(std::move(object), [&fn](QJsonObject child) { return mapObjectStringValues(child, fn); });
+}
+
+using StringVisitor = std::function<void(const QString&)>;
+
+void visitValueStrings(const QJsonValue& value, const StringVisitor& fn);
+
+// Read-only twin of mapObjectStringValues: same scope and order, no tree rebuilt.
+void visitObjectStringValues(const QJsonObject& object, const StringVisitor& fn) {
+  for (auto it = object.begin(); it != object.end(); ++it) {
+    if (it.key() != u"__pj_fanout"_s || !it.value().isArray()) {
+      visitValueStrings(it.value(), fn);
+    }
+  }
+  const QJsonValue fanout = object.value(u"__pj_fanout"_s);
+  if (!fanout.isArray()) {
+    return;
+  }
+  for (const QJsonValue& entry : fanout.toArray()) {
+    if (entry.isString()) {
+      if (const std::optional<QJsonObject> child = parseObject(entry.toString().toStdString()); child.has_value()) {
+        visitObjectStringValues(*child, fn);
+      }
+    }
+  }
+}
+
+void visitValueStrings(const QJsonValue& value, const StringVisitor& fn) {
+  if (value.isString()) {
+    fn(value.toString());
+  } else if (value.isObject()) {
+    visitObjectStringValues(value.toObject(), fn);
+  } else if (value.isArray()) {
+    for (const QJsonValue& item : value.toArray()) {
+      visitValueStrings(item, fn);
+    }
+  }
 }
 
 QJsonValue mapStringValues(const QJsonValue& value, const StringMap& fn) {
@@ -216,11 +253,12 @@ QStringList configStringValues(std::string_view config) {
     return {};
   }
   QStringList values;
-  (void)mapObjectStringValues(*object, [&values](const QString& value) {
-    if (!values.contains(value)) {
+  QSet<QString> seen;
+  visitObjectStringValues(*object, [&values, &seen](const QString& value) {
+    if (!seen.contains(value)) {
+      seen.insert(value);
       values.push_back(value);
     }
-    return value;
   });
   return values;
 }

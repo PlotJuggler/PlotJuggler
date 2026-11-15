@@ -87,6 +87,11 @@ struct LoadHints {
   // plugin whose MANIFEST id merely collides with the saved display name.
   QString expected_plugin_id;
   QString preset_config_json;  // Empty -> no hint; QSettings pre-fill is used.
+  // Layout replay: each saved side-file name (layout_xml::SideFileRef::filename) and the path it now names. Every
+  // preset string value equal to a name becomes its path before the filepath rewrite; an empty path means the
+  // file beside the loaded data file (the name resolved against its directory), which is what a desktop replay
+  // uses. The browser replay fills in the staged copies.
+  QHash<QString, QString> side_file_paths{};
   DialogPolicy dialog_policy = DialogPolicy::kInteractive;
   // Layout replay reuses matching DatasetIds; normal load/reload replaces them.
   bool prefer_reuse = false;

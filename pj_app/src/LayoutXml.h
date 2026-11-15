@@ -104,15 +104,17 @@ struct LogicalSideFiles {
 // Prepares a browser source's plugin configuration for a source-bound save.
 // Every string value (FanoutConfig's configStringValues) other than
 // `data_path` (the data file's staged path) that `staged_file` knows as a
-// staged file is a side file: it is replaced by its sanitized name (or
-// `pj4-side/<n>/<name>` when that string is already taken in the
-// configuration) and listed with its fingerprint. A string equal to the data
+// staged file is a side file: it is replaced by its sanitized name (or the
+// first free `pj4-side/<n>/<name>` when that name is a string of the
+// configuration or `data_logical_path`) and listed with its fingerprint.
+// Copies with the same name and fingerprint (one file picked twice) share
+// one name and one entry. A string equal to the data
 // file's directory becomes empty: the staging folder means nothing outside
 // this page. Fails, with `error` set, when a side file has no fingerprint. A
 // configuration that is not a JSON object comes back verbatim, with no side
 // files. The data file's own path is left for rewriteReplayFilepaths.
 [[nodiscard]] std::optional<LogicalSideFiles> logicalBrowserSideFiles(
-    std::string_view config, const QString& data_path,
+    std::string_view config, const QString& data_path, const QString& data_logical_path,
     const std::function<std::optional<StagedFileInfo>(const QString&)>& staged_file, QString* error);
 
 // Data-source reference extracted from <previouslyLoaded_Datafiles>.

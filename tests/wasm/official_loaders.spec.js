@@ -13,6 +13,7 @@ const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { elementAttributes } = require('./support/layout_xml');
 const { openFileChooser, openLayoutChooser, openSourceReplayChooser, retryChooser } = require('./support/pickers');
+const { openPreset, startPresetServer } = require('./support/preset_server');
 const { downloadSourceLayoutFromFileMenu, sourceLayoutDecisionGeometry } = require('./support/source_layout');
 
 const CANDUMP_LOG = [
@@ -103,7 +104,13 @@ async function importFile(page, screen, consoleMessages, file, inDialog = async 
   await page.waitForTimeout(1500);
   await inDialog();
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
-  // The probe records the outcome in the page too: Firefox can drop the console line.
+  return loadOkLine(page, consoleMessages);
+}
+
+// Waits for the first load outcome and returns it, expecting PJ_FILE_LOAD_OK (a
+// timeout shows the loader's log). The probe records the outcome in the page
+// too: Firefox can drop the console line.
+async function loadOkLine(page, consoleMessages) {
   let line = '';
   try {
     await expect.poll(async () => (line = await firstLoadOutcome(page, 'PJ_FILE_LOAD_')), { timeout: 30000 }).not.toBe('');
@@ -239,7 +246,8 @@ test('official candump loader decodes with a DBC picked in its dialog', async ({
 
 // The DBC picked in the loader's dialog is a side file of the source: the
 // source-bound layout names it and its fingerprint like the data file, and a
-// replay in a fresh page asks for both before the import decodes as before.
+// replay in a fresh page asks for both before the import decodes as before;
+// opened as a preset, it downloads both.
 test('a source layout saves the DBC picked in the candump dialog and replays it after both are reselected', async ({ page }) => {
   test.setTimeout(180000);
   const consoleMessages = [];
@@ -281,16 +289,28 @@ test('a source layout saves the DBC picked in the candump dialog and replays it 
   const dbcChooser = await openSourceReplayChooser(replay.page, replay.screen, geometry, replay.consoleMessages);
   await dbcChooser.setFiles(dictionary);
 
-  const outcome = async () => (await replay.page.evaluate(() => (globalThis.pjWasmLoadOutcomes || [])[0])) || '';
-  let line = '';
-  try {
-    await expect.poll(async () => (line = await outcome()), { timeout: 30000 }).not.toBe('');
-  } catch (error) {
-    throw new Error(`${error.message}\nLast app log lines:\n${replay.consoleMessages.slice(-40).join('\n')}`);
-  }
-  expect(line).toContain('PJ_FILE_LOAD_OK');
+  const line = await loadOkLine(replay.page, replay.consoleMessages);
   const speed = seriesSamples(line, '/Speed', replay.consoleMessages);
   expect(speed).toMatchObject({ count: 3, first: 100, last: 300 });
+
+  // Opened by URL (a preset), the same layout downloads the dictionary from
+  // beside its data file, with no picker.
+  const server = await startPresetServer({
+    'can/layout.pj4.xml': downloaded.bytes,
+    'can/capture.log': capture.buffer,
+    'can/engine.dbc': dictionary.buffer,
+  });
+  try {
+    const preset = await replaceRuntimeTarget(replay.page, [], errors);
+    expect(await openPreset(preset.page, preset.consoleMessages, server.url('can/layout.pj4.xml')))
+      .toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(server.requests).toEqual([
+      'GET /presets/can/layout.pj4.xml', 'GET /presets/can/capture.log', 'GET /presets/can/engine.dbc']);
+    const presetLine = await loadOkLine(preset.page, preset.consoleMessages);
+    expect(seriesSamples(presetLine, '/Speed', preset.consoleMessages)).toMatchObject({ count: 3, first: 100, last: 300 });
+  } finally {
+    await server.close();
+  }
   expect(errors).toEqual([]);
 });
 

@@ -307,8 +307,8 @@ TEST(LogicalBrowserSideFiles, NamesEachStagedSideFileAndEmptiesTheDataFolder) {
       R"("dictionaries":{"can0":["/pj_uploads/t/2/engine.dbc"]},"delimiter":",",)"
       R"("__pj_fanout":["{\"filepath\":\"/pj_uploads/t/1/run.log\",\"dbc\":\"/pj_uploads/t/3/engine.dbc\"}"]})";
   QString error;
-  const auto result =
-      PJ::layout_xml::logicalBrowserSideFiles(config, u"/pj_uploads/t/1/run.log"_s, stagedSideFile, &error);
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      config, u"/pj_uploads/t/1/run.log"_s, u"run.log"_s, stagedSideFile, &error);
   ASSERT_TRUE(result.has_value()) << error.toStdString();
   ASSERT_EQ(result->side_files.size(), 2);
   EXPECT_EQ(result->side_files[0].filename, u"pj4-side/0/engine.dbc"_s) << "the plain name is taken by the label";
@@ -348,8 +348,8 @@ TEST(LogicalBrowserSideFiles, NamesEachStagedSideFileAndEmptiesTheDataFolder) {
 TEST(LogicalBrowserSideFiles, UsesThePlainNameWhenFreeAndLeavesUnknownStringsAlone) {
   const std::string config =
       R"({"filepath":"/pj_uploads/t/1/run.log","dbc":"/pj_uploads/t/2/engine.dbc","other":"/pj_uploads/t/9/x"})";
-  const auto result =
-      PJ::layout_xml::logicalBrowserSideFiles(config, u"/pj_uploads/t/1/run.log"_s, stagedSideFile, nullptr);
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      config, u"/pj_uploads/t/1/run.log"_s, u"run.log"_s, stagedSideFile, nullptr);
   ASSERT_TRUE(result.has_value());
   ASSERT_EQ(result->side_files.size(), 1);
   EXPECT_EQ(result->side_files[0].filename, u"engine.dbc"_s);
@@ -359,15 +359,55 @@ TEST(LogicalBrowserSideFiles, UsesThePlainNameWhenFreeAndLeavesUnknownStringsAlo
       << "an unknown path stays, so the save's ephemeral-path check still refuses it";
 }
 
+// One file picked twice (candump can0 and can1 both given engine.dbc) is staged twice with equal name and bytes:
+// it is one side file, so a desktop replay finds it beside the data file under one name.
+TEST(LogicalBrowserSideFiles, OneFileStagedTwiceIsOneSideFile) {
+  const auto staged = [](const QString& path) -> std::optional<PJ::layout_xml::StagedFileInfo> {
+    if (path == u"/up/2/engine.dbc"_s || path == u"/up/3/engine.dbc"_s) {
+      return PJ::layout_xml::StagedFileInfo{.name = u"engine.dbc"_s, .content_sha256 = QString::fromLatin1(kSideSha)};
+    }
+    return std::nullopt;
+  };
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      R"({"filepath":"/up/1/run.log","dictionaries":{"can0":["/up/2/engine.dbc"],"can1":["/up/3/engine.dbc"]}})",
+      u"/up/1/run.log"_s, u"run.log"_s, staged, nullptr);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->side_files.size(), 1);
+  EXPECT_EQ(result->side_files[0].filename, u"engine.dbc"_s);
+  const QJsonObject dictionaries =
+      QJsonDocument::fromJson(QByteArray::fromStdString(result->config)).object().value(u"dictionaries"_s).toObject();
+  EXPECT_EQ(dictionaries.value(u"can0"_s).toArray().first().toString(), u"engine.dbc"_s);
+  EXPECT_EQ(dictionaries.value(u"can1"_s).toArray().first().toString(), u"engine.dbc"_s);
+}
+
+// A side file never takes the data file's logical name, nor a fallback name the configuration already uses.
+TEST(LogicalBrowserSideFiles, FallbackNamesSkipTheDataFileAndEveryTakenName) {
+  const auto staged = [](const QString& path) -> std::optional<PJ::layout_xml::StagedFileInfo> {
+    if (path == u"/up/2/run.log"_s) {
+      return PJ::layout_xml::StagedFileInfo{.name = u"run.log"_s, .content_sha256 = QString::fromLatin1(kSideSha)};
+    }
+    return std::nullopt;
+  };
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      R"({"filepath":"/up/1/run.log","side":"/up/2/run.log","note":"pj4-side/0/run.log"})", u"/up/1/run.log"_s,
+      u"run.log"_s, staged, nullptr);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->side_files.size(), 1);
+  EXPECT_EQ(result->side_files[0].filename, u"pj4-side/1/run.log"_s);
+  EXPECT_EQ(
+      QJsonDocument::fromJson(QByteArray::fromStdString(result->config)).object().value(u"note"_s).toString(),
+      u"pj4-side/0/run.log"_s);
+}
+
 TEST(LogicalBrowserSideFiles, RefusesASideFileWithoutFingerprintAndPassesNonObjectsThrough) {
   QString error;
   const auto unfingerprinted = PJ::layout_xml::logicalBrowserSideFiles(
-      R"({"filepath":"/d/run.log","dbc":"/d/2/x.dbc"})", u"/d/run.log"_s,
+      R"({"filepath":"/d/run.log","dbc":"/d/2/x.dbc"})", u"/d/run.log"_s, u"run.log"_s,
       [](const QString&) { return std::optional<PJ::layout_xml::StagedFileInfo>({.name = u"x.dbc"_s}); }, &error);
   EXPECT_FALSE(unfingerprinted.has_value());
   EXPECT_TRUE(error.contains(u"x.dbc"_s)) << error.toStdString();
 
-  const auto verbatim = PJ::layout_xml::logicalBrowserSideFiles("not json", {}, stagedSideFile, nullptr);
+  const auto verbatim = PJ::layout_xml::logicalBrowserSideFiles("not json", {}, {}, stagedSideFile, nullptr);
   ASSERT_TRUE(verbatim.has_value());
   EXPECT_EQ(verbatim->config, "not json");
   EXPECT_TRUE(verbatim->side_files.isEmpty());

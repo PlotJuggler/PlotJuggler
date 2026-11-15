@@ -4,12 +4,14 @@
 #include "FileLoader.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -873,6 +875,21 @@ std::string captureSavedConfig(DataSourceHandle& handle, const QString& source_n
   return {};
 }
 
+// The preset with each layout side-file name (hints.side_file_paths) replaced by
+// its path; an empty path resolves the name beside the loaded data file. A config
+// that is not a JSON object is left for the filepath rewrite to judge.
+std::string withSideFilePaths(const std::string& config, const LoadHints& hints, const QString& data_path) {
+  if (hints.side_file_paths.isEmpty()) {
+    return config;
+  }
+  const QDir data_dir = QFileInfo(data_path).dir();
+  QHash<QString, QString> replacements;
+  for (auto it = hints.side_file_paths.cbegin(); it != hints.side_file_paths.cend(); ++it) {
+    replacements.insert(it.key(), it.value().isEmpty() ? data_dir.filePath(it.key()) : it.value());
+  }
+  return detail::replaceConfigStringValues(config, replacements).value_or(config);
+}
+
 }  // namespace
 
 // Default ingest policies the app applies to every DataSourceRuntimeHost it
@@ -1387,8 +1404,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // JSON object cannot carry a path and is emitted as it is.
     QString emit_config = hints.preset_config_json;
     if (!emit_config.isEmpty()) {
-      const std::optional<std::string> rewritten =
-          detail::rewriteReplayFilepaths(emit_config.toStdString(), input.backing_path, detail::SavedFilepath::kOmit);
+      const std::optional<std::string> rewritten = detail::rewriteReplayFilepaths(
+          withSideFilePaths(emit_config.toStdString(), hints, input.backing_path), input.backing_path,
+          detail::SavedFilepath::kOmit);
       if (rewritten.has_value()) {
         emit_config = QString::fromStdString(*rewritten);
       }
@@ -1489,7 +1507,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   bool skip_dialog = false;
   // The layout preset's saved bytes — the one materialization both
   // preset-driven policies start from.
-  const std::string preset_bytes = hints.preset_config_json.toStdString();
+  // Its side-file names already point at the files this replay reads.
+  const std::string preset_bytes = withSideFilePaths(hints.preset_config_json.toStdString(), hints, input.backing_path);
 
   if (hints.dialog_policy == DialogPolicy::kNever) {
     // Automated (layout-driven) replay: the dialog is prohibited and the

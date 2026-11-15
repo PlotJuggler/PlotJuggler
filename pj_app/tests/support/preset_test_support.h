@@ -52,6 +52,9 @@ class PresetTestPeer {
   [[nodiscard]] static std::optional<QDomDocument> sourceLayout(const MainWindow& window, QString& error) {
     return window.browserSourceLayoutDocument(error);
   }
+  [[nodiscard]] static QString sideFilePrompt(const QString& name, const QString& source_path, int number, int total) {
+    return MainWindow::browserReplaySideFilePrompt(name, source_path, number, total);
+  }
   // The undo/redo snapshot of the live workspace.
   [[nodiscard]] static QByteArray liveState(const MainWindow& window) {
     return window.xmlSaveState().toByteArray(2);
