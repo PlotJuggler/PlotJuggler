@@ -334,7 +334,7 @@ async function validateSource(sourceRoot) {
 
 // Side modules the app dlopen()s on first use (PJ_WASM_ARROW_SIDE_MODULE), packaged beside the module as
 // plugins/<name>.wasm. Not part of the startup download (scripts/wasm_size_budget.mjs counts them apart).
-export const SIDE_MODULE_DIR = 'plugins';
+const SIDE_MODULE_DIR = 'plugins';
 async function sideModules(sourceRoot) {
   let names;
   try {

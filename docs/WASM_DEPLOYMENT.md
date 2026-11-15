@@ -111,27 +111,27 @@ in the root `CLAUDE.md`.
 
 ### The Arrow family as a side module (`PJ_WASM_ARROW_SIDE_MODULE`)
 
-On whenever the three Arrow plugins are built (`-DPJ_WASM_ARROW_SIDE_MODULE=OFF`
-links them into the app instead). The Parquet loader, the
-Arrow IPC parser, the Data Exporter and Arrow C++ leave `plotjuggler4.wasm`:
-they are linked (`cmake/PjWasmArrow.cmake`) into the Emscripten side module
-`plugins/arrow.wasm`, which `package_wasm.mjs` puts in the bundle directory
-(immutable, `.br`/`.gz` like the module) and `wasm_size_budget.mjs` reports
-apart from the startup download (an optional third argument budgets it). The
-app knows the family from the manifests it keeps (`pj_app/src/wasm/ArrowSideModule.h`)
-and links it the first time one of them is needed: a `.parquet` import
+On by default whenever the three Arrow plugins are built
+(`-DPJ_WASM_ARROW_SIDE_MODULE=OFF` links them into the app instead). The Parquet
+loader, the Arrow IPC parser, the Data Exporter and Arrow C++ leave
+`plotjuggler4.wasm`: they are linked (`cmake/PjWasmArrow.cmake`) into the
+Emscripten side module `plugins/arrow.wasm`, which `package_wasm.mjs` puts in the
+bundle directory (immutable, `.br`/`.gz` like the module) and
+`wasm_size_budget.mjs` reports apart from the startup download (an optional third
+argument budgets it). An `OFF` configure deletes a module an earlier build left,
+so it is never packaged. The module is larger than the family's share of the
+static build: it carries its own copies of the plugin SDK, zstd and lz4, and
+dead-code elimination cannot cross the module boundary.
+
+The app knows the family from the manifests it keeps
+(`pj_app/src/wasm/ArrowSideModule.h`, decoded by the SDK's `decodeManifest`) and
+links it the first time one of them is needed: a `.parquet` import
 (`FileLoader`), the exporter's launch (the toolbox menu lists it before), or an
 `arrow-ipc` channel (`ExtensionCatalogService::setDeferredParsers`, on the
 source's poll thread). The module is then registered with
-`ExtensionCatalogService::registerLatePlugins`.
-
-Measured 2026-11-15 (production configuration): the startup Brotli download goes
-from 19,054,474 B to 17,831,699 B (main module 18,808,522 B to 17,521,508 B);
-the side module is 1,560,684 B Brotli. It is larger than the family's share of
-the static build because it carries its own copies of the plugin SDK, zstd and
-lz4, and dead-code elimination cannot cross the module boundary. The first
-Parquet import, module download and link included, took 0.9 s in Chromium and
-2.4 s in Firefox against a local server; the next one 0.5 to 0.6 s.
+`ExtensionCatalogService::registerLatePlugins`. A download that fails (an HTTP
+error, a network error, or no answer within 60 s) is not remembered: the next use
+downloads again. Once `dlopen()` has run, its outcome is final.
 
 Rules the mechanism depends on:
 
@@ -142,6 +142,11 @@ Rules the mechanism depends on:
   lacks; `AUTOLOAD_DYLIBS=0` keeps it from loading at startup. A module emcc
   never saw cannot be `dlopen()`ed from an `-O2`+ build: dead-code elimination
   drops even `__stack_pointer`.
+- **The main module is position independent.** It is relocatable, and wasm-ld
+  refuses a non-PIC object that takes the table index of a symbol the dynamic
+  linker may resolve (protobuf and Abseil do, through `__cxa_end_catch`), so the
+  option turns on `CMAKE_POSITION_INDEPENDENT_CODE` for every target
+  (`cmake/PjWasmDependencies.cmake`).
 - **Every JS function whose address the main module takes has a signature.**
   JS exception handling calls anything that can throw through `invoke_*`, which
   takes the callee's address; the startup linker wraps it with
@@ -157,13 +162,14 @@ Rules the mechanism depends on:
   closed (Emscripten 5.0.5 deadlocks re-opening a module).
 - **What the side module must not link:** the sysroot's zlib is not position
   independent, so Arrow's zlib dependency resolves to the main module's.
-- **The side module exports nothing but its entry point.** Everything it links
-  is built with hidden visibility, libc++'s own annotations disabled
-  (`cmake/PjWasmArrow.cmake`), and it comes last on the main link line. wasm-ld
-  keeps a shared definition over a weak one it meets later, so any inline
-  function or typeinfo the module exported would otherwise resolve to it, and be
-  missing until the first `dlopen()`. The post-link check fails the build on
-  any main-module import the side module exports.
+- **The side module exports nothing but its entry point** (`EMSCRIPTEN_KEEPALIVE`).
+  Everything it links is built with hidden visibility, libc++'s own annotations
+  disabled (`cmake/PjWasmArrow.cmake`), and it comes last on the main link line
+  (`CMAKE_CXX_STANDARD_LIBRARIES`). wasm-ld keeps a shared definition over a weak
+  one it meets later, so any inline function or typeinfo the module exported
+  would otherwise resolve to it, and be missing until the first `dlopen()`. The
+  post-link check fails the build on any main-module import the side module
+  exports.
 
 The packaging command refuses missing, invalid, or single-threaded build
 outputs. To prevent a mistyped `--output` from deleting unrelated data, it

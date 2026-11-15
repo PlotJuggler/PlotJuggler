@@ -10971,7 +10971,11 @@ void MainWindow::launchToolbox(
   if (plugin_id == pj_app::arrow_side_module::toolboxId() && !pj_app::arrow_side_module::isRegistered()) {
     pj_app::arrow_side_module::ensureLoaded(
         session_->extensionCatalog(), this,
-        [this, plugin_id, initial_config, target, pin_tab_name, report_error](const QString& error) {
+        [this, plugin_id, initial_config, target, pin_tab_name, report_error,
+         generation = pinned_restore_generation_](const QString& error) {
+          if (target == ToolboxLaunchTarget::kPinnedTab && generation != pinned_restore_generation_) {
+            return;  // a newer layout restore replaced the pinned set this launch belonged to
+          }
           if (!error.isEmpty()) {
             report_error(plugin_id, tr("Could not load %1: %2").arg(plugin_id, error));
             return;
@@ -11331,6 +11335,7 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
   // pinned toolboxes restores to none. Floating windows are part of that live
   // set (they persist as tabs), so they go down with it. Synchronous: a
   // relaunch of the same plugin needs the engine gone first.
+  ++pinned_restore_generation_;
   for (const QString& plugin_id : replaced_ids) {
     teardownToolbox(plugin_id, ToolboxPresenter::Teardown::kImmediate);
   }

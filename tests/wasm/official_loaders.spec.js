@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const { test, expect } = require('@playwright/test');
 const { bootApp, replaceRuntimeTarget } = require('./support/app');
-const { firstLoadOutcome, loadOutcomes } = require('./support/load_outcomes');
+const { loadOutcomes } = require('./support/load_outcomes');
 const { activeDialogButtonGeometry, clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { elementAttributes } = require('./support/layout_xml');
@@ -96,9 +96,10 @@ async function pickDictionary(page, screen, consoleMessages, button) {
   await page.waitForTimeout(1000);
 }
 
-// Picks one file, optionally acts on the plugin's dialog, accepts it, and
-// returns the probe's PJ_FILE_LOAD_OK line (a failure shows the loader's log).
-async function importFile(page, screen, consoleMessages, file, inDialog = async () => {}) {
+// Picks one file, optionally acts on the plugin's dialog, accepts it, and returns
+// the page's nth (0-based) load outcome, expecting PJ_FILE_LOAD_OK (a failure
+// shows the loader's log).
+async function importFile(page, screen, consoleMessages, file, inDialog = async () => {}, nth = 0) {
   const chooser = await openFileChooser(page, screen);
   await chooser.setFiles(file);
   await page.waitForTimeout(1500);
@@ -107,16 +108,17 @@ async function importFile(page, screen, consoleMessages, file, inDialog = async 
     { timeout: 30000 }).toBe(true);
   await inDialog();
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
-  return loadOkLine(page, consoleMessages);
+  return loadOkLine(page, consoleMessages, nth);
 }
 
-// Waits for the first load outcome and returns it, expecting PJ_FILE_LOAD_OK (a
-// timeout shows the loader's log). The probe records the outcome in the page
-// too: Firefox can drop the console line.
-async function loadOkLine(page, consoleMessages) {
+// Waits for the page's nth (0-based) load outcome and returns it, expecting
+// PJ_FILE_LOAD_OK (a timeout shows the loader's log). The probe records the
+// outcome in the page too: Firefox can drop the console line.
+async function loadOkLine(page, consoleMessages, nth = 0) {
   let line = '';
   try {
-    await expect.poll(async () => (line = await firstLoadOutcome(page, 'PJ_FILE_LOAD_')), { timeout: 30000 }).not.toBe('');
+    await expect.poll(async () => (line = (await loadOutcomes(page, 'PJ_FILE_LOAD_'))[nth] || ''),
+      { timeout: 30000 }).not.toBe('');
   } catch (error) {
     const log = consoleMessages.slice(-40).join('\n');
     throw new Error(`${error.message}\nLast app log lines:\n${log}`);
@@ -125,19 +127,8 @@ async function loadOkLine(page, consoleMessages) {
   return line;
 }
 
-// Imports sample.parquet as `name` and returns the n-th (1-based) load outcome of the page.
-async function importParquet(page, screen, consoleMessages, nth, name) {
-  const chooser = await openFileChooser(page, screen);
-  await chooser.setFiles({ name, mimeType: 'application/octet-stream',
-    buffer: base64Fixture('sample.parquet.b64') });
-  await expect.poll(async () => (await activeDialogButtonGeometry(page)).ok.x >= 0,
-    { timeout: 30000 }).toBe(true);
-  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
-  let line = '';
-  await expect.poll(async () => (line = (await loadOutcomes(page, 'PJ_FILE_LOAD_'))[nth] || ''),
-    { timeout: 30000 }).not.toBe('');
-  expect(line).toContain('PJ_FILE_LOAD_OK');
-  return line;
+function parquetFile(name) {
+  return { name, mimeType: 'application/octet-stream', buffer: base64Fixture('sample.parquet.b64') };
 }
 
 // The samples of one series: count, time span (ns), first and last value. A
@@ -251,7 +242,7 @@ function recordSideModuleFetches(page) {
 
 // With PJ_WASM_ARROW_SIDE_MODULE the Arrow plugins are the side module plugins/arrow.wasm: neither the boot nor
 // another import fetches it, the first Parquet import does, once. Skipped for a package built without it.
-test('the Arrow side module is fetched by the first Parquet import only', async ({ page, request }) => {
+test('the Arrow side module is fetched by the first Parquet import only', async ({ page, request, browserName }) => {
   test.setTimeout(120000);
   test.skip(!await hasArrowSideModule(request), 'the package has no Arrow side module');
   const fetches = recordSideModuleFetches(page);
@@ -267,19 +258,62 @@ test('the Arrow side module is fetched by the first Parquet import only', async 
   expect(fetches).toEqual([]);
 
   const picked = Date.now();
-  const outcome = await importParquet(page, screen, consoleMessages, 1, 'first.parquet');
+  const outcome = await importFile(page, screen, consoleMessages, parquetFile('first.parquet'), undefined, 1);
   const firstMs = Date.now() - picked;
   const loaded = await page.evaluate(() => globalThis.pjWasmSideModule);
   expect(loaded).toMatch(/bytes=\d+ fetch_ms=\d+ link_ms=\d+/);
   expect(seriesSamples(outcome, '/value', consoleMessages)).toMatchObject({ count: 3, first: 1.5, last: 4.5 });
-  // A second import reuses the linked module: no second download.
+  // A second import reuses the linked module: no second download, no second link.
   const again = Date.now();
-  await importParquet(page, screen, consoleMessages, 2, 'second.parquet');
+  await importFile(page, screen, consoleMessages, parquetFile('second.parquet'), undefined, 2);
   const secondMs = Date.now() - again;
+  expect(await page.evaluate(() => globalThis.pjWasmSideModule)).toBe(loaded);
   test.info().annotations.push({ type: 'side-module', description: `${loaded} first_import_ms=${firstMs} second_import_ms=${secondMs}` });
   console.log(`PJ_TEST_SIDE_MODULE ${loaded} first_import_ms=${firstMs} second_import_ms=${secondMs} fetches=${fetches.length}`);
-  expect(fetches.length).toBeLessThanOrEqual(1);
+  if (browserName === 'chromium') {
+    expect(fetches).toHaveLength(1);
+  } else {
+    // Firefox does not report a worker's requests to the context: only an upper bound is observable.
+    expect(fetches.length).toBeLessThanOrEqual(1);
+  }
   expect(errors).toEqual([]);
+});
+
+// A failed download is not remembered: the next Parquet import downloads the module again and loads.
+test('a failed Arrow side module download is retried by the next Parquet import', async ({ page, request }) => {
+  test.setTimeout(120000);
+  test.skip(!await hasArrowSideModule(request), 'the package has no Arrow side module');
+  let refused = 0;
+  await page.context().route('**/plugins/arrow.wasm', route => {
+    if (refused === 0) {
+      refused += 1;
+      return route.fulfill({ status: 503, body: 'unavailable' });
+    }
+    return route.continue();
+  });
+  const consoleMessages = [];
+  const errors = [];
+  const screen = await boot(page, consoleMessages, errors);
+
+  const chooser = await openFileChooser(page, screen);
+  await chooser.setFiles(parquetFile('first.parquet'));
+  // Ends on the failure, or on the loader's dialog where the refusal never happened.
+  let failed = '';
+  await expect.poll(async () => (failed = (await loadOutcomes(page, 'PJ_FILE_LOAD_'))[0] || '') !== ''
+    || (await activeDialogButtonGeometry(page)).ok.x >= 0, { timeout: 30000 }).toBe(true);
+  // Firefox does not route a worker's requests: the download then succeeds and there is nothing to retry.
+  test.skip(refused === 0, 'this browser does not route the worker\'s request');
+  expect(failed).toContain('PJ_FILE_LOAD_FAILED');
+  expect(failed).toContain('HTTP 503');
+  // Dismiss the failure's warning, if the app shows one.
+  await page.waitForTimeout(500);
+  if ((await activeDialogButtonGeometry(page)).ok.x >= 0) {
+    await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+  }
+
+  const outcome = await importFile(page, screen, consoleMessages, parquetFile('second.parquet'), undefined, 1);
+  expect(seriesSamples(outcome, '/value', consoleMessages)).toMatchObject({ count: 3, first: 1.5, last: 4.5 });
+  expect(await page.evaluate(() => globalThis.pjWasmSideModule)).toMatch(/bytes=\d+/);
 });
 
 test('official Arrow IPC parser decodes an MCAP channel', async ({ page }) => {

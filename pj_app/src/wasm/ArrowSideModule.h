@@ -33,8 +33,9 @@ namespace pj_app::arrow_side_module {
 // Whether registerWith() has run: the catalog then has the family. Main thread.
 [[nodiscard]] bool isRegistered();
 
-// Fetches plugins/arrow.wasm into the in-memory filesystem and dlopen()s it, once: later calls return the first
-// outcome without doing anything. Empty on success, else why it failed. Blocks for the download and the link.
+// Fetches plugins/arrow.wasm into the in-memory filesystem and dlopen()s it. Empty on success, else why it failed.
+// A failed download (HTTP or network error, 60 s timeout) is retried by the next call; once dlopen() has run, later
+// calls return its outcome without doing anything. Blocks for the download and the link.
 // NEVER on the main thread: the browser refuses to compile a module this large synchronously there, and dlopen()
 // waits for every thread to link the module too, which deadlocks a main thread that cannot return to the browser.
 QString loadBlocking();

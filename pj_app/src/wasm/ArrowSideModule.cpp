@@ -16,13 +16,15 @@
 #include <QThread>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <memory>
 #include <mutex>
-#include <nlohmann/json.hpp>
 #include <optional>
 
 #include "arrow_manifest.hpp"
 #include "data_exporter_manifest.hpp"
 #include "parquet_manifest.hpp"
+#include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "wasm/arrow_side_module_abi.h"
 
@@ -46,20 +48,33 @@ struct Manifests {
   QString toolbox_name;
 };
 
+// The SDK's decoder, as the catalog reads a plugin's manifest: a malformed one fails here, not in the user's hands.
+PJ::PluginDescriptor decode(PJ::PluginFamily family, const char* manifest_json) {
+  auto descriptor = PJ::decodeManifest(std::filesystem::path{kModuleUrl}, family, manifest_json);
+  if (!descriptor) {
+    qFatal("%s: bad embedded manifest: %s", kModuleUrl, descriptor.error().c_str());
+  }
+  return std::move(*descriptor);
+}
+
 const Manifests& manifests() {
   static const Manifests kManifests = []() {
     Manifests m;
-    const auto parquet = nlohmann::json::parse(kParquetManifest);
     QStringList patterns;
-    for (const auto& ext : parquet.value("file_extensions", nlohmann::json::array())) {
-      m.file_extensions << QString::fromStdString(ext.get<std::string>()).toLower();
-      patterns << u"*"_s + m.file_extensions.back();
+    for (const auto& ext : decode(PJ::PluginFamily::kDataSource, kParquetManifest).file_extensions) {
+      // As the catalog normalises it (leading '.', ASCII case fold): what FileLoader looks up.
+      QString normalised = QString::fromStdString(ext).toLower();
+      if (!normalised.startsWith(u'.')) {
+        normalised.prepend(u'.');
+      }
+      m.file_extensions << normalised;
+      patterns << u"*"_s + normalised;
     }
     m.file_patterns = patterns.join(u' ');
-    m.encodings = nlohmann::json::parse(kArrowManifest).value("encoding", std::vector<std::string>{});
-    const auto exporter = nlohmann::json::parse(kDataExporterManifest);
-    m.toolbox_id = QString::fromStdString(exporter.value("id", ""));
-    m.toolbox_name = QString::fromStdString(exporter.value("name", ""));
+    m.encodings = decode(PJ::PluginFamily::kMessageParser, kArrowManifest).encoding;
+    const auto exporter = decode(PJ::PluginFamily::kToolbox, kDataExporterManifest);
+    m.toolbox_id = QString::fromStdString(exporter.id);
+    m.toolbox_name = QString::fromStdString(exporter.name);
     return m;
   }();
   return kManifests;
@@ -78,12 +93,15 @@ QString fetchModule(size_t& bytes) {
   emscripten_fetch_attr_init(&attr);
   std::strcpy(attr.requestMethod, "GET");
   attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
+  attr.timeoutMSecs = 60000;  // a stalled download fails (and is retried by the next use) instead of hanging the load
   emscripten_fetch_t* fetch = emscripten_fetch(&attr, kModuleUrl);
   if (fetch == nullptr) {
     return u"could not request %1"_s.arg(QLatin1StringView(kModuleUrl));
   }
   QString error;
-  if (fetch->status != 200) {
+  if (fetch->status == 0) {
+    error = u"downloading %1 failed (network error or timeout)"_s.arg(QLatin1StringView(kModuleUrl));
+  } else if (fetch->status != 200) {
     error = u"downloading %1 failed (HTTP %2)"_s.arg(QLatin1StringView(kModuleUrl)).arg(fetch->status);
   } else {
     bytes = static_cast<size_t>(fetch->numBytes);
@@ -154,11 +172,14 @@ QString loadBlocking() {
   Q_ASSERT(!QThread::isMainThread());
   const double start = emscripten_get_now();
   size_t bytes = 0;
-  QString error = fetchModule(bytes);
-  const double fetched = emscripten_get_now();
-  if (error.isEmpty()) {
-    error = linkModule();
+  if (QString error = fetchModule(bytes); !error.isEmpty()) {
+    // Not cached: nothing was linked, so the next use downloads again (a 503, a dropped connection, a timeout).
+    qCWarning(lcSideModule).noquote() << "PJ_WASM_SIDE_MODULE_FAILED" << kModuleUrl << error;
+    return error;
   }
+  const double fetched = emscripten_get_now();
+  // Cached either way from here: dlopen() was attempted, and Emscripten cannot retry or undo a partial link.
+  const QString error = linkModule();
   const double linked = emscripten_get_now();
   g_timing = u"bytes=%1 fetch_ms=%2 link_ms=%3"_s.arg(static_cast<qulonglong>(bytes))
                  .arg(qRound(fetched - start))
@@ -186,23 +207,26 @@ void registerWith(PJ::ExtensionCatalogService& catalog) {
   if (!catalog.registerLatePlugins(g_plugins)) {
     qCWarning(lcSideModule) << "Some plugins of" << kModuleUrl << "failed to register";
   }
+#ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   // Read by the browser tests: Firefox can drop the console line above.
   const QByteArray timing = g_timing.toUtf8();
   EM_ASM({ globalThis.pjWasmSideModule = UTF8ToString($0); }, timing.constData());
+#endif
 }
 
 void ensureLoaded(PJ::ExtensionCatalogService& catalog, QObject* context, std::function<void(const QString&)> done) {
-  QThread* thread = QThread::create([]() { (void)loadBlocking(); });
+  // Written by the worker before `finished`, read after it: a failed download is not cached, so it cannot be asked
+  // for again here, on the main thread.
+  auto error = std::make_shared<QString>();
+  QThread* thread = QThread::create([error]() { *error = loadBlocking(); });
   QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
   QObject::connect(
       thread, &QThread::finished, context,
-      [&catalog, done = std::move(done)]() {
-        // The worker has finished loadBlocking(): this only reads the outcome it cached.
-        const QString error = loadBlocking();
-        if (error.isEmpty()) {
+      [&catalog, error, done = std::move(done)]() {
+        if (error->isEmpty()) {
           registerWith(catalog);
         }
-        done(error);
+        done(*error);
       },
       Qt::QueuedConnection);
   thread->start();

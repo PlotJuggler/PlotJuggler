@@ -77,8 +77,7 @@ set(_pj_arrow_libs
     "${_pj_arrow_prefix}/lib/libparquet.a"
     "${_pj_arrow_prefix}/lib/libarrow.a"
     "${_pj_arrow_prefix}/lib/libarrow_bundled_dependencies.a")
-# A side module exports every symbol it does not hide, and those would win over the main module's own libc++ and
-# SDK symbols at its link (cmake/PjWasmArrow.cmake).
+# Hidden in the side module, which must export nothing but its entry point (docs/WASM_DEPLOYMENT.md).
 set(_pj_arrow_visibility "")
 if(PJ_WASM_ARROW_SIDE_MODULE)
     set(_pj_arrow_visibility "-fvisibility=hidden -fvisibility-inlines-hidden -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS")
@@ -159,8 +158,7 @@ add_dependencies(pj_wasm_arrow pj_wasm_arrow_ep)
 target_include_directories(pj_wasm_arrow SYSTEM INTERFACE "${_pj_arrow_prefix}/include")
 target_compile_definitions(pj_wasm_arrow INTERFACE ARROW_STATIC PARQUET_STATIC)
 target_link_libraries(pj_wasm_arrow INTERFACE ${_pj_arrow_libs} zstd::libzstd_static LZ4::lz4_static)
-# The sysroot's zlib is not position independent: a side module (PJ_WASM_ARROW_SIDE_MODULE) imports it from the
-# main module, which links it anyway.
+# The side module imports zlib from the main module (docs/WASM_DEPLOYMENT.md).
 if(NOT PJ_WASM_ARROW_SIDE_MODULE)
     target_link_libraries(pj_wasm_arrow INTERFACE ZLIB::ZLIB)
 endif()

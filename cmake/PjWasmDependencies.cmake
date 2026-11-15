@@ -55,9 +55,7 @@ include(CMakeDependentOption)
 cmake_dependent_option(PJ_WASM_ARROW_SIDE_MODULE "Ship the Arrow plugin family as a side module loaded on demand" ON
     "PJ_WASM_WITH_ARROW_PARSER;PJ_WASM_WITH_PARQUET;PJ_WASM_WITH_DATA_EXPORTER" OFF)
 if(PJ_WASM_ARROW_SIDE_MODULE)
-    # A main module (-sMAIN_MODULE) is relocatable: wasm-ld refuses a non-PIC object that takes the table index of
-    # a symbol the dynamic linker may resolve (protobuf and Abseil do, through __cxa_end_catch). Every target
-    # created from here on, in-tree or fetched, is position independent; ExternalProject builds that do not
+    # The main module is position independent too (docs/WASM_DEPLOYMENT.md); ExternalProject builds that do not
     # inherit this get -fPIC in their own flags (PjWasmFfmpeg).
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()

@@ -1606,6 +1606,9 @@ class MainWindow : public QMainWindow {
   // and reported through the diagnostic sink.
   [[nodiscard]] QDomElement savePinnedToolboxes(QDomDocument& doc) const;
   bool restorePinnedToolboxes(const QDomElement& root, MissingCurvePolicy policy);
+  // Bumped by each restorePinnedToolboxes that replaces the pinned set: a pinned launch still waiting for its plugin
+  // (a WASM side module) is dropped once a newer restore superseded the one that asked for it.
+  quint64 pinned_restore_generation_ = 0;
 
   // The single commit boundary of a layout open: runs what must happen only
   // once every abort/rollback path has returned — replacing the pinned

@@ -1280,6 +1280,21 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   if (disallowed()) {
     co_return;
   }
+  // A cancel ("Remove All" / "Stop") issued while the prologue sat suspended set cancel_mode_ but had no worker to
+  // observe it. Honour it rather than letting the cancel_mode_.store(0) at ingest start silently wipe it.
+  // (shutting_down_ is handled separately by joinForShutdown, which destroys the frame outright.)
+  const auto cancelled_while_suspended = [&](const char* where) -> bool {
+    if (cancel_mode_.load() == 0) {
+      return false;
+    }
+    qCInfo(lcFileLoader) << "[FileLoader] load cancelled while suspended" << where;
+    cancel_mode_.store(0);
+    erase_created_live_dataset();
+    rollback_tombstones();
+    emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
+    emit fileLoadFailed(source_identity, tr("Load cancelled"));
+    return true;
+  };
 
   const QString ext = normalizeExtension(input.display_name);
   if (ext.isEmpty()) {
@@ -1296,6 +1311,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     GuiResumingWorkerAwaiter side_module_awaiter(
         this, worker_, [&side_module_error]() { side_module_error = pj_app::arrow_side_module::loadBlocking(); });
     co_await std::move(side_module_awaiter);
+    if (disallowed() || cancelled_while_suspended("loading its side module")) {
+      co_return;
+    }
     if (!side_module_error.isEmpty()) {
       (void)fail(tr("Could not load the %1 loader: %2").arg(ext, side_module_error));
       co_return;
@@ -1673,18 +1691,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   }
 
-  // A cancel ("Remove All" / "Stop") issued while this prologue sat suspended at
-  // its config dialog set cancel_mode_ but had no worker to observe it. Honor it
-  // here rather than letting the cancel_mode_.store(0) below silently wipe it:
-  // roll back any partial state and abandon the load. (shutting_down_ is handled
-  // separately by joinForShutdown, which destroys the frame outright.)
-  if (cancel_mode_.load() != 0) {
-    qCInfo(lcFileLoader) << "[FileLoader] load cancelled while suspended at its config dialog";
-    cancel_mode_.store(0);
-    erase_created_live_dataset();
-    rollback_tombstones();
-    emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
-    emit fileLoadFailed(source_identity, tr("Load cancelled"));
+  if (cancelled_while_suspended("at its config dialog")) {
     co_return;
   }
 
