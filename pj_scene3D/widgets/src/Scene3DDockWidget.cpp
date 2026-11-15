@@ -1396,7 +1396,9 @@ void Scene3DDockWidget::refreshFrameOverlayCombo() {
   };
   bool unchanged = frame_overlay_combo_->count() == available_frames_.size();
   for (int i = 0; unchanged && i < available_frames_.size(); ++i) {
-    unchanged = frame_overlay_combo_->itemText(i) == display_of(available_frames_[i]);
+    const auto& row = available_frames_[i];
+    unchanged = frame_overlay_combo_->itemText(i) == display_of(row) &&
+                frame_overlay_combo_->itemData(i).toString() == QString::fromStdString(row.name);
   }
   if (!unchanged) {
     frame_overlay_combo_->clear();

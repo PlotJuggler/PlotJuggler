@@ -14,11 +14,13 @@
 
 #include <gtest/gtest.h>
 
+#include <QAbstractItemModel>
 #include <QApplication>
 #include <QComboBox>
 #include <QDomDocument>
 #include <QDomElement>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
 #include <cstdint>
@@ -256,7 +258,11 @@ TEST(Scene3DDockFixedFrame, OverlayComboFollowsFixedFrameOverUnchangedFrames) {
   EXPECT_EQ(combo->currentData().toString(), u"map"_s);
 
   dock.setFixedFrame(u"base_link"_s);
+  QSignalSpy removed(combo->model(), &QAbstractItemModel::rowsRemoved);
+  QSignalSpy reset(combo->model(), &QAbstractItemModel::modelReset);
   dock.sceneView()->refreshAvailableFrames();  // same frames again
+  EXPECT_EQ(removed.count(), 0) << "an unchanged frame list must not rebuild the rows";
+  EXPECT_EQ(reset.count(), 0);
   EXPECT_EQ(combo->count(), 3);
   EXPECT_EQ(combo->currentData().toString(), u"base_link"_s);
 

@@ -556,6 +556,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     MAIN gui WARNINGS
     SOURCES ${PJ_SCENE3D_WIDGET_PLAIN_TESTS}
     LIBS pj_scene3d_widgets pj_scene3d_widgets_testing pj_scene_common pj_widgets pj_resources glm::glm Qt6::Network
+         Qt6::Test
   )
   # These tests stand up in-process QTcpServer endpoints / talk Qt networking
   # directly; pj_scene3d_widgets links Qt6::Network only PRIVATEly.
