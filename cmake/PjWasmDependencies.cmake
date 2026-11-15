@@ -55,8 +55,8 @@ include(CMakeDependentOption)
 cmake_dependent_option(PJ_WASM_ARROW_SIDE_MODULE "Ship the Arrow plugin family as a side module loaded on demand" ON
     "PJ_WASM_WITH_ARROW_PARSER;PJ_WASM_WITH_PARQUET;PJ_WASM_WITH_DATA_EXPORTER" OFF)
 if(PJ_WASM_ARROW_SIDE_MODULE)
-    # The main module is position independent too (docs/WASM_DEPLOYMENT.md); ExternalProject builds that do not
-    # inherit this get -fPIC in their own flags (PjWasmFfmpeg).
+    # The main module is position independent too (docs/WASM_DEPLOYMENT.md). ExternalProject builds do not inherit
+    # this: FFmpeg and dav1d stay as they are without the option (dav1d is PIC anyway, FFmpeg need not be).
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 

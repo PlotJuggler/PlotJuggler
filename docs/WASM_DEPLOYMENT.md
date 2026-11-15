@@ -146,9 +146,10 @@ Rules the mechanism depends on:
   refuses a non-PIC object that takes the table index of a symbol the dynamic
   linker may resolve (protobuf and Abseil do, through `__cxa_end_catch`), so the
   option turns on `CMAKE_POSITION_INDEPENDENT_CODE` for every target
-  (`cmake/PjWasmDependencies.cmake`) and passes `--enable-pic` to FFmpeg's
-  configure (`cmake/PjWasmFfmpeg.cmake`). With the option off, FFmpeg stays
-  absolute-addressed, as before the side module existed.
+  (`cmake/PjWasmDependencies.cmake`). FFmpeg and dav1d (ExternalProject builds)
+  are built exactly as without the option: dav1d is position independent anyway,
+  and FFmpeg's absolute-addressed objects take no such table index, so they link
+  into the main module as they are.
 - **Every JS function whose address the main module takes has a signature.**
   JS exception handling calls anything that can throw through `invoke_*`, which
   takes the callee's address; the startup linker wraps it with

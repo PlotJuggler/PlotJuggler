@@ -91,11 +91,6 @@ ExternalProject_Add(pj_wasm_dav1d_build
     TEST_COMMAND ""
     EXCLUDE_FROM_ALL TRUE)
 
-# dav1d is already position independent (meson's b_staticpic defaults to true); FFmpeg's configure is not.
-set(_pj_wasm_ffmpeg_pic "")
-if(PJ_WASM_ARROW_SIDE_MODULE)
-    set(_pj_wasm_ffmpeg_pic --enable-pic)
-endif()
 set(_pj_wasm_ffmpeg_libs avcodec swscale avutil)
 set(_pj_wasm_ffmpeg_archives "")
 foreach(_lib IN LISTS _pj_wasm_ffmpeg_libs)
@@ -117,7 +112,7 @@ ExternalProject_Add(pj_wasm_ffmpeg_build
         "--ranlib=${_pj_wasm_emranlib}" "--nm=${_pj_wasm_emnm}" "--pkg-config=${PJ_WASM_PKG_CONFIG}"
         --disable-asm --disable-inline-asm --disable-x86asm --disable-runtime-cpudetect
         --enable-pthreads --disable-w32threads --disable-os2threads
-        "--extra-cflags=-pthread -O3" "--extra-ldflags=-pthread" ${_pj_wasm_ffmpeg_pic}
+        "--extra-cflags=-pthread -O3" "--extra-ldflags=-pthread"
         # The LGPL-critical set shared with recipes/ffmpeg/build_ffmpeg.sh.
         --disable-gpl --disable-nonfree --disable-autodetect --disable-iconv
         --enable-static --disable-shared --disable-programs --disable-doc --disable-debug
