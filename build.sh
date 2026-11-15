@@ -402,6 +402,15 @@ if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
   # never load. The lockfile is skipped with it: it pins the app graph, not this
   # one.
   conan_recipe="$SCRIPT_DIR"
+  # Linux: ConanCenter's luau recipe has no fPIC option and its prebuilt Release
+  # binary is not PIC, so it cannot link into PIE executables. -fPIC in luau's
+  # package_id makes Conan build it here (once, then cached) instead. Keep in sync
+  # with linux-ci.yml, linux-appimage-release.yml and Dockerfile.build.
+  CONAN_LUAU_PIC_ARGS=()
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    CONAN_LUAU_PIC_ARGS=(-c "luau/*:tools.build:cxxflags=['-fPIC']"
+      -c "luau/*:tools.info.package_id:confs=['tools.build:cxxflags']")
+  fi
   conan_lock_args=(${CONAN_LOCKFILE_ARGS[@]+"${CONAN_LOCKFILE_ARGS[@]}"})
   if [[ "$MSAN" == "1" ]]; then
     conan_recipe="$SCRIPT_DIR/cmake/msan"
@@ -410,6 +419,7 @@ if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
   conan install "$conan_recipe" --output-folder="$BUILD_DIR" --build=missing \
     ${conan_lock_args[@]+"${conan_lock_args[@]}"} \
     -s build_type=Release -s compiler.cppstd=20 \
+    ${CONAN_LUAU_PIC_ARGS[@]+"${CONAN_LUAU_PIC_ARGS[@]}"} \
     ${CONAN_LANE_ARGS[@]+"${CONAN_LANE_ARGS[@]}"} "${CONAN_REMOTE_ARGS[@]}"
 elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
   echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2
