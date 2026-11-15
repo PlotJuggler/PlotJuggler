@@ -43,6 +43,7 @@
 #include <string>
 
 #include "BrowserPersistence.h"
+#include "BundledFont.h"
 #include "DebugMode.h"
 #ifndef PJ_TARGET_WASM
 #include "DiagnosticDump.h"
@@ -360,18 +361,14 @@ int main(int argc, char* argv[]) {
   PJ::scripting::prestartPythonHelper();
 #endif
 
-  // Register the bundled Noto Sans and apply it as the application font, before
-  // any window is built so every widget — and every plugin dialog, which
-  // inherits the app font — uses it. The variable font spans the whole weight
-  // axis, so font-weight 400/600/700 resolve to real masters (not synthesized
-  // bold). The QSS never declares a font-family, so this family flows through
-  // untouched; only font-size is styled.
-  if (QFontDatabase::addApplicationFont(u":/resources/fonts/NotoSans/NotoSans-Variable.ttf"_s) < 0) {
-    qWarning("Failed to load bundled Noto Sans font");
+  // Register the bundled PlotJuggler Sans (its Bold is a 600, see resources/fonts/PlotJugglerSans/README.md) and
+  // apply it as the application font, before any window is built so every widget — and every plugin dialog, which
+  // inherits the app font — uses it. The QSS never declares a font-family; only font-size is styled.
+  if (const QString family = PJ::registerBundledFont(u":/resources/fonts/PlotJugglerSans"_s); !family.isEmpty()) {
+    QFont app_font = QApplication::font();
+    app_font.setFamily(family);
+    QApplication::setFont(app_font);
   }
-  QFont app_font = QApplication::font();
-  app_font.setFamily(u"Noto Sans"_s);
-  QApplication::setFont(app_font);
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
   // specificity battles by directly tagging menus and palette-painting

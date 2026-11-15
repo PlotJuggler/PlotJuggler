@@ -336,9 +336,10 @@ endif()
 if(EMSCRIPTEN)
     qt_add_executable(pj_app
         src/main.cpp
+        src/BundledFont.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
 else()
-    add_executable(pj_app src/main.cpp)
+    add_executable(pj_app src/main.cpp src/BundledFont.cpp)
 endif()
 set_target_properties(pj_app PROPERTIES
     # The CMake target id stays `pj_app` (internal module name), but the installed
@@ -486,6 +487,7 @@ if(PJ_BUILD_TESTS)
         MAIN gui
         SOURCES
             tests/browser_file_store_test.cpp
+            tests/bundled_font_test.cpp
             tests/browser_persistence_test.cpp
             tests/file_selection_service_test.cpp
             tests/fanout_config_test.cpp
@@ -496,6 +498,7 @@ if(PJ_BUILD_TESTS)
             tests/raster_key_map_test.cpp
             src/BrowserFileStore.cpp
             src/BrowserFileStore.h
+            src/BundledFont.cpp
             src/LoadInput.h
             src/BrowserPersistence.cpp
             src/BrowserPersistence.h
@@ -513,6 +516,8 @@ if(PJ_BUILD_TESTS)
         LIBS Qt6::Widgets Qt6::Xml
     )
     set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
+    target_compile_definitions(pj_app_unit_tests PRIVATE
+        PJ_BUNDLED_FONT_DIR="${CMAKE_SOURCE_DIR}/resources/fonts/PlotJugglerSans")
     # The MCP server's HTTP and JSON-RPC gates (desktop only, like the server).
     if(NOT EMSCRIPTEN)
         target_sources(pj_app_unit_tests PRIVATE tests/mcp_protocol_test.cpp src/mcp/McpProtocol.cpp)

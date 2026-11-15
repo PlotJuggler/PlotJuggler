@@ -1926,7 +1926,7 @@ test('two split QRhi plots render distinct curves and synchronize playback track
 
   expect(consoleMessages.some(message => message.includes('PJ_WASM_PLOT_RHI_FAILED'))).toBe(false);
   expect(consoleMessages.some(message => message.includes('PJ_WASM_MULTI_FAILED'))).toBe(false);
-  expect(consoleMessages.some(message => message.includes('Failed to load bundled Noto Sans font'))).toBe(false);
+  expect(consoleMessages.some(message => message.includes('Failed to load bundled PlotJuggler Sans font'))).toBe(false);
   expect(errors).toEqual([]);
 });
 
