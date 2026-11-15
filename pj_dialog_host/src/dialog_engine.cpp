@@ -461,11 +461,18 @@ struct DialogEngine::AsyncRunner {
     // MEMFS copy alive because the plugin may re-read backing_path any time until
     // the dialog completes (e.g. on accept, when it opens the file for real). We
     // key by a scope-qualified name (top-level dialog vs. parser sub-dialog +
-    // generation — see the completion below) and REPLACE on re-selection so a
-    // superseded pick frees its staged copy immediately instead of pinning every
-    // intermediate choice until dialog close. A pick the plugin rejects retains
-    // nothing.
-    std::vector<std::pair<std::string, std::shared_ptr<void>>> selected_file_leases;
+    // generation — see the completion below). A re-selection supersedes the
+    // widget's pick, but one picker can serve several entries of the config (a
+    // CAN loader's DBC per interface), so the superseded pick is set aside and
+    // handed over on accept only if the accepted config still names its path.
+    // A pick the plugin rejects retains nothing.
+    struct SelectedFileLease {
+      std::string key;
+      std::string path;
+      std::shared_ptr<void> lease;
+    };
+    std::vector<SelectedFileLease> selected_file_leases;
+    std::vector<SelectedFileLease> superseded_file_leases;
     bool file_picker_active = false;
     std::uint64_t parser_dialog_generation = 0;
 
@@ -511,8 +518,8 @@ struct DialogEngine::AsyncRunner {
         config_.file_selector(
             dialog, filter, title,
             [callbacks_alive, &file_picker_active, &parser_dialog_generation, targets_parser, target_generation,
-             widget_name, apply_selected_path = std::move(apply_selected_path),
-             &selected_file_leases](std::optional<DialogSelectedFile> selected) mutable {
+             widget_name, apply_selected_path = std::move(apply_selected_path), &selected_file_leases,
+             &superseded_file_leases](std::optional<DialogSelectedFile> selected) mutable {
               if (!*callbacks_alive) {
                 return;
               }
@@ -535,11 +542,12 @@ struct DialogEngine::AsyncRunner {
                                                   : "top:" + widget_name;
                 auto existing = std::find_if(
                     selected_file_leases.begin(), selected_file_leases.end(),
-                    [&](const auto& entry) { return entry.first == lease_key; });
+                    [&](const auto& entry) { return entry.key == lease_key; });
                 if (existing != selected_file_leases.end()) {
-                  existing->second = std::move(selected->lease);
+                  superseded_file_leases.push_back(std::move(*existing));
+                  *existing = {lease_key, selected->backing_path, std::move(selected->lease)};
                 } else {
-                  selected_file_leases.emplace_back(lease_key, std::move(selected->lease));
+                  selected_file_leases.push_back({lease_key, selected->backing_path, std::move(selected->lease)});
                 }
               }
             });
@@ -1029,15 +1037,22 @@ struct DialogEngine::AsyncRunner {
     // 8. Notify plugin and clean up
     DialogResult dr;
     if (result == QDialog::Accepted) {
-      handle_.accept(handle_.save_config());
+      const std::string accepted_config = handle_.save_config();
+      handle_.accept(accepted_config);
       // Save parser config if a parser dialog was shown
       if (parser_dialog_handle) {
         parser_config_ = parser_dialog_handle->save_config();
       } else {
         parser_config_.clear();
       }
-      for (auto& [key, lease] : selected_file_leases) {
-        self.selected_files_.push_back(std::move(lease));
+      for (auto& entry : selected_file_leases) {
+        self.selected_files_.push_back(std::move(entry.lease));
+      }
+      for (auto& entry : superseded_file_leases) {
+        if (accepted_config.find(entry.path) != std::string::npos ||
+            parser_config_.find(entry.path) != std::string::npos) {
+          self.selected_files_.push_back(std::move(entry.lease));
+        }
       }
       dr = DialogResult::kAccepted;
     } else {

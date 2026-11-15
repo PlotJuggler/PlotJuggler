@@ -361,6 +361,31 @@ const PJ_dialog_vtable_t* filePickerDialogVtable() {
       R"({"id":"file-picker-dialog","name":"File Picker Dialog","version":"1.0.0"})");
 }
 
+// FilePickerDialog's UI, but every pick is kept: the config lists them all,
+// like a CAN loader's DBC per interface picked with one button.
+class MultiPathPickerDialog : public FilePickerDialog {
+ public:
+  bool onFileSelected(std::string_view widget_name, std::string_view path) override {
+    if (!FilePickerDialog::onFileSelected(widget_name, path)) {
+      return false;
+    }
+    paths_.emplace_back(path);
+    return true;
+  }
+  std::string saveConfig() const override {
+    return nlohmann::json{{"paths", paths_}}.dump();
+  }
+
+ private:
+  std::vector<std::string> paths_;
+};
+
+const PJ_dialog_vtable_t* multiPathPickerDialogVtable() {
+  return PJ::DialogPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return static_cast<PJ::DialogPluginBase*>(new MultiPathPickerDialog()); },
+      R"({"id":"multi-path-picker-dialog","name":"Multi Path Picker Dialog","version":"1.0.0"})");
+}
+
 // Top-level host with a parser slot AND its own top-level "pick_file" file
 // picker button — the SAME widget name the injected parser dialog
 // (FilePickerDialog, see filePickerDialogVtable()) also uses for its picker.
@@ -1107,9 +1132,9 @@ TEST_F(DialogEngineTest, AsyncFileSelectorStaleParserGenerationRejected) {
   EXPECT_FALSE(engine.isDialogOpen());
 }
 
-// Two consecutive selections for the same widget must retain only the second
-// lease — the first's staged MEMFS copy is freed the moment it is superseded,
-// not pinned until dialog close.
+// Two consecutive selections for the same widget: when the accepted config
+// names only the second, only its lease is handed over and the first's staged
+// copy is freed with the dialog.
 TEST_F(DialogEngineTest, AsyncFileSelectorReSelectionReplacesLease) {
   PJ::DialogFileSelectionCompletion picker_completion;
   PJ::DialogEngineConfig config;
@@ -1142,13 +1167,50 @@ TEST_F(DialogEngineTest, AsyncFileSelectorReSelectionReplacesLease) {
   picker_completion(PJ::DialogSelectedFile{.backing_path = "/staged/second.proto", .lease = second_lease});
   second_lease.reset();
 
-  EXPECT_TRUE(weak_first.expired()) << "re-selecting the same widget must free the previous staged copy";
   EXPECT_FALSE(weak_second.expired()) << "the current selection's lease must stay alive until dialog close";
 
   dialog->accept();
   EXPECT_EQ(nlohmann::json::parse(engine.savedConfig())["path"], "/staged/second.proto");
   EXPECT_EQ(engine.takeSelectedFiles().size(), 1U) << "only the current pick is handed over";
+  EXPECT_TRUE(weak_first.expired()) << "a superseded pick the config no longer names is freed";
   EXPECT_TRUE(weak_second.expired()) << "the retained lease should release once the caller drops it";
+}
+
+// One picker can fill several entries of the config (a CAN loader picks one
+// DBC per interface with the same button). A superseded pick the accepted
+// config still names must be handed over too, or the import would find its
+// staged copy gone.
+TEST_F(DialogEngineTest, AsyncFileSelectorKeepsSupersededPickTheConfigStillNames) {
+  PJ::DialogFileSelectionCompletion picker_completion;
+  PJ::DialogEngineConfig config;
+  config.file_selector = [&](QWidget*, const std::string&, const std::string&,
+                             PJ::DialogFileSelectionCompletion completion) {
+    picker_completion = std::move(completion);
+  };
+  PJ::DialogEngine engine{PJ::DialogHandle(multiPathPickerDialogVtable()), std::move(config)};
+  engine.openDialog(nullptr, [](PJ::DialogResult) {});
+
+  QDialog* dialog = visibleDialog();
+  ASSERT_NE(dialog, nullptr);
+  auto* pick = dialog->findChild<QPushButton*>(QStringLiteral("pick_file"));
+  ASSERT_NE(pick, nullptr);
+
+  std::vector<std::weak_ptr<int>> weak;
+  for (const char* path : {"/staged/can0.dbc", "/staged/can1.dbc"}) {
+    pick->click();
+    ASSERT_TRUE(picker_completion);
+    auto lease = std::make_shared<int>(0);
+    weak.push_back(lease);
+    picker_completion(PJ::DialogSelectedFile{.backing_path = path, .lease = std::move(lease)});
+  }
+
+  dialog->accept();
+  auto selected_files = engine.takeSelectedFiles();
+  EXPECT_EQ(selected_files.size(), 2U) << "both paths the config names are handed over";
+  EXPECT_FALSE(weak[0].expired()) << "the superseded pick for can0 stays staged";
+  selected_files.clear();
+  EXPECT_TRUE(weak[0].expired());
+  EXPECT_TRUE(weak[1].expired());
 }
 
 // A top-level dialog's own file picker and its injected parser sub-dialog's
