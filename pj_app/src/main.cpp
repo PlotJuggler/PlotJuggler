@@ -360,17 +360,20 @@ int main(int argc, char* argv[]) {
   PJ::scripting::prestartPythonHelper();
 #endif
 
-  // Register the bundled Noto Sans and apply it as the application font, before
-  // any window is built so every widget — and every plugin dialog, which
-  // inherits the app font — uses it. The variable font spans the whole weight
-  // axis, so font-weight 400/600/700 resolve to real masters (not synthesized
-  // bold). The QSS never declares a font-family, so this family flows through
-  // untouched; only font-size is styled.
-  if (QFontDatabase::addApplicationFont(u":/resources/fonts/NotoSans/NotoSans-Variable.ttf"_s) < 0) {
-    qWarning("Failed to load bundled Noto Sans font");
+  // Register the bundled PlotJuggler Sans (Noto Sans under its own family name, so a system-installed Noto Sans
+  // cannot replace it) and apply it as the application font, before any window is built so every widget — and
+  // every plugin dialog, which inherits the app font — uses it. Its Bold face is Noto Sans SemiBold, so every
+  // emphasis (setBold, <b>, font-weight bold or 600, QFont::DemiBold) renders a real 600, never synthesized bold
+  // (resources/fonts/PlotJugglerSans/README.md). The QSS never declares a font-family; only font-size is styled.
+  for (const auto& face :
+       {u":/resources/fonts/PlotJugglerSans/PlotJugglerSans-Regular.ttf"_s,
+        u":/resources/fonts/PlotJugglerSans/PlotJugglerSans-Bold.ttf"_s}) {
+    if (QFontDatabase::addApplicationFont(face) < 0) {
+      qWarning("Failed to load bundled PlotJuggler Sans font: %s", qPrintable(face));
+    }
   }
   QFont app_font = QApplication::font();
-  app_font.setFamily(u"Noto Sans"_s);
+  app_font.setFamily(u"PlotJuggler Sans"_s);
   QApplication::setFont(app_font);
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
