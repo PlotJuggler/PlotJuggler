@@ -229,20 +229,32 @@ test('official Parquet loader imports a browser-selected file', async ({ page })
   expect(errors).toEqual([]);
 });
 
-// With PJ_WASM_ARROW_SIDE_MODULE the Arrow plugins are the side module plugins/arrow.wasm: neither the boot nor
-// another import fetches it, the first Parquet import does, once. Skipped for a package built without it.
-test('the Arrow side module is fetched by the first Parquet import only', async ({ page, request }) => {
-  test.setTimeout(120000);
+// Whether the served package ships the Arrow family as the side module plugins/arrow.wasm
+// (PJ_WASM_ARROW_SIDE_MODULE).
+async function hasArrowSideModule(request) {
   const base = process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html';
   const manifest = await request.get(new URL('manifest.json', base).href).then(r => r.json()).catch(() => null);
-  test.skip(!manifest?.files?.some(file => file.path.endsWith('/plugins/arrow.wasm')),
-    'the package has no Arrow side module');
+  return Boolean(manifest?.files?.some(file => file.path.endsWith('/plugins/arrow.wasm')));
+}
+
+// The URLs of every arrow.wasm request the page's context makes, as they happen. Chromium reports the worker's
+// request; Firefox does not, so a count can only be bounded above.
+function recordSideModuleFetches(page) {
   const fetches = [];
   page.context().on('request', req => {
     if (req.url().includes('/plugins/arrow.wasm')) {
       fetches.push(req.url());
     }
   });
+  return fetches;
+}
+
+// With PJ_WASM_ARROW_SIDE_MODULE the Arrow plugins are the side module plugins/arrow.wasm: neither the boot nor
+// another import fetches it, the first Parquet import does, once. Skipped for a package built without it.
+test('the Arrow side module is fetched by the first Parquet import only', async ({ page, request }) => {
+  test.setTimeout(120000);
+  test.skip(!await hasArrowSideModule(request), 'the package has no Arrow side module');
+  const fetches = recordSideModuleFetches(page);
   const consoleMessages = [];
   const errors = [];
   const screen = await boot(page, consoleMessages, errors);
@@ -452,5 +464,61 @@ test('official Data Exporter downloads CSV and Parquet exports', async ({ page }
   expect(parquet.name).toMatch(/\.parquet$/);
   expect(parquet.bytes.subarray(0, 4).toString('latin1')).toBe('PAR1');
   expect(parquet.bytes.subarray(-4).toString('latin1')).toBe('PAR1');
+  expect(errors).toEqual([]);
+});
+
+// Opening the Data Exporter links the Arrow side module whatever format is picked later: a session that imported
+// no Parquet file gets a usable exporter, Parquet included, and opening it again downloads nothing.
+test('opening the Data Exporter loads the Arrow side module once', async ({ page, request }) => {
+  test.setTimeout(120000);
+  test.skip(!await hasArrowSideModule(request), 'the package has no Arrow side module');
+  const fetches = recordSideModuleFetches(page);
+  const consoleMessages = [];
+  const errors = [];
+  const screen = await boot(page, consoleMessages, errors);
+  await importFile(page, screen, consoleMessages, {
+    name: 'speeds.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('time,speed\n1,1.5\n2,2.5\n3,4.5\n'),
+  });
+  expect(await page.evaluate(() => globalThis.pjWasmSideModule)).toBeUndefined();
+  expect(fetches).toEqual([]);
+
+  const openExporter = async () => {
+    await page.evaluate(() => window.pjWasmOpenDataExporterProbe());
+    let widgets;
+    try {
+      await expect.poll(async () => {
+        widgets = await dialogWidgets(page);
+        return Boolean(widgets.buttonAddAllFiles && widgets.saveButton && widgets.parquetButton);
+      }, { timeout: 30000 }).toBe(true);
+    } catch (error) {
+      throw new Error(`${error.message}\nexporter controls: ${JSON.stringify(widgets)}`);
+    }
+    return widgets;
+  };
+
+  // First open: the module is linked, and a Parquet export works end to end (the export closes the toolbox).
+  const widgets = await openExporter();
+  const loaded = await page.evaluate(() => globalThis.pjWasmSideModule);
+  expect(loaded).toMatch(/bytes=\d+ fetch_ms=\d+ link_ms=\d+/);
+  const fetchesAfterFirstOpen = fetches.length;
+  expect(fetchesAfterFirstOpen).toBeLessThanOrEqual(1);
+  await page.mouse.click(screen.x + widgets.buttonAddAllFiles.x, screen.y + widgets.buttonAddAllFiles.y);
+  await page.mouse.click(screen.x + widgets.parquetButton.x, screen.y + widgets.parquetButton.y);
+  await page.waitForTimeout(1000);
+  const download = page.waitForEvent('download', { timeout: 30000 });
+  await page.mouse.click(screen.x + widgets.saveButton.x, screen.y + widgets.saveButton.y);
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/\.parquet$/);
+  const bytes = fs.readFileSync(await file.path());
+  expect(bytes.subarray(0, 4).toString('latin1')).toBe('PAR1');
+  expect(bytes.subarray(-4).toString('latin1')).toBe('PAR1');
+
+  // Second open: the linked module serves it, nothing is downloaded or linked again.
+  await openExporter();
+  expect(fetches.length).toBe(fetchesAfterFirstOpen);
+  expect(await page.evaluate(() => globalThis.pjWasmSideModule)).toBe(loaded);
+  console.log(`PJ_TEST_SIDE_MODULE_EXPORTER ${loaded} fetches=${fetches.length}`);
   expect(errors).toEqual([]);
 });
