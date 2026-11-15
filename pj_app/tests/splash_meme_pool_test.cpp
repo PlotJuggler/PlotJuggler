@@ -32,7 +32,7 @@ QStringList sourcePool() {
   return memesIn(QString::fromUtf8(PJ_MEMES_SOURCE_DIR));
 }
 
-// rcc has no globbing, so a meme reaches the splash only if resources.qrc lists
+// rcc has no globbing, so a meme reaches the splash only if memes.qrc lists
 // it explicitly. A file added to the directory but left out of the manifest is
 // invisible at runtime with no build error and no warning — it simply never
 // shows, and the only symptom is a meme nobody ever sees.
@@ -43,7 +43,7 @@ TEST(SplashMemePool, EveryMemeOnDiskIsListedInTheManifest) {
   const QStringList compiled = compiledPool();
   for (const QString& meme : on_disk) {
     EXPECT_TRUE(compiled.contains(meme)) << meme.toStdString()
-                                         << " exists in resources/memes/ but is missing from resources.qrc, "
+                                         << " exists in resources/memes/ but is missing from memes.qrc, "
                                          << "so the splash can never show it";
   }
 }
@@ -58,7 +58,7 @@ TEST(SplashMemePool, EveryCompiledMemeDecodes) {
   const QDir dir(u":/resources/memes"_s);
   for (const QString& meme : compiled) {
     EXPECT_FALSE(QPixmap(dir.filePath(meme)).isNull())
-        << meme.toStdString() << " is listed in resources.qrc but does not decode; the splash would come up blank";
+        << meme.toStdString() << " is listed in memes.qrc but does not decode; the splash would come up blank";
   }
 }
 

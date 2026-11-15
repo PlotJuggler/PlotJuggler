@@ -183,7 +183,13 @@ QPixmap capMemeToSplashBox(const QPixmap& pixmap) {
 QPixmap makeStartupSplash() {
   QSettings settings;
   const QString mode = settings.value(kSplashModeKey, kSplashModeMemes).toString();
-  return mode == kSplashModeSerious ? makeSeriousSplashscreen() : getFunnySplashscreen();
+  if (mode != kSplashModeSerious) {
+    // No meme pool in the browser build: fall back to the serious splash.
+    if (QPixmap meme = getFunnySplashscreen(); !meme.isNull()) {
+      return meme;
+    }
+  }
+  return makeSeriousSplashscreen();
 }
 
 }  // namespace PJ
