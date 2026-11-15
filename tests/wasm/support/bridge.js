@@ -7,16 +7,18 @@ const { requestMultiPlotState } = require('./plot_probes');
 const { streamPreset } = require('./preset_server');
 
 const BRIDGE_PLUGIN = '<plugin ID="PlotJuggler Bridge" manifest_id="plotjuggler-bridge">';
+const FOXGLOVE_PLUGIN = '<plugin ID="Foxglove Bridge" manifest_id="foxglove-bridge">';
 
 // Runs support/bridge_server.py (PJ_BRIDGE_PYTHON, default python3) on a free
-// port. `events` collects what it reports: connect/open/request/closed.
-async function startBridgeServer(args = []) {
+// port, or another server reporting the same way (support/foxglove_server.py).
+// `events` collects what it reports: connect/open/request/closed.
+async function startBridgeServer(args = [], script = 'bridge_server.py') {
   const server = spawn(process.env.PJ_BRIDGE_PYTHON || 'python3',
-    [path.join(__dirname, 'bridge_server.py'), ...args], { stdio: ['ignore', 'pipe', 'inherit'] });
+    [path.join(__dirname, script), ...args], { stdio: ['ignore', 'pipe', 'inherit'] });
   const events = [];
   const port = await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.once('exit', code => reject(new Error(`bridge_server.py exited with ${code}`)));
+    server.once('exit', code => reject(new Error(`${script} exited with ${code}`)));
     readline.createInterface({ input: server.stdout }).on('line', (line) => {
       const event = JSON.parse(line);
       events.push(event);
@@ -51,6 +53,9 @@ async function startBridgeServer(args = []) {
 // A layout with one PlotJuggler Bridge stream (id "robot") connecting to `url`.
 const robotPreset = (url, plots) => streamPreset(
   [{ id: 'robot', config: JSON.stringify({ url }), plugin: BRIDGE_PLUGIN }], plots);
+// The same with a Foxglove Bridge stream.
+const foxglovePreset = (url, plots) => streamPreset(
+  [{ id: 'robot', config: JSON.stringify({ url }), plugin: FOXGLOVE_PLUGIN }], plots);
 const COUNTER_AND_SINE = [
   { id: 'plot_counter', curves: [['/robot/counter', 'value', 'robot']] },
   { id: 'plot_sine', curves: [['/robot/sine', 'value', 'robot']] },
@@ -62,4 +67,4 @@ async function drawnPlots(page, messages) {
   return state.plots.filter(plot => plot.vertices > 0);
 }
 
-module.exports = { COUNTER_AND_SINE, drawnPlots, robotPreset, startBridgeServer };
+module.exports = { COUNTER_AND_SINE, drawnPlots, foxglovePreset, robotPreset, startBridgeServer };
