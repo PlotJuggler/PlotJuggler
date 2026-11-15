@@ -18,7 +18,7 @@ The default is `none`.
 
 All diagnostic lanes run in the existing `pj4-appimage-builder` container
 (Ubuntu 22.04). There is no sanitizer-specific image: the local builder already
-contains Qt and the RelWithDebInfo Conan dependency closure, and every lane
+contains Qt and the Release Conan dependency closure, and every lane
 reuses them. The instrumented lanes rebuild PJ4 and the pinned SDK from source.
 
 | Lanes | Compiler |

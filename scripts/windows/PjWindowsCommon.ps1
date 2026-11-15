@@ -14,7 +14,7 @@ $PjRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $PjBuildDir = Join-Path $PjRepoRoot 'build'
 # The one configuration every Windows tree builds (windows-ci.yml): the Conan
 # graph is resolved for it and every CMakeDeps generator expression is keyed on it.
-$PjConfig = 'RelWithDebInfo'
+$PjConfig = 'Release'
 
 # PlotJuggler's Artifactory Conan remote (anonymous read). It serves
 # plotjuggler_sdk to PJ4 and to pj-official-plugins alike; ConanCenter supplies

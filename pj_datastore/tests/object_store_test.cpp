@@ -1712,7 +1712,7 @@ TEST(ObjectStoreFlushTest, SrcUidOrderClearedAfterFlushAllowsSubsequentPushes) {
   // entries_[0] even if flushTo left a stale uid_order slot, so a one-entry check
   // passes vacuously; only a full walk whose length matches entryCount catches an
   // uncleared uid_order (the debug invariant assert that would otherwise trip is
-  // compiled out under NDEBUG / RelWithDebInfo).
+  // compiled out under NDEBUG / Release).
   ASSERT_TRUE(src.pushOwned(src_id, 400, makePayload(4, 0x77)).has_value());
   ASSERT_TRUE(src.pushOwned(src_id, 500, makePayload(4, 0x88)).has_value());
   auto walked = walkUids(src, src_id);

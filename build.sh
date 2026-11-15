@@ -44,7 +44,7 @@ usage() {
 # ThreadSanitizer in a separate build/tsan tree.
 # It guards the datastore worker-thread race regressions; the Linux CI `tsan` job
 # runs the same target set. TSan is wired via -DPJ_ENABLE_TSAN=ON on a normal
-# RelWithDebInfo configure, so the Conan dependency closure is reused as-is (no
+# Release configure, so the Conan dependency closure is reused as-is (no
 # Debug rebuild), except for the SDK, which must be built from source as well.
 PJ_SANITIZE="${PJ_SANITIZE-none}"
 TSAN=0
@@ -304,7 +304,7 @@ fi
 CMAKE_ARGS=(
   -S "$SCRIPT_DIR" -B "$BUILD_DIR"
   "-DCMAKE_TOOLCHAIN_FILE=$BUILD_DIR/conan_toolchain.cmake"
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo
+  -DCMAKE_BUILD_TYPE=Release
   "-DCMAKE_PREFIX_PATH=${QT_DIR}"
   "-DPJ_SDK_LOCAL_DIR=${SDK_LOCAL_DIR}"
   "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]}"
@@ -396,9 +396,6 @@ fi
 # may have unrelated private remotes that host forked recipes under a user
 # channel; those must never shadow PJ4's intended dependency graph.
 if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
-  # Dependencies stay RelWithDebInfo because Release luau built from source is
-  # not PIC and fails to link into PIE executables. Revisit when the Conan
-  # remote ships Release binaries.
   # The MSan lane resolves its OWN minimal requirement list. The app's conanfile
   # would drag FFmpeg, CPython and the rest into a from-source rebuild under
   # Clang + instrumented libc++, to instrument code its four Qt-free targets
@@ -412,7 +409,7 @@ if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
   fi
   conan install "$conan_recipe" --output-folder="$BUILD_DIR" --build=missing \
     ${conan_lock_args[@]+"${conan_lock_args[@]}"} \
-    -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+    -s build_type=Release -s compiler.cppstd=20 \
     ${CONAN_LANE_ARGS[@]+"${CONAN_LANE_ARGS[@]}"} "${CONAN_REMOTE_ARGS[@]}"
 elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
   echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2

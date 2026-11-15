@@ -110,7 +110,7 @@ TEST(RegressionTest, Bug2_FinishBulkAppend_ColumnRowCountMismatch_TriggersUB) {
 
   // PJ_ASSERT behaviour differs by build configuration:
   //   Debug/ASAN  (PJ_ASSERT_THROWS=ON, no NDEBUG): throws std::runtime_error
-  //   RelWithDebInfo (no PJ_ASSERT_THROWS, NDEBUG):  assert() compiled away → silent UB
+  //   Release (no PJ_ASSERT_THROWS, NDEBUG):         assert() compiled away → silent UB
   // The assertion is only verifiable in debug builds.
 #ifdef PJ_ASSERT_THROWS
   EXPECT_THROW(
@@ -122,7 +122,7 @@ TEST(RegressionTest, Bug2_FinishBulkAppend_ColumnRowCountMismatch_TriggersUB) {
       },
       std::exception);
 #else
-  // RelWithDebInfo: NDEBUG disables assert(), so the check cannot be observed at
+  // Release: NDEBUG disables assert(), so the check cannot be observed at
   // this build level.  Debug builds provide the authoritative verification.
   GTEST_SKIP() << "Bug #2 assertion not verifiable in Release (NDEBUG disables assert())";
 #endif

@@ -20,7 +20,7 @@ if [[ -n "${CCACHE_DIR:-}" ]]; then
 fi
 
 cmake -G Ninja -S . -B build-conda ${CMAKE_ARGS} ${LAUNCHER_ARGS} \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="${PREFIX}" \
   -DPJ_SYSTEM_QWT=ON \
   -DPJ_BUILD_TESTS=OFF \

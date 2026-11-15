@@ -2,7 +2,7 @@
 # Windows counterpart of build.sh, reached through build.bat. Same options and
 # PJ_* variables, same build\ tree; the toolchain and the Conan/CMake
 # invocations mirror .github/workflows/windows-ci.yml (VS 2022 MSVC 14.4x,
-# Ninja Multi-Config, RelWithDebInfo), so a local tree is interchangeable with
+# Ninja Multi-Config, Release), so a local tree is interchangeable with
 # what CI builds. Shared helpers live in PjWindowsCommon.ps1.
 #
 # Windows PowerShell 5.1 only, ASCII only. No param() block: `powershell -File`
@@ -32,7 +32,7 @@ Options:
   --help               Show this help message
 
 Linux-only, rejected here: --sanitize, --tsan, --debug-info, --no-compress-debug
-(MSVC builds are always RelWithDebInfo with /Z7 embedded debug info).
+(MSVC builds are always Release with /Z7 embedded debug info).
 
 Examples:
   build.bat                     full dev tree: tests + demos
@@ -189,9 +189,7 @@ $Toolchain = Join-Path $PjBuildDir 'conan_toolchain.cmake'
 # compiler.runtime_type is pinned too: detect leaves it unset and Conan's
 # profile plugin derives Release from a non-Debug build_type (what CI gets),
 # but a user profile could set it to Debug.
-# cpython: its recipe has no static MSVC build (>=3.10) and its MSVC build has
-# no RelWithDebInfo configuration, only Debug/Release; Release is
-# CRT-compatible with the RelWithDebInfo graph (both /MD).
+# cpython: its recipe has no static MSVC build (>=3.10), so it links shared.
 # generator: the toolchain must be stamped for Ninja Multi-Config. Conan's
 # default picks Visual Studio and adds CMAKE_GENERATOR_PLATFORM=x64, which the
 # Ninja configure below rejects.
@@ -212,7 +210,6 @@ $conanArgs += @(
   '-s', 'compiler.cppstd=20',
   '-s', "build_type=$PjConfig",
   '-o', 'cpython/*:shared=True',
-  '-s', 'cpython/*:build_type=Release',
   '-c', 'tools.cmake.cmaketoolchain:generator=Ninja Multi-Config'
 )
 

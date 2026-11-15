@@ -48,13 +48,13 @@ jobs:
           conan profile detect --force
           scripts/configure_conan_remote.sh
           conan lock create . --update -r plotjuggler-conan -r conancenter \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -s build_type=Release -s compiler.cppstd=20 \
             --lockfile-out=conan.lock
           conan lock create . --update -r plotjuggler-conan -r conancenter \
             -s:h os=Windows -s:h arch=x86_64 \
             -s:h compiler=msvc -s:h compiler.version=194 -s:h compiler.runtime=dynamic \
-            -s:h build_type=RelWithDebInfo -s:h compiler.cppstd=20 \
-            -o "cpython/*:shared=True" -s:h "cpython/*:build_type=Release" \
+            -s:h build_type=Release -s:h compiler.cppstd=20 \
+            -o "cpython/*:shared=True" \
             --lockfile=conan.lock --lockfile-out=conan.lock
 
       - name: Open a PR when the lock moved
