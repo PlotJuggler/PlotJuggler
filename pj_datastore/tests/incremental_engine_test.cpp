@@ -2145,8 +2145,9 @@ constexpr std::chrono::milliseconds kStepBudget{5};
 
 // The most rows one step can feed. Each row costs at least kSlowRow of wall time, so a step
 // that has fed N rows has spent at least N * kSlowRow: it cannot run past the budget by more
-// than the engine's clock-check stride (a few rows), however long the scheduler stalls the
-// thread. The 64 rows are that stride with headroom. Rows, not elapsed time, because a wall
+// than the engine's clock-check stride (kRowsPerDeadlineCheck = 16 in incremental_engine.cpp),
+// however long the scheduler stalls the thread. The 64 rows are that stride with headroom: if
+// the stride is ever raised past 64, this bound must follow it. Rows, not elapsed time, because a wall
 // bound on a step is exactly what a loaded machine breaks.
 constexpr std::size_t kMaxRowsPerStep = static_cast<std::size_t>(kStepBudget / kSlowRow) + 64;
 
