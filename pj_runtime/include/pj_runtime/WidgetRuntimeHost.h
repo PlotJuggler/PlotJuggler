@@ -83,9 +83,9 @@ class WidgetRuntimeHost {
 
  private:
   /// The samples of the range before decimation (the ABI's `out_total`), or an error before the sink ran.
-  /// A sink returning false ends the delivery; the total is still the range's. An undecimated object
-  /// history leaves out the entries it skipped (evicted, or not encoded), so total == delivered there
-  /// still means "complete"; a decimated one reports the range's count.
+  /// A sink returning false ends the delivery; the total is still the range's. An object history counts
+  /// the entries it skipped (evicted, or not encoded) whether or not it decimates, so a one-sample probe
+  /// and a full read of the same range report the same total.
   Expected<uint32_t> history(const WidgetHistoryQuery& query, const WidgetValueSink& sink) const;
   /// `range`: the stored instants the query covers (deliveredRange), never empty.
   Expected<uint32_t> historyNumber(

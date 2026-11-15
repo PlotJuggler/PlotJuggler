@@ -683,7 +683,10 @@ TEST_F(WidgetRuntimeHostCanonicalTest, AParserBackedTopicDeliversCanonicalBytes)
   EXPECT_EQ(log->timestamp_ns, kSecond);
 }
 
-TEST_F(WidgetRuntimeHostCanonicalTest, AnEntryThatDoesNotDecodeIsNotCountedWhenNothingIsDecimated) {
+// The total is the range's, whatever the query's shape: a full read counts an entry it cannot deliver, as a
+// one-sample (decimated) probe does. A widget compares the two; when they disagreed, the log widget reloaded
+// its whole history on every update once a topic held one such entry.
+TEST_F(WidgetRuntimeHostCanonicalTest, AnEntryThatDoesNotDecodeIsCountedLikeADecimatedReadCountsIt) {
   const ObjectTopicId topic = addObjectWire(sdk::BuiltinObjectType::kLog, {"one", "bad", "three"});
   session_.registerObjectTopicParser(topic, makeTextLogParser());
 
@@ -693,7 +696,15 @@ TEST_F(WidgetRuntimeHostCanonicalTest, AnEntryThatDoesNotDecodeIsNotCountedWhenN
   ASSERT_EQ(out.size(), 2U);
   EXPECT_DOUBLE_EQ(out[0].time, 0.0);
   EXPECT_DOUBLE_EQ(out[1].time, 2.0);
-  EXPECT_EQ(total, 2U) << "an undecimated history reports what it delivered: total == delivered means complete";
+  EXPECT_EQ(total, 3U) << "the range's count, the undeliverable entry included";
+
+  PJ_error_t error{};
+  const PJ_widget_host_t host = host_->raw();
+  uint32_t probe_total = 0;
+  std::vector<Sample> first;
+  Collector collector{&first, 0};
+  ASSERT_TRUE(host.vtable->query_history(host.ctx, 0, 0, 0.0, 10.0, 1, &collect, &collector, &probe_total, &error));
+  EXPECT_EQ(probe_total, total) << "a one-sample probe and a full read agree";
 }
 
 TEST_F(WidgetRuntimeHostCanonicalTest, ATimeShiftedMergeMovesTheLogStampOntoTheDatasetClock) {

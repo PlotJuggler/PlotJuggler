@@ -307,19 +307,18 @@ Expected<uint32_t> WidgetRuntimeHost::historyObject(
 
   if (chosen.empty()) {
     // A streaming push between the count and this read can grow the window: never deliver more than the
-    // `total` (<= max_samples) that was counted. A skipped entry leaves the count, so a widget comparing
-    // the total with what it received sees a complete history.
+    // `total` (<= max_samples) that was counted. A skipped entry stays in the count, as in a decimated
+    // read: the total is the range's whatever the query's shape, so a widget can compare the count of a
+    // one-sample probe with that of a full read.
     const auto entries = objects_.rangeByTime(target.object_topic, lo, to);
     const std::size_t count = std::min(entries.size(), total);
-    std::size_t skipped = 0;
     for (std::size_t i = 0; i < count; ++i) {
       bool delivered = false;
       if (!deliver(entries[i].uid, delivered)) {
         break;
       }
-      skipped += delivered ? 0 : 1;
     }
-    return saturatedTotal(total - skipped);
+    return saturatedTotal(total);
   }
   // Decimated: the total stays the range's, a skipped pick is not replaced. The picks ascend, so those
   // sharing a stamp are adjacent: its entries are read once, not once per pick (all entries on one stamp
