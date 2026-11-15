@@ -499,19 +499,21 @@ std::optional<double> CatalogModel::scalarValueAt(const QString& key, double dis
   if (scalar == nullptr || !isPlottablePrimitive(scalar->logical_type)) {
     return std::nullopt;  // object topics carry no scalar value; strings → stringValueAt
   }
-  // Display-axis seconds -> raw ns through this dataset's display offset, then a
-  // null-aware latest-at-or-before point query (zero-order hold) read under the
-  // engine lock. latestNumericAt distinguishes a null cell from a real 0, so a
-  // sparsely-populated field shows "-" rather than a fabricated "0.000".
+  // Display-axis seconds -> raw ns through this dataset's display offset, then the
+  // plot tracker's lookup (zero-order hold) under the engine lock: the newest row
+  // that HAS a value for this column. A topic whose messages leave some columns
+  // null (a /tf TFMessage, variable-length arrays, optional JSON keys) must not
+  // blink to "-" whenever its newest row happens to lack this field; a field with
+  // no sample yet is still nullopt, never a fabricated "0.000".
   const DisplayOffset offset = impl_->session->displayOffset(it->second.dataset_id);
   const Timestamp raw_ns = displaySecondsToRaw(DisplaySeconds{display_seconds}, offset);
   const DataReader reader(impl_->session->dataEngine());
-  const auto value_or =
-      reader.latestNumericAt(QueryPoint{.topic_id = scalar->topic_id, .t = raw_ns}, scalar->column_index);
-  if (!value_or.has_value() || !value_or->has_value()) {
-    return std::nullopt;  // read error, no row at/before the query time, or null cell
+  const auto series = reader.series(scalar->topic_id, scalar->column_index);
+  if (!series.has_value()) {
+    return std::nullopt;  // read error
   }
-  return **value_or;
+  const auto sample = series->sampleAtOrBeforeTime(raw_ns);
+  return sample.has_value() ? std::optional<double>{sample->value} : std::nullopt;
 }
 
 std::optional<TopicStats> CatalogModel::topicStats(const QString& key) const {

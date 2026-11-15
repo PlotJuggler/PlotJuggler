@@ -1159,6 +1159,67 @@ TEST(CatalogModelTest, ScalarValueAtReturnsLatestSampleAtOrBeforeTime) {
   EXPECT_FALSE(catalog.scalarValueAt(u"not-a-key"_s, displayOf(2'500'000'000)).has_value());
 }
 
+// Topics whose messages leave some columns null (a /tf TFMessage whose messages
+// carry different transforms, variable-length arrays, JSON with optional keys)
+// must still show a value: scalarValueAt holds the newest row that HAS a value
+// for the column (the plot tracker's lookup), not the newest row of the topic.
+TEST(CatalogModelTest, ScalarValueAtSkipsRowsWhereTheColumnIsNull) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "sparse.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  // struct sparse { float64 a; float64 b } with alternating populated columns.
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto a = PJ::makePrimitive("a", PJ::PrimitiveType::kFloat64);
+  auto b = PJ::makePrimitive("b", PJ::PrimitiveType::kFloat64);
+  auto schema_or = writer.registerSchema("sparse", PJ::makeStruct("sparse", {a, b}));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  PJ::TopicDescriptor td;
+  td.name = "/sparse";
+  td.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  const PJ::TopicId topic = *topic_or;
+
+  ASSERT_TRUE(writer.beginRow(topic, 1'000'000'000).has_value());
+  writer.set(topic, 0, 10.0);
+  writer.setNull(topic, 1);
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  ASSERT_TRUE(writer.beginRow(topic, 2'000'000'000).has_value());
+  writer.setNull(topic, 0);
+  writer.set(topic, 1, 20.0);
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  QString key_a;
+  QString key_b;
+  for (const auto& item : catalog.items()) {
+    const auto* scalar = PJ::asScalarField(item);
+    ASSERT_NE(scalar, nullptr);
+    (scalar->column_index == 0 ? key_a : key_b) = item.key;
+  }
+  ASSERT_FALSE(key_a.isEmpty());
+  ASSERT_FALSE(key_b.isEmpty());
+
+  const PJ::DisplayOffset offset = session.displayOffset(*dataset);
+  auto displayOf = [&](PJ::Timestamp raw_ns) { return PJ::toAxisDouble(PJ::rawToDisplaySeconds(raw_ns, offset)); };
+
+  // The newest row (@2s) has no `a`: hold the @1s value instead of showing "-".
+  const auto a_held = catalog.scalarValueAt(key_a, displayOf(2'500'000'000));
+  ASSERT_TRUE(a_held.has_value());
+  EXPECT_DOUBLE_EQ(*a_held, 10.0);
+
+  // `b` has no sample yet at 1.5s (its only value is @2s): no value, never a made-up one.
+  EXPECT_FALSE(catalog.scalarValueAt(key_b, displayOf(1'500'000'000)).has_value());
+
+  // Once `b`'s first sample is reached it shows.
+  const auto b_first = catalog.scalarValueAt(key_b, displayOf(2'500'000'000));
+  ASSERT_TRUE(b_first.has_value());
+  EXPECT_DOUBLE_EQ(*b_first, 20.0);
+}
+
 // String-typed fields surface in the catalog as scalar items (so the curve list
 // shows them with their text value) but are excluded from plottable curves();
 // stringValueAt reads the latest string at/before the cursor (zero-order hold).
