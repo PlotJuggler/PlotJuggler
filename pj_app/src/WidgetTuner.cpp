@@ -12,20 +12,19 @@
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QPalette>
-#include <QSettings>
 #include <QString>
 #include <QWidget>
 using namespace Qt::StringLiterals;
 
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 
 namespace {
 
 theme::Theme popupTheme() {
-  const QString theme_name = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString();
-  return theme::themeFor(theme_name.contains(QStringLiteral("light")));
+  return theme::themeFor(currentTheme().contains(QStringLiteral("light")));
 }
 
 // Combo popup palettes use the same framework input surface as the closed combo.

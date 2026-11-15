@@ -737,8 +737,7 @@ bool CurveListPanel::valuesColumnActive() const {
 }
 
 void CurveListPanel::fillValuesNow() {
-  QSettings settings;
-  const int precision = settings.value(u"Preferences::precision"_s, 3).toInt();
+  const int precision = valuePrecision();
   const double tracker_time = last_tracker_time_;
   auto provider = [this, tracker_time, precision](const QString& key) -> QString {
     // String fields show their text value at the cursor (zero-order hold), "-"
