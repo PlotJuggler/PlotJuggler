@@ -323,8 +323,13 @@ What to know before changing it:
   2026-11-14 to leave room for built-in plugins (`scripts/wasm_size_budget.mjs`; the
   sample `presets/` are fetched on demand and not counted): an absolute budget,
   since both configurations now carry Python and a delta would need a third
-  build. About 0.67 MB of it is the stdlib zip, stored uncompressed
-  so the package's Brotli compresses it with the module.
+  build. The stdlib zip (0.67 MB Brotli, stored uncompressed so the
+  package's Brotli compresses it) is not part of it: it is a separate asset,
+  `python_stdlib.zip` in the content-addressed bundle beside the module, which
+  the first Python use downloads (a synchronous request on the Python worker,
+  `python_sandbox.cpp`) to `/lib/python314.zip` before the interpreter boots.
+  The budget leaves it out; a failed download fails that use with the reason,
+  and the next use retries it (`tests/wasm/python.spec.js`).
 - **The stdlib zip** holds only the modules that importing the roots in
   `stdlib_zip.py` loads (68 of them). A module the stdlib imports
   lazily is missed unless a root names it, and even one in the zip cannot be

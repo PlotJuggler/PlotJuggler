@@ -151,6 +151,14 @@ void wasmPyWorkerChecks() {
   qInfo(
       "PJ_WASM_PY_BOOT worker_ms=%.1f %s", wasmPyMillisSince(boot_begin),
       booted ? "ok" : ("error=" + booted.error()).c_str());
+  struct stat zip_stat{};
+  qInfo(
+      "PJ_WASM_PY_STDLIB stat=%d bytes=%lld", ::stat("/lib/python314.zip", &zip_stat),
+      static_cast<long long>(zip_stat.st_size));
+  if (!booted) {  // no interpreter: the checks below would call into CPython unbooted (the stdlib walk does)
+    qInfo("PJ_WASM_PY_DONE");
+    return;
+  }
   // Then, before anything else imports: the allowed modules' lazy dependencies inside a strict, armed run (heapq
   // behind statistics.Counter, decimal's C fallback to _pydecimal behind statistics.Decimal), then the surface walk.
   if (auto lazy = compileOnDemandScriptPython(kWasmPyLazyScript)) {
@@ -287,10 +295,8 @@ void wasmPyWorkerChecks() {
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_smoke() {
   using namespace PJ::scripting;
   qInfo("PJ_WASM_PY_AVAILABLE %d", pythonAvailable() ? 1 : 0);
-  struct stat zip_stat{};
-  qInfo(
-      "PJ_WASM_PY_STDLIB stat=%d bytes=%lld", ::stat("/lib/python314.zip", &zip_stat),
-      static_cast<long long>(zip_stat.st_size));
+  struct stat zip_stat{};  // no stdlib before the first Python use downloads it (python_sandbox.cpp)
+  qInfo("PJ_WASM_PY_STDLIB_BEFORE stat=%d", ::stat("/lib/python314.zip", &zip_stat));
   const auto begin = std::chrono::steady_clock::now();
   auto compiled = compileOnDemand("python", kWasmPyFourLineScript);
   qInfo(

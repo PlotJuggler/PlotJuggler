@@ -14,6 +14,7 @@ const BUSY_COMPILE_GAP_BOUND_MS = 250;
 // Python per call against the same script in Luau. Firefox's ratio depends on the CPU core it lands on (on a hybrid
 // laptop 1.2x on efficiency cores, 1.55x on performance cores; 0.85x on CI), Chromium's does not (1.0-1.26x).
 const PER_CALL_RATIO_BOUND = { chromium: 1.5, firefox: 2 };
+const STDLIB_ASSET = '/python_stdlib.zip';
 
 // @serial: its time bounds fail on a loaded runner (playwright.config.js).
 test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, no main-thread wait', {
@@ -24,6 +25,13 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   const errors = [];
   page.on('pageerror', error => errors.push(String(error)));
   page.on('console', message => consoleMessages.push(message.text()));
+  // The stdlib is a separate asset (scripts/package_wasm.mjs) the first Python use downloads, not the startup.
+  const stdlibRequests = [];
+  page.context().on('request', request => {
+    if (request.url().endsWith(STDLIB_ASSET)) {
+      stdlibRequests.push(request.url());
+    }
+  });
   // The longest gap between 20 ms ticks of the main thread's event loop, once armed.
   await page.addInitScript(() => {
     window.pjMainGap = { armed: false, max: 0, last: performance.now() };
@@ -37,6 +45,7 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   });
   await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
   await waitForQtApp(page, consoleMessages);
+  expect(stdlibRequests, 'the app starts without the Python stdlib').toEqual([]);
 
   await page.evaluate(() => {
     window.pjMainGap.armed = true;
@@ -71,6 +80,12 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
 
   expect(line('PJ_WASM_PY_AVAILABLE')).toContain('PJ_WASM_PY_AVAILABLE 1');
   expect(line('PJ_WASM_PY_BOOT')).toContain(' ok');
+  // Not in the filesystem before the first use, there after it. Playwright sees a worker's requests in Chromium only.
+  expect(line('PJ_WASM_PY_STDLIB_BEFORE')).toContain('stat=-1');
+  expect(number('PJ_WASM_PY_STDLIB ', 'bytes')).toBeGreaterThan(1_000_000);
+  if (browserName === 'chromium') {
+    expect(stdlibRequests, 'the first Python use downloads the stdlib, once').toHaveLength(1);
+  }
   // The allowed modules' lazy dependencies work inside a strict run (heapq, decimal's _pydecimal fallback), and every
   // other one a strict script can reach is loaded before any run.
   expect(number('PJ_WASM_PY_LAZY', 'value')).toBe(7);
@@ -131,4 +146,35 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   expect(Number((consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_RUN')).match(/value=([-0-9.]+)/) || [])[1]))
     .toBeCloseTo(Math.sqrt(10), 5);
   expect(busyGap).toBeLessThan(BUSY_COMPILE_GAP_BOUND_MS);
+});
+
+// The stdlib download fails: Python reports why instead of hanging or crashing the app, and the next use retries it.
+test('on-demand Python: a failed stdlib download is reported, and retried by the next use', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', "Playwright routes a worker's requests in Chromium only");
+  test.setTimeout(300_000);
+  const consoleMessages = [];
+  const errors = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('console', message => consoleMessages.push(message.text()));
+  await page.context().route(`**${STDLIB_ASSET}`, route => route.fulfill({ status: 503, body: 'unavailable' }));
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  const boots = () => consoleMessages.filter(message => message.includes('PJ_WASM_PY_BOOT'));
+  const done = () => consoleMessages.filter(message => message.includes('PJ_WASM_PY_DONE')).length;
+
+  await page.evaluate(() => window.pjWasmPythonSmokeProbe());
+  const available = await expect.poll(
+    () => consoleMessages.some(message => message.includes('PJ_WASM_PY_AVAILABLE 1')), { timeout: 10_000 },
+  ).toBe(true).then(() => true, () => false);
+  test.skip(!available && process.env.PJ_WASM_PYTHON !== '1', 'this build has no Python (PJ_WASM_WITH_PYTHON off)');
+  await expect.poll(done, { timeout: 240_000 }).toBeGreaterThan(0);
+  expect(boots().join('\n')).toContain('could not download its standard library');
+  expect(boots().join('\n')).toContain('HTTP 503');
+
+  await page.context().unroute(`**${STDLIB_ASSET}`);
+  const before = done();
+  await page.evaluate(() => window.pjWasmPythonSmokeProbe());
+  await expect.poll(done, { timeout: 240_000 }).toBeGreaterThan(before);
+  expect(boots().some(message => message.includes(' ok'))).toBe(true);
+  expect(errors).toEqual([]);
 });

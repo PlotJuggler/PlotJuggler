@@ -22,6 +22,15 @@
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/sandbox.h"
 
+#ifdef PJ_WASM_PYTHON_STDLIB
+#include <emscripten/emscripten.h>
+#include <sys/stat.h>
+
+#include <cstdio>
+#include <mutex>
+#include <vector>
+#endif
+
 namespace PJ::scripting::detail {
 namespace {
 
@@ -471,9 +480,73 @@ bool isArmed(const PersistentWatchdog::Slot& slot) {
   return slot.armed_generation.load(std::memory_order_acquire) != 0;
 }
 
+#ifdef PJ_WASM_PYTHON_STDLIB
+// The browser's stdlib is not in the module (cmake/PjWasmPython.cmake): the first Python use downloads it from beside
+// the module script (`locateFile`; scripts/package_wasm.mjs packages it there) with a synchronous request, which a
+// worker may make; Python never boots on the main thread. The body waits in the worker's JS for
+// pj_python_stdlib_take. Returns its size, -1 when the request failed or timed out, else minus its HTTP status.
+// clang-format off
+EM_JS(int, pj_python_stdlib_fetch, (), {
+  try {
+    const request = new XMLHttpRequest();
+    request.open('GET', locateFile('python_stdlib.zip'), false);
+    request.responseType = 'arraybuffer';
+    request.timeout = 120000;
+    request.send(null);
+    if (request.status !== 200) {
+      return request.status ? -request.status : -1;
+    }
+    globalThis.pjPythonStdlib = new Uint8Array(request.response);
+    return globalThis.pjPythonStdlib.length;
+  } catch (error) {
+    return -1;
+  }
+});
+
+EM_JS(void, pj_python_stdlib_take, (char* buffer), {
+  HEAPU8.set(globalThis.pjPythonStdlib, buffer);
+  delete globalThis.pjPythonStdlib;
+});
+// clang-format on
+
+/// Downloads the stdlib to PJ_WASM_PYTHON_STDLIB, where CPython looks for it, unless an earlier call did. A failure
+/// throws, and the next call tries again: unlike a failed boot, a failed download leaves nothing half-started.
+void downloadStdlib() {
+  static std::mutex mutex;
+  static bool downloaded = false;  // guarded by mutex
+  const std::lock_guard lock(mutex);
+  if (downloaded) {
+    return;
+  }
+  const int size = pj_python_stdlib_fetch();
+  if (size < 0) {
+    throw std::runtime_error(
+        std::string("Python failed to start: could not download its standard library (") +
+        (size == -1 ? std::string("network error or timeout") : "HTTP " + std::to_string(-size)) + ")");
+  }
+  std::vector<char> bytes(static_cast<std::size_t>(size));
+  pj_python_stdlib_take(bytes.data());
+  ::mkdir("/lib", 0755);
+  std::FILE* file = std::fopen(PJ_WASM_PYTHON_STDLIB, "wb");
+  bool written = file != nullptr && std::fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size();
+  if (file != nullptr) {
+    written = std::fclose(file) == 0 && written;
+  }
+  if (!written) {
+    std::remove(PJ_WASM_PYTHON_STDLIB);
+    throw std::runtime_error(
+        "Python failed to start: could not write its standard library to " + std::string(PJ_WASM_PYTHON_STDLIB));
+  }
+  downloaded = true;
+}
+#endif
+
 }  // namespace
 
 void ensureInterpreter() {
+#ifdef PJ_WASM_PYTHON_STDLIB
+  downloadStdlib();  // before the once-only boot below, which would keep a failure for good
+#endif
   // Once per process, failure included: a second start is refused by pybind11 ("already running") or, after CPython
   // failed to start, runs on a half-initialized runtime, either way losing the cause. Leaked like the interpreter: a
   // thread still running at exit may call this after static destruction.

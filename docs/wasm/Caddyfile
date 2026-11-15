@@ -72,6 +72,7 @@
 			~(?i)\.stl$ "model/stl"
 			~(?i)\.txt$ "text/plain; charset=utf-8"
 			~(?i)\.xml$ "application/xml"
+			~(?i)\.zip$ "application/zip"
 			# A directory's index.html, and extensionless files (LICENSE, NOTICE).
 			~/$ "text/html; charset=utf-8"
 			~/[^/.]+$ "text/plain; charset=utf-8"

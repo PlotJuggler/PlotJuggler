@@ -135,6 +135,33 @@ test('packages the third-party notices precompressed, and refuses a build withou
   );
 });
 
+test('packages the Python stdlib in the bundle when the build has it, outside the startup budget', async t => {
+  const { root, source } = await fixture(t);
+  const without = await packageWasm({ source, output: path.join(root, 'without'), version: 'test' });
+  assert.ok(!without.files.some(file => file.path.endsWith('/python_stdlib.zip')));
+
+  const stdlib = Buffer.alloc(4096, 'pyc');
+  await writeFile(path.join(source, 'python_stdlib.zip'), stdlib);
+  const output = path.join(root, 'with');
+  const manifest = await packageWasm({ source, output, version: 'test' });
+  // In the content-addressed bundle, beside the module whose worker fetches it by that relative name.
+  assert.notEqual(manifest.bundleId, without.bundleId);
+  const zip = manifest.files.find(file => file.path === `assets/${manifest.bundleId}/python_stdlib.zip`);
+  assert.ok(zip, 'the stdlib is packaged');
+  assert.equal(zip.contentType, 'application/zip');
+  assert.equal(zip.cache, 'immutable');
+  assert.ok(zip.representations.br, 'the stdlib is precompressed');
+  assert.deepEqual(await readFile(path.join(output, zip.path)), stdlib);
+
+  const budget = async manifestPath => (await execFileAsync(
+    process.execPath, [path.join(ROOT, 'scripts', 'wasm_size_budget.mjs'), manifestPath, '1000000000'])).stdout;
+  assert.equal(
+    await budget(path.join(output, 'manifest.json')),
+    await budget(path.join(root, 'without', 'manifest.json')),
+    'the stdlib is not part of the startup download',
+  );
+});
+
 test('serves the notices at a stable root URL, revalidated, beside the immutable copy', async t => {
   const { root, source } = await fixture(t);
   const output = path.join(root, 'stable');

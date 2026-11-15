@@ -8,12 +8,14 @@
 # patches and a Setup.local, documented there) into PJ_WASM_PYTHON_STAGE:
 #   include/python3.14/      headers and the host pyconfig.h
 #   lib/*.a                  libpython and its builtins' native code (HACL* SHA-2, libmpdec)
-#   lib/python314.zip        the pyc-only stdlib (wasm_python/stdlib_zip.py), embedded at /lib/python314.zip
+#   lib/python314.zip        the pyc-only stdlib (wasm_python/stdlib_zip.py), PJ_WASM_PYTHON_STDLIB: not in the module,
+#                            but served beside it, and downloaded to /lib/python314.zip by the first Python use
 #   THIRD_PARTY_NOTICES.txt  PSF-2.0, CPython's incorporated-software notices (libmpdec's BSD among them), HACL*'s MIT
 # The stage is named by a key over the tarball hash, the Emscripten release and every wasm_python/ file, and is built
 # (about 4 minutes) only when no stage of that key exists. CI keeps PJ_WASM_PYTHON_CACHE_DIR in its cache.
 #
-# Defines cpython::embed and pybind11::embed, the names the desktop graph uses, and PJ_WASM_PYTHON_STAGE.
+# Defines cpython::embed and pybind11::embed, the names the desktop graph uses, PJ_WASM_PYTHON_STAGE and
+# PJ_WASM_PYTHON_STDLIB.
 include_guard(GLOBAL)
 
 # CPython 3.14 is the first release with a supported (tier 3) Emscripten target. Bumping it: the tarball's hash, the
@@ -98,8 +100,8 @@ target_link_libraries(cpython::embed INTERFACE
     "${PJ_WASM_PYTHON_STAGE}/lib/libHacl_Hash_SHA2.a"
     "${PJ_WASM_PYTHON_STAGE}/lib/libmpdec.a"
     -sUSE_ZLIB=1)
-target_link_options(cpython::embed INTERFACE
-    "SHELL:--embed-file \"${PJ_WASM_PYTHON_STAGE}/lib/python${_pj_cpython_nodot}.zip@/lib/python${_pj_cpython_nodot}.zip\"")
+# Its name is where CPython looks for it under PYTHONHOME "/" (pj_scripting/CMakeLists.txt).
+set(PJ_WASM_PYTHON_STDLIB "${PJ_WASM_PYTHON_STAGE}/lib/python${_pj_cpython_nodot}.zip")
 set(PJ_WASM_PYTHON_NOTICES "${PJ_WASM_PYTHON_STAGE}/THIRD_PARTY_NOTICES.txt")
 
 # pybind11 2.13 (the desktop pin) predates CPython 3.14; 3.0 supports it. Headers only.
