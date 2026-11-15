@@ -210,7 +210,8 @@ TEST(PlotMagnifierClamp, WheelZoomBeyondTheDataKeepsAForwardWindow) {
   fixture.plantMouseAtCenter();  // one notch in, centered at 2.25 s
   const QwtScaleDiv& zoomed = fixture.plot.axisScaleDiv(QwtPlot::xBottom);
   EXPECT_LT(zoomed.lowerBound(), zoomed.upperBound()) << "the X axis folded";
-  EXPECT_GT(zoomed.upperBound() - zoomed.lowerBound(), 1.0) << "one notch shrinks the 1.5 s window only a little";
+  // One notch zooms in by the wheel factor (0.9): the window shrinks, and only by that much.
+  EXPECT_NEAR(zoomed.upperBound() - zoomed.lowerBound(), 1.5 * 0.9, 1e-6);
 
   fixture.zoomX(0.01);  // and zooming back out reaches the data again
   const QwtScaleDiv& out = fixture.plot.axisScaleDiv(QwtPlot::xBottom);
