@@ -1023,12 +1023,17 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
       });
     };
     const openAnymal = async (pass, staged) => {
+      const from = run.messages.length;
       const { frameGap, task } = await watchMainThread(async () => {
         expect(await pickSample(run, samples, 'anymal'), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
         await waitForScene3DModels(run.page, run.messages, anymalLoaded, 60000);
       });
+      // The app's own timing of the restore inside that task, logged, not bounded.
+      const restore = run.messages.slice(from).map(text => /PJ_WASM_LAYOUT_RESTORE_MS ms=(\d+)/.exec(text))
+        .filter(Boolean).map(match => Number(match[1]));
+      expect(restore.length, pass).toBeGreaterThan(0);
       console.log(`anymal ${pass}: longest task ${task === null ? 'n/a' : Math.round(task)} ms, `
-        + `longest frame gap ${Math.round(frameGap)} ms`);
+        + `restore ${Math.max(...restore)} ms, longest frame gap ${Math.round(frameGap)} ms`);
       expect(task ?? frameGap, pass).toBeLessThan(MAX_MAIN_THREAD_TASK_MS);
       // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a
       // replaced sample releases its own, so nothing else is left behind.

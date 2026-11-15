@@ -265,7 +265,8 @@ built-in filters sample's raw and moving-average plots, its filter restored from
 the layout), check that seeking
 between two points inside the recording changes what the 3D view draws (a scene
 drawn once and then frozen fails), reopen ANYmal after switching sample while
-watching the page's longest frame gap, and make loads fail after staging
+bounding the page's longest main-thread task (Chromium; Firefox, which has no
+Long Tasks API, falls back to the longest frame gap), and make loads fail after staging
 and after importing to check that the staged files are released and the open
 sample is left as it was. The suites never reach the network, so the samples get
 their hosted recordings and models from a local mirror of
