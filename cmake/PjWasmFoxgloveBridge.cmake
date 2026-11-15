@@ -5,15 +5,12 @@
 # the browser, over the browser's own WebSocket (the shared pj_wasm_websocket
 # target). Its messages are decoded by the ROS, Protobuf and JSON parsers already
 # in the module. A page served over https:// can open only wss://, so a robot's
-# plain ws:// foxglove_bridge needs TLS in front of it (docs/WASM_HOSTING.md).
+# plain ws:// foxglove_bridge needs TLS in front of it (docs/WASM_HOSTING.md
+# shows it for the PlotJuggler Bridge).
 #
-# Symbol audit (root CLAUDE.md), emsdk llvm-nm --defined-only --extern-only on
-# libpj_wasm_foxglove_bridge.a against every other archive of pj_app's link, the
-# Qt wasm_multithread archives and the sysroot archives: its two strong
-# definitions (the static getters) exist nowhere else; the PJ::WebSocket inlines
-# it shares with libpj_wasm_pj_bridge.a (DialogConnection, Endpoint,
-# DropWarning) come from the same common/websocket header, so they are one
-# definition. Repeat it when the pin or this recipe changes.
+# Symbol audit as in PjWasmPjBridge.cmake: its strong definitions (the two
+# static getters) exist nowhere else; the WebSocket client is pj_wasm_websocket's
+# (PjWasmPluginCommon.cmake). Repeat it when the pin or this recipe changes.
 include_guard(GLOBAL)
 
 if(NOT EMSCRIPTEN OR NOT PJ_WASM_WITH_FOXGLOVE_BRIDGE)

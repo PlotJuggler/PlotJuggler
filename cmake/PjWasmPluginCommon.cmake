@@ -48,16 +48,21 @@ endif()
 if(PJ_WASM_WITH_PJ_BRIDGE OR PJ_WASM_WITH_FOXGLOVE_BRIDGE)
     # The browser backend of the shared WebSocket client (common/websocket), compiled ONCE for
     # every WebSocket streamer: each one compiling it would define PJ::WebSocket::Client and its
-    # EM_JS entry twice. The native IXWebSocket backend is never compiled here. Symbol audit
-    # (as in PjWasmPjBridge.cmake): PJ::WebSocket::Client::* and the
-    # pj_websocket_client_new_guarded EM_JS entries are defined by this archive only.
-    if(NOT EXISTS "${_pj_wasm_common_dir}/websocket/websocket_client_wasm.cpp")
-        message(FATAL_ERROR "Pinned common/websocket source is missing websocket_client_wasm.cpp")
-    endif()
-    add_library(pj_wasm_websocket STATIC "${_pj_wasm_common_dir}/websocket/websocket_client_wasm.cpp")
+    # EM_JS entry twice. The native IXWebSocket backend is never compiled here.
+    #
+    # Symbol audit (root CLAUDE.md), emsdk llvm-nm --defined-only --extern-only against every
+    # other archive of pj_app's link, the Qt wasm_multithread and the sysroot archives:
+    # PJ::WebSocket::Client::* and the pj_websocket_client_new_guarded EM_JS entries are
+    # defined by this archive only. The consumers share the header-only PJ::WebSocket inlines
+    # (connection_dialog.hpp), one definition. Repeat it when the pin or this target changes.
+    pj_wasm_require_official_plugin_sources(_pj_websocket_dir common/websocket
+        websocket_client_wasm.cpp
+        include/pj_websocket/websocket_client.hpp
+        include/pj_websocket/connection_dialog.hpp)
+    add_library(pj_wasm_websocket STATIC "${_pj_websocket_dir}/websocket_client_wasm.cpp")
     target_compile_features(pj_wasm_websocket PUBLIC cxx_std_20)
-    target_include_directories(pj_wasm_websocket PUBLIC "${_pj_wasm_common_dir}/websocket/include")
-    target_link_libraries(pj_wasm_websocket PUBLIC plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
+    target_include_directories(pj_wasm_websocket PUBLIC "${_pj_websocket_dir}/include")
+    target_link_libraries(pj_wasm_websocket PUBLIC plotjuggler_sdk::plugin_sdk)
     # Emscripten links its WebSocket JS library only when asked; the final executable inherits
     # this, or emscripten_websocket_* stays undefined.
     target_link_options(pj_wasm_websocket INTERFACE "-lwebsocket.js")

@@ -11,10 +11,11 @@
 # on libpj_wasm_pj_bridge.a against every archive and object of pj_app's link
 # plus the multithread sysroot archives: its strong definitions (the two static
 # getters, PJ::BridgeProtocol::*) exist nowhere else (the WebSocket client is
-# pj_wasm_websocket's), and the few hundred symbols it shares are weak instantiations of
-# the libc++, nlohmann_json and SDK headers every plugin compiles alike; a shared weak symbol from a plugin's own
-# inline variable or function would be a silent ODR merge, so those must stay
-# uniquely named. Zstd stays one copy (libzstd.a), and no IXWebSocket symbol is
+# pj_wasm_websocket's), and the few hundred symbols it shares are weak
+# instantiations of the libc++, nlohmann_json, SDK and common/websocket headers
+# every consumer compiles alike; a shared weak symbol from a plugin's own inline
+# variable or function would be a silent ODR merge, so those must stay uniquely
+# named. Zstd stays one copy (libzstd.a), and no IXWebSocket symbol is
 # referenced. Repeat it when the pin or this recipe changes.
 include_guard(GLOBAL)
 

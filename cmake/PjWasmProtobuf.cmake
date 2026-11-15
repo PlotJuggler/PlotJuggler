@@ -17,7 +17,6 @@ pj_wasm_require_official_plugin_sources(_pj_protobuf_dir parser_protobuf
         foxglove_voxelgrid_codec.cpp foxglove_voxelgrid_codec.hpp
         foxglove_grid_codec.cpp foxglove_grid_codec.hpp
         manifest.json protobuf_parser_options.ui)
-set(_pj_common_dir "${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/common")
 
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedUi.cmake")
 include("${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/cmake/EmbedManifest.cmake")
