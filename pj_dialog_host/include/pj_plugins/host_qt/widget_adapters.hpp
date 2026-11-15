@@ -53,6 +53,14 @@ void adaptMarkdownEdits(QWidget* root);
 /// handle), so a stretched-column table no longer doubles the native grid's
 /// trailing line against the chrome. Idempotent (marker property).
 void adaptGridTables(QWidget* root);
+/// Frame the footer of an edge-to-edge plugin dialog the way the host frames
+/// its title bar. When `root`'s vertical layout has zero left/right/bottom
+/// margins and its last item holds a QDialogButtonBox (the box itself, a
+/// wrapper widget, or a button row layout), that item is moved into a host
+/// footer (objectName "pjDialogFooter") that draws a hairline above it and pads
+/// it by one standard inset, replacing the item's own outer margins. Padded
+/// dialogs are left alone. Idempotent.
+void adaptDialogFooter(QWidget* root);
 /// Attach a PJ::Scrollbar overlay (one horizontal + one vertical) to every
 /// QAbstractScrollArea found under `root` that has not yet been adapted. The
 /// native bars are hidden (policy forced to AlwaysOff); the pill overlays own

@@ -178,5 +178,75 @@ TEST(HeaderResizePolicy, HiddenHeaderGrowingAColumnKeepsTheTotal) {
   EXPECT_GE(f.header->sectionSize(0), kAbsoluteFloor);
 }
 
+// A data grid (e.g. the CSV loader's preview): more columns than the view can
+// hold, every one already at its label floor. Splitter semantics leave no
+// neighbour with width to give, so without a fallback no divider moves at all.
+QStringList overflowingLabels() {
+  QStringList labels{QStringLiteral("Name")};
+  for (int i = 0; i < 8; ++i) {
+    labels.push_back(QString::fromLatin1(kWideLabel) + QString::number(i));
+  }
+  return labels;
+}
+
+TEST(HeaderResizePolicy, OverflowingHeaderResizesOnlyTheDraggedColumn) {
+  Fixture f(overflowingLabels());
+  ASSERT_GT(f.total(), f.header->width()) << "the fixture must overflow the view";
+  const QList<int> before = f.widths();
+
+  f.dragDivider(3, 40);
+
+  QList<int> expected = before;
+  expected[3] += 40;
+  EXPECT_EQ(f.widths(), expected) << "the dragged column alone should grow; the scrollbar takes the rest";
+
+  f.dragDivider(3, -40);
+  EXPECT_EQ(f.widths(), before) << "narrowing back should restore the layout";
+}
+
+TEST(HeaderResizePolicy, OverflowingHeaderStillHonoursTheLabelFloor) {
+  Fixture f(overflowingLabels());
+  const QList<int> before = f.widths();
+
+  f.dragDivider(3, -kTableWidth);
+
+  EXPECT_EQ(f.header->sectionSize(3), before[3]) << "a column at its floor must not be squashed under its label";
+}
+
+TEST(HeaderResizePolicy, OverflowingHeaderLetsTheLastColumnGrow) {
+  Fixture f(overflowingLabels());
+  const int last = f.header->count() - 1;
+  const int before = f.header->sectionSize(last);
+
+  f.dragDivider(last, 50);
+
+  EXPECT_EQ(f.header->sectionSize(last), before + 50);
+}
+
+TEST(HeaderResizePolicy, OverflowingFillColumnKeepsItsWidthAcrossAResize) {
+  // The fill column normally absorbs slack and so is shrunk back on every
+  // resize; once the user sizes it in a grid that cannot fit anyway, that
+  // width must survive the next resize instead of snapping to the floor.
+  Fixture f(overflowingLabels());
+  const int widened = f.header->sectionSize(0) + 60;
+
+  f.dragDivider(0, 60);
+  EXPECT_EQ(f.header->sectionSize(0), widened);
+
+  f.table.resize(kTableWidth + 20, kTableHeight);
+  QApplication::processEvents();
+  EXPECT_EQ(f.header->sectionSize(0), widened);
+}
+
+TEST(HeaderResizePolicy, FillColumnAbsorbsSlackAgainOnceTheGridFits) {
+  Fixture f(overflowingLabels());
+  f.dragDivider(0, 60);
+
+  // Wide enough for every column: the fill column goes back to filling the view.
+  f.table.resize(f.total() + 400, kTableHeight);
+  QApplication::processEvents();
+  EXPECT_EQ(f.total(), f.header->width());
+}
+
 }  // namespace
 }  // namespace PJ

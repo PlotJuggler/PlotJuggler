@@ -18,6 +18,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QFrame>
 #include <QGridLayout>
 #include <QLayout>
@@ -791,6 +792,78 @@ void adaptMarkdownEdits(QWidget* root) {
   }
 }
 
+namespace {
+
+constexpr const char* kDialogFooterName = "pjDialogFooter";
+
+bool holdsButtonBox(const QWidget* w) {
+  return qobject_cast<const QDialogButtonBox*>(w) != nullptr || w->findChild<QDialogButtonBox*>() != nullptr;
+}
+
+bool holdsButtonBox(const QLayout* layout) {
+  for (int i = 0; i < layout->count(); ++i) {
+    QLayoutItem* item = layout->itemAt(i);
+    if ((item->widget() != nullptr && holdsButtonBox(item->widget())) ||
+        (item->layout() != nullptr && holdsButtonBox(item->layout()))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+void adaptDialogFooter(QWidget* root) {
+  auto* layout = root != nullptr ? qobject_cast<QBoxLayout*>(root->layout()) : nullptr;
+  if (layout == nullptr || layout->direction() != QBoxLayout::TopToBottom || layout->count() == 0) {
+    return;
+  }
+  // Only an edge-to-edge dialog has a footer to frame: a padded root insets
+  // its buttons along with everything else, like any ordinary dialog.
+  const QMargins outer = layout->contentsMargins();
+  if (outer.left() != 0 || outer.right() != 0 || outer.bottom() != 0) {
+    return;
+  }
+  const int last_index = layout->count() - 1;
+  QLayoutItem* last = layout->itemAt(last_index);
+  QWidget* last_widget = last->widget();
+  QLayout* last_layout = last->layout();
+  if (last_widget != nullptr && last_widget->objectName() == QLatin1String(kDialogFooterName)) {
+    return;  // already adapted
+  }
+  if (!(last_widget != nullptr ? holdsButtonBox(last_widget) : last_layout != nullptr && holdsButtonBox(last_layout))) {
+    return;
+  }
+
+  // The host owns the footer's frame: a hairline above it (the same stroke the
+  // title bar draws below itself, see #pjDialogFooter in the QSS) and one
+  // standard inset, replacing whatever outer padding the plugin chose.
+  auto* footer = new QWidget(root);
+  footer->setObjectName(QLatin1String(kDialogFooterName));
+  footer->setAttribute(Qt::WA_StyledBackground, true);
+  // Vertically Fixed like the QDialogButtonBox it usually replaces: a Preferred
+  // footer would share the dialog's spare height with the content above it.
+  footer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+  auto* footer_layout = new QVBoxLayout(footer);
+  const int inset = theme::space(theme::Space::Comfortable);
+  footer_layout->setContentsMargins(inset, inset, inset, inset);
+  footer_layout->setSpacing(0);
+
+  QLayoutItem* taken = layout->takeAt(last_index);
+  if (last_widget != nullptr) {
+    delete taken;  // the QWidgetItem wrapper only; the widget moves into the footer
+    if (qobject_cast<QDialogButtonBox*>(last_widget) == nullptr && last_widget->layout() != nullptr) {
+      last_widget->layout()->setContentsMargins(0, 0, 0, 0);
+    }
+    footer_layout->addWidget(last_widget);
+  } else {
+    last_layout->setContentsMargins(0, 0, 0, 0);
+    last_layout->setParent(nullptr);
+    footer_layout->addLayout(last_layout);
+  }
+  layout->addWidget(footer);
+}
+
 void adaptStyledWidgets(QWidget* root) {
   adaptRadioGroups(root);
   adaptCheckBoxes(root);
@@ -798,6 +871,7 @@ void adaptStyledWidgets(QWidget* root) {
   adaptMarkdownEdits(root);
   adaptScrollAreas(root);
   adaptGridTables(root);
+  adaptDialogFooter(root);
 }
 
 void tryAdaptStyledWidget(QWidget* w) {

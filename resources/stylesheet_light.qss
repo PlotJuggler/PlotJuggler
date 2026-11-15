@@ -1348,6 +1348,13 @@ QWidget#markerScopesFooter {
     border-top: 1px solid ${separation};
 }
 
+/* Footer the dialog host wraps around an edge-to-edge plugin dialog's buttons
+   (adaptDialogFooter): the same hairline the dialog title bar draws below
+   itself, so the content is framed identically top and bottom. */
+QWidget#pjDialogFooter {
+    border-top: ${stroke_hairline}px solid ${separation};
+}
+
 /* Playback slider spans the full 24-px chrome row top-to-bottom:
    groove and handle both fill the bar height (no margins / negative
    insets), so the body reads as a solid track and the handle as a

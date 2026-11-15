@@ -115,6 +115,16 @@ int HeaderResizePolicy::fillSection() const {
   return -1;
 }
 
+int HeaderResizePolicy::visibleWidthExcept(int section) const {
+  int width = 0;
+  for (int i = 0; i < header_->count(); ++i) {
+    if (i != section && !header_->isSectionHidden(i)) {
+      width += header_->sectionSize(i);
+    }
+  }
+  return width;
+}
+
 int HeaderResizePolicy::minimumWidthFor(int section) const {
   const QAbstractItemModel* model = header_->model();
   if (model == nullptr) {
@@ -162,6 +172,23 @@ void HeaderResizePolicy::enforceMinimumWidths() {
 
 void HeaderResizePolicy::onSectionResized(int section, int old_size, int new_size) {
   if (adjusting_ || header_->isSectionHidden(section)) {
+    return;
+  }
+  if (visibleWidthExcept(section) + old_size > availableWidth()) {
+    // The columns already overflow the view (a wide data grid), so there is no
+    // width to trade and splitter semantics would freeze every divider. Behave
+    // like a stock header: only the dragged column changes, the horizontal
+    // scrollbar absorbs it, and the label floor still holds.
+    const int width = std::max(new_size, minimumWidthFor(section));
+    if (width != new_size) {
+      adjusting_ = true;
+      header_->resizeSection(section, width);
+      adjusting_ = false;
+    }
+    if (section == fillSection()) {
+      user_fill_width_ = width;
+    }
+    rebalance();  // narrowing may have made the columns fit again
     return;
   }
   const int next = nextVisibleSection(section);
@@ -215,13 +242,11 @@ void HeaderResizePolicy::rebalance() {
   if (fill < 0 || header_->count() == 0) {
     return;
   }
-  int occupied = 0;
-  for (int i = 0; i < header_->count(); ++i) {
-    if (i != fill && !header_->isSectionHidden(i)) {
-      occupied += header_->sectionSize(i);
-    }
+  const int slack = availableWidth() - visibleWidthExcept(fill);
+  if (slack >= user_fill_width_) {
+    user_fill_width_ = 0;  // the columns fit again: the fill section resumes absorbing slack
   }
-  const int target = std::max(minimumWidthFor(fill), availableWidth() - occupied);
+  const int target = std::max({minimumWidthFor(fill), slack, user_fill_width_});
   if (header_->sectionSize(fill) == target) {
     return;
   }
