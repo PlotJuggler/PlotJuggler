@@ -296,6 +296,51 @@ class GuiResumingWorkerAwaiter {
   std::shared_ptr<State> state_;
 };
 
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+// Resumes its coroutine on the GUI thread with the side module's load outcome (arrow_side_module::ensureLoaded).
+// The load runs on a thread FileLoader does not own, so joinForShutdown never waits for it; a frame destroyed
+// meanwhile is not resumed.
+class SideModuleAwaiter {
+ public:
+  SideModuleAwaiter(ExtensionCatalogService& catalog, QObject* context)
+      : catalog_(catalog), context_(context), state_(std::make_shared<State>()) {}
+  SideModuleAwaiter(const SideModuleAwaiter&) = delete;
+  SideModuleAwaiter& operator=(const SideModuleAwaiter&) = delete;
+  ~SideModuleAwaiter() {
+    state_->alive = false;
+  }
+
+  [[nodiscard]] bool await_ready() const noexcept {
+    return false;
+  }
+
+  void await_suspend(std::coroutine_handle<> continuation) {
+    state_->continuation = continuation;
+    pj_app::arrow_side_module::ensureLoaded(catalog_, context_, [state = state_](const QString& error) {
+      if (state->alive) {
+        state->error = error;
+        state->continuation.resume();
+      }
+    });
+  }
+
+  QString await_resume() {
+    return state_->error;
+  }
+
+ private:
+  struct State {
+    std::coroutine_handle<> continuation;
+    QString error;
+    bool alive = true;  // GUI thread only, like the callback
+  };
+
+  ExtensionCatalogService& catalog_;
+  QObject* context_;
+  std::shared_ptr<State> state_;
+};
+#endif
+
 #ifndef PJ_TARGET_WASM
 constexpr const char* kLastDirKey = "FileLoader/lastDir";
 #endif
@@ -1306,11 +1351,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
 #ifdef PJ_WASM_ARROW_SIDE_MODULE
   // The loader lives in a side module linked on first use, off the main thread (ArrowSideModule.h).
   if (matches.empty() && pj_app::arrow_side_module::fileExtensions().contains(ext)) {
-    QString side_module_error;
     // Named local, not a co_await temporary — see dialog_awaiter below (GCC 11.4 awaiter-temporary miscompile).
-    GuiResumingWorkerAwaiter side_module_awaiter(
-        this, worker_, [&side_module_error]() { side_module_error = pj_app::arrow_side_module::loadBlocking(); });
-    co_await std::move(side_module_awaiter);
+    SideModuleAwaiter side_module_awaiter(extensions_, this);
+    const QString side_module_error = co_await std::move(side_module_awaiter);
     if (disallowed() || cancelled_while_suspended("loading its side module")) {
       co_return;
     }
@@ -1318,7 +1361,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       (void)fail(tr("Could not load the %1 loader: %2").arg(ext, side_module_error));
       co_return;
     }
-    pj_app::arrow_side_module::registerWith(extensions_);
     matches = extensions_.findSourcesForExtension(ext);
   }
 #endif

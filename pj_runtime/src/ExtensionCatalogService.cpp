@@ -8,7 +8,9 @@
 #include <QLoggingCategory>
 #include <QMap>
 #include <QSettings>
+#include <QThread>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -697,16 +699,30 @@ bool ExtensionCatalogService::registerLatePlugins(const StaticPluginSet& plugins
     rebuildParserClaims();
     resolveCustomTopicsEditor();
   }
+  signalDeferredParsers();
   emit catalogChanged();
   return ok;
 }
 
-void ExtensionCatalogService::setDeferredParsers(std::vector<std::string> encodings, std::function<void()> load) {
+void ExtensionCatalogService::setDeferredParsers(std::vector<std::string> encodings, std::function<void()> start_load) {
   deferred_parser_encodings_ = std::move(encodings);
-  deferred_parser_load_ = std::move(load);
+  deferred_parser_load_ = std::move(start_load);
 }
 
-void ExtensionCatalogService::loadDeferredParser(std::string_view encoding) const {
+void ExtensionCatalogService::deferredParsersFailed() {
+  signalDeferredParsers();
+}
+
+void ExtensionCatalogService::signalDeferredParsers() {
+  {
+    const std::scoped_lock lock(deferred_mutex_);
+    ++deferred_events_;
+  }
+  deferred_cv_.notify_all();
+}
+
+void ExtensionCatalogService::loadDeferredParser(std::string_view encoding, const std::atomic<bool>* stop) const {
+  // The only cost when no deferred parsers are set (always on the desktop): this empty-function test.
   if (!deferred_parser_load_ ||
       std::ranges::find(deferred_parser_encodings_, encoding) == deferred_parser_encodings_.end()) {
     return;
@@ -717,21 +733,35 @@ void ExtensionCatalogService::loadDeferredParser(std::string_view encoding) cons
       return;
     }
   }
+  std::unique_lock lock(deferred_mutex_);
+  const uint64_t seen = deferred_events_;
+  lock.unlock();
   deferred_parser_load_();
+  if (QThread::isMainThread()) {
+    return;  // the load registers on this thread, which therefore cannot wait for it
+  }
+  lock.lock();
+  using namespace std::chrono_literals;
+  while (stop == nullptr || !stop->load()) {
+    if (deferred_cv_.wait_for(lock, 50ms, [this, seen]() { return deferred_events_ != seen; })) {
+      return;  // registered, or failed: resolve against the catalog as it is now
+    }
+  }
 }
 
 ParserRouteSelection ExtensionCatalogService::resolveParserRoutes(
     std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema,
-    std::string_view parser_config_json) const {
-  loadDeferredParser(encoding);
+    std::string_view parser_config_json, const std::atomic<bool>* stop) const {
+  loadDeferredParser(encoding, stop);
   const std::scoped_lock routing_lock(routing_mutex_);
   const std::shared_lock catalog_lock(catalog_mutex_);
   return routing_.resolveParserRoutes(encoding, type_name, schema, parser_config_json);
 }
 
 std::optional<sdk::BuiltinObjectType> ExtensionCatalogService::classifyParserObjectRoute(
-    std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema) const {
-  loadDeferredParser(encoding);
+    std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema,
+    const std::atomic<bool>* stop) const {
+  loadDeferredParser(encoding, stop);
   const std::scoped_lock routing_lock(routing_mutex_);
   const std::shared_lock catalog_lock(catalog_mutex_);
   return routing_.classifyParserObjectRoute(encoding, type_name, schema);

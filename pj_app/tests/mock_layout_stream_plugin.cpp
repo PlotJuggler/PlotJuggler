@@ -138,10 +138,24 @@ class MockLayoutStream : public PJ::StreamSourceBase {
     value_ = numberValue(config_, "value", 1.0);
     gate_file_ = stringValue(config_, "gate_file", "");
     end_file_ = stringValue(config_, "end_file", "");
+    parser_encoding_ = stringValue(config_, "parser_encoding", "");
     return PJ::okStatus();
   }
 
   PJ::Status onPoll() override {
+    if (!parser_encoding_.empty()) {
+      // Binds one channel of that encoding on this poll thread, once (a deferred parser is resolved here).
+      recordProbe("binding");
+      const auto binding = runtimeHost().ensureParserBinding(
+          PJ::ParserBindingRequest{
+              .topic_name = topic_name_,
+              .parser_encoding = parser_encoding_,
+              .type_name = "any/Type",
+              .schema = {},
+              .parser_config_json = "{}"});
+      recordProbe(binding ? "bound" : "unbound");
+      parser_encoding_.clear();
+    }
     if (!end_file_.empty() && std::ifstream(end_file_).good()) {
       runtimeHost().requestStop(PJ::DataSourceState::kStopped, "end of stream");
       return PJ::okStatus();
@@ -173,6 +187,7 @@ class MockLayoutStream : public PJ::StreamSourceBase {
   double value_ = 1.0;
   std::string gate_file_;
   std::string end_file_;
+  std::string parser_encoding_;
   int polls_ = 0;
   std::optional<PJ::sdk::TopicHandle> topic_;
 };

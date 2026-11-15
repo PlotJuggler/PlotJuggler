@@ -18,9 +18,17 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QWidget>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
+#include <mutex>
+#include <thread>
 
 #include "StreamingSourceManager.h"
 #include "pj_datastore/engine.hpp"
@@ -137,6 +145,57 @@ class StreamingDialogExitTest : public ::testing::Test {
   QStringList setup_errors_;
   QStringList stream_errors_;
 };
+
+// Aborts the test binary when it outlives `limit`: a deadlocked join fails the run instead of hanging it.
+class Watchdog {
+ public:
+  Watchdog(std::chrono::seconds limit, const char* what)
+      : thread_([this, limit, what]() {
+          std::unique_lock lock(mutex_);
+          if (!cv_.wait_for(lock, limit, [this]() { return done_; })) {
+            std::fprintf(stderr, "WATCHDOG: %s\n", what);
+            std::abort();
+          }
+        }) {}
+  ~Watchdog() {
+    {
+      const std::scoped_lock lock(mutex_);
+      done_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool done_ = false;
+  std::thread thread_;
+};
+
+// A poll thread that meets a deferred parser (a browser side module still loading) must not keep the GUI thread's
+// stop from joining it: the load it waits for cannot finish while that thread is blocked in the join.
+TEST_F(StreamingDialogExitTest, StoppingAStreamWaitingForADeferredParserReturns) {
+  ExtensionCatalogService& catalog = app_session_->extensionCatalog();
+  std::atomic<bool> loading = false;
+  catalog.setDeferredParsers({"deferred_enc"}, [&loading]() {
+    loading = true;  // a load that never completes: in the browser it cannot while the GUI thread is joining
+  });
+  qputenv(kDialogConfigEnv, R"({"parser_encoding":"deferred_enc"})");
+  settleNextDialog(/*accept=*/true);
+  startAndSettle();
+  ASSERT_EQ(started_, 1);
+  const std::vector<DatasetId> datasets = app_session_->sessionManager().dataEngine().listDatasets();
+  ASSERT_EQ(datasets.size(), 1U);
+  // Without serving events: the load must still be pending when the stop blocks this thread.
+  for (int i = 0; i < 5000 && !loading; ++i) {
+    QThread::msleep(1);
+  }
+  ASSERT_TRUE(loading) << "the poll thread never resolved the deferred encoding";
+
+  const Watchdog watchdog(std::chrono::seconds(10), "stopDatasetAndWait hung on a poll thread awaiting a parser");
+  EXPECT_TRUE(manager_->stopDatasetAndWait(datasets.front(), QString{}));
+}
 
 // A browser cannot block on a dialog, so no platform does: the start returns while its dialog is
 // open, and launches when the user accepts.

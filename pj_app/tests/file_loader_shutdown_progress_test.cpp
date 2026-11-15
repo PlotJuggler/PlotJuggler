@@ -19,6 +19,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QtGlobal>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -40,6 +41,8 @@ namespace {
 constexpr auto kChildEnv = "PJ_RUN_PROGRESS_SHUTDOWN_CHILD";
 constexpr auto kProbeEnv = "PJ_PROGRESS_SHUTDOWN_PROBE_FILE";
 constexpr auto kChildFilter = "FileLoaderShutdownProgressChild.DispatchesQueuedProgressAfterJoin";
+constexpr auto kEncodingEnv = "PJ_PROGRESS_SHUTDOWN_PARSER_ENCODING";
+constexpr auto kDeferredChildFilter = "FileLoaderShutdownProgressChild.JoinsAWorkerAwaitingADeferredParser";
 
 QByteArray readProbe(const QString& path) {
   QFile file(path);
@@ -195,4 +198,83 @@ TEST(FileLoaderShutdownProgressRegression, QueuedProgressAfterJoinMustNotAccessD
                                  << "probe:\n"
                                  << probe.constData() << "child output:\n"
                                  << output.constData();
+}
+
+// A load whose worker meets a deferred parser (a browser side module still loading) must not keep joinForShutdown
+// from joining it: the load cannot finish while the GUI thread is blocked in the join.
+TEST(FileLoaderShutdownProgressChild, JoinsAWorkerAwaitingADeferredParser) {
+  if (qgetenv(kChildEnv) != QByteArrayLiteral("1")) {
+    GTEST_SKIP() << "subprocess-only hang scenario";
+  }
+  const QString probe_path = QString::fromUtf8(qgetenv(kProbeEnv));
+  ASSERT_FALSE(probe_path.isEmpty());
+  QFile::remove(probe_path);
+  QTemporaryDir extensions_dir;
+  QTemporaryDir data_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  ASSERT_TRUE(data_dir.isValid());
+  const QString plugin_src = QString::fromUtf8(PJ_PROGRESS_SHUTDOWN_SOURCE_PLUGIN_PATH);
+  ASSERT_TRUE(QFile::copy(plugin_src, extensions_dir.filePath(QFileInfo(plugin_src).fileName())));
+
+  auto app_session = std::make_unique<PJ::AppSession>(extensions_dir.path());
+  PJ::ExtensionCatalogService& catalog = app_session->extensionCatalog();
+  std::atomic<bool> loading = false;
+  catalog.setDeferredParsers({"deferred_enc"}, [&loading]() {
+    loading = true;  // a load that never completes: in the browser it cannot while the GUI thread is joining
+  });
+  PJ::FileLoader loader(app_session->sessionManager(), catalog, app_session->catalogModel());
+
+  const QString input_path = data_dir.filePath(u"deferred.progressshutdown"_s);
+  QFile input(input_path);
+  ASSERT_TRUE(input.open(QIODevice::WriteOnly));
+  input.close();
+  PJ::LoadHints hints;
+  hints.expected_plugin_id = u"Progress Shutdown Source"_s;
+  hints.preset_config_json = u"{}"_s;
+  hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
+  ASSERT_TRUE(loader.loadFile(input_path, nullptr, hints));
+  // Serve events only until the worker asks for the parser: its load must still be pending at the join.
+  QElapsedTimer timer;
+  timer.start();
+  while (!loading && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+  }
+  ASSERT_TRUE(loading) << "the worker never resolved the deferred encoding";
+
+  loader.joinForShutdown();
+  EXPECT_TRUE(readProbe(probe_path).contains(QByteArrayLiteral("stop_observed"))) << readProbe(probe_path).constData();
+  EXPECT_FALSE(loader.isBusy());
+}
+
+TEST(FileLoaderShutdownProgressRegression, JoinForShutdownDoesNotWaitForADeferredParserLoad) {
+  if (qgetenv(kChildEnv) == QByteArrayLiteral("1")) {
+    GTEST_SKIP() << "parent assertion is not run recursively";
+  }
+  QTemporaryDir probe_dir;
+  ASSERT_TRUE(probe_dir.isValid());
+  const QString probe_path = probe_dir.filePath(u"deferred_parser_probe.log"_s);
+
+  QProcess child;
+  child.setProcessChannelMode(QProcess::MergedChannels);
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  env.insert(QString::fromLatin1(kChildEnv), u"1"_s);
+  env.insert(QString::fromLatin1(kProbeEnv), probe_path);
+  env.insert(QString::fromLatin1(kEncodingEnv), u"deferred_enc"_s);
+  child.setProcessEnvironment(env);
+  child.setProgram(QCoreApplication::applicationFilePath());
+  child.setArguments(
+      {QStringLiteral("--gtest_filter=%1").arg(QString::fromLatin1(kDeferredChildFilter)),
+       QStringLiteral("--gtest_color=no")});
+  child.start();
+  ASSERT_TRUE(child.waitForStarted(5000)) << child.errorString().toStdString();
+  if (!child.waitForFinished(15000)) {
+    child.kill();
+    child.waitForFinished(5000);
+    FAIL() << "joinForShutdown hung on a worker awaiting a deferred parser\nprobe:\n"
+           << readProbe(probe_path).constData() << "child output:\n"
+           << child.readAll().constData();
+  }
+  const QByteArray output = child.readAll();
+  EXPECT_EQ(child.exitStatus(), QProcess::NormalExit) << output.constData();
+  EXPECT_EQ(child.exitCode(), 0) << output.constData();
 }

@@ -10,11 +10,13 @@
 
 #include <QString>
 #include <algorithm>
+#include <atomic>
 #include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -479,6 +481,38 @@ TEST(ExtensionCatalogParserRoutes, DeferredParserLoadsOnFirstResolutionOfItsEnco
   EXPECT_TRUE(catalog.service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {}).scalar.has_value());
   EXPECT_EQ(loads, 1);
   EXPECT_EQ(changes, 1);
+}
+
+// Off the main thread a resolution of a deferred encoding waits for the load it started: a stop abandons the wait
+// unbound, a registration ends it bound.
+TEST(ExtensionCatalogParserRoutes, DeferredParserResolutionWaitsForRegistrationOrStop) {
+  PJ::test::HermeticCatalog catalog(staticParsers({&kWildcardParser}));
+  std::atomic<int> starts = 0;
+  catalog.service.setDeferredParsers({"custom_enc"}, [&starts]() { ++starts; });
+
+  std::atomic<bool> stop = false;
+  std::optional<bool> stopped_bound;
+  std::thread stopped([&]() {
+    stopped_bound =
+        catalog.service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {}, &stop).scalar.has_value();
+  });
+  while (starts == 0) {
+    std::this_thread::yield();
+  }
+  stop = true;
+  stopped.join();
+  EXPECT_EQ(stopped_bound, false);
+
+  std::optional<bool> bound;
+  std::thread waiting([&]() {
+    bound = catalog.service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {}).scalar.has_value();
+  });
+  while (starts < 2) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(catalog.service.registerLatePlugins(staticParsers({&kCustomEncodingParser})));
+  waiting.join();
+  EXPECT_EQ(bound, true);
 }
 
 TEST(ExtensionCatalogParserRoutes, EmptyTypeNameStaysOnLegacyPath) {

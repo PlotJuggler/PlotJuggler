@@ -41,6 +41,9 @@ class ProgressShutdownSource : public PJ::FileSourceBase {
   }
 
   PJ::Status importData() override {
+    if (const auto encoding = PJ::sdk::getEnv("PJ_PROGRESS_SHUTDOWN_PARSER_ENCODING"); encoding.has_value()) {
+      return bindThenAwaitStop(*encoding);
+    }
     auto progress = runtimeHost().progressStart("Shutdown progress probe", 1, true);
     if (!progress) {
       return progress;
@@ -74,6 +77,27 @@ class ProgressShutdownSource : public PJ::FileSourceBase {
       return PJ::unexpected("timed out waiting for shutdown stop request");
     }
     recordProbe("stop_observed");
+    return PJ::unexpected("stopped for shutdown probe");
+  }
+
+ private:
+  // Resolves a parser of `encoding` on this worker (a deferred parser is loaded here), then holds the worker until
+  // joinForShutdown requests stop.
+  PJ::Status bindThenAwaitStop(const std::string& encoding) {
+    recordProbe("binding_started");
+    const auto binding = runtimeHost().ensureParserBinding(
+        PJ::ParserBindingRequest{
+            .topic_name = "shutdown/parsed",
+            .parser_encoding = encoding,
+            .type_name = "any/Type",
+            .schema = {},
+            .parser_config_json = "{}"});
+    recordProbe(binding ? "bound" : "unbound");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!runtimeHost().isStopRequested() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    recordProbe(runtimeHost().isStopRequested() ? "stop_observed" : "stop_timed_out");
     return PJ::unexpected("stopped for shutdown probe");
   }
 };

@@ -154,11 +154,17 @@ Rules the mechanism depends on:
   and library functions only when they are also called directly, so a
   `--js-library` function declares `__sig`. pj_app's post-link step
   (`cmake/wasm_main_module_check.py`) fails the build on a missing one.
-- **Never `dlopen()` on the main thread.** Chromium refuses a synchronous
-  compile this large there, and `dlopen()` waits until every thread linked the
-  module, which deadlocks a main thread that cannot return to the browser. A
-  worker downloads the module (synchronous `emscripten_fetch`) into MEMFS and
-  `dlopen()`s it once; every thread links that one copy. The handle is never
+- **Never `dlopen()` on the main thread, nor on a thread anyone joins.**
+  Chromium refuses a synchronous compile this large on the main thread.
+  `dlopen()` also waits until every thread has linked the module, and the main
+  thread links it only once it is back in the browser's event loop. A loader
+  thread that nothing joins downloads the module (a synchronous XHR with a 60 s
+  timeout) into MEMFS and `dlopen()`s it once; every thread links that one copy,
+  and the main thread then registers it. A source's poll or import thread that
+  needs an `arrow-ipc` parser only starts that load and waits for it until its
+  source is stopped (`ExtensionCatalogService::setDeferredParsers`): the main
+  thread may be joining it. `FileLoader` resumes its `.parquet` load from the
+  loader's callback instead of running it on its worker. The handle is never
   closed (Emscripten 5.0.5 deadlocks re-opening a module).
 - **What the side module must not link:** the sysroot's zlib is not position
   independent, so Arrow's zlib dependency resolves to the main module's.

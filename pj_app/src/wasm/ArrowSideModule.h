@@ -33,22 +33,14 @@ namespace pj_app::arrow_side_module {
 // Whether registerWith() has run: the catalog then has the family. Main thread.
 [[nodiscard]] bool isRegistered();
 
-// Fetches plugins/arrow.wasm into the in-memory filesystem and dlopen()s it. Empty on success, else why it failed.
-// A failed download (HTTP or network error, 60 s timeout) is retried by the next call; once dlopen() has run, later
-// calls return its outcome without doing anything. Blocks for the download and the link.
-// NEVER on the main thread: the browser refuses to compile a module this large synchronously there, and dlopen()
-// waits for every thread to link the module too, which deadlocks a main thread that cannot return to the browser.
-QString loadBlocking();
-
-// Registers the loaded family with the catalog (once; a no-op before a successful loadBlocking()). Main thread.
-void registerWith(PJ::ExtensionCatalogService& catalog);
-
-// Main thread: loadBlocking() on a worker thread, then registerWith(), then done(error) on the main thread, unless
-// `context` was destroyed first.
+// Main thread. Calls done(error) on the main thread, unless `context` was destroyed first, once the module is
+// registered with the catalog (error empty) or its load failed. The load runs on a loader thread that nothing
+// joins: a failed download (HTTP or network error, 60 s timeout) is retried by the next request; a failed link
+// is final.
 void ensureLoaded(PJ::ExtensionCatalogService& catalog, QObject* context, std::function<void(const QString&)> done);
 
-// Hands the catalog the deferred parsers, so a source's poll thread that meets one of their encodings loads the
-// module (registering on the main thread) before resolving it.
+// Hands the catalog the deferred parsers: a source's poll thread that meets one of their encodings starts the load
+// and waits for it only until its source stops (ExtensionCatalogService::setDeferredParsers).
 void installDeferredParsers(PJ::ExtensionCatalogService& catalog);
 
 }  // namespace pj_app::arrow_side_module

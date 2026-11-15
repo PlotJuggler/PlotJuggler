@@ -670,7 +670,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     // GUI-thread reload inside the catalog service.
     const Span<const uint8_t> schema_span(request->schema.data, request->schema.size);
     ParserRouteSelection selection =
-        self->catalog_.resolveParserRoutes(encoding, type_name, schema_span, parser_config);
+        self->catalog_.resolveParserRoutes(encoding, type_name, schema_span, parser_config, &self->stop_requested_);
     if (!selection.scalar.has_value()) {
       // No encoding/type prefix: the plugin names the channel when it
       // re-reports this through its own 224-byte PJ_error_t message, and the
@@ -1147,7 +1147,7 @@ sdk::BuiltinObjectType DataSourceRuntimeHost::classifyAvailableTopic(const PJ_av
     // The advertised type is an object exactly when some provider holds the
     // OBJECT route for it — the same resolution bind time performs, so the
     // probe work is shared through the resolver cache. No config exists here.
-    if (const auto object_type = catalog_.classifyParserObjectRoute(encoding, type_name, schema_span);
+    if (const auto object_type = catalog_.classifyParserObjectRoute(encoding, type_name, schema_span, &stop_requested_);
         object_type.has_value()) {
       return *object_type;
     }

@@ -5,7 +5,6 @@
 
 #include <dlfcn.h>
 #include <emscripten.h>
-#include <emscripten/fetch.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -15,11 +14,13 @@
 #include <QPointer>
 #include <QThread>
 #include <cstdio>
-#include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include "arrow_manifest.hpp"
 #include "data_exporter_manifest.hpp"
@@ -86,35 +87,63 @@ PJ::StaticPluginSet g_plugins;     // written once under g_load_mutex before g_o
 QString g_timing;                  // ditto: what the load cost, for the log and the probe
 bool g_registered = false;         // main thread
 
+// clang-format off
+EM_JS_DEPS(pj_arrow_side_module, "malloc");
+// A synchronous XHR on the calling worker (only a worker may give one a timeout). The body in a malloc()ed buffer and
+// its size in *size; or null, with *size = -status (an HTTP error), -1 (a network error or the timeout) or -2 (out
+// of memory).
+EM_JS(char*, pj_arrow_side_fetch, (const char* url, int* size), {
+  let result = -1;
+  try {
+    const request = new XMLHttpRequest();
+    request.open('GET', locateFile(UTF8ToString(url)), false);
+    request.responseType = 'arraybuffer';
+    request.timeout = 60000;
+    request.send(null);
+    if (request.status === 200) {
+      const body = new Uint8Array(request.response);
+      const buffer = _malloc(Math.max(body.length, 1)) >>> 0;
+      if (buffer) {
+        HEAPU8.set(body, buffer);
+        HEAP32[size >>> 2] = body.length;
+        return buffer;
+      }
+      result = -2;
+    } else {
+      result = request.status ? -request.status : -1;
+    }
+  } catch (error) {
+  }
+  HEAP32[size >>> 2] = result;
+  return 0;
+});
+// clang-format on
+
 // Downloads the module into MEMFS: dlopen() then copies it into shared memory once, where every thread links it
-// from, instead of each thread fetching the URL again.
+// from, instead of each thread fetching the URL again. Every error is retryable (loadBlocking does not cache it).
 QString fetchModule(size_t& bytes) {
-  emscripten_fetch_attr_t attr;
-  emscripten_fetch_attr_init(&attr);
-  std::strcpy(attr.requestMethod, "GET");
-  attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
-  attr.timeoutMSecs = 60000;  // a stalled download fails (and is retried by the next use) instead of hanging the load
-  emscripten_fetch_t* fetch = emscripten_fetch(&attr, kModuleUrl);
-  if (fetch == nullptr) {
-    return u"could not request %1"_s.arg(QLatin1StringView(kModuleUrl));
+  int size = 0;
+  const std::unique_ptr<char, decltype(&std::free)> body(pj_arrow_side_fetch(kModuleUrl, &size), &std::free);
+  const QLatin1StringView url(kModuleUrl);
+  if (!body) {
+    if (size == -2) {
+      return u"out of memory downloading %1"_s.arg(url);
+    }
+    if (size == -1) {
+      return u"downloading %1 failed (network error or timeout)"_s.arg(url);
+    }
+    return u"downloading %1 failed (HTTP %2)"_s.arg(url).arg(-size);
   }
+  bytes = static_cast<size_t>(size);
+  mkdir(kModuleDir, 0755);
+  FILE* file = std::fopen(kModulePath, "wb");
   QString error;
-  if (fetch->status == 0) {
-    error = u"downloading %1 failed (network error or timeout)"_s.arg(QLatin1StringView(kModuleUrl));
-  } else if (fetch->status != 200) {
-    error = u"downloading %1 failed (HTTP %2)"_s.arg(QLatin1StringView(kModuleUrl)).arg(fetch->status);
-  } else {
-    bytes = static_cast<size_t>(fetch->numBytes);
-    mkdir(kModuleDir, 0755);
-    FILE* file = std::fopen(kModulePath, "wb");
-    if (file == nullptr || std::fwrite(fetch->data, 1, bytes, file) != bytes) {
-      error = u"could not stage %1"_s.arg(QLatin1StringView(kModulePath));
-    }
-    if (file != nullptr) {
-      std::fclose(file);
-    }
+  if (file == nullptr || std::fwrite(body.get(), 1, bytes, file) != bytes) {
+    error = u"could not stage %1"_s.arg(QLatin1StringView(kModulePath));
   }
-  emscripten_fetch_close(fetch);
+  if (file != nullptr) {
+    std::fclose(file);
+  }
   return error;
 }
 
@@ -164,16 +193,20 @@ bool isRegistered() {
   return g_registered;
 }
 
+namespace {
+
+// Fetches plugins/arrow.wasm and dlopen()s it. A failed download is not cached: the next call downloads again.
+// Once dlopen() has run, later calls return its outcome. Blocks for the download and the link, so only on the
+// loader thread: dlopen() waits for every thread to link the module, the main thread included, which can only do
+// so once it is back in the browser's event loop.
 QString loadBlocking() {
   const std::scoped_lock lock(g_load_mutex);
   if (g_outcome.has_value()) {
     return *g_outcome;
   }
-  Q_ASSERT(!QThread::isMainThread());
   const double start = emscripten_get_now();
   size_t bytes = 0;
   if (QString error = fetchModule(bytes); !error.isEmpty()) {
-    // Not cached: nothing was linked, so the next use downloads again (a 503, a dropped connection, a timeout).
     qCWarning(lcSideModule).noquote() << "PJ_WASM_SIDE_MODULE_FAILED" << kModuleUrl << error;
     return error;
   }
@@ -193,54 +226,69 @@ QString loadBlocking() {
   return error;
 }
 
-void registerWith(PJ::ExtensionCatalogService& catalog) {
-  if (g_registered) {
-    return;
+// Main thread from here on.
+bool g_loading = false;  // a loader thread runs
+struct Waiter {
+  QPointer<QObject> context;
+  std::function<void(const QString&)> done;
+};
+std::vector<Waiter> g_waiters;
+
+void finishLoad(PJ::ExtensionCatalogService& catalog, const QString& error) {
+  g_loading = false;
+  if (error.isEmpty()) {
+    g_registered = true;
+    if (!catalog.registerLatePlugins(g_plugins)) {
+      qCWarning(lcSideModule) << "Some plugins of" << kModuleUrl << "failed to register";
+    }
+#ifdef PJ_WASM_ENABLE_INGRESS_PROBE
+    // Read by the browser tests: Firefox can drop the console line.
+    const QByteArray timing = g_timing.toUtf8();
+    EM_ASM({ globalThis.pjWasmSideModule = UTF8ToString($0); }, timing.constData());
+#endif
+  } else {
+    catalog.deferredParsersFailed();
   }
-  {
-    const std::scoped_lock lock(g_load_mutex);
-    if (!g_outcome.has_value() || !g_outcome->isEmpty()) {
-      return;
+  for (const Waiter& waiter : std::exchange(g_waiters, {})) {
+    if (waiter.context != nullptr) {
+      waiter.done(error);
     }
   }
-  g_registered = true;
-  if (!catalog.registerLatePlugins(g_plugins)) {
-    qCWarning(lcSideModule) << "Some plugins of" << kModuleUrl << "failed to register";
-  }
-#ifdef PJ_WASM_ENABLE_INGRESS_PROBE
-  // Read by the browser tests: Firefox can drop the console line above.
-  const QByteArray timing = g_timing.toUtf8();
-  EM_ASM({ globalThis.pjWasmSideModule = UTF8ToString($0); }, timing.constData());
-#endif
 }
 
-void ensureLoaded(PJ::ExtensionCatalogService& catalog, QObject* context, std::function<void(const QString&)> done) {
-  // Written by the worker before `finished`, read after it: a failed download is not cached, so it cannot be asked
-  // for again here, on the main thread.
-  auto error = std::make_shared<QString>();
+// Starts the self-ending loader thread, unless the module is registered or loading. Nothing joins that thread:
+// its dlopen() finishes only once the main thread is back in the browser's event loop.
+void startLoad(PJ::ExtensionCatalogService& catalog) {
+  if (g_registered || g_loading) {
+    return;
+  }
+  g_loading = true;
+  auto error = std::make_shared<QString>();  // written by the thread before `finished`, read after it
   QThread* thread = QThread::create([error]() { *error = loadBlocking(); });
   QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
   QObject::connect(
-      thread, &QThread::finished, context,
-      [&catalog, error, done = std::move(done)]() {
-        if (error->isEmpty()) {
-          registerWith(catalog);
-        }
-        done(*error);
-      },
-      Qt::QueuedConnection);
+      thread, &QThread::finished, &catalog, [&catalog, error]() { finishLoad(catalog, *error); }, Qt::QueuedConnection);
   thread->start();
 }
 
+}  // namespace
+
+void ensureLoaded(PJ::ExtensionCatalogService& catalog, QObject* context, std::function<void(const QString&)> done) {
+  if (g_registered) {
+    QMetaObject::invokeMethod(context, [done = std::move(done)]() { done({}); }, Qt::QueuedConnection);
+    return;
+  }
+  g_waiters.push_back({context, std::move(done)});
+  startLoad(catalog);
+}
+
 void installDeferredParsers(PJ::ExtensionCatalogService& catalog) {
+  // A poll thread only asks the main thread to start the load: it must never wait on it (setDeferredParsers).
   catalog.setDeferredParsers(parserEncodings(), [&catalog]() {
     if (QThread::isMainThread()) {
-      qCWarning(lcSideModule) << "An Arrow parser was needed on the main thread, where" << kModuleUrl
-                              << "cannot be linked";
-      return;
-    }
-    if (loadBlocking().isEmpty()) {
-      QMetaObject::invokeMethod(&catalog, [&catalog]() { registerWith(catalog); }, Qt::BlockingQueuedConnection);
+      startLoad(catalog);
+    } else {
+      QMetaObject::invokeMethod(&catalog, [&catalog]() { startLoad(catalog); }, Qt::QueuedConnection);
     }
   });
 }
