@@ -43,6 +43,7 @@
 #include <string>
 
 #include "BrowserPersistence.h"
+#include "BundledFont.h"
 #include "DebugMode.h"
 #ifndef PJ_TARGET_WASM
 #include "DiagnosticDump.h"
@@ -363,16 +364,11 @@ int main(int argc, char* argv[]) {
   // Register the bundled PlotJuggler Sans (its Bold is a 600, see resources/fonts/PlotJugglerSans/README.md) and
   // apply it as the application font, before any window is built so every widget — and every plugin dialog, which
   // inherits the app font — uses it. The QSS never declares a font-family; only font-size is styled.
-  for (const auto& face :
-       {u":/resources/fonts/PlotJugglerSans/PlotJugglerSans-Regular.ttf"_s,
-        u":/resources/fonts/PlotJugglerSans/PlotJugglerSans-Bold.ttf"_s}) {
-    if (QFontDatabase::addApplicationFont(face) < 0) {
-      qWarning("Failed to load bundled PlotJuggler Sans font: %s", qPrintable(face));
-    }
+  if (const QString family = PJ::registerBundledFont(u":/resources/fonts/PlotJugglerSans"_s); !family.isEmpty()) {
+    QFont app_font = QApplication::font();
+    app_font.setFamily(family);
+    QApplication::setFont(app_font);
   }
-  QFont app_font = QApplication::font();
-  app_font.setFamily(u"PlotJuggler Sans"_s);
-  QApplication::setFont(app_font);
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
   // specificity battles by directly tagging menus and palette-painting

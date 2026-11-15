@@ -25,10 +25,14 @@ def build(upstream, wght, style):
     # fsSelection: bit 0 italic, bit 5 bold, bit 6 regular. macStyle: bit 0 bold.
     font["OS/2"].fsSelection = (font["OS/2"].fsSelection & ~0b1100001) | (0b100000 if bold else 0b1000000)
     font["head"].macStyle = 1 if bold else 0
+    font["OS/2"].panose.bWeight = 7 if bold else 5  # PANOSE "Demi" / "Book"
     name = font["name"]
     # Keep upstream's copyright, trademark, designer and licence records; replace the naming ones, and drop the
     # typographic family/style, variations prefix and axis/instance names a renamed static face must not carry.
-    name.names = [r for r in name.names if r.platformID == 3 and r.nameID in (0, 5, 7, 8, 9, 11, 12, 13, 14)]
+    # IDs 256+ label GSUB stylistic sets; removeUnusedNames() below drops the rest of them (old axis names).
+    name.names = [
+        r for r in name.names if r.platformID == 3 and (r.nameID in (0, 5, 7, 8, 9, 11, 12, 13, 14) or r.nameID >= 256)
+    ]
     postscript = FAMILY.replace(" ", "") + "-" + style
     for name_id, value in {
         1: FAMILY,
@@ -38,6 +42,7 @@ def build(upstream, wght, style):
         6: postscript,
     }.items():
         name.setName(value, name_id, 3, 1, 0x409)
+    name.removeUnusedNames(font)
     font.save(HERE / f"{postscript}.ttf")
 
 
