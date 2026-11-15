@@ -7,12 +7,9 @@ per-SHA cache keys (``ccache-linux-main-<sha>``, ``conan-...-<hash>``) write a
 fresh large blob on every saving run, so the budget fills with stale duplicates
 and starts evicting the infrequently-accessed entries.
 
-Scope: this reaches the *GitHub* cache store only — the management endpoint
-(``/repos/{owner}/{repo}/actions/caches``) is served by GitHub, while jobs on
-``depot-*`` runners have their cache traffic redirected to Depot Cache, whose
-entries this API neither lists nor deletes. Depot Cache is bounded by the
-retention policy in the Depot organisation settings and by the push-only save
-gating in the workflows, not by this script. See ``cache-cleanup.yml``.
+sccache's per-object entries (``sccache/f/c/b/fcb<hash>``, no ``-`` before the hash) have
+no rolling suffix, so each is its own family and is never pruned here; GitHub's
+LRU eviction bounds them. See ``cache-cleanup.yml``.
 
 Since every consumer restores via ``restore-keys`` prefix (always the most
 recent match), only the newest entry per (ref, key-family) is useful; the rest

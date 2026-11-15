@@ -26,7 +26,7 @@ jobs:
     # skip this job too.
     if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
     name: ${{ matrix.lane }}
-    runs-on: depot-ubuntu-22.04-4
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
     permissions:
       contents: read
@@ -43,6 +43,16 @@ jobs:
       PJ_SANITIZER_CLANG_VERSION: "22"
 
     steps:
+      - name: Free up runner disk space
+        # GitHub-hosted Ubuntu runners leave ~14 GB free, which the Conan
+        # closure, Qt and the build tree can exceed ("No space left on
+        # device"). Reclaim the preinstalled toolchains no job here uses.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -184,7 +194,7 @@ jobs:
       - name: Save ccache
         # Scheduled runs only: the SHA-keyed entry is never an exact hit, so
         # every saving run writes a new blob of up to max_size per lane into
-        # per-GB-month billed Depot Cache storage. Manual runs restore only.
+        # the repo's shared 10 GB Actions cache. Manual runs restore only.
         if: always() && github.event_name == 'schedule' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
