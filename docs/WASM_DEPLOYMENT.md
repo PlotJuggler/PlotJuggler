@@ -109,9 +109,10 @@ unqualified class (or use the `_NAMED` variants) so the static getter symbol is
 valid. Every new static archive also needs the symbol-collision audit described
 in the root `CLAUDE.md`.
 
-### The Arrow family as a side module (`PJ_WASM_ARROW_SIDE_MODULE`, prototype)
+### The Arrow family as a side module (`PJ_WASM_ARROW_SIDE_MODULE`)
 
-Off by default. With `-DPJ_WASM_ARROW_SIDE_MODULE=ON` the Parquet loader, the
+On whenever the three Arrow plugins are built (`-DPJ_WASM_ARROW_SIDE_MODULE=OFF`
+links them into the app instead). The Parquet loader, the
 Arrow IPC parser, the Data Exporter and Arrow C++ leave `plotjuggler4.wasm`:
 they are linked (`cmake/PjWasmArrow.cmake`) into the Emscripten side module
 `plugins/arrow.wasm`, which `package_wasm.mjs` puts in the bundle directory
