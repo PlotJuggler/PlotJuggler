@@ -64,15 +64,6 @@ FetchContent_Declare(tsl-robin-map
     OVERRIDE_FIND_PACKAGE
     SYSTEM)
 
-set(NANOARROW_IPC ON CACHE BOOL "" FORCE)
-set(NANOARROW_NAMESPACE "PJ" CACHE STRING "" FORCE)
-FetchContent_Declare(nanoarrow
-    GIT_REPOSITORY https://github.com/apache/arrow-nanoarrow.git
-    GIT_TAG apache-arrow-nanoarrow-0.7.0
-    GIT_SHALLOW TRUE
-    OVERRIDE_FIND_PACKAGE
-    SYSTEM)
-
 set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(glm
@@ -88,8 +79,11 @@ FetchContent_MakeAvailable(
     fmt
     FastFloat
     tsl-robin-map
-    nanoarrow
     glm)
+
+# The same pinned nanoarrow source the desktop builds fall back to.
+set(NANOARROW_NAMESPACE "PJ" CACHE STRING "" FORCE)
+include(${CMAKE_SOURCE_DIR}/pj_datastore/cmake/PjNanoarrow.cmake)
 
 
 if(PJ_WASM_WITH_CSV OR PJ_WASM_WITH_PARQUET)

@@ -104,7 +104,7 @@ cmake -S . -B build -G Ninja \
 ```
 
 The Conan recipe and lockfile list the library dependencies; Qt is installed
-separately. The configure step also populates `build/_deps` with Qwt source.
+separately. The configure step also populates `build/_deps` with Qwt and nanoarrow source.
 With tests enabled, it additionally fetches the pinned SDK source for test
 fixtures. Conan may compile missing dependency binaries during preparation;
 the application has not been built yet.
@@ -123,8 +123,9 @@ with `--no-remote --build=never` in place of the two `-r` options and
 `--build=missing`. Cache preparation must use the same source revision, profiles,
 compiler, architecture and build options as the offline build. Generated CMake
 and Conan files contain absolute paths; a transferred build needs regeneration
-and local source overrides such as `FETCHCONTENT_SOURCE_DIR_QWT_UPSTREAM` and,
-when needed, `FETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK`.
+and local source overrides such as `FETCHCONTENT_SOURCE_DIR_QWT_UPSTREAM`,
+`FETCHCONTENT_SOURCE_DIR_NANOARROW` and, when needed,
+`FETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK`.
 
 ## Notes for PJ3 package maintainers
 
@@ -217,8 +218,11 @@ Conan remote (anonymous read). Build paths without Conan (WebAssembly, pixi) fet
 pinned release tag from GitHub and build the SDK in-tree (see the root
 `CMakeLists.txt`). `pj_datastore` is added right after the SDK is resolved, so the
 `plotjuggler_sdk::base` and `pj_internal_fmt` targets it links already exist; its Conan
-dependencies (`nanoarrow`, `tsl-robin-map`, `benchmark`) are in the root
-`conanfile.txt`.
+dependencies (`tsl-robin-map`, `benchmark`) are in the root `conanfile.txt`. nanoarrow
+0.9.0 (with IPC) is not on ConanCenter yet: `pj_datastore/cmake/PjNanoarrow.cmake` takes
+an installed one (conda-forge's `libnanoarrow`) and otherwise builds the pinned Apache
+source release in-tree; pass `-DFETCHCONTENT_SOURCE_DIR_NANOARROW=<unpacked tarball>`
+to build offline.
 
 **Local-SDK mode.** `./build.sh --sdk-local[=PATH]` builds `plotjuggler_sdk` from a
 local working tree (default: the `../plotjuggler_sdk` sibling checkout) instead of the

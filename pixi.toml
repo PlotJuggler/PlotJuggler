@@ -18,7 +18,7 @@
 
 [workspace]
 name = "pj4"
-# local-channel/ holds the packages built from recipes/ (4 conda-forge gaps +
+# local-channel/ holds the packages built from recipes/ (2 conda-forge gaps +
 # the LGPL-lean ffmpeg) via:
 # rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 channels = ["conda-forge", "./local-channel"]
@@ -41,7 +41,7 @@ tsl_robin_map = "1.4.*"          # conda name uses underscores; CMake config is 
 gtest = "1.17.*"
 glm = "1.0.*"
 benchmark = "1.9.*"
-libnanoarrow = "0.7.*"           # local channel (conda-forge `nanoarrow` is the Python binding)
+libnanoarrow = "0.9.*"           # C library + IPC (conda-forge `nanoarrow` is the Python binding)
 nlohmann_json = "3.12.*"
 python = "3.12.*"                # embedded CPython for pj_scripting's PythonEngine
 pybind11 = "2.13.*"

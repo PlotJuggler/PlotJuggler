@@ -70,26 +70,6 @@ in
     // recipeSource "luau" (v: "https://github.com/luau-lang/luau/archive/refs/tags/${v}.tar.gz")
   );
 
-  nanoarrow = stdenv.mkDerivation (
-    {
-      pname = "pj4-nanoarrow";
-      nativeBuildInputs = [
-        cmake
-        ninja
-      ];
-      # The app needs the IPC CMake targets and the matching flatcc runtime;
-      # the Nixpkgs Meson package exposes a different installation layout.
-      cmakeFlags = [
-        "-DNANOARROW_IPC=ON"
-        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-      ];
-      meta.license = lib.licenses.asl20;
-    }
-    // recipeSource "libnanoarrow" (
-      v: "https://github.com/apache/arrow-nanoarrow/archive/refs/tags/apache-arrow-nanoarrow-${v}.tar.gz"
-    )
-  );
-
   # Pinned here, not through recipeSource: conda takes cloudini from conda-forge,
   # so recipes/ has no cloudini entry. Keep the version at conanfile.txt's.
   cloudini = stdenv.mkDerivation rec {

@@ -13,6 +13,9 @@
 #                   nanoarrow (+ IPC)
 #   its runners  -> GoogleTest
 #
+# nanoarrow is absent too: pj_datastore/cmake/PjNanoarrow.cmake builds its pinned
+# source in-tree, under the lane's flags.
+#
 # plotjuggler_sdk is absent on purpose: the lane sets PJ_SDK_FORCE_SOURCE=ON, so
 # CMake fetches and builds the pinned SDK sources in-tree, which is what makes the
 # SDK instrumented rather than linked in prebuilt and blind.
@@ -24,7 +27,6 @@
 fmt/12.2.0
 tsl-robin-map/1.4.0
 gtest/1.18.0
-nanoarrow/0.7.0
 # Required by the in-tree SDK build (PJ_SDK_FORCE_SOURCE=ON), not by
 # pj_datastore itself: plotjuggler_sdk's CMakeLists calls find_package for
 # FastFloat and nlohmann_json. Both are header-only, so they cost nothing to
@@ -39,7 +41,6 @@ nlohmann_json/3.12.0
 
 [options]
 fmt/*:header_only=True
-nanoarrow/*:with_ipc=True
 
 [generators]
 CMakeDeps

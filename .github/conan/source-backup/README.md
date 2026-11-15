@@ -66,7 +66,7 @@ when the `cpython` recipe moves macOS off 2.5.0.
   append `core.sources:download_cache=<dir>` (plus the mirror's
   `core.sources:download_urls=`) to `global.conf`. One lane escapes it: the
   MSan sanitizer lane switches to a dedicated `CONAN_HOME` (`build.sh`) after
-  that step, and only rebuilds gtest + nanoarrow, both GitHub-hosted. A seeded source is
+  that step, and only rebuilds gtest, which is GitHub-hosted. A seeded source is
   served locally; anything not seeded falls through to the recipe's own URLs
   as usual. The `<dir>/s/` layout is Conan-internal but observed stable across
   Conan 2.x; if it ever changes, the seed simply misses and CI degrades to the

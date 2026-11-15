@@ -181,11 +181,10 @@ if [[ "$MSAN" == "1" ]]; then
   fi
   # A DEDICATED Conan cache, because the settings above do not isolate this lane.
   # The sanitizer flags travel in tools.build:*, which does NOT participate in
-  # package_id, and compiler.libcxx is dropped for C-only packages such as
-  # nanoarrow — so an ordinary Clang build and this instrumented one resolve to
-  # the SAME id. With a shared cache, --build=missing would reuse an
-  # uninstrumented nanoarrow here, and an instrumented one would contaminate
-  # later ordinary builds. Neither is detectable from the final executable: it
+  # package_id, and compiler.libcxx is dropped for C-only packages — so an
+  # ordinary Clang build and this instrumented one resolve to the SAME id. With a
+  # shared cache, --build=missing would reuse an uninstrumented package here, and
+  # an instrumented one would contaminate later ordinary builds. Neither is detectable from the final executable: it
   # still carries __msan_ symbols from our own code, so the lane would report a
   # confident, meaningless clean run.
   #
@@ -204,7 +203,7 @@ if [[ "$MSAN" == "1" ]]; then
   # And build the closure from source regardless of what that cache holds: a
   # cache is only trustworthy if nothing ever wrote an uninstrumented package
   # into it, which is an invariant no build can verify after the fact.
-  CONAN_LANE_ARGS+=(--build="nanoarrow/*" --build="gtest/*")
+  CONAN_LANE_ARGS+=(--build="gtest/*")
   CONAN_LANE_ARGS+=(
     -s compiler=clang
     -s "compiler.version=${PJ_SANITIZER_CLANG_VERSION:-22}"
