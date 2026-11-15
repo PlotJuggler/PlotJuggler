@@ -200,7 +200,7 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
     const QRect text_rect = style->subElementRect(QStyle::SE_ItemViewItemText, &opt, widget);
     const int text_margin = style->pixelMetric(QStyle::PM_FocusFrameHMargin, &opt, widget) + 1;
     QFont font = opt.font;
-    font.setBold(true);
+    font.setWeight(QFont::DemiBold);
     font.setLetterSpacing(QFont::PercentageSpacing, 104.0);
     if (font.pointSizeF() > 0) {
       font.setPointSizeF(font.pointSizeF() * 0.85);

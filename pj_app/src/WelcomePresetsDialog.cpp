@@ -154,7 +154,7 @@ void WelcomePresetsDialog::addEntryCard(const PresetEntry& preset, int index) {
   title->setObjectName(u"labelPresetTitle"_s);
   title->setTextFormat(Qt::PlainText);
   QFont title_font = title->font();
-  title_font.setBold(true);
+  title_font.setWeight(QFont::DemiBold);
   title->setFont(title_font);
   auto* description = new QLabel(preset.description, card);
   description->setObjectName(u"labelPresetDescription"_s);

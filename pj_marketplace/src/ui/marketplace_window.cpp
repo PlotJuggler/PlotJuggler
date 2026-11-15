@@ -852,7 +852,7 @@ void MarketplaceWindow::updateDetailFooter() {
             ? tr("⚠ Update to v%1 available, but blocked — %2").arg(esc(ext->version), esc(compat.reason))
             : tr("⚠ Incompatible — %1").arg(esc(compat.reason));
     html +=
-        u"<p style='margin:0 0 6px 0; padding:3px 6px; font-weight:700; "
+        u"<p style='margin:0 0 6px 0; padding:3px 6px; font-weight:600; "
         u"background-color:rgba(%1,%2,%3,%4);'>%5</p>"_s.arg(tint.red())
             .arg(tint.green())
             .arg(tint.blue())
@@ -901,9 +901,10 @@ void MarketplaceWindow::updateDetailFooter() {
     std::sort(versions.begin(), versions.end(), [](const QString& a, const QString& b) {
       return comparePluginVersions(a.toStdString(), b.toStdString()) > 0;
     });
-    html += u"<p style='margin:0 0 2px 0;'><b>Changelog</b></p><ul style='margin:0 0 0 -20px;'>"_s;
+    html += u"<p style='margin:0 0 2px 0; font-weight:600;'>Changelog</p><ul style='margin:0 0 0 -20px;'>"_s;
     for (const QString& version : versions) {
-      html += u"<li><b>%1</b> — %2</li>"_s.arg(esc(version), esc(ext->changelog.value(version)));
+      html += u"<li><span style='font-weight:600;'>%1</span> — %2</li>"_s.arg(
+          esc(version), esc(ext->changelog.value(version)));
     }
     html += u"</ul>"_s;
   }

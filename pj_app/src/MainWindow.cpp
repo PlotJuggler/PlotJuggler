@@ -3863,7 +3863,8 @@ void MainWindow::checkForUpdates(bool interactive) {
 
   update_available_conn_ =
       connect(update_checker_, &UpdateChecker::updateAvailable, this, [this](const ReleaseInfo& release) {
-        QString message = tr("New release available: <b>%1</b>").arg(release.name.toHtmlEscaped());
+        QString message =
+            tr("New release available: <span style='font-weight:600;'>%1</span>").arg(release.name.toHtmlEscaped());
         switch (release.route) {
           case UpdateRoute::AptUpgrade:
             message += u"<br>"_s + tr("Update with <code>sudo apt update &amp;&amp; sudo apt upgrade</code>");

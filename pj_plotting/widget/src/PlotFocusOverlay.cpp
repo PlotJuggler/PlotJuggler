@@ -50,7 +50,7 @@ QFont watermarkFont(theme::Theme token_theme) {
   const theme::TypeSpec spec = theme::type(theme::TextRole::Heading, token_theme);
   QFont wm_font(spec.family);
   wm_font.setPixelSize(std::max(1, static_cast<int>(std::lround(spec.size * 1.8))));
-  wm_font.setWeight(QFont::Bold);
+  wm_font.setWeight(QFont::DemiBold);
   wm_font.setItalic(false);
   wm_font.setLetterSpacing(QFont::PercentageSpacing, 104.0);
   return wm_font;
