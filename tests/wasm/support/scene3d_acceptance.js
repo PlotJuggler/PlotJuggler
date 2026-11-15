@@ -6,6 +6,7 @@ const path = require('path');
 const { waitForQtApp } = require('./app');
 const { dragQtCanvas } = require('./canvas');
 const { clickActiveDialogButton } = require('./dialogs');
+const { loadOutcomes } = require('./load_outcomes');
 const { openFileChooser } = require('./pickers');
 const { qtPointToCss, requestScene3DFoundationState } = require('./scene3d_foundation');
 
@@ -25,8 +26,8 @@ async function bootScene3D(page, messages) {
 }
 
 async function loadScene3DFixture(page, screen, messages, name) {
-  const loads = () => messages.filter(message => message.includes('PJ_FILE_LOAD_OK') && message.includes(`/${name}`)).length;
-  const before = loads();
+  const loads = async () => (await loadOutcomes(page, 'PJ_FILE_LOAD_OK')).filter(line => line.includes(`/${name}`)).length;
+  const before = await loads();
   const chooser = await openFileChooser(page, screen);
   await chooser.setFiles({
     name,

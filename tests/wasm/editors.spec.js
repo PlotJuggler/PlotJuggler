@@ -4,6 +4,7 @@ const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp } = require('./
 const { dragQtCanvas } = require('./support/canvas');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { elementAttribute } = require('./support/layout_xml');
+const { loadOutcomes } = require('./support/load_outcomes');
 const { openFileChooser, openLayoutChooser, openSourceReplayChooser } = require('./support/pickers');
 const { requestPlotState } = require('./support/plot_probes');
 const { sourceLayoutDecisionGeometry, downloadSourceLayoutFromFileMenu } = require('./support/source_layout');
@@ -257,7 +258,7 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    async () => (await loadOutcomes(page, 'PJ_FILE_LOAD_OK'))[0] || '',
     { timeout: 15000 },
   ).toContain('scalar_series=filter-values/temp,filter-values/time,filter-values/value');
 
@@ -445,7 +446,7 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    async () => (await loadOutcomes(page, 'PJ_FILE_LOAD_OK'))[0] || '',
     { timeout: 60000 },
   ).toContain('scalar_series=toolbox-values/temp,toolbox-values/time');
 

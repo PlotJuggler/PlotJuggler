@@ -534,6 +534,11 @@ class FileLoader : public QObject {
   DiagnosticSink diagnostic_sink_;
   std::shared_ptr<BrowserFileStore> browser_file_store_;
   QHash<QString, QString> browser_content_sha256_;
+  // Per source plugin, the files last picked in its dialog (a DBC, say). The
+  // plugin saves their browser-staged paths in its config, so a reload, a
+  // layout replay or the next import reads them again: keep them staged until
+  // that plugin's dialog picks new ones.
+  QHash<QString, std::vector<std::shared_ptr<void>>> last_dialog_files_;
 #ifdef PJ_TARGET_WASM
   // Source identity of every browser upload loaded, by backing path: a failed read of a picked file reports its path.
   // A picked file leaves it at its first failed read.

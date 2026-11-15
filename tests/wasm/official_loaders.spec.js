@@ -6,7 +6,7 @@
 // (Parquet, MF4, Arrow MCAP); sample.blf is pj-official-plugins' data_load_blf/test_data/sample.blf.
 const fs = require('fs');
 const { test, expect } = require('@playwright/test');
-const { waitForQtApp } = require('./support/app');
+const { bootApp } = require('./support/app');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { openFileChooser, retryChooser } = require('./support/pickers');
@@ -60,13 +60,7 @@ function makeULog(samples) {
 
 async function boot(page, consoleMessages, errors) {
   await page.addInitScript(() => { delete window.showOpenFilePicker; });
-  page.on('pageerror', error => errors.push(String(error)));
-  page.on('console', message => consoleMessages.push(message.text()));
-  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
-  await waitForQtApp(page, consoleMessages);
-  const screen = await page.locator('#screen').boundingBox();
-  expect(screen).not.toBeNull();
-  return screen;
+  return (await bootApp(page, consoleMessages, errors)).screen;
 }
 
 // Named, visible buttons of the active dialog, canvas-relative. The probe runs

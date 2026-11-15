@@ -3,6 +3,7 @@
 
 #include "browser_save_target.hpp"
 
+#include <QDir>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
@@ -22,7 +23,15 @@ QString browserSaveName(const FilePickerStart& start, std::string_view default_s
 }
 
 BrowserSaveTarget::BrowserSaveTarget(const QString& file_name)
-    : path_(file_name.isEmpty() ? dir_.path() : dir_.filePath(QFileInfo(file_name).fileName())) {}
+    : path_(file_name.isEmpty() ? dir_.path() : dir_.filePath(QFileInfo(file_name).fileName())) {
+  if (!dir_.isValid()) {
+    qWarning("Browser export: cannot create a scratch directory: %s", qPrintable(dir_.errorString()));
+  }
+}
+
+QString BrowserSaveTarget::downloadName(const QString& written_path) const {
+  return QDir(dir_.path()).relativeFilePath(written_path).replace(u'/', u'_');
+}
 
 QStringList BrowserSaveTarget::writtenPaths() const {
   QStringList paths;
@@ -33,8 +42,8 @@ QStringList BrowserSaveTarget::writtenPaths() const {
   while (it.hasNext()) {
     paths.append(it.next());
   }
-  std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) {
-    return QFileInfo(a).fileName() < QFileInfo(b).fileName();
+  std::sort(paths.begin(), paths.end(), [this](const QString& a, const QString& b) {
+    return downloadName(a) < downloadName(b);
   });
   return paths;
 }
@@ -47,7 +56,7 @@ void BrowserSaveTarget::offerDownloads() const {
     QFile file(path);
     if (file.open(QIODevice::ReadOnly)) {
       QFileDialog::saveFileContent(  // NOLINT(pj-canonical-chrome): Qt's browser download API.
-          file.readAll(), QFileInfo(path).fileName());
+          file.readAll(), downloadName(path));
     }
   }
 #endif

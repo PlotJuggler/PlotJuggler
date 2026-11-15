@@ -107,5 +107,10 @@ if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
     target_link_libraries(pj_wasm_cloudini PRIVATE
         LZ4::lz4_static
         zstd::libzstd_static)
+    # Cloudini vendors its own nanocdr, laid out differently from the ROS
+    # parser's copy; a namespace of its own keeps their inline functions apart.
+    # Only ros_msg_utils.hpp exposes nanocdr and no consumer includes it, so
+    # the rename stays private.
+    target_compile_definitions(pj_wasm_cloudini PRIVATE nanocdr=pj_wasm_cloudini_nanocdr)
     add_library(cloudini::cloudini ALIAS pj_wasm_cloudini)
 endif()

@@ -84,6 +84,14 @@ ExternalProject_Add(pj_wasm_arrow_ep
     INSTALL_DIR "${_pj_arrow_prefix}"
     DEPENDS libzstd_static lz4_static
     CMAKE_GENERATOR Ninja
+    # Arrow's bundled Thrift, Snappy and simdjson come from the copies fetched
+    # above (a directory URL is copied, not downloaded) instead of a second
+    # download. Boost is still Arrow's own: nothing here populates it.
+    CMAKE_COMMAND ${CMAKE_COMMAND} -E env
+        ARROW_THRIFT_URL=${arrow_thrift_SOURCE_DIR}
+        ARROW_SNAPPY_URL=${arrow_snappy_SOURCE_DIR}
+        ARROW_SIMDJSON_URL=${arrow_simdjson_SOURCE_DIR}
+        ${CMAKE_COMMAND}
     CMAKE_ARGS
         -DCMAKE_TOOLCHAIN_FILE:FILEPATH=${_pj_arrow_toolchain}
         -DCMAKE_BUILD_TYPE=Release

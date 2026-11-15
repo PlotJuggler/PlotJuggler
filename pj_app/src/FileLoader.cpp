@@ -1581,6 +1581,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     if (dlg.payload.has_value()) {
       config = dlg.payload->saved_config;
       dialog_selected_files = std::move(dlg.payload->selected_files);
+      if (!dialog_selected_files.empty()) {
+        last_dialog_files_.insert(source_name, dialog_selected_files);
+      }
       // If the dialog had an embedded parser slot, embed the parser config in the
       // saved config so it survives across sessions and reaches the source via
       // loadConfig(). The source extracts it under the "_parser_config" key.
