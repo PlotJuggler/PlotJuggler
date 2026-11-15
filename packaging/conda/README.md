@@ -52,6 +52,17 @@ build against what RoboStack's ROS packages were built against:
   Qt 6.11 (`qt6_main`; the build passes it to CMake as `PJ_QT_MIN_VERSION`, below
   the release kit in `versions.env`). There is one build per Python RoboStack
   ships (3.12 and 3.14), since the embedded interpreter links that `libpython`.
+- **Qt 6.11** is also a run pin to that minor: PJ4 builds against Qt's private
+  headers (QRhi and others), which change ABI every minor release.
+- **Qt-Advanced-Docking** is conda-forge's `qt6-advanced-docking-system`
+  (`PJ_SYSTEM_ADS=ON`), not the fork in `3rdparty/`. It must carry the fork's
+  tab-parenting fix (PlotJuggler/Qt-Advanced-Docking-System@d713b1f), which
+  conda-forge's 5.1.1 has from build 3 on; without it every dock-tab switch
+  rebuilds the GPU resources of the QRhiWidget in that tab. The recipe asks for
+  `build_number>=3` in host and at run time.
+- **plotjuggler_sdk** and **pocketfft** are on neither channel yet, so the
+  configure step downloads them (pinned by SHA-256) and the build cannot run
+  with `FETCHCONTENT_FULLY_DISCONNECTED`.
 - **ffmpeg** and **libarchive** come from conda-forge's LGPL builds (PJ4 is
   MPL-2.0; the GPL libarchive links lzo). There are two builds, one per ffmpeg
   major, because RoboStack's OpenCV pins it: Jazzy is on 9, Kilted on 8.

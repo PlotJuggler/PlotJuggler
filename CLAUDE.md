@@ -144,7 +144,7 @@ C++20, CMake + Conan, Qt pinned by `PJ_QT_VERSION` in [`versions.env`](./version
 - **Confirm the recompile**: after a rebuild meant to pick up a C++ change, grep the build log for `Building .../<file>.cpp.o` (or check the `.o` mtime) before claiming the fix is live; RCC/QSS rebuilds can mask a stalled C++ recompile.
 - **Never chain `pkill … ; ./build.sh`**: the chained build exits 144 and skips recompiling. Kill the running app in its own command, then run `./build.sh` standalone.
 - **Portability:** Linux, Windows and macOS (arm64) are shipped targets. No Linux-only APIs or POSIX-specific paths in module code; gate platform code behind CMake / `#ifdef`. Pitfalls: [docs/BUILDING.md](./docs/BUILDING.md#portability).
-- **Third-party:** vendored deps live in `3rdparty/` (never take them from Conan or the system); everything else comes from Conan. Qwt is fetched (pinned release), not vendored, and **never patched**: PJ-specific Qwt behavior lives in `pj_plotting` / `pj_dialog_host` ([details](./docs/BUILDING.md#third-party-dependencies)).
+- **Third-party:** vendored deps live in `3rdparty/` (never take them from Conan or the system; only distribution builds opt out, with `PJ_SYSTEM_*`); everything else comes from Conan. Qwt is fetched (pinned release), not vendored, and **never patched**: PJ-specific Qwt behavior lives in `pj_plotting` / `pj_dialog_host` ([details](./docs/BUILDING.md#third-party-dependencies)).
 
 ## UI conventions
 

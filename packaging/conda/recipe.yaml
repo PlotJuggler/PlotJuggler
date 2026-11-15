@@ -75,12 +75,25 @@ requirements:
     - libmcap 2.1.*
     - cloudini 1.4.*
     - libnanoarrow >=0.9
+    # PJ_SYSTEM_ADS (build.sh): conda-forge's builds from 3 on carry the fork's
+    # d713b1f, without which every dock-tab switch rebuilds the QRhiWidget's GPU
+    # resources. Relax build_number for the first release that has the fix.
+    - qt6-advanced-docking-system[version='>=5.1.1', build_number='>=3']
+    # Not here yet, so build.sh's configure fetches them (pinned by SHA-256):
+    # plotjuggler_sdk ==1.0.0 (conanfile.txt's pin; the plotjuggler channel stops
+    # at 0.18.0) and pocketfft (on neither channel).
   # ffmpeg's run_export demands at least the patch release built against,
   # often newer than a RoboStack snapshot's; the ABI holds within a major.
   ignore_run_exports:
     from_package:
       - ffmpeg
   run:
+    # PJ4 compiles against Qt's private headers (QRhi, qguiapplication_p.h,
+    # qhighdpiscaling_p.h, ...), whose ABI changes every minor release: the
+    # package loads only with the Qt minor it was built against.
+    - ${{ pin_compatible('qt6-main', upper_bound='x.x') }}
+    # Its run_exports pin only the version, which older unpatched builds share.
+    - qt6-advanced-docking-system[build_number='>=3']
     # The embedded interpreter links libpython and loads the stdlib from the
     # env; python's run_exports only pin the ABI, not the package itself.
     - python
@@ -99,6 +112,8 @@ tests:
         # proves conda's prefix relocation rewrote it to the installed env.
         - plotjuggler4 --selftest-python
         - test -x "$PREFIX/bin/pj-plugin-check"
+        - if: linux
+          then: test -f "$PREFIX/share/applications/plotjuggler4.desktop"
 
 about:
   homepage: https://plotjuggler.io

@@ -138,10 +138,19 @@ when needed, `FETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK`.
 - PJ4 filters use a different contract from PJ3 custom Lua functions; see
   [Filter Class Contract](../pj_scripting/docs/FILTER_CLASS.md#5-differences-from-pj3-lua_custom_function-intentional).
   Keep original PJ3 layouts and scripts when validating a migrated analysis.
-- Packaging and runtime-library deployment are separate from compiling the
-  application. Follow the [packaging guides](../packaging/README.md), including
-  the [Debian installation layout](../packaging/deb/README.md#layout), rather than
-  expecting `cmake --install` to install the desktop application and its runtime.
+- `cmake --install` installs `plotjuggler4` and its `pj-plugin-check` helper side
+  by side in `bin/` and, on Linux, the desktop entry and icons. The app seeds
+  bundled plugins from `<prefix>/lib/plotjuggler/plugins`, which the install
+  leaves empty. Qt, Python and the libraries must come from the prefix; bundling
+  them is packaging work, so see the [packaging guides](../packaging/README.md),
+  including the [Debian installation layout](../packaging/deb/README.md#layout).
+- Switches for distribution builds, all OFF unless noted: `PJ_SYSTEM_QWT`,
+  `PJ_SYSTEM_NANOCDR` and `PJ_SYSTEM_ADS` take Qwt, nanocdr and
+  Qt-Advanced-Docking from the system (`PJ_SYSTEM_ADS` needs 5.1.1 or newer with
+  the fork's d713b1f patch, see `packaging/conda/README.md`), and
+  `PJ_WARNINGS_AS_ERRORS` (ON) drops `-Werror` / `/WX` when turned off. An
+  installed `plotjuggler_sdk` is used only when its version equals the pin in
+  `conanfile.txt`; otherwise the pinned release is downloaded and built in-tree.
 
 ## Run tests
 
@@ -304,7 +313,8 @@ at test time, which is not a shippable layout.
 
 Vendored dependencies live in `3rdparty/<name>/` and are added from
 the top-level `CMakeLists.txt`, mostly with `add_subdirectory`. They are explicitly
-vendored: do not take them from Conan or system packages.
+vendored: do not take them from Conan or system packages (distribution builds can
+opt out with `PJ_SYSTEM_ADS` / `PJ_SYSTEM_NANOCDR`, above).
 
 - **Qt-Advanced-Docking-System**: the docking framework used by `pj_app`.
 - **nanocdr**: added with `add_subdirectory`.
