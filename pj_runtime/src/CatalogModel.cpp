@@ -499,19 +499,20 @@ std::optional<double> CatalogModel::scalarValueAt(const QString& key, double dis
   if (scalar == nullptr || !isPlottablePrimitive(scalar->logical_type)) {
     return std::nullopt;  // object topics carry no scalar value; strings → stringValueAt
   }
-  // Display-axis seconds -> raw ns through this dataset's display offset, then a
-  // null-aware latest-at-or-before point query (zero-order hold) read under the
-  // engine lock. latestNumericAt distinguishes a null cell from a real 0, so a
-  // sparsely-populated field shows "-" rather than a fabricated "0.000".
+  // The plot tracker's lookup, under the engine lock. The type was checked above,
+  // so read the storage directly rather than through DataReader::series, which
+  // copies the topic's column descriptors on every call (per visible row, 10 Hz).
   const DisplayOffset offset = impl_->session->displayOffset(it->second.dataset_id);
   const Timestamp raw_ns = displaySecondsToRaw(DisplaySeconds{display_seconds}, offset);
-  const DataReader reader(impl_->session->dataEngine());
-  const auto value_or =
-      reader.latestNumericAt(QueryPoint{.topic_id = scalar->topic_id, .t = raw_ns}, scalar->column_index);
-  if (!value_or.has_value() || !value_or->has_value()) {
-    return std::nullopt;  // read error, no row at/before the query time, or null cell
+  const DataEngine& engine = impl_->session->dataEngine();
+  const auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(scalar->topic_id);
+  if (storage == nullptr) {
+    return std::nullopt;
   }
-  return **value_or;
+  const SeriesReader series(storage->sealedChunks(), scalar->column_index, storage->retentionFloor());
+  const auto sample = series.sampleAtOrBeforeTime(raw_ns);
+  return sample.has_value() ? std::optional<double>{sample->value} : std::nullopt;
 }
 
 std::optional<TopicStats> CatalogModel::topicStats(const QString& key) const {

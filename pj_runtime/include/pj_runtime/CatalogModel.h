@@ -293,8 +293,10 @@ class CatalogModel : public QObject {
   // Latest scalar value at or before display-axis time `display_seconds` for the
   // curve identified by catalog `key` (zero-order hold). Returns nullopt when the
   // key is unknown / not a scalar field, or no sample exists at or before that
-  // time. Backs the curve-list "Value" column; reads committed DataEngine storage
-  // under its lock via DataReader::latestAt, converting the display time to raw ns
+  // time. Rows where the field is null are skipped (the newest row that HAS a
+  // value is held), exactly as the plot tracker does. Backs the curve-list "Value"
+  // column; reads committed DataEngine storage under its lock via
+  // SeriesReader::sampleAtOrBeforeTime, converting the display time to raw ns
   // through the curve's per-dataset display offset.
   [[nodiscard]] std::optional<double> scalarValueAt(const QString& key, double display_seconds) const;
 

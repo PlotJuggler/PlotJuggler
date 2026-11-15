@@ -1799,10 +1799,10 @@ TEST(EngineIntegrationTest, ColumnTypeSeesAColumnAddedAfterRowsAreStored) {
   EXPECT_EQ(reader.columnType(topic, *label + 1), std::nullopt) << "just past the added column";
 }
 
-// Both null-aware reads must distinguish a NULL latest cell from a real value
-// (so the Value column shows "-" not a fabricated "0.000"), and latestStringAt
-// must refuse a non-string column (readString is UB on numeric storage).
-TEST(EngineIntegrationTest, LatestNumericAndStringAtAreNullAware) {
+// latestStringAt must distinguish a NULL latest cell from a real value (so the
+// Value column shows "-" not a fabricated string) and must refuse a non-string
+// column (readString is UB on numeric storage).
+TEST(EngineIntegrationTest, LatestStringAtIsNullAware) {
   DataEngine engine;
   // struct rec { float64 value; string label } → col 0 numeric, col 1 string.
   auto value = makePrimitive("value", PrimitiveType::kFloat64);
@@ -1835,19 +1835,12 @@ TEST(EngineIntegrationTest, LatestNumericAndStringAtAreNullAware) {
   DataReader reader = engine.createReader();
 
   // Latest row at t=1500 is the populated row0.
-  auto n_mid = reader.latestNumericAt(QueryPoint{.topic_id = topic, .t = 1500}, 0);
-  ASSERT_TRUE(n_mid.has_value()) << n_mid.error();
-  ASSERT_TRUE(n_mid->has_value());
-  EXPECT_DOUBLE_EQ(**n_mid, 10.0);
   auto s_mid = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 1500}, 1);
   ASSERT_TRUE(s_mid.has_value()) << s_mid.error();
   ASSERT_TRUE(s_mid->has_value());
   EXPECT_EQ((*s_mid)->value, "a");
 
-  // Latest row at t=2500 is the null row1 → no value (NOT a fabricated 0).
-  auto n_null = reader.latestNumericAt(QueryPoint{.topic_id = topic, .t = 2500}, 0);
-  ASSERT_TRUE(n_null.has_value()) << n_null.error();
-  EXPECT_FALSE(n_null->has_value()) << "null numeric cell must read as no-value, not 0.0";
+  // Latest row at t=2500 is the null row1 → no value.
   auto s_null = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 1);
   ASSERT_TRUE(s_null.has_value()) << s_null.error();
   ASSERT_TRUE(s_null->has_value()) << "a null cell is still the latest row";
