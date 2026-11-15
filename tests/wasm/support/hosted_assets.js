@@ -14,6 +14,15 @@ const MIRROR = path.resolve(
 // The deployment's types (scripts/package_wasm.mjs) plus the hosted samples' own.
 const HOSTED_CONTENT_TYPES = [['.glb', 'model/gltf-binary'], ['.jpg', 'image/jpeg'], ['.urdf', 'application/xml']];
 
+// Why the mirror cannot serve the samples, or '' when every file is present at its manifest size
+// (a stale file would stream a truncated body); the hash is fetch:assets' job.
+function hostedAssetsMissing() {
+  const missing = Object.entries(MANIFEST.files).filter(
+    ([file, { bytes }]) => !fs.existsSync(path.join(MIRROR, file)) || fs.statSync(path.join(MIRROR, file)).size !== bytes);
+  return missing.length === 0 ? '' : `${missing.length} hosted sample files are not mirrored in ${MIRROR}: `
+    + 'run npm --prefix tests/wasm run fetch:assets';
+}
+
 // Serves the mirror on loopback, with the CORS header the host sends, and returns
 // { origin, route(context, samples_origin), close() }. route() rewrites the asset host to that
 // origin in every layout the context's pages download from `samples_origin` (the local sample
@@ -24,12 +33,9 @@ const HOSTED_CONTENT_TYPES = [['.glb', 'model/gltf-binary'], ['.jpg', 'image/jpe
 async function startHostedAssetMirror() {
   const { CONTENT_TYPES } = await import('../../../scripts/package_wasm.mjs');
   const contentTypes = new Map([...CONTENT_TYPES, ...HOSTED_CONTENT_TYPES]);
-  // Present at its manifest size (a stale file would stream a truncated body); the hash is fetch:assets' job.
-  const missing = Object.entries(MANIFEST.files).filter(
-    ([file, { bytes }]) => !fs.existsSync(path.join(MIRROR, file)) || fs.statSync(path.join(MIRROR, file)).size !== bytes);
-  if (missing.length > 0) {
-    throw new Error(`${missing.length} hosted sample files are not mirrored in ${MIRROR}: `
-      + 'run npm --prefix tests/wasm run fetch:assets');
+  const missing = hostedAssetsMissing();
+  if (missing) {
+    throw new Error(missing);
   }
   const server = http.createServer((request, response) => {
     const file = decodeURIComponent(new URL(request.url, 'http://mirror').pathname.slice(1));
@@ -86,4 +92,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startHostedAssetMirror };
+module.exports = { hostedAssetsMissing, startHostedAssetMirror };

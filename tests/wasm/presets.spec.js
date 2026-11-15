@@ -11,7 +11,7 @@ const {
 } = require('./support/app');
 const { count, latest } = require('./support/console');
 const { clickActiveDialogButton } = require('./support/dialogs');
-const { startHostedAssetMirror } = require('./support/hosted_assets');
+const { hostedAssetsMissing, startHostedAssetMirror } = require('./support/hosted_assets');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { elementAttributes, setElementAttributeAt } = require('./support/layout_xml');
 const { loadOutcomes, loadOutcomeCount } = require('./support/load_outcomes');
@@ -765,9 +765,14 @@ const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
 const SIGNALS_FIXTURE = path.join(__dirname, 'fixtures', 'signals');
 
 async function startSamples() {
-  if (!fs.existsSync(path.join(SAMPLES_PACKAGE, 'manifest.json'))) {
-    throw new Error(`No sample package at ${SAMPLES_PACKAGE}: package it with `
-      + 'node scripts/package_wasm.mjs --presets resources/wasm-presets --source <pj_app> --output <it>');
+  const missing = !fs.existsSync(path.join(SAMPLES_PACKAGE, 'manifest.json'))
+    ? `No sample package at ${SAMPLES_PACKAGE}: package it with `
+      + 'node scripts/package_wasm.mjs --presets resources/wasm-presets --source <pj_app> --output <it>'
+    : hostedAssetsMissing();
+  if (missing) {
+    // A local setup step; CI packages and mirrors them (wasm-ci.yml), so there a gap fails.
+    test.skip(!process.env.CI, missing);
+    throw new Error(missing);
   }
   const { listenWasmServer } = await import('../../scripts/serve_wasm.mjs');
   const server = await listenWasmServer(SAMPLES_PACKAGE);
