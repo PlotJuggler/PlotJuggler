@@ -336,6 +336,17 @@ async function validateSource(sourceRoot) {
   if (wasm.length < 8 || !wasm.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) {
     throw new Error('plotjuggler4.wasm does not have a WebAssembly magic header');
   }
+  // The stdlib ships exactly with a module that downloads it: a missing one fails the first Python use, a stray one
+  // (left by an earlier build with Python) would ship unused.
+  const downloadsStdlib = javascript.includes(PYTHON_STDLIB);
+  const hasStdlib = await access(path.join(sourceRoot, PYTHON_STDLIB)).then(() => true, () => false);
+  if (downloadsStdlib && !hasStdlib) {
+    throw new Error(`plotjuggler4.js downloads ${PYTHON_STDLIB}, which the build does not have`);
+  }
+  if (hasStdlib && !downloadsStdlib) {
+    throw new Error(`${PYTHON_STDLIB} is left over from another build: plotjuggler4.js does not download it`);
+  }
+  return hasStdlib;
 }
 
 async function validateReplaceableOutput(outputRoot) {
@@ -384,7 +395,7 @@ export async function packageWasm(options) {
     throw new Error('The source, presets and output directories must be distinct, non-nested paths');
   }
   await validateReplaceableOutput(outputRoot);
-  await validateSource(sourceRoot);
+  const hasPythonStdlib = await validateSource(sourceRoot);
   if (presetsRoot && !(await stat(presetsRoot)).isDirectory()) {
     throw new Error(`The preset tree is not a directory: ${presetsRoot}`);
   }
@@ -393,7 +404,6 @@ export async function packageWasm(options) {
     await validatePresetIndex(presetsRoot, presets);
   }
 
-  const hasPythonStdlib = await access(path.join(sourceRoot, PYTHON_STDLIB)).then(() => true, () => false);
   const sourceAssets = await Promise.all([
     ...[...REQUIRED_ARTIFACTS, NOTICES, ...(hasPythonStdlib ? [PYTHON_STDLIB] : [])].map(async fileName => ({
       fileName,

@@ -373,12 +373,18 @@ Expected<PyObject*> compileNow(const std::string& source) {
   }
 }
 
-/// `script`'s code object, compiled by the first call; a compile error is kept and returned to every later call.
-/// Takes the GIL to compile, after `script.mutex`. Without the GIL.
+/// `script`'s code object, compiled by the first call; a compile error is kept and returned to every later call. An
+/// interpreter that cannot start is not the script's error and is not kept: a failed stdlib download is retried by the
+/// next call (a failed boot fails it again at once). Takes the GIL to compile, after `script.mutex`. Without the GIL.
 Expected<PyObject*> compiledCode(const PythonCode& script) {
   assert(Py_IsInitialized() == 0 || PyGILState_Check() == 0);  // the GIL after the mutex, never before
   const std::lock_guard lock(script.mutex);
   if (!script.compiled) {
+    try {
+      detail::ensureInterpreter();
+    } catch (const std::exception& error) {
+      return unexpected("Python error: " + std::string(error.what()));
+    }
     Expected<PyObject*> code = compileNow(script.source);
     std::string().swap(script.source);
     script.compiled = true;
@@ -417,6 +423,7 @@ Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view source) {
     std::mutex mutex;
     std::condition_variable done;
     std::optional<Status> result;  ///< guarded by mutex
+    std::string unchecked;         ///< guarded by mutex: why Python could not check it now (a failed stdlib download)
     bool finished = false;         ///< guarded by mutex: the helper is no longer busy with it
     bool abandoned = false;        ///< guarded by mutex: the caller stopped waiting, so the helper skips the compile
   };
@@ -434,6 +441,14 @@ Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view source) {
           if (pending->abandoned) {
             return;
           }
+        }
+        try {
+          detail::ensureInterpreter();
+        } catch (const detail::StdlibDownloadError& error) {  // says nothing about the script
+          const std::lock_guard lock(pending->mutex);
+          pending->unchecked = error.what();
+          return;
+        } catch (const std::exception&) {  // a failed boot: the compile below reports it
         }
         const Expected<PyObject*> code = compiledCode(*throwaway.code);
         const std::lock_guard lock(pending->mutex);
@@ -454,6 +469,9 @@ Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view source) {
     return sdk::ScriptCheck{
         sdk::ScriptCheckStatus::kUnchecked, "not checked: Python did not compile it within " +
                                                 std::to_string(bound.count()) + " ms (busy or still booting)"};
+  }
+  if (!pending->unchecked.empty()) {
+    return sdk::ScriptCheck{sdk::ScriptCheckStatus::kUnchecked, "not checked: " + pending->unchecked};
   }
   if (!*pending->result) {
     return sdk::ScriptCheck{sdk::ScriptCheckStatus::kInvalid, pending->result->error()};

@@ -14,6 +14,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,7 +34,14 @@ namespace py = pybind11;
 /// which an armed hook refuses). Idempotent; any thread. Boots once even when it fails: every call then throws
 /// `std::runtime_error` with the first failure, and the caller must not touch Python. The interpreter is unusable, and
 /// the GIL is free after a failure past the start but still held by the booting thread when CPython failed to start.
+/// In the browser the first call first downloads the stdlib (a worker only: it blocks for up to 120 s). A failed
+/// download throws `StdlibDownloadError` and is not kept: the next call tries again.
 void ensureInterpreter();
+
+/// The browser's stdlib download failed (the network, the server, or not a zip): unlike a failed boot, it is retried.
+struct StdlibDownloadError : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
 
 /// What a script call runs under, beyond the limits and the hook every call gets. kCompatible: nothing more, the
 /// filters' profile, so filters written before the sandbox run unchanged (python_engine.h). kStrict: the on-demand

@@ -217,7 +217,9 @@ jobs:
         # notices included), plus 158,000 B for the MCP server in the browser
         # (2026-11-11: 16,836,762 B on main -> 16,992,912 B with it). Set to
         # 20,000,000 B on 2026-11-14 to leave room for built-in plugins such as
-        # the log widget. Raise it deliberately.
+        # the log widget. Raise it deliberately. The Python stdlib zip
+        # (python_stdlib.zip, about 0.67 MB) is downloaded on first Python use
+        # and not counted since 2026-11-15 (-0.68 MB).
         run: node scripts/wasm_size_budget.mjs build-wasm-prod/deploy/manifest.json 20000000
 
       - name: Cache Playwright browsers

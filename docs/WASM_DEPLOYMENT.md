@@ -315,9 +315,11 @@ cmake ... -DPJ_WASM_WITH_PYTHON=ON -DPJ_WASM_PYTHON_CACHE_DIR="$HOME/.cache/pj-w
 
 What to know before changing it:
 
-- **Size budget.** It adds about 1.9 MB to the Brotli download (2026-10-21,
-  the acceptance configuration with and without it), about 12 % of the
-  production package's 16.13 MB. CI fails the production package above
+- **Size budget.** At startup it adds the interpreter linked into the module,
+  about 1.2 MB of Brotli download: 1.9 MB measured with and without Python
+  (2026-10-21), less the 0.68 MB the stdlib zip took before it moved out of the
+  module (2026-11-15, production package 15.87 MB -> 15.19 MB). The stdlib is
+  downloaded on demand, below. CI fails the production package above
   16,932,000 B, 5 % over that measurement, raised to 17,090,000 B for the MCP
   server in the browser (+156 KB, 2026-11-11), and set to 20,000,000 B on
   2026-11-14 to leave room for built-in plugins (`scripts/wasm_size_budget.mjs`; the
@@ -328,8 +330,12 @@ What to know before changing it:
   `python_stdlib.zip` in the content-addressed bundle beside the module, which
   the first Python use downloads (a synchronous request on the Python worker,
   `python_sandbox.cpp`) to `/lib/python314.zip` before the interpreter boots.
-  The budget leaves it out; a failed download fails that use with the reason,
-  and the next use retries it (`tests/wasm/python.spec.js`).
+  The budget leaves it out. A failed download (the network, an HTTP error,
+  a body that is not a zip; a 404 means the app was redeployed since the page
+  loaded, so it says to reload) fails that use with the reason and is not
+  kept: the next run of any script, the same recipe included, downloads again,
+  and a validate meanwhile reports the script unchecked, not invalid
+  (`tests/wasm/python.spec.js`).
 - **The stdlib zip** holds only the modules that importing the roots in
   `stdlib_zip.py` loads (68 of them). A module the stdlib imports
   lazily is missed unless a root names it, and even one in the zip cannot be

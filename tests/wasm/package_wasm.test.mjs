@@ -135,12 +135,16 @@ test('packages the third-party notices precompressed, and refuses a build withou
   );
 });
 
+// The module names the stdlib it downloads (python_sandbox.cpp): a build with Python has both.
+const PYTHON_JS = 'var PThread = { unusedWorkers: [] }; const memory = {"shared": true}; locateFile("python_stdlib.zip");\n';
+
 test('packages the Python stdlib in the bundle when the build has it, outside the startup budget', async t => {
   const { root, source } = await fixture(t);
   const without = await packageWasm({ source, output: path.join(root, 'without'), version: 'test' });
   assert.ok(!without.files.some(file => file.path.endsWith('/python_stdlib.zip')));
 
   const stdlib = Buffer.alloc(4096, 'pyc');
+  await writeFile(path.join(source, 'plotjuggler4.js'), PYTHON_JS);
   await writeFile(path.join(source, 'python_stdlib.zip'), stdlib);
   const output = path.join(root, 'with');
   const manifest = await packageWasm({ source, output, version: 'test' });
@@ -155,10 +159,29 @@ test('packages the Python stdlib in the bundle when the build has it, outside th
 
   const budget = async manifestPath => (await execFileAsync(
     process.execPath, [path.join(ROOT, 'scripts', 'wasm_size_budget.mjs'), manifestPath, '1000000000'])).stdout;
+  const startup = async manifestPath => Number((await budget(manifestPath)).match(/download: (\d+) B/)[1]);
+  const js = file => file.path.endsWith('/plotjuggler4.js');
+  const jsBytes = m => (m.files.find(js).representations.br ?? m.files.find(js).representations.identity).bytes;
   assert.equal(
-    await budget(path.join(output, 'manifest.json')),
-    await budget(path.join(root, 'without', 'manifest.json')),
+    await startup(path.join(output, 'manifest.json')) - jsBytes(manifest),
+    await startup(path.join(root, 'without', 'manifest.json')) - jsBytes(without),
     'the stdlib is not part of the startup download',
+  );
+});
+
+test('refuses a module that downloads the stdlib without it, and a stdlib no module downloads', async t => {
+  const missing = await fixture(t);
+  await writeFile(path.join(missing.source, 'plotjuggler4.js'), PYTHON_JS);
+  await assert.rejects(
+    packageWasm({ source: missing.source, output: path.join(missing.root, 'out'), version: 'test' }),
+    /downloads python_stdlib\.zip, which the build does not have/,
+  );
+
+  const stray = await fixture(t);
+  await writeFile(path.join(stray.source, 'python_stdlib.zip'), Buffer.alloc(16));
+  await assert.rejects(
+    packageWasm({ source: stray.source, output: path.join(stray.root, 'out'), version: 'test' }),
+    /python_stdlib\.zip is left over from another build: plotjuggler4\.js does not download it/,
   );
 });
 

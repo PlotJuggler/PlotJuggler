@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -354,4 +355,28 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_compile_now() {
         wasmPyOutcome(runOnDemand(script, PJ::Span<const NamedValue>(x_input.data(), x_input.size()), "{}", {}, {}))
             .c_str());
   }).detach();
+}
+
+/// The stdlib download's failures, before the first successful Python use (tests/wasm/python.spec.js routes the
+/// download). Step 0, GUI thread: a recipe's handle, compiled as the GUI does (no interpreter). Step 1, GUI thread: a
+/// validate of a valid script, waiting up to `arg` ms. Step 2: that one handle run on a worker, numbered by `arg`.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_stdlib(int step, int arg) {
+  using namespace PJ::scripting;
+  static std::optional<CompiledOnDemandScript> handle;  // set by step 0 before any step 2 reads it
+  if (step == 0) {
+    auto compiled = compileOnDemand("python", kWasmPyValueScript);
+    qInfo("PJ_WASM_PY_DL_HANDLE %s", compiled ? "ok" : ("error=" + compiled.error()).c_str());
+    if (compiled) {
+      handle = std::move(*compiled);
+    }
+  } else if (step == 1) {
+    setPythonValidateWaitForTest(static_cast<std::uint64_t>(arg));
+    const auto checked = checkOnDemand("python", kWasmPyValueScript);
+    setPythonValidateWaitForTest(0);
+    qInfo("PJ_WASM_PY_DL_VALIDATE %s", wasmPyCheckOutcome(checked).c_str());
+  } else if (step == 2 && handle) {
+    std::thread([arg] {
+      qInfo("PJ_WASM_PY_DL_RUN %d %s", arg, wasmPyOutcome(runOnDemand(*handle, {}, "{}", {}, {})).c_str());
+    }).detach();
+  }
 }

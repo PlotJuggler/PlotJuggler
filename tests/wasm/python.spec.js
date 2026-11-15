@@ -148,33 +148,44 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   expect(busyGap).toBeLessThan(BUSY_COMPILE_GAP_BOUND_MS);
 });
 
-// The stdlib download fails: Python reports why instead of hanging or crashing the app, and the next use retries it.
-test('on-demand Python: a failed stdlib download is reported, and retried by the next use', async ({ page, browserName }) => {
+// The stdlib download fails, before any Python use succeeded: each failure is reported as a download failure (a
+// validate leaves a valid script unchecked, not invalid), none sticks to the recipe's handle, and the same handle runs
+// once the download works. Playwright routes a worker's requests in Chromium only.
+test('on-demand Python: a failed stdlib download is reported and retried, never kept', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', "Playwright routes a worker's requests in Chromium only");
   test.setTimeout(300_000);
   const consoleMessages = [];
   const errors = [];
   page.on('pageerror', error => errors.push(String(error)));
   page.on('console', message => consoleMessages.push(message.text()));
-  await page.context().route(`**${STDLIB_ASSET}`, route => route.fulfill({ status: 503, body: 'unavailable' }));
+  let answer = { status: 503, body: 'unavailable' };
+  await page.context().route(`**${STDLIB_ASSET}`, route => (answer ? route.fulfill(answer) : route.continue()));
   await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
   await waitForQtApp(page, consoleMessages);
-  const boots = () => consoleMessages.filter(message => message.includes('PJ_WASM_PY_BOOT'));
-  const done = () => consoleMessages.filter(message => message.includes('PJ_WASM_PY_DONE')).length;
+  const line = marker => consoleMessages.find(message => message.includes(marker)) || '';
+  const probe = (step, arg = 0) => page.evaluate(([s, a]) => window.pjWasmPythonStdlibProbe(s, a), [step, arg]);
+  const run = async attempt => {
+    await probe(2, attempt);
+    await expect.poll(() => line(`PJ_WASM_PY_DL_RUN ${attempt} `), { timeout: 120_000 }).not.toBe('');
+    return line(`PJ_WASM_PY_DL_RUN ${attempt} `);
+  };
 
-  await page.evaluate(() => window.pjWasmPythonSmokeProbe());
-  const available = await expect.poll(
-    () => consoleMessages.some(message => message.includes('PJ_WASM_PY_AVAILABLE 1')), { timeout: 10_000 },
-  ).toBe(true).then(() => true, () => false);
-  test.skip(!available && process.env.PJ_WASM_PYTHON !== '1', 'this build has no Python (PJ_WASM_WITH_PYTHON off)');
-  await expect.poll(done, { timeout: 240_000 }).toBeGreaterThan(0);
-  expect(boots().join('\n')).toContain('could not download its standard library');
-  expect(boots().join('\n')).toContain('HTTP 503');
+  await probe(0);
+  const handle = line('PJ_WASM_PY_DL_HANDLE');
+  test.skip(handle === '' && process.env.PJ_WASM_PYTHON !== '1', 'this build has no Python (PJ_WASM_WITH_PYTHON off)');
+  expect(handle).toContain(' ok');
 
-  await page.context().unroute(`**${STDLIB_ASSET}`);
-  const before = done();
-  await page.evaluate(() => window.pjWasmPythonSmokeProbe());
-  await expect.poll(done, { timeout: 240_000 }).toBeGreaterThan(before);
-  expect(boots().some(message => message.includes(' ok'))).toBe(true);
+  // Soft: every step reports, so one run shows each failure.
+  await probe(1, 30_000);
+  expect.soft(line('PJ_WASM_PY_DL_VALIDATE')).toContain('unchecked');
+  expect.soft(line('PJ_WASM_PY_DL_VALIDATE')).toContain('could not download its standard library');
+
+  expect.soft(await run(1)).toContain('could not download its standard library (HTTP 503)');
+  answer = { status: 404, body: 'not found' };
+  expect.soft(await run(2)).toContain('the app was updated since this page was loaded; reload the page');
+  answer = { status: 200, contentType: 'text/html', body: '<html><body>a login page</body></html>' };
+  expect.soft(await run(3)).toContain('could not download its standard library (not a zip archive)');
+  answer = null;
+  expect.soft(await run(4)).toMatch(/value=5\.14159/);
   expect(errors).toEqual([]);
 });
