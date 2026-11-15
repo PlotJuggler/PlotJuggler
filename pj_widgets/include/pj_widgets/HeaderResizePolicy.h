@@ -142,6 +142,9 @@ class HeaderResizePolicy : public QObject {
   /// the view; rebalance() keeps it instead of shrinking the section back to
   /// its floor. 0 = none. Cleared once the columns fit the view again.
   int user_fill_width_ = 0;
+  /// The section user_fill_width_ belongs to; the pin is dropped when another
+  /// section becomes the fill (setFillSection, or the fill being hidden).
+  int user_fill_section_ = -1;
 };
 
 }  // namespace PJ

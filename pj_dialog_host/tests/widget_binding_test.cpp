@@ -45,6 +45,7 @@
 #include <QSignalSpy>
 #include <QSpacerItem>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStyleOptionViewItem>
 #include <QStyledItemDelegate>
 #include <QTabBar>
@@ -3231,8 +3232,6 @@ TEST(DialogFooterAdapter, BareButtonBoxGetsTheHostFooter) {
   EXPECT_EQ(root.findChildren<QWidget*>(u"pjDialogFooter"_s).size(), 1);
 }
 
-// WebRTC/UDP/LSL/ZMQ shape: the plugin padded its own wrapper. The host footer
-// replaces that padding so every dialog's buttons sit at the same inset.
 // The footer must not take spare height from the content: a QSplitter (CSV)
 // or plain widget above it is Preferred too, so a Preferred footer would
 // split a tall dialog's extra space with it.
@@ -3249,6 +3248,8 @@ TEST(DialogFooterAdapter, FooterKeepsItsNaturalHeightInATallDialog) {
   EXPECT_EQ(footer->height(), footer->sizeHint().height());
 }
 
+// WebRTC/UDP/LSL/ZMQ shape: the plugin padded its own wrapper. The host footer
+// replaces that padding so every dialog's buttons sit at the same inset.
 TEST(DialogFooterAdapter, PluginWrapperPaddingIsReplacedByTheStandardInset) {
   QWidget root;
   auto* layout = edgeToEdgeRoot(root);
@@ -3293,9 +3294,8 @@ TEST(DialogFooterAdapter, ButtonRowMovesIntoTheFooterAsAWhole) {
 // adding a footer there would frame only half of it.
 TEST(DialogFooterAdapter, PaddedDialogIsLeftAlone) {
   QWidget root;
-  auto* layout = new QVBoxLayout(&root);
+  auto* layout = edgeToEdgeRoot(root);
   layout->setContentsMargins(11, 11, 11, 11);
-  layout->addWidget(new QWidget(&root));
   auto* box = new QDialogButtonBox(QDialogButtonBox::Ok, &root);
   layout->addWidget(box);
 
@@ -3303,6 +3303,32 @@ TEST(DialogFooterAdapter, PaddedDialogIsLeftAlone) {
 
   EXPECT_EQ(dialogFooter(root), nullptr);
   EXPECT_EQ(box->parentWidget(), &root);
+}
+
+// Content that merely contains a button box somewhere inside (a splitter
+// pane, a stacked page) is not a footer: moving it would freeze its height.
+TEST(DialogFooterAdapter, ContentContainingButtonsDeeperDownIsLeftAlone) {
+  QWidget root;
+  auto* splitter = new QSplitter(&root);
+  auto* pane = new QWidget(splitter);
+  (new QVBoxLayout(pane))->addWidget(new QDialogButtonBox(QDialogButtonBox::Ok, pane));
+  edgeToEdgeRoot(root)->addWidget(splitter);
+
+  PJ::adaptDialogFooter(&root);
+
+  EXPECT_EQ(dialogFooter(root), nullptr);
+}
+
+// An aligned box would hand its alignment to the footer through replaceWidget,
+// leaving a narrow footer with a partial hairline.
+TEST(DialogFooterAdapter, FooterSpansTheWidthEvenForAnAlignedBox) {
+  QWidget root;
+  edgeToEdgeRoot(root)->addWidget(new QDialogButtonBox(QDialogButtonBox::Ok, &root), 0, Qt::AlignRight);
+
+  PJ::adaptDialogFooter(&root);
+
+  ASSERT_NE(dialogFooter(root), nullptr);
+  EXPECT_EQ(root.layout()->itemAt(root.layout()->count() - 1)->alignment(), Qt::Alignment{});
 }
 
 TEST(DialogFooterAdapter, EdgeToEdgeDialogWithoutButtonsIsLeftAlone) {

@@ -1342,17 +1342,12 @@ QWidget#timelineStrip {
     border-top: 1px solid ${separation};
 }
 
-/* 1-px separator above the CurveEditor's pinned marker-scope footer,
+/* 1-px separator above the CurveEditor's pinned marker-scope footer and the
+   footer the dialog host gives edge-to-edge plugin dialogs (adaptDialogFooter),
    painted as the footer's top border so it disappears with the footer. */
-QWidget#markerScopesFooter {
-    border-top: 1px solid ${separation};
-}
-
-/* Footer the dialog host wraps around an edge-to-edge plugin dialog's buttons
-   (adaptDialogFooter): the same hairline the dialog title bar draws below
-   itself, so the content is framed identically top and bottom. */
+QWidget#markerScopesFooter,
 QWidget#pjDialogFooter {
-    border-top: ${stroke_hairline}px solid ${separation};
+    border-top: 1px solid ${separation};
 }
 
 /* Playback slider spans the full 24-px chrome row top-to-bottom:

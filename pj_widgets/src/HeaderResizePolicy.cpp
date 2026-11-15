@@ -116,6 +116,8 @@ int HeaderResizePolicy::fillSection() const {
 }
 
 int HeaderResizePolicy::visibleWidthExcept(int section) const {
+  // Not QHeaderView::length(): a hidden section keeps a stored size that
+  // length() still counts.
   int width = 0;
   for (int i = 0; i < header_->count(); ++i) {
     if (i != section && !header_->isSectionHidden(i)) {
@@ -174,21 +176,18 @@ void HeaderResizePolicy::onSectionResized(int section, int old_size, int new_siz
   if (adjusting_ || header_->isSectionHidden(section)) {
     return;
   }
-  if (visibleWidthExcept(section) + old_size > availableWidth()) {
-    // The columns already overflow the view (a wide data grid), so there is no
-    // width to trade and splitter semantics would freeze every divider. Behave
-    // like a stock header: only the dragged column changes, the horizontal
-    // scrollbar absorbs it, and the label floor still holds.
-    const int width = std::max(new_size, minimumWidthFor(section));
-    if (width != new_size) {
-      adjusting_ = true;
-      header_->resizeSection(section, width);
-      adjusting_ = false;
-    }
+  const int before = visibleWidthExcept(section) + old_size;
+  const int available = availableWidth();
+  if (before > available) {
+    // Overflowing: no width to trade, so behave like a stock header (see class
+    // doc). A narrowing stops where the columns exactly fit; the rest of the
+    // drag continues under splitter semantics, with the divider under the cursor.
+    const int width = std::max(new_size, old_size - (before - available));
     if (section == fillSection()) {
-      user_fill_width_ = width;
+      user_fill_width_ = std::max(width, minimumWidthFor(section));
+      user_fill_section_ = section;
     }
-    rebalance();  // narrowing may have made the columns fit again
+    setSectionWidth(section, width);
     return;
   }
   const int next = nextVisibleSection(section);
@@ -243,8 +242,8 @@ void HeaderResizePolicy::rebalance() {
     return;
   }
   const int slack = availableWidth() - visibleWidthExcept(fill);
-  if (slack >= user_fill_width_) {
-    user_fill_width_ = 0;  // the columns fit again: the fill section resumes absorbing slack
+  if (fill != user_fill_section_ || slack >= user_fill_width_) {
+    user_fill_width_ = 0;  // another column is the fill, or the columns fit again
   }
   const int target = std::max({minimumWidthFor(fill), slack, user_fill_width_});
   if (header_->sectionSize(fill) == target) {

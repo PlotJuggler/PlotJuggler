@@ -208,7 +208,7 @@ TEST(HeaderResizePolicy, OverflowingHeaderStillHonoursTheLabelFloor) {
   Fixture f(overflowingLabels());
   const QList<int> before = f.widths();
 
-  f.dragDivider(3, -kTableWidth);
+  f.header->resizeSection(3, kAbsoluteFloor);  // a real drag bottoms out at minimumSectionSize
 
   EXPECT_EQ(f.header->sectionSize(3), before[3]) << "a column at its floor must not be squashed under its label";
 }
@@ -246,6 +246,58 @@ TEST(HeaderResizePolicy, FillColumnAbsorbsSlackAgainOnceTheGridFits) {
   f.table.resize(f.total() + 400, kTableHeight);
   QApplication::processEvents();
   EXPECT_EQ(f.total(), f.header->width());
+
+  // ... and the user's width is released, so overflowing again shrinks it to its floor.
+  f.table.resize(kTableWidth, kTableHeight);
+  QApplication::processEvents();
+  EXPECT_EQ(f.header->sectionSize(0), std::max(kAbsoluteFloor, expectedFloor(f.header, QStringLiteral("Name"))));
+}
+
+// The curve list hides its Values column by default. A hidden section keeps a
+// stored size Qt still counts in length(), so the fill must be sized from the
+// visible sections only or it stops short of the view.
+TEST(HeaderResizePolicy, HiddenLastColumnLeavesTheFillSpanningTheView) {
+  Fixture f({QStringLiteral("Name"), QStringLiteral("Values")});
+  f.policy->setSectionWidth(1, 60);
+
+  f.header->hideSection(1);
+  f.policy->rebalance();
+
+  EXPECT_EQ(f.header->sectionSize(0), f.header->width());
+}
+
+// A narrowing drag that turns an overflowing grid into one that fits must stop
+// at the exact fit: past it the splitter takes over, so the freed width goes to
+// the next column and the divider stays under the cursor, instead of the fill
+// column on the left absorbing it.
+TEST(HeaderResizePolicy, NarrowingIntoAFittingGridHandsOverToTheSplitter) {
+  Fixture f(overflowingLabels());
+  f.dragDivider(3, 40);  // give column 3 room above its floor
+  const int overflow = f.total() - f.header->width();
+  f.table.resize(f.table.width() + overflow - 10, kTableHeight);  // now overflowing by 10 px
+  QApplication::processEvents();
+  ASSERT_EQ(f.total() - f.header->width(), 10);
+  const int start = f.header->sectionSize(3);
+  const int fill = f.header->sectionSize(0);
+
+  f.header->resizeSection(3, start - 40);  // one mouse move, past the fit point
+  EXPECT_EQ(f.total(), f.header->width());
+  EXPECT_EQ(f.header->sectionSize(0), fill) << "the fill column must not absorb the drag";
+
+  f.header->resizeSection(3, start - 40);  // the next move: now under splitter semantics
+  EXPECT_EQ(f.header->sectionSize(3), start - 40) << "the divider must follow the cursor";
+  EXPECT_EQ(f.header->sectionSize(0), fill);
+  EXPECT_EQ(f.total(), f.header->width());
+}
+
+TEST(HeaderResizePolicy, UserFillWidthStaysWithTheColumnTheUserSized) {
+  Fixture f(overflowingLabels());
+  const int column1 = f.header->sectionSize(1);
+  f.dragDivider(0, column1 + 80);  // wider than column 1, so leaking the pin would widen it
+
+  f.policy->setFillSection(1);
+
+  EXPECT_EQ(f.header->sectionSize(1), column1) << "a column the user never sized must not inherit that width";
 }
 
 }  // namespace

@@ -796,15 +796,23 @@ namespace {
 
 constexpr const char* kDialogFooterName = "pjDialogFooter";
 
-bool holdsButtonBox(const QWidget* w) {
-  return qobject_cast<const QDialogButtonBox*>(w) != nullptr || w->findChild<QDialogButtonBox*>() != nullptr;
+bool isButtonBox(QLayoutItem* item) {
+  return qobject_cast<QDialogButtonBox*>(item->widget()) != nullptr;
 }
 
-bool holdsButtonBox(const QLayout* layout) {
-  for (int i = 0; i < layout->count(); ++i) {
-    QLayoutItem* item = layout->itemAt(i);
-    if ((item->widget() != nullptr && holdsButtonBox(item->widget())) ||
-        (item->layout() != nullptr && holdsButtonBox(item->layout()))) {
+// The item is the button box itself, or a wrapper widget / button row whose own
+// items include it. Deeper nesting means the item is content that merely
+// contains buttons somewhere (a splitter, a stacked page), not a footer.
+bool holdsButtonBox(QLayoutItem* item) {
+  if (isButtonBox(item)) {
+    return true;
+  }
+  QLayout* own = item->widget() != nullptr ? item->widget()->layout() : item->layout();
+  if (own == nullptr) {
+    return false;
+  }
+  for (int i = 0; i < own->count(); ++i) {
+    if (isButtonBox(own->itemAt(i))) {
       return true;
     }
   }
@@ -818,29 +826,21 @@ void adaptDialogFooter(QWidget* root) {
   if (layout == nullptr || layout->direction() != QBoxLayout::TopToBottom || layout->count() == 0) {
     return;
   }
-  // Only an edge-to-edge dialog has a footer to frame: a padded root insets
-  // its buttons along with everything else, like any ordinary dialog.
+  // A padded root insets its buttons along with everything else: nothing to frame.
   const QMargins outer = layout->contentsMargins();
   if (outer.left() != 0 || outer.right() != 0 || outer.bottom() != 0) {
     return;
   }
-  const int last_index = layout->count() - 1;
-  QLayoutItem* last = layout->itemAt(last_index);
+  QLayoutItem* last = layout->itemAt(layout->count() - 1);
   QWidget* last_widget = last->widget();
-  QLayout* last_layout = last->layout();
-  if (last_widget != nullptr && last_widget->objectName() == QLatin1String(kDialogFooterName)) {
-    return;  // already adapted
-  }
-  if (!(last_widget != nullptr ? holdsButtonBox(last_widget) : last_layout != nullptr && holdsButtonBox(last_layout))) {
+  if ((last_widget != nullptr && last_widget->objectName() == QLatin1String(kDialogFooterName)) ||
+      !holdsButtonBox(last)) {
     return;
   }
 
-  // The host owns the footer's frame: a hairline above it (the same stroke the
-  // title bar draws below itself, see #pjDialogFooter in the QSS) and one
-  // standard inset, replacing whatever outer padding the plugin chose.
   auto* footer = new QWidget(root);
   footer->setObjectName(QLatin1String(kDialogFooterName));
-  footer->setAttribute(Qt::WA_StyledBackground, true);
+  footer->setAttribute(Qt::WA_StyledBackground, true);  // the QSS hairline needs it
   // Vertically Fixed like the QDialogButtonBox it usually replaces: a Preferred
   // footer would share the dialog's spare height with the content above it.
   footer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -849,19 +849,22 @@ void adaptDialogFooter(QWidget* root) {
   footer_layout->setContentsMargins(inset, inset, inset, inset);
   footer_layout->setSpacing(0);
 
-  QLayoutItem* taken = layout->takeAt(last_index);
+  // The footer's inset replaces the moved item's own outer padding.
   if (last_widget != nullptr) {
-    delete taken;  // the QWidgetItem wrapper only; the widget moves into the footer
     if (qobject_cast<QDialogButtonBox*>(last_widget) == nullptr && last_widget->layout() != nullptr) {
       last_widget->layout()->setContentsMargins(0, 0, 0, 0);
     }
+    replaceWidgetInLayout(root, last_widget, footer);
+    layout->setAlignment(footer, {});  // replaceWidget copies the item's alignment; the footer spans the width
     footer_layout->addWidget(last_widget);
   } else {
-    last_layout->setContentsMargins(0, 0, 0, 0);
-    last_layout->setParent(nullptr);
-    footer_layout->addLayout(last_layout);
+    QLayout* row = last->layout();
+    row->setContentsMargins(0, 0, 0, 0);
+    layout->takeAt(layout->count() - 1);  // the item is the layout itself: re-homed, not deleted
+    row->setParent(nullptr);
+    footer_layout->addLayout(row);
+    layout->addWidget(footer);
   }
-  layout->addWidget(footer);
 }
 
 void adaptStyledWidgets(QWidget* root) {
