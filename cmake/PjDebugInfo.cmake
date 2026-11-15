@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MPL-2.0
-# Debug-information policy for RelWithDebInfo trees. Sizes measured 2026-09-08
-# (workspace findings): with plain -g every executable is ~94 % DWARF and the
+# Debug-information policy for Release trees (every PlotJuggler build is Release:
+# CMake's stock optimisation flags, plus the debug info chosen here). Sizes measured
+# 2026-09-08 (workspace findings): with plain -g every executable is ~94 % DWARF and the
 # same module DWARF is copied into each of 300+ test binaries. Split DWARF
 # stores it once per object (.dwo); type units dedupe Qt template types within
 # a link; zlib halves what remains. Mach-O keeps DWARF in the object files, so
 # on macOS the level only costs compile time and compiler-cache size, and
-# `split` has nothing to add over `full`. MSVC is not handled here: its debug
-# format comes from CMAKE_MSVC_DEBUG_INFORMATION_FORMAT on the command line.
+# `split` has nothing to add over `full`. MSVC compile-time debug info comes from
+# CMAKE_MSVC_DEBUG_INFORMATION_FORMAT on the command line; only its link is handled
+# here, at the end.
 set(PJ_DEBUG_INFO "full" CACHE STRING "Debug info level: none|lines|full|split")
 set_property(CACHE PJ_DEBUG_INFO PROPERTY STRINGS none lines full split)
 option(PJ_COMPRESS_DEBUG "Compress ELF debug sections with zlib (-gz)" OFF)
@@ -16,14 +18,19 @@ if(NOT PJ_DEBUG_INFO MATCHES "^(none|lines|full|split)$")
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT EMSCRIPTEN)
-    # Strip CMake's stock RelWithDebInfo -g so the policy below is the single
-    # source of debug flags for that configuration.
-    string(REPLACE "-g " "" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} ")
-    string(REPLACE "-g " "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ")
-    string(STRIP "${CMAKE_C_FLAGS_RELWITHDEBINFO}" CMAKE_C_FLAGS_RELWITHDEBINFO)
-    string(STRIP "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}" CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+    # Strip any -g a toolchain or cache entry adds to Release so the policy below
+    # is the single source of debug flags for that configuration. Only languages
+    # already enabled: a normal variable set before enable_language() would shadow
+    # the stock cache value and leave that language without -O/-DNDEBUG.
+    get_property(_pj_langs GLOBAL PROPERTY ENABLED_LANGUAGES)
+    foreach(_pj_lang IN ITEMS C CXX)
+        if(_pj_lang IN_LIST _pj_langs)
+            string(REPLACE "-g " "" CMAKE_${_pj_lang}_FLAGS_RELEASE "${CMAKE_${_pj_lang}_FLAGS_RELEASE} ")
+            string(STRIP "${CMAKE_${_pj_lang}_FLAGS_RELEASE}" CMAKE_${_pj_lang}_FLAGS_RELEASE)
+        endif()
+    endforeach()
 
-    set(_pj_dbg "$<CONFIG:RelWithDebInfo>")
+    set(_pj_dbg "$<CONFIG:Release>")
     if(PJ_DEBUG_INFO STREQUAL "none")
         add_compile_options("$<${_pj_dbg}:-g0>")
     elseif(PJ_DEBUG_INFO STREQUAL "lines")
@@ -78,4 +85,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
         set(CMAKE_C_ARCHIVE_FINISH   "<CMAKE_RANLIB> <TARGET>")
         set(CMAKE_CXX_ARCHIVE_FINISH "<CMAKE_RANLIB> <TARGET>")
     endif()
+endif()
+
+# Release links carry no /DEBUG, so MSVC would write no PDB at all. Add it so every
+# executable and DLL still gets a PDB of public symbols and a crash backtrace names
+# its functions (objects compiled without /Z7 contribute no further detail).
+if(MSVC)
+    add_link_options("$<$<CONFIG:Release>:/DEBUG>")
 endif()

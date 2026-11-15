@@ -149,7 +149,7 @@ jobs:
 
       # ─────────────────────────── Conan binaries ───────────────────────────
       # The Actions cache closure maintained by windows-ci.yml is
-      # the Conan binary store (same windows-2022 MSVC/RelWithDebInfo graph,
+      # the Conan binary store (same windows-2022 MSVC/Release graph,
       # same key). ConanCenter source builds cover any residual miss.
 
       - name: Compute Conan cache key
@@ -163,14 +163,14 @@ jobs:
           $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "restore_prefix=conan-windows-msvc-release-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Restore Conan cache
         id: conan-gha-cache
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
+          key: conan-windows-msvc-release-${{ steps.public_conan_cache.outputs.hash }}
           restore-keys: |
             ${{ steps.public_conan_cache.outputs.restore_prefix }}
 
@@ -308,14 +308,13 @@ jobs:
           conan profile detect --force
           scripts/configure_conan_remote.sh
           # cpython shared: its Conan recipe disables the static MSVC build (>=3.10),
-          # so the embedded interpreter must link shared (Release CRT, matching the
-          # RelWithDebInfo /MD graph). Ninja Multi-Config so sccache's compiler
-          # launcher is honoured (VS/MSBuild ignores it).
+          # so the embedded interpreter must link shared. Ninja Multi-Config so
+          # sccache's compiler launcher is honoured (VS/MSBuild ignores it).
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
-            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+            -s build_type=Release -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" \
             -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
@@ -334,7 +333,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
+          key: conan-windows-msvc-release-${{ steps.public_conan_cache.outputs.hash }}
 
       - name: Build PlotJuggler 4 (app)
         shell: bash
@@ -342,7 +341,7 @@ jobs:
           SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
           # Same debug format as windows-ci.yml (see its Build step), so the
-          # two share sccache objects: no debug information in RelWithDebInfo
+          # two share sccache objects: no debug information in Release
           # objects. The installer ships no PDB. Requires CMP0141=NEW.
           launcher_args=()
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
@@ -364,7 +363,7 @@ jobs:
           # This release only packages the application. PJ_BUILD_TESTS=OFF also
           # keeps the widgets' test-only fault injection (the PJ_RHI_TEST_HOOKS
           # definition) out of the shipped binaries.
-          cmake --build build --config RelWithDebInfo --target pj_app --parallel
+          cmake --build build --config Release --target pj_app --parallel
 
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             sccache --show-stats

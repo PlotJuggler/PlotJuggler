@@ -92,7 +92,7 @@ jobs:
         shell: pwsh
         run: |
           # The runner is pinned to windows-2022 above, so this identity maps to
-          # one stable MSVC/RelWithDebInfo graph. The Actions cache is the
+          # one stable MSVC/Release graph. The Actions cache is the
           # binary store; ConanCenter is the source-build fallback.
           $cacheVersion = "v6"
           $combined = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash + (Get-FileHash conan.lock -Algorithm SHA256).Hash
@@ -100,7 +100,7 @@ jobs:
           $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "restore_prefix=conan-windows-msvc-release-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Restore Conan cache
         # Prefix fallback: an older closure for the same toolchain still seeds
@@ -109,7 +109,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
+          key: conan-windows-msvc-release-${{ steps.public_conan_cache.outputs.hash }}
           restore-keys: |
             ${{ steps.public_conan_cache.outputs.restore_prefix }}
 
@@ -251,17 +251,12 @@ jobs:
           #   Generator Ninja Multi-Config does not support platform specification,
           #   but platform x64 was specified.
           # CPython's Conan recipe disables the STATIC MSVC build (>=3.10), so the
-          # embedded Python backend (pj_scripting) must link it shared here. CPython's
-          # MSVC build (PCbuild.sln) also has no "RelWithDebInfo" configuration — only
-          # Debug/Release — so build just that dependency as Release. Release is
-          # CRT-compatible with the rest of the RelWithDebInfo graph (both use the
-          # release /MD runtime). Both overrides are scoped to cpython only and
-          # Windows-CI-only; Linux links CPython statically.
+          # embedded Python backend (pj_scripting) must link it shared here.
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
-            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+            -s build_type=Release -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" \
             -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
@@ -292,7 +287,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
+          key: conan-windows-msvc-release-${{ steps.public_conan_cache.outputs.hash }}
 
       - name: Build
         shell: bash
@@ -314,12 +309,13 @@ jobs:
           # silently ignores it, which is why prior runs showed "Compile
           # requests: 0" in sccache --show-stats.
           #
-          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT compiles RelWithDebInfo, the
+          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT compiles Release, the
           # configuration built here, without debug information. MSVC has no
           # line-tables-only level, and full debug info writes the types of
           # every included header into every .obj, which costs compile time,
-          # sccache storage and link time. The linker's /DEBUG still writes a
-          # PDB of public symbols, so a crash backtrace names its functions.
+          # sccache storage and link time. The linker's /DEBUG (added to Release
+          # links by cmake/PjDebugInfo.cmake) still writes a PDB of public
+          # symbols, so a crash backtrace names its functions.
           # Debug gets /Z7, never /Zi: /Zi writes a shared PDB through
           # mspdbsrv.exe, which sccache cannot cache and parallel cl.exe
           # workers race on (fatal C1041 on pj_base.pdb).
@@ -347,7 +343,7 @@ jobs:
             "${launcher_args[@]}"
 
           # -k 0: one run lists every compile error.
-          cmake --build build --config RelWithDebInfo --parallel -- -k 0
+          cmake --build build --config Release --parallel -- -k 0
 
           # Surface sccache stats before the post-action does, so they
           # appear in the Build step's log next to the compile output.
@@ -386,7 +382,7 @@ jobs:
           # --timeout kills any single test after 2 min so a deadlocked test
           # fails loudly with its name in the log instead of stalling the job.
           # The QRhi display runners (label qrhi) run in the D3D11 step below.
-          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120 -LE qrhi \
+          ctest --test-dir build --build-config Release --output-on-failure --timeout 120 -LE qrhi \
             -j "${NUMBER_OF_PROCESSORS}"
 
       - name: Test the QRhi display runners on D3D11 (WARP)
@@ -407,7 +403,7 @@ jobs:
           export QT_FORCE_STDERR_LOGGING=1
           mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
           log="${RUNNER_TEMP}/qrhi-d3d11-ctest.log"
-          ctest --test-dir build --build-config RelWithDebInfo -V --timeout 120 --no-tests=error -L qrhi-d3d11 2>&1 | tee "$log" ||
+          ctest --test-dir build --build-config Release -V --timeout 120 --no-tests=error -L qrhi-d3d11 2>&1 | tee "$log" ||
             status=$?
           # Every view must report D3D11 on a software (Cpu) adapter, i.e. WARP,
           # and at least one plot canvas must have run on D3D11.
