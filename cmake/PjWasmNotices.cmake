@@ -196,7 +196,7 @@ function(pj_wasm_write_notices output python_notices)
   _pj_notice_section("${output}" "Qt Advanced Docking System" "LGPL-2.1-or-later"
       "${CMAKE_SOURCE_DIR}/3rdparty/Qt-Advanced-Docking/LICENSE")
   _pj_notice_section("${output}" "nanocdr" "Apache-2.0" "HEADER|${CMAKE_SOURCE_DIR}/3rdparty/nanocdr/include/nanocdr/nanocdr.hpp")
-  _pj_notice_section("${output}" "Noto Sans (font)" "OFL-1.1" "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSans/OFL.txt")
+  _pj_notice_section("${output}" "PlotJuggler Sans (font, derived from Noto Sans)" "OFL-1.1" "${CMAKE_SOURCE_DIR}/resources/fonts/PlotJugglerSans/OFL.txt")
 
   # Fetched: the name is the FetchContent name, the files are in its source tree.
   pj_wasm_notice("${output}" plotjuggler_sdk "PlotJuggler SDK (pj_base, pj_plugins)" "Apache-2.0" LICENSE LICENSE-APACHE)
