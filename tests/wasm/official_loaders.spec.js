@@ -4,13 +4,17 @@
 // MCAP), and the CAN logs (candump with a DBC
 // picked from its own dialog, BLF, MF4). Fixtures: fixtures/generate_official_loader_fixtures.py
 // (Parquet, MF4, Arrow MCAP); sample.blf is pj-official-plugins' data_load_blf/test_data/sample.blf.
+const crypto = require('crypto');
 const fs = require('fs');
 const { test, expect } = require('@playwright/test');
-const { bootApp } = require('./support/app');
+const { bootApp, replaceRuntimeTarget } = require('./support/app');
 const { firstLoadOutcome } = require('./support/load_outcomes');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
-const { openFileChooser, retryChooser } = require('./support/pickers');
+const { elementAttributes } = require('./support/layout_xml');
+const { openFileChooser, openLayoutChooser, openSourceReplayChooser, retryChooser } = require('./support/pickers');
+const { openPreset, startPresetServer } = require('./support/preset_server');
+const { downloadSourceLayoutFromFileMenu, sourceLayoutDecisionGeometry } = require('./support/source_layout');
 
 const CANDUMP_LOG = [
   '(1700000000.123456) can0 100#E803',
@@ -100,7 +104,13 @@ async function importFile(page, screen, consoleMessages, file, inDialog = async 
   await page.waitForTimeout(1500);
   await inDialog();
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
-  // The probe records the outcome in the page too: Firefox can drop the console line.
+  return loadOkLine(page, consoleMessages);
+}
+
+// Waits for the first load outcome and returns it, expecting PJ_FILE_LOAD_OK (a
+// timeout shows the loader's log). The probe records the outcome in the page
+// too: Firefox can drop the console line.
+async function loadOkLine(page, consoleMessages) {
   let line = '';
   try {
     await expect.poll(async () => (line = await firstLoadOutcome(page, 'PJ_FILE_LOAD_')), { timeout: 30000 }).not.toBe('');
@@ -231,6 +241,76 @@ test('official candump loader decodes with a DBC picked in its dialog', async ({
   const speed = seriesSamples(outcome, '/Speed', consoleMessages);
   expect(speed).toMatchObject({ count: 3, first: 100, last: 300 });
   expect(speed.span).toBe(20_000_000n);
+  expect(errors).toEqual([]);
+});
+
+// The DBC picked in the loader's dialog is a side file of the source: the
+// source-bound layout names it and its fingerprint like the data file, and a
+// replay in a fresh page asks for both before the import decodes as before;
+// opened as a preset, it downloads both.
+test('a source layout saves the DBC picked in the candump dialog and replays it after both are reselected', async ({ page }) => {
+  test.setTimeout(180000);
+  const consoleMessages = [];
+  const errors = [];
+  const screen = await boot(page, consoleMessages, errors);
+  const capture = { name: 'capture.log', mimeType: 'text/plain', buffer: Buffer.from(CANDUMP_LOG) };
+  const dictionary = { name: 'engine.dbc', mimeType: 'text/plain', buffer: Buffer.from(SAMPLE_DBC) };
+  await importFile(page, screen, consoleMessages, capture,
+    () => pickDictionary(page, screen, consoleMessages, 'buttonDictionary'));
+
+  const downloaded = await downloadSourceLayoutFromFileMenu(page, screen, consoleMessages);
+  const xml = downloaded.bytes.toString('utf8');
+  expect(xml).not.toContain('/pj_uploads');
+  expect(xml).not.toContain('pj-upload://');
+  expect(elementAttributes(downloaded.bytes, 'fileInfo', 'filename')).toEqual(['capture.log']);
+  expect(elementAttributes(downloaded.bytes, 'sideFile', 'filename')).toEqual(['engine.dbc']);
+  expect(elementAttributes(downloaded.bytes, 'sideFile', 'content_sha256')).toEqual([
+    crypto.createHash('sha256').update(dictionary.buffer).digest('hex'),
+  ]);
+  expect(xml).toContain('"engine.dbc"');
+
+  const allMessages = [];
+  const replay = await replaceRuntimeTarget(page, allMessages, errors, { hideOpenFilePicker: true });
+  const layoutChooser = await openLayoutChooser(replay.page);
+  await layoutChooser.setFiles({ name: downloaded.fileName, mimeType: 'application/xml', buffer: downloaded.bytes });
+  await expect.poll(
+    () => replay.consoleMessages.some(message => message.includes('PJ_WASM_SOURCE_LAYOUT_DECISION')),
+    { timeout: 15000 },
+  ).toBe(true);
+  let geometry = await sourceLayoutDecisionGeometry(replay.page, replay.consoleMessages);
+  const dataChooser = await openSourceReplayChooser(replay.page, replay.screen, geometry, replay.consoleMessages);
+  await dataChooser.setFiles(capture);
+  await expect.poll(
+    () => replay.consoleMessages.some(message => message.includes('PJ_WASM_SOURCE_LAYOUT_STAGED index=1')),
+    { timeout: 15000 },
+  ).toBe(true);
+  // The same decision now asks for the dictionary; nothing is imported yet.
+  geometry = await sourceLayoutDecisionGeometry(replay.page, replay.consoleMessages);
+  const dbcChooser = await openSourceReplayChooser(replay.page, replay.screen, geometry, replay.consoleMessages);
+  await dbcChooser.setFiles(dictionary);
+
+  const line = await loadOkLine(replay.page, replay.consoleMessages);
+  const speed = seriesSamples(line, '/Speed', replay.consoleMessages);
+  expect(speed).toMatchObject({ count: 3, first: 100, last: 300 });
+
+  // Opened by URL (a preset), the same layout downloads the dictionary from
+  // beside its data file, with no picker.
+  const server = await startPresetServer({
+    'can/layout.pj4.xml': downloaded.bytes,
+    'can/capture.log': capture.buffer,
+    'can/engine.dbc': dictionary.buffer,
+  });
+  try {
+    const preset = await replaceRuntimeTarget(replay.page, [], errors);
+    expect(await openPreset(preset.page, preset.consoleMessages, server.url('can/layout.pj4.xml')))
+      .toContain('PJ_WASM_LAYOUT_LOAD_OK');
+    expect(server.requests).toEqual([
+      'GET /presets/can/layout.pj4.xml', 'GET /presets/can/capture.log', 'GET /presets/can/engine.dbc']);
+    const presetLine = await loadOkLine(preset.page, preset.consoleMessages);
+    expect(seriesSamples(presetLine, '/Speed', preset.consoleMessages)).toMatchObject({ count: 3, first: 100, last: 300 });
+  } finally {
+    await server.close();
+  }
   expect(errors).toEqual([]);
 });
 

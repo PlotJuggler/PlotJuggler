@@ -87,6 +87,11 @@ struct LoadHints {
   // plugin whose MANIFEST id merely collides with the saved display name.
   QString expected_plugin_id;
   QString preset_config_json;  // Empty -> no hint; QSettings pre-fill is used.
+  // Layout replay: each saved side-file name (layout_xml::SideFileRef::filename) and the path it now names. Every
+  // preset string value equal to a name becomes its path before the filepath rewrite; an empty path means the
+  // file beside the loaded data file (the name resolved against its directory), which is what a desktop replay
+  // uses. The browser replay fills in the staged copies.
+  QHash<QString, QString> side_file_paths{};
   DialogPolicy dialog_policy = DialogPolicy::kInteractive;
   // Layout replay reuses matching DatasetIds; normal load/reload replaces them.
   bool prefer_reuse = false;
@@ -184,9 +189,11 @@ class FileLoader : public QObject {
   // replay uses this to finish every required selection before importing any
   // data, with its content fingerprint already set (it compares it). Cancellation
   // is an empty input/error pair.
+  // `name_filter` replaces the catalog's data-file filter when not empty.
   void selectBrowserInput(
       QWidget* dialog_parent, BrowserSelectionCallback callback,
-      FileSelectionService::Fingerprint fingerprint = FileSelectionService::Fingerprint::kBeforeSelection);
+      FileSelectionService::Fingerprint fingerprint = FileSelectionService::Fingerprint::kBeforeSelection,
+      const QString& name_filter = {});
 #endif
 
   // Fingerprint captured while BrowserFileStore staged this opaque upload (or a
@@ -198,6 +205,18 @@ class FileLoader : public QObject {
   // outside SessionManager because it is browser-session metadata, not a durable
   // source path or plugin concern.
   [[nodiscard]] QString browserContentSha256(const QString& source_identity) const;
+
+  // Records a staged browser input's fingerprint (when it has one) and, for an
+  // upload, its identity by backing path. loadFile records every input it
+  // accepts; the dialog file picker records each pick, which is what a
+  // source-bound save looks up for the side files a plugin config names.
+  void rememberBrowserUpload(const LoadInput& input);
+
+  // The upload identity staged at `backing_path`, while its file is still
+  // trusted (a failed read forgets it); empty otherwise.
+  [[nodiscard]] QString browserIdentityForPath(const QString& backing_path) const;
+  // The inverse: where the upload `source_identity` is staged; empty when unknown.
+  [[nodiscard]] QString browserPathForIdentity(const QString& source_identity) const;
 
   // Resolves the "pick file(s)" interaction inside openFromDialog() /
   // replaceFromDialog(). Returns the selected paths (empty on cancel; at most
@@ -538,11 +557,9 @@ class FileLoader : public QObject {
   // saves their browser-staged paths in its config, which pre-fills its next
   // import's dialog: keep them staged for the session so that import finds them.
   QHash<QString, std::vector<std::shared_ptr<void>>> last_dialog_files_;
-#ifdef PJ_TARGET_WASM
-  // Source identity of every browser upload loaded, by backing path: a failed read of a picked file reports its path.
-  // A picked file leaves it at its first failed read.
+  // Source identity of every browser upload staged (loaded, or picked in a plugin dialog), by backing path: a failed
+  // read of a picked file reports its path. A picked file leaves it at its first failed read.
   QHash<QString, QString> browser_identity_by_path_;
-#endif
 #ifdef PJ_WITH_SCENE3D
   PJ::TransformService* transform_service_ = nullptr;
 #endif

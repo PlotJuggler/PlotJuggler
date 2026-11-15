@@ -4,12 +4,14 @@
 #include "FileLoader.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -873,6 +875,21 @@ std::string captureSavedConfig(DataSourceHandle& handle, const QString& source_n
   return {};
 }
 
+// The preset with each layout side-file name (hints.side_file_paths) replaced by
+// its path; an empty path resolves the name beside the loaded data file. A config
+// that is not a JSON object is left for the filepath rewrite to judge.
+std::string withSideFilePaths(const std::string& config, const LoadHints& hints, const QString& data_path) {
+  if (hints.side_file_paths.isEmpty()) {
+    return config;
+  }
+  const QDir data_dir = QFileInfo(data_path).dir();
+  QHash<QString, QString> replacements;
+  for (auto it = hints.side_file_paths.cbegin(); it != hints.side_file_paths.cend(); ++it) {
+    replacements.insert(it.key(), it.value().isEmpty() ? data_dir.filePath(it.key()) : it.value());
+  }
+  return detail::replaceConfigStringValues(config, replacements).value_or(config);
+}
+
 }  // namespace
 
 // Default ingest policies the app applies to every DataSourceRuntimeHost it
@@ -1139,8 +1156,9 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
 }
 
 void FileLoader::selectBrowserInput(
-    QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint) {
-  const QString filter = extensions_.buildFileFilter();
+    QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint,
+    const QString& name_filter) {
+  const QString filter = name_filter.isEmpty() ? extensions_.buildFileFilter() : name_filter;
   qCInfo(lcFileLoader).noquote() << "Opening browser file picker with filter:" << filter;
   FileSelectionService::selectAndStageFile(
       dialog_parent, filter, browser_file_store_,
@@ -1157,6 +1175,23 @@ void FileLoader::selectBrowserInput(
 
 QString FileLoader::browserContentSha256(const QString& source_identity) const {
   return browser_content_sha256_.value(source_identity);
+}
+
+void FileLoader::rememberBrowserUpload(const LoadInput& input) {
+  if (!input.content_sha256.isEmpty()) {
+    browser_content_sha256_.insert(input.source_identity, input.content_sha256);
+  }
+  if (isBrowserUploadIdentity(input.source_identity)) {
+    browser_identity_by_path_.insert(input.backing_path, input.source_identity);
+  }
+}
+
+QString FileLoader::browserIdentityForPath(const QString& backing_path) const {
+  return browser_identity_by_path_.value(backing_path);
+}
+
+QString FileLoader::browserPathForIdentity(const QString& source_identity) const {
+  return browser_identity_by_path_.key(source_identity);
 }
 
 FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
@@ -1369,8 +1404,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // JSON object cannot carry a path and is emitted as it is.
     QString emit_config = hints.preset_config_json;
     if (!emit_config.isEmpty()) {
-      const std::optional<std::string> rewritten =
-          detail::rewriteReplayFilepaths(emit_config.toStdString(), input.backing_path, detail::SavedFilepath::kOmit);
+      const std::optional<std::string> rewritten = detail::rewriteReplayFilepaths(
+          withSideFilePaths(emit_config.toStdString(), hints, input.backing_path), input.backing_path,
+          detail::SavedFilepath::kOmit);
       if (rewritten.has_value()) {
         emit_config = QString::fromStdString(*rewritten);
       }
@@ -1471,7 +1507,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   bool skip_dialog = false;
   // The layout preset's saved bytes — the one materialization both
   // preset-driven policies start from.
-  const std::string preset_bytes = hints.preset_config_json.toStdString();
+  // Its side-file names already point at the files this replay reads.
+  const std::string preset_bytes = withSideFilePaths(hints.preset_config_json.toStdString(), hints, input.backing_path);
 
   if (hints.dialog_policy == DialogPolicy::kNever) {
     // Automated (layout-driven) replay: the dialog is prohibited and the
@@ -1555,6 +1592,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         .browser_file_store = browser_file_store_,
         .title_prefix = hints.dialog_title_prefix,
         .on_dialog = hints.on_dialog,
+        .on_browser_file_staged =
+            [self = QPointer<FileLoader>(this)](const LoadInput& picked) {
+              if (self) {
+                self->rememberBrowserUpload(picked);
+              }
+            },
     });
     auto dlg = co_await std::move(dialog_awaiter);
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
@@ -2278,12 +2321,9 @@ LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_pare
     emit fileLoadFailed(path, reason);
     return 0;
   }
-  if (!input.content_sha256.isEmpty()) {
-    browser_content_sha256_.insert(input.source_identity, input.content_sha256);
-  }
+  rememberBrowserUpload(input);
 #ifdef PJ_TARGET_WASM
   if (isBrowserUploadIdentity(input.source_identity)) {
-    browser_identity_by_path_.insert(input.backing_path, input.source_identity);
     // Only a lazily read pick arrives unfingerprinted (a copied or downloaded file is hashed as it is written); an
     // empty result means its File changed since the pick, which its reads report.
     if (input.content_sha256.isEmpty()) {

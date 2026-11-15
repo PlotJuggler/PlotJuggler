@@ -401,6 +401,25 @@ layouts are downloaded with logical references and require explicit file
 reselection when replayed. Paths, upload identities, plugin configuration, and
 credentials are intentionally excluded from browser-local persistence.
 
+A source's plugin may also read files picked in its own dialog (a CAN
+dictionary, say). "Save Layout with Sources" saves each such *side file* like
+the data file: every string of the plugin configuration that is a staged
+file other than the data file is replaced by a logical name relative to the
+data file's directory, and listed as
+`<sideFile filename="…" content_sha256="…"/>` under the source's `<fileInfo>`.
+The name is the file's basename, or the first free `pj4-side/<n>/<basename>`
+when that is already the data file's name or a string of the configuration.
+One file staged twice (same name and fingerprint) is one side file. The data
+file's staging folder, if the configuration names it, is saved as an empty
+string. Any other staged path still refuses the save. On replay the page asks
+for every side file after the data files (same name rule as a data file; the
+fingerprint tells same-named files apart), and a layout opened by URL
+downloads each one resolved against its data file's URL, checked against its
+fingerprint like a data file. Every configuration string equal to a
+`filename` is then rewritten to the staged copy before the import. On the
+desktop the same rewrite points each `filename` at that name in the loaded
+data file's folder. `<sideFile>` is optional: older layouts load unchanged.
+
 A layout opened by URL (a preset) replays its `<fileInfo>` sources without a
 picker instead. Each `filename` resolves against the layout's URL — the browser
 reports the requested URL even after a redirect, so a preset must not rely on a

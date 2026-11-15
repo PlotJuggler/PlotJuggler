@@ -2,8 +2,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QHash>
 #include <QLatin1StringView>
 #include <QString>
+#include <QStringList>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -71,5 +73,19 @@ enum class SavedFilepath { kOmit, kRecord };
 // Configs that do not contain the key, or are not JSON objects, come back
 // byte-for-byte.
 [[nodiscard]] std::string stripHostReplayKeys(std::string_view config);
+
+// Every string VALUE of a config (never a key), at any depth of objects and
+// arrays and inside each `__pj_fanout` child that parses as a JSON object (the
+// child's own JSON text is not listed). Each value once, in a stable order:
+// object keys sorted (as QJsonObject keeps them), fan-out children last.
+// Empty for a config that is not a JSON object.
+[[nodiscard]] QStringList configStringValues(std::string_view config);
+
+// Replaces every string value equal to a key of `replacements` (the scope of
+// configStringValues) with its mapped value; anything else, a substring match
+// included, is left alone. An empty config stays empty. A non-empty config that
+// is not a JSON object yields nullopt.
+[[nodiscard]] std::optional<std::string> replaceConfigStringValues(
+    std::string_view config, const QHash<QString, QString>& replacements);
 
 }  // namespace PJ::detail

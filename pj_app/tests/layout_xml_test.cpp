@@ -9,6 +9,7 @@
 #include <QDomNodeList>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QString>
@@ -16,8 +17,10 @@
 #include <QTemporaryDir>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 
+#include "FanoutConfig.h"
 #include "LayoutXml.h"
 #include "pj_runtime/XmlCdata.h"
 using namespace Qt::StringLiterals;
@@ -250,6 +253,164 @@ TEST(ExtractDataSource, CanonicalBrowserContentFingerprintIsOptionalAndValidated
   ASSERT_EQ(refs.size(), 1);
   EXPECT_TRUE(refs.front().content_sha256.isEmpty());
   EXPECT_FALSE(refs.front().content_sha256_malformed);
+}
+
+TEST(ExtractDataSource, SideFilesAreOptionalAndTheirFingerprintsValidated) {
+  constexpr auto kSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  QDomDocument doc = buildDataSourceDoc(u"run.log"_s);
+  EXPECT_TRUE(PJ::layout_xml::extractDataSource(doc, QDir::current()).front().side_files.isEmpty())
+      << "a layout without <sideFile> reads as before";
+  QDomElement file_info =
+      doc.documentElement().firstChildElement(u"previouslyLoaded_Datafiles"_s).firstChildElement(u"fileInfo"_s);
+  for (const auto& [filename, sha256] : std::array<std::pair<QString, QString>, 3>{{
+           {u"a.dbc"_s, QString::fromLatin1(kSha256)},
+           {u"pj4-side/1/a.dbc"_s, u"ABCDEF"_s},
+           {QString(), QString::fromLatin1(kSha256)},
+       }}) {
+    QDomElement side = doc.createElement(u"sideFile"_s);
+    side.setAttribute(u"filename"_s, filename);
+    side.setAttribute(u"content_sha256"_s, sha256);
+    file_info.appendChild(side);
+  }
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  ASSERT_EQ(refs.front().side_files.size(), 2) << "a side file with no filename is skipped";
+  EXPECT_EQ(refs.front().side_files[0].filename, u"a.dbc"_s);
+  EXPECT_EQ(refs.front().side_files[0].content_sha256, QLatin1StringView(kSha256));
+  EXPECT_FALSE(refs.front().side_files[0].content_sha256_malformed);
+  EXPECT_EQ(refs.front().side_files[1].filename, u"pj4-side/1/a.dbc"_s);
+  EXPECT_TRUE(refs.front().side_files[1].content_sha256.isEmpty());
+  EXPECT_TRUE(refs.front().side_files[1].content_sha256_malformed);
+}
+
+// ---------- logicalBrowserSideFiles ----------------------------------------
+
+constexpr auto kSideSha = "1111111111111111111111111111111111111111111111111111111111111111";
+
+std::optional<PJ::layout_xml::StagedFileInfo> stagedSideFile(const QString& path) {
+  if (path == u"/pj_uploads/t/2/engine.dbc"_s) {
+    return PJ::layout_xml::StagedFileInfo{.name = u"engine.dbc"_s, .content_sha256 = QString::fromLatin1(kSideSha)};
+  }
+  if (path == u"/pj_uploads/t/3/engine.dbc"_s) {
+    return PJ::layout_xml::StagedFileInfo{.name = u"engine.dbc"_s, .content_sha256 = u"2"_s.repeated(64)};
+  }
+  if (path == u"/pj_uploads/t/1/run.log"_s) {
+    return PJ::layout_xml::StagedFileInfo{.name = u"run.log"_s, .content_sha256 = u"3"_s.repeated(64)};
+  }
+  return std::nullopt;
+}
+
+TEST(LogicalBrowserSideFiles, NamesEachStagedSideFileAndEmptiesTheDataFolder) {
+  // Two dictionaries of one basename, one in a fan-out child, plus a label that already reads like the name.
+  const std::string config =
+      R"({"filepath":"/pj_uploads/t/1/run.log","aux_base_dir":"/pj_uploads/t/1","label":"engine.dbc",)"
+      R"("dictionaries":{"can0":["/pj_uploads/t/2/engine.dbc"]},"delimiter":",",)"
+      R"("__pj_fanout":["{\"filepath\":\"/pj_uploads/t/1/run.log\",\"dbc\":\"/pj_uploads/t/3/engine.dbc\"}"]})";
+  QString error;
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      config, u"/pj_uploads/t/1/run.log"_s, u"run.log"_s, stagedSideFile, &error);
+  ASSERT_TRUE(result.has_value()) << error.toStdString();
+  ASSERT_EQ(result->side_files.size(), 2);
+  EXPECT_EQ(result->side_files[0].filename, u"pj4-side/0/engine.dbc"_s) << "the plain name is taken by the label";
+  EXPECT_EQ(result->side_files[0].content_sha256, QLatin1StringView(kSideSha));
+  EXPECT_EQ(result->side_files[1].filename, u"pj4-side/1/engine.dbc"_s);
+  EXPECT_EQ(result->config.find("/pj_uploads/t/2"), std::string::npos) << result->config;
+  EXPECT_EQ(result->config.find("/pj_uploads/t/3"), std::string::npos) << result->config;
+
+  const QJsonObject root = QJsonDocument::fromJson(QByteArray::fromStdString(result->config)).object();
+  EXPECT_EQ(root.value(u"filepath"_s).toString(), u"/pj_uploads/t/1/run.log"_s)
+      << "the data file is left for rewriteReplayFilepaths";
+  EXPECT_EQ(root.value(u"aux_base_dir"_s).toString(), QString());
+  EXPECT_EQ(root.value(u"label"_s).toString(), u"engine.dbc"_s);
+  EXPECT_EQ(root.value(u"delimiter"_s).toString(), u","_s);
+  EXPECT_EQ(
+      root.value(u"dictionaries"_s).toObject().value(u"can0"_s).toArray().first().toString(),
+      u"pj4-side/0/engine.dbc"_s);
+  const QJsonObject child =
+      QJsonDocument::fromJson(root.value(u"__pj_fanout"_s).toArray().first().toString().toUtf8()).object();
+  EXPECT_EQ(child.value(u"dbc"_s).toString(), u"pj4-side/1/engine.dbc"_s);
+
+  // Replay maps the saved names back to fresh copies; together with the filepath rewrite nothing ephemeral stays.
+  const std::string replayed = PJ::detail::rewriteReplayFilepaths(
+                                   PJ::detail::replaceConfigStringValues(
+                                       result->config, {{u"pj4-side/0/engine.dbc"_s, u"/pj_uploads/u/7/engine.dbc"_s},
+                                                        {u"pj4-side/1/engine.dbc"_s, u"/pj_uploads/u/8/engine.dbc"_s}})
+                                       .value(),
+                                   u"/pj_uploads/u/6/run.log"_s, PJ::detail::SavedFilepath::kOmit)
+                                   .value();
+  const QJsonObject replayed_root = QJsonDocument::fromJson(QByteArray::fromStdString(replayed)).object();
+  EXPECT_EQ(
+      replayed_root.value(u"dictionaries"_s).toObject().value(u"can0"_s).toArray().first().toString(),
+      u"/pj_uploads/u/7/engine.dbc"_s);
+  EXPECT_EQ(replayed_root.value(u"filepath"_s).toString(), u"/pj_uploads/u/6/run.log"_s);
+}
+
+TEST(LogicalBrowserSideFiles, UsesThePlainNameWhenFreeAndLeavesUnknownStringsAlone) {
+  const std::string config =
+      R"({"filepath":"/pj_uploads/t/1/run.log","dbc":"/pj_uploads/t/2/engine.dbc","other":"/pj_uploads/t/9/x"})";
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      config, u"/pj_uploads/t/1/run.log"_s, u"run.log"_s, stagedSideFile, nullptr);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->side_files.size(), 1);
+  EXPECT_EQ(result->side_files[0].filename, u"engine.dbc"_s);
+  const QJsonObject root = QJsonDocument::fromJson(QByteArray::fromStdString(result->config)).object();
+  EXPECT_EQ(root.value(u"dbc"_s).toString(), u"engine.dbc"_s);
+  EXPECT_EQ(root.value(u"other"_s).toString(), u"/pj_uploads/t/9/x"_s)
+      << "an unknown path stays, so the save's ephemeral-path check still refuses it";
+}
+
+// One file picked twice (candump can0 and can1 both given engine.dbc) is staged twice with equal name and bytes:
+// it is one side file, so a desktop replay finds it beside the data file under one name.
+TEST(LogicalBrowserSideFiles, OneFileStagedTwiceIsOneSideFile) {
+  const auto staged = [](const QString& path) -> std::optional<PJ::layout_xml::StagedFileInfo> {
+    if (path == u"/up/2/engine.dbc"_s || path == u"/up/3/engine.dbc"_s) {
+      return PJ::layout_xml::StagedFileInfo{.name = u"engine.dbc"_s, .content_sha256 = QString::fromLatin1(kSideSha)};
+    }
+    return std::nullopt;
+  };
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      R"({"filepath":"/up/1/run.log","dictionaries":{"can0":["/up/2/engine.dbc"],"can1":["/up/3/engine.dbc"]}})",
+      u"/up/1/run.log"_s, u"run.log"_s, staged, nullptr);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->side_files.size(), 1);
+  EXPECT_EQ(result->side_files[0].filename, u"engine.dbc"_s);
+  const QJsonObject dictionaries =
+      QJsonDocument::fromJson(QByteArray::fromStdString(result->config)).object().value(u"dictionaries"_s).toObject();
+  EXPECT_EQ(dictionaries.value(u"can0"_s).toArray().first().toString(), u"engine.dbc"_s);
+  EXPECT_EQ(dictionaries.value(u"can1"_s).toArray().first().toString(), u"engine.dbc"_s);
+}
+
+// A side file never takes the data file's logical name, nor a fallback name the configuration already uses.
+TEST(LogicalBrowserSideFiles, FallbackNamesSkipTheDataFileAndEveryTakenName) {
+  const auto staged = [](const QString& path) -> std::optional<PJ::layout_xml::StagedFileInfo> {
+    if (path == u"/up/2/run.log"_s) {
+      return PJ::layout_xml::StagedFileInfo{.name = u"run.log"_s, .content_sha256 = QString::fromLatin1(kSideSha)};
+    }
+    return std::nullopt;
+  };
+  const auto result = PJ::layout_xml::logicalBrowserSideFiles(
+      R"({"filepath":"/up/1/run.log","side":"/up/2/run.log","note":"pj4-side/0/run.log"})", u"/up/1/run.log"_s,
+      u"run.log"_s, staged, nullptr);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->side_files.size(), 1);
+  EXPECT_EQ(result->side_files[0].filename, u"pj4-side/1/run.log"_s);
+  EXPECT_EQ(
+      QJsonDocument::fromJson(QByteArray::fromStdString(result->config)).object().value(u"note"_s).toString(),
+      u"pj4-side/0/run.log"_s);
+}
+
+TEST(LogicalBrowserSideFiles, RefusesASideFileWithoutFingerprintAndPassesNonObjectsThrough) {
+  QString error;
+  const auto unfingerprinted = PJ::layout_xml::logicalBrowserSideFiles(
+      R"({"filepath":"/d/run.log","dbc":"/d/2/x.dbc"})", u"/d/run.log"_s, u"run.log"_s,
+      [](const QString&) { return std::optional<PJ::layout_xml::StagedFileInfo>({.name = u"x.dbc"_s}); }, &error);
+  EXPECT_FALSE(unfingerprinted.has_value());
+  EXPECT_TRUE(error.contains(u"x.dbc"_s)) << error.toStdString();
+
+  const auto verbatim = PJ::layout_xml::logicalBrowserSideFiles("not json", {}, {}, stagedSideFile, nullptr);
+  ASSERT_TRUE(verbatim.has_value());
+  EXPECT_EQ(verbatim->config, "not json");
+  EXPECT_TRUE(verbatim->side_files.isEmpty());
 }
 
 // A downloaded layout's sources live beside it; relative names are paths, so

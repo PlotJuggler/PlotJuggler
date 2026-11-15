@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLoggingCategory>
+#include <QSet>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -83,6 +84,73 @@ QJsonObject rewriteObjectFilepaths(QJsonObject object, const QString& fresh_path
 QJsonObject stripSavedFilepath(QJsonObject object) {
   object.remove(kSavedFilepathKey);
   return mapFanoutChildren(std::move(object), [](QJsonObject child) { return stripSavedFilepath(std::move(child)); });
+}
+
+using StringMap = std::function<QString(const QString&)>;
+
+QJsonValue mapStringValues(const QJsonValue& value, const StringMap& fn);
+
+QJsonObject mapObjectStringValues(QJsonObject object, const StringMap& fn) {
+  for (auto it = object.begin(); it != object.end(); ++it) {
+    if (it.key() != u"__pj_fanout"_s || !it.value().isArray()) {
+      it.value() = mapStringValues(it.value(), fn);
+    }
+  }
+  // A fan-out child is its own config inside a JSON string: walk the parsed object, never the string itself.
+  return mapFanoutChildren(std::move(object), [&fn](QJsonObject child) { return mapObjectStringValues(child, fn); });
+}
+
+using StringVisitor = std::function<void(const QString&)>;
+
+void visitValueStrings(const QJsonValue& value, const StringVisitor& fn);
+
+// Read-only twin of mapObjectStringValues: same scope and order, no tree rebuilt.
+void visitObjectStringValues(const QJsonObject& object, const StringVisitor& fn) {
+  for (auto it = object.begin(); it != object.end(); ++it) {
+    if (it.key() != u"__pj_fanout"_s || !it.value().isArray()) {
+      visitValueStrings(it.value(), fn);
+    }
+  }
+  const QJsonValue fanout = object.value(u"__pj_fanout"_s);
+  if (!fanout.isArray()) {
+    return;
+  }
+  for (const QJsonValue& entry : fanout.toArray()) {
+    if (entry.isString()) {
+      if (const std::optional<QJsonObject> child = parseObject(entry.toString().toStdString()); child.has_value()) {
+        visitObjectStringValues(*child, fn);
+      }
+    }
+  }
+}
+
+void visitValueStrings(const QJsonValue& value, const StringVisitor& fn) {
+  if (value.isString()) {
+    fn(value.toString());
+  } else if (value.isObject()) {
+    visitObjectStringValues(value.toObject(), fn);
+  } else if (value.isArray()) {
+    for (const QJsonValue& item : value.toArray()) {
+      visitValueStrings(item, fn);
+    }
+  }
+}
+
+QJsonValue mapStringValues(const QJsonValue& value, const StringMap& fn) {
+  if (value.isString()) {
+    return fn(value.toString());
+  }
+  if (value.isObject()) {
+    return mapObjectStringValues(value.toObject(), fn);
+  }
+  if (value.isArray()) {
+    QJsonArray array = value.toArray();
+    for (auto it = array.begin(); it != array.end(); ++it) {
+      *it = mapStringValues(*it, fn);
+    }
+    return array;
+  }
+  return value;
 }
 }  // namespace
 
@@ -177,6 +245,35 @@ std::string stripHostReplayKeys(std::string_view config) {
     return std::string(config);
   }
   return compactJson(stripSavedFilepath(*object));
+}
+
+QStringList configStringValues(std::string_view config) {
+  const std::optional<QJsonObject> object = parseObject(config);
+  if (!object.has_value()) {
+    return {};
+  }
+  QStringList values;
+  QSet<QString> seen;
+  visitObjectStringValues(*object, [&values, &seen](const QString& value) {
+    if (!seen.contains(value)) {
+      seen.insert(value);
+      values.push_back(value);
+    }
+  });
+  return values;
+}
+
+std::optional<std::string> replaceConfigStringValues(
+    std::string_view config, const QHash<QString, QString>& replacements) {
+  if (config.empty()) {
+    return std::string();
+  }
+  const std::optional<QJsonObject> object = parseObject(config);
+  if (!object.has_value()) {
+    return std::nullopt;
+  }
+  return compactJson(mapObjectStringValues(
+      *object, [&replacements](const QString& value) { return replacements.value(value, value); }));
 }
 
 }  // namespace PJ::detail

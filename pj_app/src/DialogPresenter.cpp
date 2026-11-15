@@ -46,16 +46,17 @@ QueryParserDialogFn makeParserDialogProvider(const ExtensionCatalogService& cata
 }
 
 #ifdef PJ_TARGET_WASM
-DialogFileSelector makeBrowserFileSelector(std::shared_ptr<BrowserFileStore> store) {
+DialogFileSelector makeBrowserFileSelector(
+    std::shared_ptr<BrowserFileStore> store, std::function<void(const LoadInput&)> on_staged) {
   if (!store) {
     return {};
   }
-  return [store = std::move(store)](
+  return [store = std::move(store), on_staged = std::move(on_staged)](
              QWidget* parent, const std::string& name_filter, const std::string& /*title*/,
              DialogFileSelectionCompletion completion) {
     FileSelectionService::selectAndStageFile(
         parent, QString::fromStdString(name_filter), store,
-        [guarded_parent = QPointer<QWidget>(parent),
+        [guarded_parent = QPointer<QWidget>(parent), on_staged,
          completion = std::move(completion)](FileSelectionService::StagedSelection staged) mutable {
           if (!staged.input.has_value()) {
             if (!staged.error.isEmpty()) {
@@ -83,6 +84,9 @@ DialogFileSelector makeBrowserFileSelector(std::shared_ptr<BrowserFileStore> sto
             }
             completion(std::nullopt);
             return;
+          }
+          if (on_staged) {
+            on_staged(*staged.input);
           }
           completion(
               DialogSelectedFile{
@@ -139,7 +143,7 @@ DialogPrologue prepareDialog(const DataSourceRequest& req) {
   // raw .assign(data(), size()) would be UB when data() is nullptr.
   engine_config.initial_parser_config = std::string(req.initial_parser_config);
 #ifdef PJ_TARGET_WASM
-  engine_config.file_selector = makeBrowserFileSelector(req.browser_file_store);
+  engine_config.file_selector = makeBrowserFileSelector(req.browser_file_store, req.on_browser_file_staged);
 #endif
 
   return {

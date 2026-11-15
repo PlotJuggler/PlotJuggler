@@ -222,8 +222,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_source_layout_decision(
   if (dialog != nullptr) {
     for (QPushButton* button : dialog->findChildren<QPushButton*>()) {
       const QPoint center = button->mapToGlobal(button->rect().center());
+      // "Select '<name>'" asks for a side file the layout's sources read.
       if (button->text() == QObject::tr("Reselect source") ||
-          button->text().startsWith(QObject::tr("Select source "))) {
+          button->text().startsWith(QObject::tr("Select source ")) || button->text().startsWith(u"Select '"_s)) {
         qInfo("PJ_WASM_SOURCE_LAYOUT_RESELECT center=%d,%d", center.x(), center.y());
       } else if (button->text() == QObject::tr("Cancel")) {
         qInfo("PJ_WASM_SOURCE_LAYOUT_CANCEL center=%d,%d", center.x(), center.y());

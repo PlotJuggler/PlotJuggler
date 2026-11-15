@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "FanoutConfig.h"
 #include "LoadInput.h"
 #include "pj_plotting/PlotXml.h"
 #include "pj_runtime/HttpUrl.h"
@@ -68,6 +69,17 @@ bool isCanonicalSha256(const QString& value) {
   }
   return std::all_of(
       value.cbegin(), value.cend(), [](QChar ch) { return (ch >= u'0' && ch <= u'9') || (ch >= u'a' && ch <= u'f'); });
+}
+
+// An element's optional content_sha256: only canonical lower-case SHA-256 is kept; any other non-empty value
+// leaves `sha256` empty and sets `malformed`.
+void readContentSha256(const QDomElement& element, QString& sha256, bool& malformed) {
+  const QString value = element.attribute(u"content_sha256"_s);
+  if (isCanonicalSha256(value)) {
+    sha256 = value;
+  } else {
+    malformed = !value.isEmpty();
+  }
 }
 
 }  // namespace
@@ -265,6 +277,63 @@ bool containsEphemeralBrowserPath(const QByteArray& serialized) {
   return serialized.contains(kBrowserUploadScheme) || serialized.contains("/pj_uploads");
 }
 
+std::optional<LogicalSideFiles> logicalBrowserSideFiles(
+    std::string_view config, const QString& data_path, const QString& data_logical_path,
+    const std::function<std::optional<StagedFileInfo>(const QString&)>& staged_file, QString* error) {
+  const auto fail = [error](const QString& reason) -> std::optional<LogicalSideFiles> {
+    if (error != nullptr) {
+      *error = reason;
+    }
+    return std::nullopt;
+  };
+  const QString data_dir = data_path.isEmpty() ? QString() : QFileInfo(data_path).path();
+  const QStringList values = detail::configStringValues(config);
+  QSet<QString> taken(values.cbegin(), values.cend());
+  taken.insert(data_logical_path);
+  QHash<QString, QString> replacements;
+  // One file picked twice is staged twice: its copies share a name and fingerprint, and one logical name.
+  QHash<QString, QString> logical_by_content;
+  LogicalSideFiles result;
+  for (const QString& value : values) {
+    if (value.isEmpty() || value == data_path) {
+      continue;
+    }
+    if (value == data_dir) {
+      replacements.insert(value, QString());
+      continue;
+    }
+    const std::optional<StagedFileInfo> staged = staged_file(value);
+    if (!staged.has_value()) {
+      continue;
+    }
+    if (staged->name.isEmpty() || !isCanonicalSha256(staged->content_sha256)) {
+      return fail(
+          QCoreApplication::translate(
+              "LayoutXml",
+              "'%1', which the source's plugin reads, has no content fingerprint: the file changed since it "
+              "was picked. Open the source again.")
+              .arg(staged->name));
+    }
+    const QString content_key = staged->name + u'\n' + staged->content_sha256;
+    if (const auto known = logical_by_content.constFind(content_key); known != logical_by_content.cend()) {
+      replacements.insert(value, *known);
+      continue;
+    }
+    QString logical = staged->name;
+    for (qsizetype n = result.side_files.size(); taken.contains(logical); ++n) {
+      logical = u"pj4-side/%1/%2"_s.arg(n).arg(staged->name);
+    }
+    taken.insert(logical);
+    logical_by_content.insert(content_key, logical);
+    replacements.insert(value, logical);
+    result.side_files.push_back({.filename = logical, .content_sha256 = staged->content_sha256});
+  }
+  result.config = replacements.isEmpty()
+                      ? std::string(config)
+                      : detail::replaceConfigStringValues(config, replacements).value_or(std::string(config));
+  return result;
+}
+
 QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
   QList<DataSourceRef> sources;
   const QDomElement root = doc.documentElement();
@@ -297,12 +366,7 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
       info.resolved_path = qfi.isAbsolute() ? qfi.absoluteFilePath() : layout_dir.absoluteFilePath(filename);
     }
     info.prefix = file_info.attribute(u"prefix"_s);
-    const QString content_sha256 = file_info.attribute(u"content_sha256"_s);
-    if (isCanonicalSha256(content_sha256)) {
-      info.content_sha256 = content_sha256;
-    } else {
-      info.content_sha256_malformed = !content_sha256.isEmpty();
-    }
+    readContentSha256(file_info, info.content_sha256, info.content_sha256_malformed);
 
     // Legacy single-track state on <fileInfo> (optional; absent in pre-v3
     // layouts). A missing display_offset_ns leaves has_display_offset false so
@@ -327,6 +391,16 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     for (QDomElement dataset = file_info.firstChildElement(u"dataset"_s); !dataset.isNull();
          dataset = dataset.nextSiblingElement(u"dataset"_s)) {
       info.datasets.push_back(readDatasetRef(dataset, schema_version));
+    }
+
+    for (QDomElement side = file_info.firstChildElement(u"sideFile"_s); !side.isNull();
+         side = side.nextSiblingElement(u"sideFile"_s)) {
+      SideFileRef side_file{.filename = side.attribute(u"filename"_s)};
+      if (side_file.filename.isEmpty()) {
+        continue;
+      }
+      readContentSha256(side, side_file.content_sha256, side_file.content_sha256_malformed);
+      info.side_files.push_back(std::move(side_file));
     }
 
     const QDomElement plugin = file_info.firstChildElement(u"plugin"_s);

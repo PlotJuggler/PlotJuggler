@@ -1034,6 +1034,13 @@ class MainWindow : public QMainWindow {
   // Accepts `input` (already checked) for the replay's current source slot and moves to the
   // next one; `name` is only logged.
   void stageReplayInput(LoadInput input, const QString& name);
+  // Relabels the decision dialog for the replay's next file to pick (a data file or a side file).
+  void promptBrowserReplayFile();
+  // True when more than one file of the replay has this basename: a fingerprint must then tell them apart.
+  [[nodiscard]] bool isAmbiguousReplayName(const QString& basename) const;
+  // The decision text asking for side file `number` of `total`.
+  [[nodiscard]] static QString browserReplaySideFilePrompt(
+      const QString& name, const QString& source_path, int number, int total);
   // Remote replay (layout_url set): downloads the next source, then stages it
   // under the same generation token a picker selection uses.
   void downloadNextReplaySource();
