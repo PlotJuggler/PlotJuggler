@@ -77,6 +77,12 @@ set(_pj_arrow_libs
     "${_pj_arrow_prefix}/lib/libparquet.a"
     "${_pj_arrow_prefix}/lib/libarrow.a"
     "${_pj_arrow_prefix}/lib/libarrow_bundled_dependencies.a")
+# A side module exports every symbol it does not hide, and those would win over the main module's own libc++ and
+# SDK symbols at its link (cmake/PjWasmArrow.cmake).
+set(_pj_arrow_visibility "")
+if(PJ_WASM_ARROW_SIDE_MODULE)
+    set(_pj_arrow_visibility "-fvisibility=hidden -fvisibility-inlines-hidden -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS")
+endif()
 ExternalProject_Add(pj_wasm_arrow_ep
     SOURCE_DIR "${arrow_SOURCE_DIR}"
     SOURCE_SUBDIR cpp
@@ -99,8 +105,8 @@ ExternalProject_Add(pj_wasm_arrow_ep
         -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
         -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
         # The app is threaded: every object it links must use shared memory.
-        "-DCMAKE_C_FLAGS=-pthread"
-        "-DCMAKE_CXX_FLAGS=-pthread"
+        "-DCMAKE_C_FLAGS=-pthread ${_pj_arrow_visibility}"
+        "-DCMAKE_CXX_FLAGS=-pthread ${_pj_arrow_visibility}"
         -DCMAKE_C_BYTE_ORDER=LITTLE_ENDIAN
         -DARROW_BUILD_STATIC=ON
         -DARROW_BUILD_SHARED=OFF
@@ -152,4 +158,9 @@ add_library(pj_wasm_arrow INTERFACE)
 add_dependencies(pj_wasm_arrow pj_wasm_arrow_ep)
 target_include_directories(pj_wasm_arrow SYSTEM INTERFACE "${_pj_arrow_prefix}/include")
 target_compile_definitions(pj_wasm_arrow INTERFACE ARROW_STATIC PARQUET_STATIC)
-target_link_libraries(pj_wasm_arrow INTERFACE ${_pj_arrow_libs} zstd::libzstd_static LZ4::lz4_static ZLIB::ZLIB)
+target_link_libraries(pj_wasm_arrow INTERFACE ${_pj_arrow_libs} zstd::libzstd_static LZ4::lz4_static)
+# The sysroot's zlib is not position independent: a side module (PJ_WASM_ARROW_SIDE_MODULE) imports it from the
+# main module, which links it anyway.
+if(NOT PJ_WASM_ARROW_SIDE_MODULE)
+    target_link_libraries(pj_wasm_arrow INTERFACE ZLIB::ZLIB)
+endif()

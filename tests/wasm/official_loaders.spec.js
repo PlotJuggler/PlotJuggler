@@ -8,8 +8,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const { test, expect } = require('@playwright/test');
 const { bootApp, replaceRuntimeTarget } = require('./support/app');
-const { firstLoadOutcome } = require('./support/load_outcomes');
-const { clickActiveDialogButton } = require('./support/dialogs');
+const { firstLoadOutcome, loadOutcomes } = require('./support/load_outcomes');
+const { activeDialogButtonGeometry, clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { elementAttributes } = require('./support/layout_xml');
 const { openFileChooser, openLayoutChooser, openSourceReplayChooser, retryChooser } = require('./support/pickers');
@@ -102,6 +102,9 @@ async function importFile(page, screen, consoleMessages, file, inDialog = async 
   const chooser = await openFileChooser(page, screen);
   await chooser.setFiles(file);
   await page.waitForTimeout(1500);
+  // A loader in a side module (PJ_WASM_ARROW_SIDE_MODULE) opens its dialog once the module has downloaded.
+  await expect.poll(async () => (await activeDialogButtonGeometry(page)).ok.x >= 0,
+    { timeout: 30000 }).toBe(true);
   await inDialog();
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   return loadOkLine(page, consoleMessages);
@@ -118,6 +121,21 @@ async function loadOkLine(page, consoleMessages) {
     const log = consoleMessages.slice(-40).join('\n');
     throw new Error(`${error.message}\nLast app log lines:\n${log}`);
   }
+  expect(line).toContain('PJ_FILE_LOAD_OK');
+  return line;
+}
+
+// Imports sample.parquet as `name` and returns the n-th (1-based) load outcome of the page.
+async function importParquet(page, screen, consoleMessages, nth, name) {
+  const chooser = await openFileChooser(page, screen);
+  await chooser.setFiles({ name, mimeType: 'application/octet-stream',
+    buffer: base64Fixture('sample.parquet.b64') });
+  await expect.poll(async () => (await activeDialogButtonGeometry(page)).ok.x >= 0,
+    { timeout: 30000 }).toBe(true);
+  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+  let line = '';
+  await expect.poll(async () => (line = (await loadOutcomes(page, 'PJ_FILE_LOAD_'))[nth] || ''),
+    { timeout: 30000 }).not.toBe('');
   expect(line).toContain('PJ_FILE_LOAD_OK');
   return line;
 }
@@ -208,6 +226,47 @@ test('official Parquet loader imports a browser-selected file', async ({ page })
   const value = seriesSamples(outcome, '/value', consoleMessages);
   expect(value).toMatchObject({ count: 3, first: 1.5, last: 4.5 });
   expect(value.span).toBe(2_000_000_000n);
+  expect(errors).toEqual([]);
+});
+
+// With PJ_WASM_ARROW_SIDE_MODULE the Arrow plugins are the side module plugins/arrow.wasm: neither the boot nor
+// another import fetches it, the first Parquet import does, once. Skipped for a package built without it.
+test('the Arrow side module is fetched by the first Parquet import only', async ({ page, request }) => {
+  test.setTimeout(120000);
+  const base = process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html';
+  const manifest = await request.get(new URL('manifest.json', base).href).then(r => r.json()).catch(() => null);
+  test.skip(!manifest?.files?.some(file => file.path.endsWith('/plugins/arrow.wasm')),
+    'the package has no Arrow side module');
+  const fetches = [];
+  page.context().on('request', req => {
+    if (req.url().includes('/plugins/arrow.wasm')) {
+      fetches.push(req.url());
+    }
+  });
+  const consoleMessages = [];
+  const errors = [];
+  const screen = await boot(page, consoleMessages, errors);
+  await importFile(page, screen, consoleMessages, {
+    name: 'speeds.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('time,speed\n1,1.5\n2,2.5\n3,4.5\n'),
+  });
+  expect(await page.evaluate(() => globalThis.pjWasmSideModule)).toBeUndefined();
+  expect(fetches).toEqual([]);
+
+  const picked = Date.now();
+  const outcome = await importParquet(page, screen, consoleMessages, 1, 'first.parquet');
+  const firstMs = Date.now() - picked;
+  const loaded = await page.evaluate(() => globalThis.pjWasmSideModule);
+  expect(loaded).toMatch(/bytes=\d+ fetch_ms=\d+ link_ms=\d+/);
+  expect(seriesSamples(outcome, '/value', consoleMessages)).toMatchObject({ count: 3, first: 1.5, last: 4.5 });
+  // A second import reuses the linked module: no second download.
+  const again = Date.now();
+  await importParquet(page, screen, consoleMessages, 2, 'second.parquet');
+  const secondMs = Date.now() - again;
+  test.info().annotations.push({ type: 'side-module', description: `${loaded} first_import_ms=${firstMs} second_import_ms=${secondMs}` });
+  console.log(`PJ_TEST_SIDE_MODULE ${loaded} first_import_ms=${firstMs} second_import_ms=${secondMs} fetches=${fetches.length}`);
+  expect(fetches.length).toBeLessThanOrEqual(1);
   expect(errors).toEqual([]);
 });
 

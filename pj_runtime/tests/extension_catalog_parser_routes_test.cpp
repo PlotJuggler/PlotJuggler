@@ -459,6 +459,28 @@ TEST(ExtensionCatalogParserRoutes, UnregisteredEncodingStaysOnLegacyPath) {
   EXPECT_FALSE(catalog.service.classifyParserObjectRoute("custom_enc", "any/Type", schemaSpan()).has_value());
 }
 
+// A deferred parser (a browser side module) loads on the first resolution of its encoding and serves it; other
+// encodings, and a later resolution, never call the loader.
+TEST(ExtensionCatalogParserRoutes, DeferredParserLoadsOnFirstResolutionOfItsEncoding) {
+  PJ::test::HermeticCatalog catalog(staticParsers({&kWildcardParser}));
+  int loads = 0;
+  int changes = 0;
+  QObject::connect(&catalog.service, &ExtensionCatalogService::catalogChanged, [&changes]() { ++changes; });
+  catalog.service.setDeferredParsers({"custom_enc"}, [&]() {
+    ++loads;
+    EXPECT_TRUE(catalog.service.registerLatePlugins(staticParsers({&kCustomEncodingParser})));
+  });
+
+  EXPECT_TRUE(catalog.service.resolveParserRoutes("json", "any/Type", schemaSpan(), {}).scalar.has_value());
+  EXPECT_EQ(loads, 0);
+  const auto selection = catalog.service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {});
+  ASSERT_TRUE(selection.scalar.has_value());
+  EXPECT_EQ(selection.scalar->provider_id, "ccc-custom");
+  EXPECT_TRUE(catalog.service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {}).scalar.has_value());
+  EXPECT_EQ(loads, 1);
+  EXPECT_EQ(changes, 1);
+}
+
 TEST(ExtensionCatalogParserRoutes, EmptyTypeNameStaysOnLegacyPath) {
   PJ::test::HermeticCatalog catalog(staticParsers({&kWildcardParser}));
 

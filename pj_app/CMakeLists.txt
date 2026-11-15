@@ -314,17 +314,23 @@ if(TARGET pj_wasm_mf4_source)
     target_link_libraries(pj_app_shell PUBLIC pj_wasm_mf4_source)
     target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_MF4_PLUGIN)
 endif()
-if(TARGET pj_wasm_arrow_parser)
-    target_link_libraries(pj_app_shell PUBLIC pj_wasm_arrow_parser)
-    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_ARROW_PARSER_PLUGIN)
-endif()
-if(TARGET pj_wasm_parquet_source)
-    target_link_libraries(pj_app_shell PUBLIC pj_wasm_parquet_source)
-    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_PARQUET_PLUGIN)
-endif()
-if(TARGET pj_wasm_data_exporter)
-    target_link_libraries(pj_app_shell PUBLIC pj_wasm_data_exporter)
-    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_DATA_EXPORTER_PLUGIN)
+if(TARGET pj_wasm_arrow_side)
+    # The three below live in the side module plugins/arrow.wasm instead (cmake/PjWasmArrow.cmake).
+    target_sources(pj_app_shell PRIVATE src/wasm/ArrowSideModule.cpp src/wasm/ArrowSideModule.h)
+    target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_ARROW_SIDE_MODULE)
+else()
+    if(TARGET pj_wasm_arrow_parser)
+        target_link_libraries(pj_app_shell PUBLIC pj_wasm_arrow_parser)
+        target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_ARROW_PARSER_PLUGIN)
+    endif()
+    if(TARGET pj_wasm_parquet_source)
+        target_link_libraries(pj_app_shell PUBLIC pj_wasm_parquet_source)
+        target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_PARQUET_PLUGIN)
+    endif()
+    if(TARGET pj_wasm_data_exporter)
+        target_link_libraries(pj_app_shell PUBLIC pj_wasm_data_exporter)
+        target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_DATA_EXPORTER_PLUGIN)
+    endif()
 endif()
 
 if(EMSCRIPTEN)
@@ -442,6 +448,24 @@ if(EMSCRIPTEN)
             target_include_directories(pj_app_shell SYSTEM PRIVATE
                 $<TARGET_PROPERTY:cpython::embed,INTERFACE_INCLUDE_DIRECTORIES>)
         endif()
+    endif()
+    if(TARGET pj_wasm_arrow_side)
+        # A main module that dlopen()s plugins/arrow.wasm. Naming the module on the link line makes emcc export what
+        # it imports (an -O2+ link otherwise drops even __stack_pointer); AUTOLOAD_DYLIBS=0 keeps it from loading
+        # at startup. MAIN_MODULE=2 keeps dead-code elimination (=1 exports everything). The module goes after
+        # every library (CMAKE_CXX_STANDARD_LIBRARIES; pj_app is this directory's only WASM executable): wasm-ld
+        # keeps a shared definition over a weak one it meets later, and every inline function and typeinfo the
+        # module exports would otherwise resolve to it. The post-link check fails the build on any that still do.
+        add_dependencies(pj_app pj_wasm_arrow_side)
+        target_link_options(pj_app PRIVATE -sMAIN_MODULE=2 -sAUTOLOAD_DYLIBS=0)
+        get_target_property(_pj_side_dir pj_wasm_arrow_side RUNTIME_OUTPUT_DIRECTORY)
+        string(APPEND CMAKE_CXX_STANDARD_LIBRARIES " \"${_pj_side_dir}/arrow.wasm\"")
+        set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "$<TARGET_FILE:pj_wasm_arrow_side>")
+        add_custom_command(TARGET pj_app POST_BUILD
+            COMMAND "${PJ_WASM_PYTHON}" "${CMAKE_SOURCE_DIR}/cmake/wasm_main_module_check.py"
+                "${PJ_WASM_EMSCRIPTEN_ROOT}" "$<TARGET_FILE_DIR:pj_app>/plotjuggler4.wasm"
+                "$<TARGET_FILE_DIR:pj_app>/plotjuggler4.js" "$<TARGET_FILE:pj_wasm_arrow_side>"
+            VERBATIM)
     endif()
     # Next to plotjuggler4.js, where scripts/package_wasm.mjs packages it with the module.
     include(${CMAKE_SOURCE_DIR}/cmake/PjWasmNotices.cmake)

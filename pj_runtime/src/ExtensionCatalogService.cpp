@@ -687,9 +687,43 @@ void ExtensionCatalogService::rebuildParserClaims() {
   routing_.rebuild(std::move(snapshot));
 }
 
+bool ExtensionCatalogService::registerLatePlugins(const StaticPluginSet& plugins) {
+  bool ok = false;
+  {
+    // Same exclusive section as reload(): a poll thread may be resolving a parser right now.
+    const std::scoped_lock routing_lock(routing_mutex_);
+    const std::unique_lock lock(catalog_mutex_);
+    ok = plugin_catalog_->registerStaticPlugins(plugins);
+    rebuildParserClaims();
+    resolveCustomTopicsEditor();
+  }
+  emit catalogChanged();
+  return ok;
+}
+
+void ExtensionCatalogService::setDeferredParsers(std::vector<std::string> encodings, std::function<void()> load) {
+  deferred_parser_encodings_ = std::move(encodings);
+  deferred_parser_load_ = std::move(load);
+}
+
+void ExtensionCatalogService::loadDeferredParser(std::string_view encoding) const {
+  if (!deferred_parser_load_ ||
+      std::ranges::find(deferred_parser_encodings_, encoding) == deferred_parser_encodings_.end()) {
+    return;
+  }
+  {
+    const std::shared_lock lock(catalog_mutex_);
+    if (plugin_catalog_->findParserByEncoding(encoding) != nullptr) {
+      return;
+    }
+  }
+  deferred_parser_load_();
+}
+
 ParserRouteSelection ExtensionCatalogService::resolveParserRoutes(
     std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema,
     std::string_view parser_config_json) const {
+  loadDeferredParser(encoding);
   const std::scoped_lock routing_lock(routing_mutex_);
   const std::shared_lock catalog_lock(catalog_mutex_);
   return routing_.resolveParserRoutes(encoding, type_name, schema, parser_config_json);
@@ -697,6 +731,7 @@ ParserRouteSelection ExtensionCatalogService::resolveParserRoutes(
 
 std::optional<sdk::BuiltinObjectType> ExtensionCatalogService::classifyParserObjectRoute(
     std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema) const {
+  loadDeferredParser(encoding);
   const std::scoped_lock routing_lock(routing_mutex_);
   const std::shared_lock catalog_lock(catalog_mutex_);
   return routing_.classifyParserObjectRoute(encoding, type_name, schema);

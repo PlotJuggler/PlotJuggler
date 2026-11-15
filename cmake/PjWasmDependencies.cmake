@@ -279,6 +279,9 @@ set(PJ_WASM_WITH_ARROW OFF)
 if(PJ_WASM_WITH_ARROW_PARSER OR PJ_WASM_WITH_PARQUET OR PJ_WASM_WITH_DATA_EXPORTER)
     set(PJ_WASM_WITH_ARROW ON)
 endif()
+# Prototype: the three Arrow plugins as the side module plugins/arrow.wasm, linked on first use
+# (cmake/PjWasmArrow.cmake, pj_app/src/wasm/ArrowSideModule.h) instead of into plotjuggler4.wasm.
+option(PJ_WASM_ARROW_SIDE_MODULE "Ship the Arrow plugin family as a side module loaded on demand" OFF)
 
 if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS) OR
    PJ_WASM_WITH_ARROW)

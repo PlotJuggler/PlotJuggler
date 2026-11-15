@@ -8,6 +8,7 @@
 #include <QStringList>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -118,6 +119,17 @@ class ExtensionCatalogService : public QObject {
 
   // Reconciles the loaded plugin catalog with files on disk.
   void reload();
+
+  // Registers plugins linked in after startup (the browser's side modules, fetched on first use), then emits
+  // catalogChanged. Main thread. The vtables must outlive the service, as for the constructor's static set; the
+  // same id rules apply. Returns false when an entry failed to register (the rest still do).
+  bool registerLatePlugins(const StaticPluginSet& plugins);
+
+  // Parsers the application can link in later, by the encodings they register. The first route resolution
+  // (resolveParserRoutes, classifyParserObjectRoute) for one of them that finds no loaded parser calls `load`
+  // first, on its own thread (a plugin poll thread): `load` blocks until the parsers are registered through
+  // registerLatePlugins, or gives up. Set once, before any source runs.
+  void setDeferredParsers(std::vector<std::string> encodings, std::function<void()> load);
 
   // Returns all loaded DataSource plugins.
   const std::vector<LoadedDataSource>& dataSources() const;
@@ -310,6 +322,12 @@ class ExtensionCatalogService : public QObject {
   // wherever the toolbox list changes.
   void resolveCustomTopicsEditor();
   QString custom_topics_editor_id_;
+
+  // Runs deferred_parser_load_ when `encoding` is a deferred one no loaded parser handles. Holds no lock across
+  // the load, which registers on the main thread.
+  void loadDeferredParser(std::string_view encoding) const;
+  std::vector<std::string> deferred_parser_encodings_;
+  std::function<void()> deferred_parser_load_;
 
   // Host-derived trust tier for one loaded parser (spec §4): statically linked
   // or seeded-bundled → kBundled; loaded from a user-explicit (authoritative)

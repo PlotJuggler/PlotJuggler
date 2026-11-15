@@ -135,6 +135,29 @@ test('packages the third-party notices precompressed, and refuses a build withou
   );
 });
 
+test('packages side modules immutable in the bundle, outside the startup budget', async t => {
+  const { root, source } = await fixture(t);
+  await mkdir(path.join(source, 'plugins'));
+  await writeFile(path.join(source, 'plugins', 'arrow.wasm'), Buffer.concat([
+    Buffer.from([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]), Buffer.alloc(4096)]));
+  const output = path.join(root, 'side');
+  const manifest = await packageWasm({ source, output, version: 'test' });
+  const side = manifest.files.find(file => file.path === `assets/${manifest.bundleId}/plugins/arrow.wasm`);
+  assert.ok(side, 'the side module is in the bundle directory');
+  assert.equal(side.contentType, 'application/wasm');
+  assert.equal(side.cache, 'immutable');
+  assert.ok(side.representations.br, 'the side module is precompressed');
+
+  const budget = path.join(ROOT, 'scripts', 'wasm_size_budget.mjs');
+  const manifestPath = path.join(output, 'manifest.json');
+  const { stdout } = await execFileAsync(process.execPath, [budget, manifestPath, '100000000']);
+  const startup = Number(stdout.match(/Brotli download: (\d+) B/)[1]);
+  const total = manifest.files.reduce((sum, file) => sum + (file.representations.br ?? file.representations.identity).bytes, 0);
+  assert.equal(startup, total - side.representations.br.bytes);
+  assert.match(stdout, /Side module arrow\.wasm: \d+ B Brotli, fetched on first use/);
+  await assert.rejects(execFileAsync(process.execPath, [budget, manifestPath, '100000000', '1']), /exceeds its side-module budget/);
+});
+
 test('serves the notices at a stable root URL, revalidated, beside the immutable copy', async t => {
   const { root, source } = await fixture(t);
   const output = path.join(root, 'stable');

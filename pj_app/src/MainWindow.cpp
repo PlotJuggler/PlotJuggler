@@ -101,6 +101,9 @@
 #include "BrowserFileStore.h"
 #include "BrowserPersistence.h"
 #include "BuiltinPlugins.h"
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+#include "wasm/ArrowSideModule.h"
+#endif
 #include "DatasetMergeActions.h"
 #include "DebugUi.h"
 #include "FanoutConfig.h"
@@ -1706,6 +1709,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       PlatformUtils::currentPlatform().toStdString());
 #endif
 
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+  pj_app::arrow_side_module::installDeferredParsers(session_->extensionCatalog());
+#endif
   // Populate the Cloud page from the catalog now and on every catalog change.
   ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
   connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this, [this]() {
@@ -5507,6 +5513,16 @@ void MainWindow::onRebuildToolboxMenu() {
     added_any = true;
   }
 
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+  // The side module's toolbox is listed before its first launch links it (launchToolbox).
+  if (!pj_app::arrow_side_module::isRegistered()) {
+    const QString id = pj_app::arrow_side_module::toolboxId();
+    connect(menu->addAction(pj_app::arrow_side_module::toolboxName()), &QAction::triggered, this, [this, id]() {
+      launchToolbox(id);
+    });
+    added_any = true;
+  }
+#endif
   if (!added_any) {
     QAction* placeholder = menu->addAction(tr("(no toolboxes available)"));
     placeholder->setEnabled(false);
@@ -10949,6 +10965,22 @@ void MainWindow::launchToolbox(
     qWarning("MainWindow::launchToolbox: %s", qPrintable(detail));
     MessageBox::warning(this, tr("Toolbox"), detail);  // a click that did nothing needs an answer on screen
   };
+
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+  // A toolbox of the side module links it first, off the main thread, then launches as usual.
+  if (plugin_id == pj_app::arrow_side_module::toolboxId() && !pj_app::arrow_side_module::isRegistered()) {
+    pj_app::arrow_side_module::ensureLoaded(
+        session_->extensionCatalog(), this,
+        [this, plugin_id, initial_config, target, pin_tab_name, report_error](const QString& error) {
+          if (!error.isEmpty()) {
+            report_error(plugin_id, tr("Could not load %1: %2").arg(plugin_id, error));
+            return;
+          }
+          launchToolbox(plugin_id, initial_config, target, pin_tab_name);
+        });
+    return;
+  }
+#endif
 
   // 0. One live instance per toolbox id. A takeover relaunch keeps the
   //    presentPanel replace semantics: an idle takeover is torn down and the

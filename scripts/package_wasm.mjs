@@ -332,6 +332,22 @@ async function validateSource(sourceRoot) {
   }
 }
 
+// Side modules the app dlopen()s on first use (PJ_WASM_ARROW_SIDE_MODULE), packaged beside the module as
+// plugins/<name>.wasm. Not part of the startup download (scripts/wasm_size_budget.mjs counts them apart).
+export const SIDE_MODULE_DIR = 'plugins';
+async function sideModules(sourceRoot) {
+  let names;
+  try {
+    names = await readdir(path.join(sourceRoot, SIDE_MODULE_DIR));
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+  return names.filter(name => name.endsWith('.wasm')).sort().map(name => `${SIDE_MODULE_DIR}/${name}`);
+}
+
 async function validateReplaceableOutput(outputRoot) {
   let entries;
   try {
@@ -388,7 +404,7 @@ export async function packageWasm(options) {
   }
 
   const sourceAssets = await Promise.all([
-    ...[...REQUIRED_ARTIFACTS, NOTICES].map(async fileName => ({
+    ...[...REQUIRED_ARTIFACTS, NOTICES, ...await sideModules(sourceRoot)].map(async fileName => ({
       fileName,
       contents: await readFile(path.join(sourceRoot, fileName)),
     })),

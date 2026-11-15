@@ -52,6 +52,9 @@
 #ifdef PJ_TARGET_WASM
 #include "BrowserPickedFile.h"
 #endif
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+#include "wasm/ArrowSideModule.h"
+#endif
 #include "LayoutXml.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
@@ -1158,7 +1161,16 @@ void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) 
 void FileLoader::selectBrowserInput(
     QWidget* dialog_parent, BrowserSelectionCallback callback, FileSelectionService::Fingerprint fingerprint,
     const QString& name_filter) {
-  const QString filter = name_filter.isEmpty() ? extensions_.buildFileFilter() : name_filter;
+  QString filter = name_filter.isEmpty() ? extensions_.buildFileFilter() : name_filter;
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+  // The side-module loader (ArrowSideModule.h) is not in the catalog until its first use; the browser takes the
+  // accepted types from the first, all-supported group.
+  if (name_filter.isEmpty() && !pj_app::arrow_side_module::isRegistered()) {
+    const qsizetype close = filter.indexOf(u')');
+    filter = close < 0 ? u"All supported files (%1)"_s.arg(pj_app::arrow_side_module::filePatterns())
+                       : filter.insert(close, u" "_s + pj_app::arrow_side_module::filePatterns());
+  }
+#endif
   qCInfo(lcFileLoader).noquote() << "Opening browser file picker with filter:" << filter;
   FileSelectionService::selectAndStageFile(
       dialog_parent, filter, browser_file_store_,
@@ -1275,7 +1287,23 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  const auto matches = extensions_.findSourcesForExtension(ext);
+  auto matches = extensions_.findSourcesForExtension(ext);
+#ifdef PJ_WASM_ARROW_SIDE_MODULE
+  // The loader lives in a side module linked on first use, off the main thread (ArrowSideModule.h).
+  if (matches.empty() && pj_app::arrow_side_module::fileExtensions().contains(ext)) {
+    QString side_module_error;
+    // Named local, not a co_await temporary — see dialog_awaiter below (GCC 11.4 awaiter-temporary miscompile).
+    GuiResumingWorkerAwaiter side_module_awaiter(
+        this, worker_, [&side_module_error]() { side_module_error = pj_app::arrow_side_module::loadBlocking(); });
+    co_await std::move(side_module_awaiter);
+    if (!side_module_error.isEmpty()) {
+      (void)fail(tr("Could not load the %1 loader: %2").arg(ext, side_module_error));
+      co_return;
+    }
+    pj_app::arrow_side_module::registerWith(extensions_);
+    matches = extensions_.findSourcesForExtension(ext);
+  }
+#endif
   if (matches.empty()) {
     (void)fail(tr("No DataSource plugin handles %1 files. Install one from the Marketplace.").arg(ext));
     co_return;

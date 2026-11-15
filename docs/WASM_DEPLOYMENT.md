@@ -109,6 +109,61 @@ unqualified class (or use the `_NAMED` variants) so the static getter symbol is
 valid. Every new static archive also needs the symbol-collision audit described
 in the root `CLAUDE.md`.
 
+### The Arrow family as a side module (`PJ_WASM_ARROW_SIDE_MODULE`, prototype)
+
+Off by default. With `-DPJ_WASM_ARROW_SIDE_MODULE=ON` the Parquet loader, the
+Arrow IPC parser, the Data Exporter and Arrow C++ leave `plotjuggler4.wasm`:
+they are linked (`cmake/PjWasmArrow.cmake`) into the Emscripten side module
+`plugins/arrow.wasm`, which `package_wasm.mjs` puts in the bundle directory
+(immutable, `.br`/`.gz` like the module) and `wasm_size_budget.mjs` reports
+apart from the startup download (an optional third argument budgets it). The
+app knows the family from the manifests it keeps (`pj_app/src/wasm/ArrowSideModule.h`)
+and links it the first time one of them is needed: a `.parquet` import
+(`FileLoader`), the exporter's launch (the toolbox menu lists it before), or an
+`arrow-ipc` channel (`ExtensionCatalogService::setDeferredParsers`, on the
+source's poll thread). The module is then registered with
+`ExtensionCatalogService::registerLatePlugins`.
+
+Measured 2026-11-15 (production configuration): the startup Brotli download goes
+from 19,054,474 B to 17,831,699 B (main module 18,808,522 B to 17,521,508 B);
+the side module is 1,560,684 B Brotli. It is larger than the family's share of
+the static build because it carries its own copies of the plugin SDK, zstd and
+lz4, and dead-code elimination cannot cross the module boundary. The first
+Parquet import, module download and link included, took 0.9 s in Chromium and
+2.4 s in Firefox against a local server; the next one 0.5 to 0.6 s.
+
+Rules the mechanism depends on:
+
+- **The main module is `-sMAIN_MODULE=2`** (`=1` exports everything and disables
+  dead-code elimination) **and names the side module on its link line with
+  `-sAUTOLOAD_DYLIBS=0`**. Naming it makes emcc export what it imports (libc,
+  libc++, zlib, the Emscripten runtime) and fail the link on one the main module
+  lacks; `AUTOLOAD_DYLIBS=0` keeps it from loading at startup. A module emcc
+  never saw cannot be `dlopen()`ed from an `-O2`+ build: dead-code elimination
+  drops even `__stack_pointer`.
+- **Every JS function whose address the main module takes has a signature.**
+  JS exception handling calls anything that can throw through `invoke_*`, which
+  takes the callee's address; the startup linker wraps it with
+  `addFunction(f, f.sig)` and aborts on a missing one. emcc infers it for EM_JS
+  and library functions only when they are also called directly, so a
+  `--js-library` function declares `__sig`. pj_app's post-link step
+  (`cmake/wasm_main_module_check.py`) fails the build on a missing one.
+- **Never `dlopen()` on the main thread.** Chromium refuses a synchronous
+  compile this large there, and `dlopen()` waits until every thread linked the
+  module, which deadlocks a main thread that cannot return to the browser. A
+  worker downloads the module (synchronous `emscripten_fetch`) into MEMFS and
+  `dlopen()`s it once; every thread links that one copy. The handle is never
+  closed (Emscripten 5.0.5 deadlocks re-opening a module).
+- **What the side module must not link:** the sysroot's zlib is not position
+  independent, so Arrow's zlib dependency resolves to the main module's.
+- **The side module exports nothing but its entry point.** Everything it links
+  is built with hidden visibility, libc++'s own annotations disabled
+  (`cmake/PjWasmArrow.cmake`), and it comes last on the main link line. wasm-ld
+  keeps a shared definition over a weak one it meets later, so any inline
+  function or typeinfo the module exported would otherwise resolve to it, and be
+  missing until the first `dlopen()`. The post-link check fails the build on
+  any main-module import the side module exports.
+
 The packaging command refuses missing, invalid, or single-threaded build
 outputs. To prevent a mistyped `--output` from deleting unrelated data, it
 only replaces an absent directory, an empty directory, or a prior package with

@@ -356,6 +356,9 @@ addToLibrary({
   // Shows the browser's file picker through a detached <input type=file>. The chosen File stays page-side under `id`;
   // pj_browser_pick_done(id, name) reports it once the Workers run, with an empty name on cancel. A browser that never
   // fires `cancel` leaves the pick pending, as Qt's own picker does. Must run inside a user gesture.
+  // __sig: a main-module build (PJ_WASM_ARROW_SIDE_MODULE) reaches these through invoke_*, which takes their address,
+  // and its startup linker needs each signature (cmake/wasm_main_module_check.py).
+  pj_browser_pick_file__sig: 'vip',
   pj_browser_pick_file__deps: ['$PJPick', '$stringToNewUTF8'],
   pj_browser_pick_file: function (id, accept_utf8) {
     PJPick.install();
@@ -381,11 +384,13 @@ addToLibrary({
     input.click();
   },
 
+  pj_browser_pick_mount__sig: 'iip',
   pj_browser_pick_mount__deps: ['$PJPick'],
   pj_browser_pick_mount: function (pick_id, path_utf8) {
     return PJPick.mount(pick_id, UTF8ToString(path_utf8)) ? 1 : 0;
   },
 
+  pj_browser_pick_forget__sig: 'vi',
   pj_browser_pick_forget__deps: ['$PJPick'],
   pj_browser_pick_forget: function (pick_id) {
     PJPick.files.delete(pick_id);
@@ -393,6 +398,7 @@ addToLibrary({
 
   // Hashes the File behind the mounted pick at `path`; pj_browser_pick_hash_done(request_id, hex) reports it, with an
   // empty hex when the File cannot be read whole (changed or removed since it was picked).
+  pj_browser_pick_hash__sig: 'vip',
   pj_browser_pick_hash__deps: ['$PJPick', '$stringToNewUTF8'],
   pj_browser_pick_hash: function (request_id, path_utf8) {
     let file;
