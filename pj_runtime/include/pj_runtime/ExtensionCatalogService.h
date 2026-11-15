@@ -138,6 +138,12 @@ class ExtensionCatalogService : public QObject {
   // Any thread: the load setDeferredParsers started failed; resolutions waiting for it give up.
   void deferredParsersFailed();
 
+  // Test seam: runs inside a deferred-parser resolution right after it found no loaded parser, so a test can land a
+  // registration exactly there.
+  void setDeferredLookupHookForTest(std::function<void()> hook) {
+    deferred_lookup_hook_for_test_ = std::move(hook);
+  }
+
   // Returns all loaded DataSource plugins.
   const std::vector<LoadedDataSource>& dataSources() const;
 
@@ -342,6 +348,7 @@ class ExtensionCatalogService : public QObject {
   std::function<void()> deferred_parser_load_;
   mutable std::mutex deferred_mutex_;
   mutable std::condition_variable deferred_cv_;
+  std::function<void()> deferred_lookup_hook_for_test_;
   uint64_t deferred_events_ = 0;  // guarded by deferred_mutex_: registrations and failed loads so far
 
   // Host-derived trust tier for one loaded parser (spec §4): statically linked

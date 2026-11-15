@@ -11,6 +11,8 @@
 #include <QString>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <initializer_list>
 #include <memory>
 #include <optional>
@@ -513,6 +515,31 @@ TEST(ExtensionCatalogParserRoutes, DeferredParserResolutionWaitsForRegistrationO
   EXPECT_TRUE(catalog.service.registerLatePlugins(staticParsers({&kCustomEncodingParser})));
   waiting.join();
   EXPECT_EQ(bound, true);
+}
+
+// A registration that lands after a resolution found no parser, but before it started waiting, still ends the wait:
+// the start it then makes is a no-op, so a missed registration would leave it waiting until its source stops.
+TEST(ExtensionCatalogParserRoutes, DeferredParserRegistrationJustAfterTheLookupEndsTheWait) {
+  PJ::test::HermeticCatalog catalog(staticParsers({&kWildcardParser}));
+  catalog.service.setDeferredParsers({"custom_enc"}, []() {});
+  catalog.service.setDeferredLookupHookForTest([&catalog]() {
+    std::thread registrar(
+        [&catalog]() { EXPECT_TRUE(catalog.service.registerLatePlugins(staticParsers({&kCustomEncodingParser}))); });
+    registrar.join();
+  });
+
+  std::atomic<bool> stop = false;
+  std::promise<bool> bound;
+  std::future<bool> result = bound.get_future();
+  std::thread waiting([&]() {
+    bound.set_value(
+        catalog.service.resolveParserRoutes("custom_enc", "any/Type", schemaSpan(), {}, &stop).scalar.has_value());
+  });
+  const bool ended = result.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  stop = true;  // the watchdog: a missed registration waits until here
+  waiting.join();
+  EXPECT_TRUE(ended) << "the resolution missed the registration and waited until its stop";
+  EXPECT_TRUE(result.get());
 }
 
 TEST(ExtensionCatalogParserRoutes, EmptyTypeNameStaysOnLegacyPath) {

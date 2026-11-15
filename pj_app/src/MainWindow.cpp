@@ -1711,6 +1711,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
 #ifdef PJ_WASM_ARROW_SIDE_MODULE
   pj_app::arrow_side_module::installDeferredParsers(session_->extensionCatalog());
+  deferred_toolbox_load_ = [this](const QString& plugin_id, std::function<void(const QString&)> done) {
+    if (plugin_id != pj_app::arrow_side_module::toolboxId() || pj_app::arrow_side_module::isRegistered()) {
+      return false;
+    }
+    pj_app::arrow_side_module::ensureLoaded(session_->extensionCatalog(), this, std::move(done));
+    return true;
+  };
 #endif
   // Populate the Cloud page from the catalog now and on every catalog change.
   ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
@@ -10320,6 +10327,7 @@ void MainWindow::presentPanel(QWidget* panel) {
   // A panel is already presented: dismiss it so launching a new toolbox/panel
   // replaces the open one instead of refusing.
   dismissTakeoverPanel();
+  ++takeover_generation_;
 
   ui_->centralAreaStack->addWidget(panel);
   ui_->centralAreaStack->setCurrentWidget(panel);
@@ -10966,25 +10974,29 @@ void MainWindow::launchToolbox(
     MessageBox::warning(this, tr("Toolbox"), detail);  // a click that did nothing needs an answer on screen
   };
 
-#ifdef PJ_WASM_ARROW_SIDE_MODULE
-  // A toolbox of the side module links it first, off the main thread, then launches as usual.
-  if (plugin_id == pj_app::arrow_side_module::toolboxId() && !pj_app::arrow_side_module::isRegistered()) {
-    pj_app::arrow_side_module::ensureLoaded(
-        session_->extensionCatalog(), this,
-        [this, plugin_id, initial_config, target, pin_tab_name, report_error,
-         generation = pinned_restore_generation_](const QString& error) {
-          if (target == ToolboxLaunchTarget::kPinnedTab && generation != pinned_restore_generation_) {
-            return;  // a newer layout restore replaced the pinned set this launch belonged to
-          }
-          if (!error.isEmpty()) {
-            report_error(plugin_id, tr("Could not load %1: %2").arg(plugin_id, error));
-            return;
-          }
-          launchToolbox(plugin_id, initial_config, target, pin_tab_name);
-        });
+  // A toolbox whose plugin is linked in later loads it first, off the main thread, then launches as usual.
+  if (deferred_toolbox_load_ &&
+      deferred_toolbox_load_(
+          plugin_id, [this, plugin_id, initial_config, target, pin_tab_name, report_error,
+                      restore = pinned_restore_generation_, takeover = takeover_generation_](const QString& error) {
+            // Superseded: a newer layout restore replaced the pinned set this launch belonged to, or the user
+            // presented a newer panel, which this takeover would replace (a second launch of this toolbox, too).
+            const bool stale = target == ToolboxLaunchTarget::kPinnedTab ? restore != pinned_restore_generation_
+                                                                         : takeover != takeover_generation_;
+            const QString failure = tr("Could not load %1: %2").arg(plugin_id, error);
+            if (!error.isEmpty() && !stale) {
+              report_error(plugin_id, failure);
+            } else if (!error.isEmpty() && diagnostic_history_ != nullptr) {
+              // The user moved on: keep the reason, but raise nothing over what they are doing now.
+              diagnostic_history_->record(DiagnosticLevel::kError, plugin_id, u"toolbox"_s, failure);
+            }
+            if (!error.isEmpty() || stale) {
+              return;
+            }
+            launchToolbox(plugin_id, initial_config, target, pin_tab_name);
+          })) {
     return;
   }
-#endif
 
   // 0. One live instance per toolbox id. A takeover relaunch keeps the
   //    presentPanel replace semantics: an idle takeover is torn down and the

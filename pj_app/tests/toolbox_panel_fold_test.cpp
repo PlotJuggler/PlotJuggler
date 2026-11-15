@@ -15,6 +15,7 @@
 #include <QBoxLayout>
 #include <QByteArray>
 #include <QDomDocument>
+#include <QElapsedTimer>
 #include <QLabel>
 #include <QPointer>
 #include <QPushButton>
@@ -152,6 +153,11 @@ class ToolboxPanelFoldTestPeer {
   // plugin id absent from the catalog returns before any session is built.
   static void launchToolbox(MainWindow& window, const QString& plugin_id) {
     window.launchToolbox(plugin_id);
+  }
+
+  static void setDeferredToolboxLoad(
+      MainWindow& window, std::function<bool(const QString&, std::function<void(const QString&)>)> load) {
+    window.deferred_toolbox_load_ = std::move(load);
   }
 
   static void foldTakeoverPanelIfOwnedBy(MainWindow& window, const void* owner, bool transient) {
@@ -1497,6 +1503,105 @@ class SettingsEnvironment : public ::testing::Environment {
     QSettings().clear();
   }
 };
+
+// A toolbox whose plugin is still loading (the browser's Arrow side module) launches when the load completes,
+// unless the user presented another panel meanwhile: their latest action wins, as it did when the toolbox opened
+// at once. The fake load stands in for the side module: until `loaded`, a launch waits in `pending`; after it, the
+// relaunch from the completion is a launch, which presents its takeover like the real one does.
+class DeferredToolboxLaunch {
+ public:
+  explicit DeferredToolboxLaunch(PJ::MainWindow& window) : window_(window) {
+    PJ::ToolboxPanelFoldTestPeer::setDeferredToolboxLoad(
+        window_, [this](const QString& plugin_id, std::function<void(const QString&)> done) {
+          if (plugin_id != kId) {
+            return false;
+          }
+          if (!loaded_) {
+            pending_.push_back(std::move(done));
+            return true;
+          }
+          ++launches_;
+          (void)PJ::ToolboxPanelFoldTestPeer::presentPanel(window_, new QWidget);
+          return true;
+        });
+  }
+  ~DeferredToolboxLaunch() {
+    PJ::ToolboxPanelFoldTestPeer::setDeferredToolboxLoad(window_, {});
+    PJ::ToolboxPanelFoldTestPeer::dismissTakeoverPanel(window_);
+  }
+
+  void launch() {
+    PJ::ToolboxPanelFoldTestPeer::launchToolbox(window_, kId);
+  }
+  // Completes the load: every launch waiting for it resumes, in order.
+  void complete(const QString& error = {}) {
+    loaded_ = error.isEmpty();
+    for (auto& done : std::exchange(pending_, {})) {
+      done(error);
+    }
+  }
+  [[nodiscard]] int launches() const {
+    return launches_;
+  }
+
+  static constexpr auto kId = "deferred-toolbox";
+
+ private:
+  PJ::MainWindow& window_;
+  bool loaded_ = false;
+  std::vector<std::function<void(const QString&)>> pending_;
+  int launches_ = 0;
+};
+
+TEST_F(ToolboxPanelFoldTest, ADeferredToolboxLaunchesWhenItsLoadCompletes) {
+  DeferredToolboxLaunch deferred(mainWindow());
+  deferred.launch();
+  EXPECT_EQ(deferred.launches(), 0);
+  deferred.complete();
+  EXPECT_EQ(deferred.launches(), 1);
+}
+
+TEST_F(ToolboxPanelFoldTest, APanelPresentedWhileADeferredToolboxLoadsStays) {
+  DeferredToolboxLaunch deferred(mainWindow());
+  deferred.launch();
+  auto* newer = new QWidget;
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), newer));
+  deferred.complete();
+  EXPECT_EQ(deferred.launches(), 0) << "the stale launch replaced the newer panel";
+  EXPECT_EQ(PJ::ToolboxPanelFoldTestPeer::currentPanel(mainWindow()), newer);
+}
+
+TEST_F(ToolboxPanelFoldTest, LaunchingADeferredToolboxTwiceWhileItLoadsOpensOne) {
+  DeferredToolboxLaunch deferred(mainWindow());
+  deferred.launch();
+  deferred.launch();
+  deferred.complete();
+  EXPECT_EQ(deferred.launches(), 1);
+}
+
+// The failure of a launch the user has moved on from is kept in the diagnostics, not raised over the newer panel.
+TEST_F(ToolboxPanelFoldTest, AStaleDeferredToolboxFailureRaisesNoDialog) {
+  DeferredToolboxLaunch deferred(mainWindow());
+  deferred.launch();
+  auto* newer = new QWidget;
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), newer));
+  bool modal_shown = false;
+  QObject modal_guard;
+  QTimer::singleShot(200, &modal_guard, [&modal_shown]() {
+    if (QWidget* modal = QApplication::activeModalWidget()) {
+      modal_shown = true;
+      modal->close();
+    }
+  });
+  deferred.complete(u"HTTP 503"_s);
+  QElapsedTimer waited;
+  waited.start();
+  while (waited.elapsed() < 400) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+  }
+  EXPECT_FALSE(modal_shown);
+  EXPECT_EQ(PJ::ToolboxPanelFoldTestPeer::currentPanel(mainWindow()), newer);
+}
 
 static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new SettingsEnvironment);
 

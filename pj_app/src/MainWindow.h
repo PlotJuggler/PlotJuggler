@@ -1609,6 +1609,13 @@ class MainWindow : public QMainWindow {
   // Bumped by each restorePinnedToolboxes that replaces the pinned set: a pinned launch still waiting for its plugin
   // (a WASM side module) is dropped once a newer restore superseded the one that asked for it.
   quint64 pinned_restore_generation_ = 0;
+  // A toolbox whose plugin the app links in later (the browser's Arrow side module): returns false when
+  // `plugin_id` is not one, or is loaded already; otherwise loads it and calls done(error) on this thread. Empty on
+  // the desktop. launchToolbox relaunches from `done`.
+  std::function<bool(const QString& plugin_id, std::function<void(const QString& error)> done)> deferred_toolbox_load_;
+  // Bumped by every presentPanel: a takeover launch still waiting for its plugin is dropped once the user presented
+  // a newer panel, which it would otherwise replace.
+  quint64 takeover_generation_ = 0;
 
   // The single commit boundary of a layout open: runs what must happen only
   // once every abort/rollback path has returned — replacing the pinned
