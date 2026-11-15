@@ -19,11 +19,14 @@
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/toolbox_protocol.h"
 #include "pj_marketplace/plugin_compatibility.hpp"
+#include "pj_marketplace/utf8_path.hpp"
 #include "pj_marketplace/version_compare.hpp"
 #include "pj_plugins/widget_protocol.h"
 #include "pj_plugins/widget_types.hpp"
 
 namespace PJ {
+
+using marketplace_internal::pathToUtf8;
 
 namespace {
 
@@ -53,7 +56,7 @@ PluginCompatibilityResult descriptorCompatibility(const PluginDescriptor& descri
 std::string canonicalPath(const std::filesystem::path& path) {
   std::error_code ec;
   auto canon = std::filesystem::weakly_canonical(path, ec);
-  return (ec ? path : canon).string();
+  return pathToUtf8(ec ? path : canon);
 }
 
 std::filesystem::file_time_type safeMtime(const std::filesystem::path& path) {
@@ -237,7 +240,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
       if (isStaticallyRegisteredId(descriptor.id)) {
         report(
             DiagnosticLevel::kInfo, descriptor.id,
-            descriptor.dso_path.string() + ": ignoring duplicate plugin id \"" + descriptor.id +
+            pathToUtf8(descriptor.dso_path) + ": ignoring duplicate plugin id \"" + descriptor.id +
                 "\" (statically registered plugin takes precedence)");
         continue;
       }
@@ -245,7 +248,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
       if (!candidate_compatibility.ok) {
         report(
             DiagnosticLevel::kError, descriptor.id,
-            descriptor.dso_path.string() + ": incompatible plugin \"" + descriptor.id +
+            pathToUtf8(descriptor.dso_path) + ": incompatible plugin \"" + descriptor.id +
                 "\": " + candidate_compatibility.reason);
         rejected_ids.insert(descriptor.id);
         continue;
@@ -255,7 +258,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
         if (rejected_ids.count(descriptor.id) != 0) {
           report(
               DiagnosticLevel::kWarning, descriptor.id,
-              descriptor.dso_path.string() + ": falling back to plugin id \"" + descriptor.id + "\" v" +
+              pathToUtf8(descriptor.dso_path) + ": falling back to plugin id \"" + descriptor.id + "\" v" +
                   descriptor.version + " (an incompatible copy was rejected)");
         }
         winner_index.emplace(descriptor.id, winners.size());
@@ -266,7 +269,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
         continue;
       }
       PluginDescriptor& incumbent = winners[it->second];
-      const std::string incumbent_path = incumbent.dso_path.string();
+      const std::string incumbent_path = pathToUtf8(incumbent.dso_path);
 
       // (1) A locked authoritative winner is a hard override — nothing displaces it.
       if (authoritative_win.count(descriptor.id) != 0) {
@@ -276,7 +279,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
             dir_authoritative ? "; candidate is also from an authoritative folder (lower priority)" : "";
         report(
             DiagnosticLevel::kInfo, descriptor.id,
-            descriptor.dso_path.string() + ": ignoring duplicate plugin id \"" + descriptor.id + "\" v" +
+            pathToUtf8(descriptor.dso_path) + ": ignoring duplicate plugin id \"" + descriptor.id + "\" v" +
                 descriptor.version + " (authoritative v" + incumbent.version + " already loaded from " +
                 incumbent_path + candidate_note + ")");
         continue;
@@ -286,7 +289,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
       if (dir_authoritative) {
         report(
             DiagnosticLevel::kInfo, descriptor.id,
-            descriptor.dso_path.string() + ": plugin id \"" + descriptor.id + "\" v" + descriptor.version +
+            pathToUtf8(descriptor.dso_path) + ": plugin id \"" + descriptor.id + "\" v" + descriptor.version +
                 " from an authoritative folder supersedes v" + incumbent.version + " from " + incumbent_path);
         incumbent = descriptor;
         authoritative_win.insert(descriptor.id);
@@ -296,13 +299,13 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
       if (comparePluginVersions(descriptor.version, incumbent.version) > 0) {
         report(
             DiagnosticLevel::kInfo, descriptor.id,
-            descriptor.dso_path.string() + ": plugin id \"" + descriptor.id + "\" v" + descriptor.version +
+            pathToUtf8(descriptor.dso_path) + ": plugin id \"" + descriptor.id + "\" v" + descriptor.version +
                 " supersedes v" + incumbent.version + " from " + incumbent_path);
         incumbent = descriptor;
       } else {
         report(
             DiagnosticLevel::kInfo, descriptor.id,
-            descriptor.dso_path.string() + ": ignoring duplicate plugin id \"" + descriptor.id + "\" v" +
+            pathToUtf8(descriptor.dso_path) + ": ignoring duplicate plugin id \"" + descriptor.id + "\" v" +
                 descriptor.version + " (v" + incumbent.version + " already loaded from " + incumbent_path + ")");
       }
     }
@@ -314,7 +317,8 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
       if (disabled_ids_.count(descriptor.id) == 0) {
         return false;
       }
-      report(DiagnosticLevel::kInfo, descriptor.id, descriptor.dso_path.string() + ": disabled by user — not loaded");
+      report(
+          DiagnosticLevel::kInfo, descriptor.id, pathToUtf8(descriptor.dso_path) + ": disabled by user — not loaded");
       return true;
     });
   }
@@ -346,7 +350,7 @@ void PluginRuntimeCatalog::scanDirectory() {
     if (!loadAndRegister(descriptor)) {
       report(
           DiagnosticLevel::kError, descriptor.id,
-          descriptor.dso_path.string() + ": failed to load " + std::string(toString(descriptor.family)) + " plugin");
+          pathToUtf8(descriptor.dso_path) + ": failed to load " + std::string(toString(descriptor.family)) + " plugin");
     }
   }
 }
@@ -393,7 +397,7 @@ bool PluginRuntimeCatalog::reload() {
     const std::string path = canonicalPath(descriptor.dso_path);
     const auto disk_mtime = safeMtime(descriptor.dso_path);
     if (disk_mtime == std::filesystem::file_time_type{}) {
-      report(DiagnosticLevel::kWarning, descriptor.id, descriptor.dso_path.string() + ": could not read mtime");
+      report(DiagnosticLevel::kWarning, descriptor.id, pathToUtf8(descriptor.dso_path) + ": could not read mtime");
       continue;
     }
 
@@ -413,7 +417,7 @@ bool PluginRuntimeCatalog::reload() {
       } else if (std::ranges::any_of(widget_plugins_, [&](const auto& w) { return w.id == descriptor.id; })) {
         notice_key = path;
         notice = "another copy of this library is already loaded and is never unloaded; restart required to use " +
-                 descriptor.dso_path.string();
+                 pathToUtf8(descriptor.dso_path);
       }
       if (!notice.empty()) {
         if (widget_notices_.insert(notice_key).second) {
@@ -431,7 +435,7 @@ bool PluginRuntimeCatalog::reload() {
     } else {
       report(
           DiagnosticLevel::kError, descriptor.id,
-          descriptor.dso_path.string() + ": failed to load " + std::string(toString(descriptor.family)) + " plugin");
+          pathToUtf8(descriptor.dso_path) + ": failed to load " + std::string(toString(descriptor.family)) + " plugin");
     }
   }
 
@@ -636,7 +640,7 @@ bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
   // this build's SDK still loads (the gate above passed) but some optional
   // features stay inactive — say so once, at admission.
   if (const std::string note = evaluateFeatureCompleteness(descriptor.suggested_sdk_version); !note.empty()) {
-    report(DiagnosticLevel::kInfo, descriptor.id, descriptor.dso_path.string() + ": " + note);
+    report(DiagnosticLevel::kInfo, descriptor.id, pathToUtf8(descriptor.dso_path) + ": " + note);
   }
   switch (descriptor.family) {
     case PluginFamily::kDataSource:
@@ -650,7 +654,7 @@ bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
     case PluginFamily::kDialog:
       report(
           DiagnosticLevel::kWarning, descriptor.id,
-          descriptor.dso_path.string() + ": standalone dialog plugin \"" + descriptor.name +
+          pathToUtf8(descriptor.dso_path) + ": standalone dialog plugin \"" + descriptor.name +
               "\" discovered; dialogs are loaded through owning plugins");
       return false;
     case PluginFamily::kUnknown:
@@ -660,9 +664,9 @@ bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
 }
 
 bool PluginRuntimeCatalog::loadAndRegisterDataSource(const PluginDescriptor& descriptor) {
-  auto result = DataSourceLibrary::load(descriptor.dso_path.string());
+  auto result = DataSourceLibrary::load(descriptor.dso_path);
   if (!result) {
-    report(DiagnosticLevel::kError, descriptor.id, descriptor.dso_path.string() + ": " + result.error());
+    report(DiagnosticLevel::kError, descriptor.id, pathToUtf8(descriptor.dso_path) + ": " + result.error());
     return false;
   }
 
@@ -678,7 +682,7 @@ bool PluginRuntimeCatalog::loadAndRegisterDataSource(const PluginDescriptor& des
   if (!capabilities) {
     report(
         DiagnosticLevel::kError, descriptor.id,
-        descriptor.dso_path.string() + ": plugin instance creation failed (create() returned null)");
+        pathToUtf8(descriptor.dso_path) + ": plugin instance creation failed (create() returned null)");
     return false;
   }
   loaded.capabilities = *capabilities;
@@ -693,7 +697,7 @@ bool PluginRuntimeCatalog::loadAndRegisterDataSource(const PluginDescriptor& des
     if (!vt) {
       report(
           DiagnosticLevel::kError, descriptor.id,
-          descriptor.dso_path.string() + ": advertises kCapabilityHasDialog but " + vt.error());
+          pathToUtf8(descriptor.dso_path) + ": advertises kCapabilityHasDialog but " + vt.error());
       return false;
     }
   }
@@ -709,9 +713,9 @@ bool PluginRuntimeCatalog::loadAndRegisterDataSource(const PluginDescriptor& des
 }
 
 bool PluginRuntimeCatalog::loadAndRegisterMessageParser(const PluginDescriptor& descriptor) {
-  auto result = MessageParserLibrary::load(descriptor.dso_path.string());
+  auto result = MessageParserLibrary::load(descriptor.dso_path);
   if (!result) {
-    report(DiagnosticLevel::kError, descriptor.id, descriptor.dso_path.string() + ": " + result.error());
+    report(DiagnosticLevel::kError, descriptor.id, pathToUtf8(descriptor.dso_path) + ": " + result.error());
     return false;
   }
 
@@ -731,9 +735,9 @@ bool PluginRuntimeCatalog::loadAndRegisterMessageParser(const PluginDescriptor& 
 }
 
 bool PluginRuntimeCatalog::loadAndRegisterToolbox(const PluginDescriptor& descriptor) {
-  auto result = ToolboxLibrary::load(descriptor.dso_path.string());
+  auto result = ToolboxLibrary::load(descriptor.dso_path);
   if (!result) {
-    report(DiagnosticLevel::kError, descriptor.id, descriptor.dso_path.string() + ": " + result.error());
+    report(DiagnosticLevel::kError, descriptor.id, pathToUtf8(descriptor.dso_path) + ": " + result.error());
     return false;
   }
 
@@ -751,7 +755,7 @@ bool PluginRuntimeCatalog::loadAndRegisterToolbox(const PluginDescriptor& descri
   if (!capabilities) {
     report(
         DiagnosticLevel::kError, descriptor.id,
-        descriptor.dso_path.string() + ": plugin instance creation failed (create() returned null)");
+        pathToUtf8(descriptor.dso_path) + ": plugin instance creation failed (create() returned null)");
     return false;
   }
   loaded.capabilities = *capabilities;
@@ -763,7 +767,7 @@ bool PluginRuntimeCatalog::loadAndRegisterToolbox(const PluginDescriptor& descri
     if (!vt) {
       report(
           DiagnosticLevel::kError, descriptor.id,
-          descriptor.dso_path.string() + ": advertises kToolboxCapabilityHasDialog but " + vt.error());
+          pathToUtf8(descriptor.dso_path) + ": advertises kToolboxCapabilityHasDialog but " + vt.error());
       return false;
     }
   }
@@ -797,11 +801,11 @@ bool PluginRuntimeCatalog::loadAndRegisterWidget(const PluginDescriptor& descrip
   if (std::ranges::any_of(widget_plugins_, [&](const auto& w) { return w.id == descriptor.id || w.path == path; })) {
     return true;  // already loaded; a Widget library is never replaced at runtime
   }
-  auto result = WidgetLibrary::load(descriptor.dso_path.string());
+  auto result = WidgetLibrary::load(descriptor.dso_path);
   if (!result) {
     report(
         DiagnosticLevel::kError, descriptor.id,
-        descriptor.dso_path.string() + ": " + readableLoadFailure(result.error()));
+        pathToUtf8(descriptor.dso_path) + ": " + readableLoadFailure(result.error()));
     return false;
   }
 
@@ -1024,7 +1028,7 @@ void PluginRuntimeCatalog::report(DiagnosticLevel level, const std::string& id, 
 
 void PluginRuntimeCatalog::reportScanDiagnostics(const PluginScanResult& scan) const {
   for (const auto& diagnostic : scan.diagnostics) {
-    report(DiagnosticLevel::kError, {}, diagnostic.path.string() + ": " + readableLoadFailure(diagnostic.message));
+    report(DiagnosticLevel::kError, {}, pathToUtf8(diagnostic.path) + ": " + readableLoadFailure(diagnostic.message));
   }
 }
 

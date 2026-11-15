@@ -26,10 +26,14 @@
 #endif
 #include "pj_base/plugin_data_api.h"
 #include "pj_marketplace/plugin_compatibility.hpp"
+#include "pj_marketplace/utf8_path.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
+
+using marketplace_internal::pathFromUtf8;
+using marketplace_internal::pathToUtf8;
 
 namespace {
 Q_LOGGING_CATEGORY(lcCatalog, "pj.app_core.extensions")
@@ -312,7 +316,7 @@ std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool ext
   // masks real plugin-load errors.
   const auto add_if_exists = [&dirs](const QString& folder, bool authoritative) {
     if (!folder.isEmpty() && QDir(folder).exists()) {
-      dirs.push_back({std::filesystem::path(folder.toStdString()), authoritative});
+      dirs.push_back({pathFromUtf8(folder.toStdString()), authoritative});
     }
   };
   // Priority order: the --plugin-dir override outranks everything, then the
@@ -335,7 +339,7 @@ std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool ext
   // available. managedPluginDirs() returns only dirs that exist, so they skip the
   // add_if_exists existence gate.
   for (const QString& plugin_dir : extension_manager_->managedPluginDirs()) {
-    dirs.push_back({std::filesystem::path(plugin_dir.toStdString()), false});
+    dirs.push_back({pathFromUtf8(plugin_dir.toStdString()), false});
   }
 #else
   add_if_exists(marketplace_dir_, false);
@@ -351,7 +355,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
   std::optional<PluginScanResult> scan;
   QMap<QString, QString> bundled_versions;
   if (QDir(bundled_dir_).exists()) {
-    auto scanned = scanPluginDsos(std::filesystem::path(bundled_dir_.toStdString()));
+    auto scanned = scanPluginDsos(pathFromUtf8(bundled_dir_.toStdString()));
     if (!scanned) {
       reportDiagnostic(
           DiagnosticLevel::kWarning,
@@ -400,9 +404,9 @@ void ExtensionCatalogService::seedBundledPlugins() {
   // next to the extensions dir (see PlatformUtils::canonicalStoreRoot): beside a
   // symlinked store the staging area can land on another filesystem, and then the
   // promoting rename below is EXDEV instead of an atomic move.
-  const std::filesystem::path market_root(marketplace_dir_.toStdString());
-  const std::filesystem::path stage_root(
-      (PlatformUtils::canonicalStoreRoot(marketplace_dir_) + u".seed_stage"_s).toStdString());
+  const std::filesystem::path market_root = pathFromUtf8(marketplace_dir_.toStdString());
+  const std::filesystem::path stage_root =
+      pathFromUtf8((PlatformUtils::canonicalStoreRoot(marketplace_dir_) + u".seed_stage"_s).toStdString());
   std::error_code ec;
   std::filesystem::remove_all(stage_root, ec);
 
@@ -421,8 +425,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
   // The payload sources resolve against the canonical bundled root (computed
   // once — it is loop-invariant).
   ec.clear();
-  const std::filesystem::path root =
-      std::filesystem::weakly_canonical(std::filesystem::path(bundled_dir_.toStdString()), ec);
+  const std::filesystem::path root = std::filesystem::weakly_canonical(pathFromUtf8(bundled_dir_.toStdString()), ec);
   if (ec) {
     reportDiagnostic(
         DiagnosticLevel::kWarning, u"Cannot resolve the bundled plugin directory \"%1\": %2"_s.arg(
@@ -521,7 +524,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
       reportDiagnostic(
           DiagnosticLevel::kError,
           u"Refreshing plugin \"%1\" failed and the previous copy could not be restored; it is preserved at "
-          u"\"%2\" until the next launch"_s.arg(id, QString::fromStdString(aside.string())),
+          u"\"%2\" until the next launch"_s.arg(id, QString::fromStdString(pathToUtf8(aside))),
           id);
     }
     if (step_ec) {
@@ -531,7 +534,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
       reportDiagnostic(
           DiagnosticLevel::kWarning,
           u"Failed to seed bundled plugin \"%1\" into \"%2\"%3: %4"_s.arg(
-              id, QString::fromStdString(dst.string()), context, QString::fromStdString(step_ec.message())),
+              id, QString::fromStdString(pathToUtf8(dst)), context, QString::fromStdString(step_ec.message())),
           id);
       continue;
     }
@@ -566,7 +569,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
         reportDiagnostic(DiagnosticLevel::kInfo, message, id);
       }
     } else {
-      qCInfo(lcCatalog) << "Seeded bundled plugin" << id << "into" << QString::fromStdString(dst.string());
+      qCInfo(lcCatalog) << "Seeded bundled plugin" << id << "into" << QString::fromStdString(pathToUtf8(dst));
     }
   }
 
@@ -667,7 +670,7 @@ ParserClaimProvenance ExtensionCatalogService::provenanceForParser(const LoadedM
   // cannot forge the top trust tier. Authenticated receipts are the full answer.
   const auto bundled = bundled_plugin_versions_.find(parser.id);
   if (bundled != bundled_plugin_versions_.end() && bundled->second.version == parser.version &&
-      sameDsoSignature(parser.path, bundled->second.dso_path)) {
+      sameDsoSignature(pathFromUtf8(parser.path), bundled->second.dso_path)) {
     return ParserClaimProvenance::kBundled;
   }
   return ParserClaimProvenance::kMarketplace;

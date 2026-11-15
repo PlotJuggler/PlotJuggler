@@ -7,8 +7,9 @@
 #include <string>
 #include <string_view>
 
-// Public only because fs_walk.hpp and sha256.hpp, themselves public headers, build their
-// error text with it; consumers have no business calling it.
+// Public because fs_walk.hpp and sha256.hpp, themselves public headers, build their error text
+// with it, and because pj_runtime's plugin catalog (which already links this library) needs the
+// same conversions for its scan roots and diagnostics rather than a second copy.
 namespace PJ::marketplace_internal {
 
 /// Encodes a filesystem path as UTF-8 with the platform's separators, for messages and logs.

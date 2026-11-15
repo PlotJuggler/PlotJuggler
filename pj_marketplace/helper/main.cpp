@@ -78,19 +78,15 @@ int printResultAndExit(const nlohmann::json& result, int exit_code) {
   return exit_code;
 }
 
-}  // namespace
+int usage() {
+  nlohmann::json result;
+  result["schema"] = 1;
+  result["outcome"] = "rejected";
+  result["error"] = "usage: pj-plugin-check <extension-directory>";
+  return printResultAndExit(result, kExitUsage);
+}
 
-int main(int argc, char** argv) {
-  if (argc != 2) {
-    nlohmann::json usage;
-    usage["schema"] = 1;
-    usage["outcome"] = "rejected";
-    usage["error"] = "usage: pj-plugin-check <extension-directory>";
-    return printResultAndExit(usage, kExitUsage);
-  }
-
-  std::filesystem::path directory(argv[1]);
-
+int check(const std::filesystem::path& directory) {
   auto scanned = PJ::scanPluginDsos(directory);
 
   nlohmann::json result;
@@ -120,3 +116,19 @@ int main(int argc, char** argv) {
   result["outcome"] = has_plugin ? "admitted" : "rejected";
   return printResultAndExit(result, has_plugin ? kExitAdmitted : kExitNoValidPlugin);
 }
+
+}  // namespace
+
+#ifdef _WIN32
+// wmain, not main: Windows narrows main's argv to the active code page, so a directory name
+// outside it would arrive with '?' in its place. wmain gets the UTF-16 command line, which
+// std::filesystem::path takes as is. (MSVC selects wmainCRTStartup for it; a MinGW build
+// would need -municode.)
+int wmain(int argc, wchar_t** argv) {
+  return argc == 2 ? check(std::filesystem::path(argv[1])) : usage();
+}
+#else
+int main(int argc, char** argv) {
+  return argc == 2 ? check(std::filesystem::path(argv[1])) : usage();
+}
+#endif
