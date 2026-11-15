@@ -37,8 +37,12 @@ class BrowserSaveTarget {
     return path_;
   }
 
-  // Every regular file under the scratch directory, sorted by file name.
+  // Every regular file under the scratch directory, sorted by download name.
   [[nodiscard]] QStringList writtenPaths() const;
+
+  // The browser download name of a written file: its path relative to the
+  // scratch directory, folders joined with '_' (a download name has no folders).
+  [[nodiscard]] QString downloadName(const QString& written_path) const;
 
   // Starts one browser download per written file, reading one file at a time
   // (no-op outside the browser).

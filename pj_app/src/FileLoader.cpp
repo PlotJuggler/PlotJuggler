@@ -1623,6 +1623,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // opening a layout would silently mutate the global per-plugin pre-fill.
   if (!skip_dialog) {
     persisted_settings.setValue(config_key, QString::fromStdString(config));
+    // The persisted config may still name files picked in earlier dialogs (a
+    // DBC for another channel), so new picks add to the kept ones.
+    // ponytail: every pick stays staged for the session; prune by what the
+    // config still references if large dialog-picked files become common.
+    auto& kept = last_dialog_files_[source_name];
+    kept.insert(kept.end(), dialog_selected_files.begin(), dialog_selected_files.end());
   }
 
   // Detect multi-instance fanout. A DataSource plugin emits a `__pj_fanout`

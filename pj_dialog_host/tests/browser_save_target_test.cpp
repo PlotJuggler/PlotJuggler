@@ -45,10 +45,13 @@ TEST(BrowserSaveTarget, AFolderPickerOffersEveryFileWrittenUnderIt) {
     writeFile(scratch + QStringLiteral("/b.csv"), "2");
     ASSERT_TRUE(QDir(scratch).mkdir(QStringLiteral("sub")));
     writeFile(scratch + QStringLiteral("/sub/a.csv"), "1");
+    writeFile(scratch + QStringLiteral("/a.csv"), "0");
     const QStringList files = target.writtenPaths();
-    ASSERT_EQ(files.size(), 2);
-    EXPECT_EQ(QFileInfo(files[0]).fileName(), QStringLiteral("a.csv"));
-    EXPECT_EQ(QFileInfo(files[1]).fileName(), QStringLiteral("b.csv"));
+    ASSERT_EQ(files.size(), 3);
+    // Same-named files from different subfolders keep distinct download names.
+    EXPECT_EQ(target.downloadName(files[0]), QStringLiteral("a.csv"));
+    EXPECT_EQ(target.downloadName(files[1]), QStringLiteral("b.csv"));
+    EXPECT_EQ(target.downloadName(files[2]), QStringLiteral("sub_a.csv"));
   }
   EXPECT_FALSE(QFileInfo::exists(scratch));
 }

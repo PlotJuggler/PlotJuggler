@@ -8,6 +8,7 @@ const { nativePickerType } = require('./support/browser');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { writeSparseRos2Float64Mcap } = require('./support/large_mcap');
+const { loadOutcomes, firstLoadOutcome, loadOutcomeCount } = require('./support/load_outcomes');
 const { openFileChooser } = require('./support/pickers');
 
 async function csvDialogControlGeometry(page, consoleMessages) {
@@ -175,7 +176,7 @@ test('a picked MCAP larger than 4 GiB loads its data', async ({ page }) => {
     await page.waitForTimeout(2000);
     await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
     await expect.poll(
-      () => consoleMessages.find(message => message.includes('/ros2/value/data:3@')) || '',
+      () => firstLoadOutcome(page, '/ros2/value/data:3@'),
       { timeout: 240000 },
     ).toContain('=1.25..7.75');
     expect(errors).toEqual([]);
@@ -260,13 +261,10 @@ test('browser file dialog can reject then accept without a nested event loop', a
   // Wait for FileLoader's own rejection marker instead of a fixed delay, so
   // the absence check below can't race the coroutine unwind.
   await expect.poll(
-    () => consoleMessages.some(message => message.includes('PJ_FILE_LOAD_REJECTED')),
+    async () => (await loadOutcomeCount(page, 'PJ_FILE_LOAD_REJECTED')) > 0,
     { timeout: 10000 },
   ).toBe(true);
-  // Anchor the accept-path poll after the rejection marker: a stray early
-  // PROBE_OK (there shouldn't be one, but a fixed-length find() can't tell)
-  // must not satisfy it.
-  const rejectionIndex = consoleMessages.findIndex(message => message.includes('PJ_FILE_LOAD_REJECTED'));
+  // No PROBE_OK before the accept path, so the poll below can only see its own.
   expect(consoleMessages.some(message => message.includes('PJ_WASM_INGRESS_PROBE_OK'))).toBe(false);
 
   const secondChooser = await openFileChooser(page, screen, true);
@@ -277,8 +275,7 @@ test('browser file dialog can reject then accept without a nested event loop', a
   });
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.slice(rejectionIndex + 1).find(message => message.includes('PJ_WASM_INGRESS_PROBE_OK')) ||
-        '',
+    () => consoleMessages.find(message => message.includes('PJ_WASM_INGRESS_PROBE_OK')) || '',
     { timeout: 10000 },
   ).toContain('bytes=5 sum=15');
   expect(errors).toEqual([]);
@@ -309,10 +306,10 @@ test('official CSV plugin previews and imports browser-selected data', async ({ 
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 15000 },
   ).toContain('plugin=CSV Loader');
-  const loadMessage = consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '';
+  const loadMessage = await firstLoadOutcome(page);
   expect(loadMessage).toContain('catalog_items=3');
   expect(loadMessage).toContain('scalar_count=3');
   expect(loadMessage).toContain('scalar_series=sample/temp,sample/time,sample/value');
@@ -367,10 +364,10 @@ test('official CSV plugin applies delimiter and time-column choices', async ({ p
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
 
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 15000 },
   ).toContain('plugin=CSV Loader');
-  const loadMessage = consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '';
+  const loadMessage = await firstLoadOutcome(page);
   expect(loadMessage).toContain('catalog_items=2');
   expect(loadMessage).toContain('scalar_count=2');
   expect(loadMessage).toContain('scalar_series=semicolon/temp,semicolon/value');
@@ -413,10 +410,10 @@ test('official CSV plugin can continue after a malformed-row warning', async ({ 
   await page.keyboard.press('Enter');
 
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 15000 },
   ).toContain('plugin=CSV Loader');
-  const loadMessage = consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '';
+  const loadMessage = await firstLoadOutcome(page);
   expect(loadMessage).toContain('catalog_items=3');
   expect(loadMessage).toContain('scalar_count=3');
   expect(loadMessage).toContain('malformed/value:2@0..1000000000=1..3');
@@ -444,10 +441,10 @@ test('official CSV plugin can stop and keep a browser import', async ({ page }) 
   await stopIngest(page, screen, consoleMessages, 'keep');
 
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 30000 },
   ).toContain('plugin=CSV Loader');
-  const loadMessage = consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '';
+  const loadMessage = await firstLoadOutcome(page);
   const partial = loadMessage.match(/large\/value:(\d+)@/);
   expect(partial).not.toBeNull();
   expect(Number(partial[1])).toBeGreaterThan(0);
@@ -480,7 +477,7 @@ test('official CSV plugin can discard a partial import and load again', async ({
     () => consoleMessages.some(message => message.includes('import discarded by user; the new dataset is removed')),
     { timeout: 30000 },
   ).toBe(true);
-  expect(consoleMessages.some(message => message.includes('PJ_FILE_LOAD_OK'))).toBe(false);
+  expect(await loadOutcomes(page, 'PJ_FILE_LOAD_OK')).toEqual([]);
 
   // A discarded load must release the queue and its empty dataset shell.
   const retryChooser = await openFileChooser(page, screen, true);
@@ -492,7 +489,7 @@ test('official CSV plugin can discard a partial import and load again', async ({
   await page.waitForTimeout(750);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 15000 },
   ).toContain('after-discard/value:2@0..1000000000=5..6');
   expect(errors).toEqual([]);
@@ -525,17 +522,17 @@ test('same-named CSV uploads keep distinct browser identities and data', async (
 
   await loadCsv('time,value\n0,1\n1,2\n');
   await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK')).length,
+    () => loadOutcomeCount(page),
     { timeout: 15000 },
   ).toBe(1);
   await page.waitForTimeout(1500);
   await loadCsv('time,value\n0,5\n1,6\n');
   await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK')).length,
+    () => loadOutcomeCount(page),
     { timeout: 15000 },
   ).toBe(2);
 
-  const loads = consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK'));
+  const loads = await loadOutcomes(page, 'PJ_FILE_LOAD_OK');
   expect(loads[0]).toContain('same/value:2@0..1000000000=1..2');
   expect(loads[1]).toContain('same/value:2@0..1000000000=5..6');
   const identities = loads.map(message => message.match(/identity=([^ ]+)/)?.[1]);
@@ -568,7 +565,7 @@ test('official Protobuf parser imports scalars and cold-decodes a Foxglove objec
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
 
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('/protobuf/telemetry/temperature:3@')) || '',
+    () => firstLoadOutcome(page, '/protobuf/telemetry/temperature:3@'),
     { timeout: 30000 },
   ).toContain('=12.5..-2');
   // The object probe logs after the load does, once its cold fetch has read the picked file on demand.
@@ -629,7 +626,7 @@ test('official Protobuf parser reports a bad descriptor and leaves the load queu
   await page.waitForTimeout(750);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('after-mcap-error/value:2@')) || '',
+    () => firstLoadOutcome(page, 'after-mcap-error/value:2@'),
     { timeout: 15000 },
   ).toContain('=7..8');
   expect(errors).toEqual([]);

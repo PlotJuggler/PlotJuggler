@@ -10,6 +10,7 @@ const {
   elementAttribute, elementAttributes, setElementAttribute, setElementAttributeAt,
 } = require('./support/layout_xml');
 const { downloadLayoutFromFileMenu, saveLayoutActionCenter } = require('./support/layout_actions');
+const { loadOutcomes, firstLoadOutcome, loadOutcomeCount } = require('./support/load_outcomes');
 const { openFileChooser, openLayoutChooser, openSourceReplayChooser } = require('./support/pickers');
 const { requestPlotState } = require('./support/plot_probes');
 const { sourceLayoutDecisionGeometry, downloadSourceLayoutFromFileMenu } = require('./support/source_layout');
@@ -284,7 +285,7 @@ test('browser layouts open transactionally and download with exact round-trip st
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 15000 },
   ).toContain('layout-open/temp:3@');
   { const icon = await placeholderIconCenter(page, screen, consoleMessages, 'plot');
@@ -657,7 +658,7 @@ test('source-bound browser layouts download logical references and replay after 
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 15000 },
   ).toContain('source-reselect/temp:3@');
   { const icon = await placeholderIconCenter(page, screen, consoleMessages, 'plot');
@@ -829,7 +830,8 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
   };
   observePage(page, consoleMessages);
   // Every page of this context also records its console lines itself. Firefox can lose a console event on its
-  // way to Playwright, so the exact-count checks of the successful replay read the page's own record instead.
+  // way to Playwright, so the successful replay's layout-outcome wait reads the page's own record instead (load
+  // outcomes come from the app's pjWasmLoadOutcomes global).
   await page.context().addInitScript(() => {
     window.pjTestConsoleRecord = [];
     for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
@@ -873,7 +875,7 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
   const rightBytes = Buffer.from('time,value\n0,8\n1,9\n2,10\n');
 
   const loadCsv = async (bytes) => {
-    const loadedBefore = consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK')).length;
+    const loadedBefore = await loadOutcomeCount(page);
     const chooser = await openFileChooser(page, screen);
     await chooser.setFiles({
       name: 'duplicate.csv',
@@ -883,7 +885,7 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
     await page.waitForTimeout(1000);
     await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
     await expect.poll(
-      () => consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK')).length,
+      () => loadOutcomeCount(page),
       { timeout: 15000 },
     ).toBeGreaterThan(loadedBefore);
   };
@@ -975,7 +977,7 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
   // Cancelling after source 1 proves all selections are staged before import:
   // there is no load completion and no partially-created dataset to remove.
   await openSavedSourceLayout(customized, 'multi-source-cancel.pj4.xml');
-  const loadCountBeforeCancel = consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK')).length;
+  const loadCountBeforeCancel = await loadOutcomeCount(page);
   // Selecting source 2's bytes for source 1 is rejected before any import even
   // though both files have the same basename and produce the same topic shape.
   await rejectReplaySource(rightBytes);
@@ -997,7 +999,7 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
     () => consoleMessages.find(message => message.includes('PJ_WASM_SOURCE_LAYOUT_STAGED index=1 total=2')) || '',
     { timeout: 10000 },
   ).toContain('name=duplicate.csv');
-  expect(consoleMessages.filter(message => message.includes('PJ_FILE_LOAD_OK')).length).toBe(loadCountBeforeCancel);
+  expect(await loadOutcomeCount(page)).toBe(loadCountBeforeCancel);
   const stagedCountMessages = consoleMessages.filter(
     message => message.includes('PJ_WASM_DATASET_COUNT count='),
   ).length;
@@ -1043,7 +1045,7 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
 
   // The clean replay imports in source order, remaps both logical aliases to
   // fresh uploads, and applies the document/timeline exactly once.
-  const loadCountBeforeSuccess = (await recordedLines('PJ_FILE_LOAD_OK')).length;
+  const loadCountBeforeSuccess = await loadOutcomeCount(page);
   await openSavedSourceLayout(customized, 'multi-source-success.pj4.xml');
   await selectReplaySource(leftBytes);
   await selectReplaySource(rightBytes);
@@ -1051,7 +1053,7 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
     async () => (await recordedLines('PJ_WASM_LAYOUT_LOAD_OK name=multi-source-success')).join('\n'),
     { timeout: 30000 },
   ).toContain('multi-source-success.pj4.xml');
-  const successfulLoads = (await recordedLines('PJ_FILE_LOAD_OK')).slice(loadCountBeforeSuccess);
+  const successfulLoads = (await loadOutcomes(page, 'PJ_FILE_LOAD_OK')).slice(loadCountBeforeSuccess);
   expect(successfulLoads).toHaveLength(2);
   expect(successfulLoads[0]).toContain('duplicate/value:3@');
   expect(successfulLoads[1]).toContain('duplicate/value:3@');
@@ -1108,7 +1110,7 @@ test('an exception thrown by a plugin fails its load with a reason and leaves th
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 20000 },
   ).toContain('plugin=MCAP Loader');
   const downloaded = await downloadSourceLayoutFromFileMenu(page, screen, consoleMessages);
@@ -1136,7 +1138,7 @@ test('an exception thrown by a plugin fails its load with a reason and leaves th
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
-    () => consoleMessages.find(message => message.includes('PJ_FILE_LOAD_OK')) || '',
+    () => firstLoadOutcome(page),
     { timeout: 20000 },
   ).toContain('plugin=MCAP Loader');
   expect(errors).toEqual([]);

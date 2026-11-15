@@ -6,7 +6,8 @@
 // (Parquet, MF4, Arrow MCAP); sample.blf is pj-official-plugins' data_load_blf/test_data/sample.blf.
 const fs = require('fs');
 const { test, expect } = require('@playwright/test');
-const { waitForQtApp } = require('./support/app');
+const { bootApp } = require('./support/app');
+const { firstLoadOutcome } = require('./support/load_outcomes');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { openFileChooser, retryChooser } = require('./support/pickers');
@@ -60,13 +61,7 @@ function makeULog(samples) {
 
 async function boot(page, consoleMessages, errors) {
   await page.addInitScript(() => { delete window.showOpenFilePicker; });
-  page.on('pageerror', error => errors.push(String(error)));
-  page.on('console', message => consoleMessages.push(message.text()));
-  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
-  await waitForQtApp(page, consoleMessages);
-  const screen = await page.locator('#screen').boundingBox();
-  expect(screen).not.toBeNull();
-  return screen;
+  return (await bootApp(page, consoleMessages, errors)).screen;
 }
 
 // Named, visible buttons of the active dialog, canvas-relative. The probe runs
@@ -106,10 +101,9 @@ async function importFile(page, screen, consoleMessages, file, inDialog = async 
   await inDialog();
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   // The probe records the outcome in the page too: Firefox can drop the console line.
-  const outcome = async () => (await page.evaluate(() => (globalThis.pjWasmLoadOutcomes || [])[0])) || '';
   let line = '';
   try {
-    await expect.poll(async () => (line = await outcome()), { timeout: 30000 }).not.toBe('');
+    await expect.poll(async () => (line = await firstLoadOutcome(page, 'PJ_FILE_LOAD_')), { timeout: 30000 }).not.toBe('');
   } catch (error) {
     const log = consoleMessages.slice(-40).join('\n');
     throw new Error(`${error.message}\nLast app log lines:\n${log}`);

@@ -3,11 +3,12 @@
 
 #include "browser_save_target.hpp"
 
+#include <QDir>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <algorithm>
+#include <QMultiMap>
 #include <pj_plugins/host_qt/browser_file_picker_fallback.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 
@@ -22,21 +23,29 @@ QString browserSaveName(const FilePickerStart& start, std::string_view default_s
 }
 
 BrowserSaveTarget::BrowserSaveTarget(const QString& file_name)
-    : path_(file_name.isEmpty() ? dir_.path() : dir_.filePath(QFileInfo(file_name).fileName())) {}
+    : path_(file_name.isEmpty() ? dir_.path() : dir_.filePath(QFileInfo(file_name).fileName())) {
+  if (!dir_.isValid()) {
+    qWarning("Browser export: cannot create a scratch directory: %s", qPrintable(dir_.errorString()));
+  }
+}
+
+QString BrowserSaveTarget::downloadName(const QString& written_path) const {
+  return QDir(dir_.path()).relativeFilePath(written_path).replace(u'/', u'_');
+}
 
 QStringList BrowserSaveTarget::writtenPaths() const {
-  QStringList paths;
   if (!dir_.isValid()) {
-    return paths;
+    return {};
   }
+  // Keyed by download name, so the paths come out in that order (a multimap:
+  // two names that flatten alike, sub/a.csv and sub_a.csv, are both kept).
+  QMultiMap<QString, QString> by_name;
   QDirIterator it(dir_.path(), QDir::Files, QDirIterator::Subdirectories);
   while (it.hasNext()) {
-    paths.append(it.next());
+    const QString path = it.next();
+    by_name.insert(downloadName(path), path);
   }
-  std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) {
-    return QFileInfo(a).fileName() < QFileInfo(b).fileName();
-  });
-  return paths;
+  return by_name.values();
 }
 
 void BrowserSaveTarget::offerDownloads() const {
@@ -47,7 +56,7 @@ void BrowserSaveTarget::offerDownloads() const {
     QFile file(path);
     if (file.open(QIODevice::ReadOnly)) {
       QFileDialog::saveFileContent(  // NOLINT(pj-canonical-chrome): Qt's browser download API.
-          file.readAll(), QFileInfo(path).fileName());
+          file.readAll(), downloadName(path));
     }
   }
 #endif
