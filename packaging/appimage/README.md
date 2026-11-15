@@ -156,7 +156,7 @@ info, full DWARF, or DWARF in `.dwo` sidecars kept in the build tree;
 [`cmake/PjDebugInfo.cmake`](../../cmake/PjDebugInfo.cmake).
 
 Linux builds with GNU/Clang compilers use thin archives to avoid copying object
-files, and `resources.qrc` is compiled once as `pj_resources`.
+files, and `resources.qrc` plus the splash memes in `memes.qrc` are compiled once as `pj_resources`.
 [`scripts/build_tree_size.sh`](../../scripts/build_tree_size.sh) `<build-dir>`
 reports bytes by artifact class in decimal GB. Use a fresh build tree when
 measuring the smaller default; disabling targets does not remove artifacts from

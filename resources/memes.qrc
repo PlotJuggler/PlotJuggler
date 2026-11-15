@@ -3,8 +3,8 @@
   <qresource prefix="/resources">
     <!-- Funny splashscreen pool. The startup splash enumerates this directory
          at runtime (QDir(":/resources/memes")), so adding a meme is a pure
-         resource change: drop meme_NN.jpg here and list it below. Desktop only: the
-         browser build leaves this file out, and its splash is the serious one. -->
+         resource change: add memes/meme_NN.jpg and list it below. Desktop only:
+         the browser build leaves this file out, and its splash is the serious one. -->
     <file alias="memes/meme_01.jpg">memes/meme_01.jpg</file>
     <file alias="memes/meme_02.jpg">memes/meme_02.jpg</file>
     <file alias="memes/meme_03.jpg">memes/meme_03.jpg</file>

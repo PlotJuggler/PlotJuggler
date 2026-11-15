@@ -27,8 +27,8 @@ QPixmap capMemeToSplashBox(const QPixmap& pixmap);
 
 // Builds the startup splash pixmap honouring Preferences::splash_mode:
 // "serious" → a composed branded banner (logo + wordmark + random subtitle),
-// anything else → a random meme from the bundled pool. Returns a null QPixmap
-// when no image is available (e.g. an empty meme pool).
+// anything else → a random meme from the bundled pool, or the serious banner
+// when the pool is empty (the browser build bundles no memes).
 QPixmap makeStartupSplash();
 
 }  // namespace PJ

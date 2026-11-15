@@ -540,10 +540,10 @@ int main(int argc, char* argv[]) {
   //   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
   // }
 
-  // The funny splashscreen: a random meme that covers the (slow) MainWindow
-  // construction below. Skipped with --nosplash and when launching straight
-  // into a layout (--layout), where the user wants data, not a meme. Shown
-  // before the MainWindow ctor so it's already on screen while the ctor runs.
+  // The startup splash (a random meme, or the serious banner in serious mode
+  // and in the browser build) covers the (slow) MainWindow construction below. Skipped with --nosplash and when
+  // launching straight into a layout (--layout), where the user wants data, not a meme. Shown before the MainWindow
+  // ctor so it's already on screen while the ctor runs.
   std::unique_ptr<QSplashScreen> splash;
   if (!parser.isSet(nosplash_option) && !parser.isSet(layout_option)) {
     const QPixmap pixmap = PJ::makeStartupSplash();

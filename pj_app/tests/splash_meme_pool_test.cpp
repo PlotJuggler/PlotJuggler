@@ -13,6 +13,15 @@
 
 #include "Splashscreen.h"
 
+// Q_INIT_RESOURCE / Q_CLEANUP_RESOURCE declare their functions in the current scope, so they must be used outside
+// any namespace.
+static void unregisterMemePool() {
+  Q_CLEANUP_RESOURCE(memes);
+}
+static void registerMemePool() {
+  Q_INIT_RESOURCE(memes);
+}
+
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -109,6 +118,15 @@ TEST(SplashMemePool, CapLeavesImagesInsideTheBoxUntouched) {
   QPixmap exactly_at_the_bound(kMaxMemeExtent, kMaxMemeExtent);
   exactly_at_the_bound.fill(Qt::green);
   EXPECT_EQ(capMemeToSplashBox(exactly_at_the_bound).size(), exactly_at_the_bound.size());
+}
+
+// The browser build compiles no memes: a funny splash request over an empty pool must still show the serious
+// banner, not nothing.
+TEST(SplashMemePool, EmptyPoolFallsBackToTheSeriousSplash) {
+  unregisterMemePool();
+  EXPECT_TRUE(QDir(QStringLiteral(":/resources/memes")).entryList(QDir::Files).isEmpty());
+  EXPECT_FALSE(makeStartupSplash().isNull());
+  registerMemePool();
 }
 
 }  // namespace
