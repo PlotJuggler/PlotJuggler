@@ -51,10 +51,15 @@ void prestartPythonHelper();
 /// test of the bound itself keeps the constant. Any thread.
 void setPythonValidateWaitForTest(std::uint64_t millis);
 
+/// Test seam: how long a failed stdlib download in the browser is answered with its error before the next use retries
+/// it, in place of the 10 s default; 0 restores it. A no-op outside the browser. Any thread.
+void setPythonStdlibRetryCooldownForTest(std::uint64_t millis);
+
 /// A validate's check of `source`: a throwaway compile (nothing cached, no script handle touched) on the Python
 /// helper thread, waited for at most `kPythonValidateWaitMillis`. Finished in time: valid, or invalid with
 /// `compileOnDemandScriptPython`'s error text. Not finished (a script holds the GIL, the interpreter is still booting),
-/// or the helper already busy with an item (then at once): unchecked, with why; the first run reports the error anyway,
+/// the browser's stdlib download failed (it says nothing about the script), or the helper already busy with an item
+/// (then at once): unchecked, with why; the first run reports the error anyway,
 /// and the helper skips a compile nobody waits for any more. An error only where `pythonAvailable()` is false. Any
 /// thread but the helper, without the GIL.
 [[nodiscard]] Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view source);

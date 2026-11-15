@@ -5,9 +5,12 @@
 // Usage: node scripts/wasm_size_budget.mjs <manifest.json> <budget bytes>
 //
 // What a browser downloads to start the app from a package (a scripts/package_wasm.mjs manifest): every file's Brotli
-// representation, or its identity when it has none. The sample presets (presets/) are fetched on demand and left out.
+// representation, or its identity when it has none. The sample presets (presets/) and the Python stdlib are fetched on
+// demand and left out.
 // Fails when it exceeds the budget.
 import { readFile } from 'node:fs/promises';
+
+import { PYTHON_STDLIB } from './package_wasm.mjs';
 
 const [manifestPath, budgetText] = process.argv.slice(2);
 const budget = Number(budgetText);
@@ -17,7 +20,7 @@ if (!manifestPath || !Number.isFinite(budget)) {
 }
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 const bytes = manifest.files
-  .filter(file => !file.path.startsWith('presets/'))
+  .filter(file => !file.path.startsWith('presets/') && !file.path.endsWith(`/${PYTHON_STDLIB}`))
   .reduce((sum, file) => sum + (file.representations.br ?? file.representations.identity).bytes, 0);
 process.stdout.write(`Brotli download: ${bytes} B (budget ${budget} B, ${(100 * bytes / budget).toFixed(1)} % of it)\n`);
 if (bytes > budget) {

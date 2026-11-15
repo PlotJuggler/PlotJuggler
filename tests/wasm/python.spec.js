@@ -14,6 +14,7 @@ const BUSY_COMPILE_GAP_BOUND_MS = 250;
 // Python per call against the same script in Luau. Firefox's ratio depends on the CPU core it lands on (on a hybrid
 // laptop 1.2x on efficiency cores, 1.55x on performance cores; 0.85x on CI), Chromium's does not (1.0-1.26x).
 const PER_CALL_RATIO_BOUND = { chromium: 1.5, firefox: 2 };
+const STDLIB_ASSET = '/python_stdlib.zip';
 
 // @serial: its time bounds fail on a loaded runner (playwright.config.js).
 test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, no main-thread wait', {
@@ -24,6 +25,13 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   const errors = [];
   page.on('pageerror', error => errors.push(String(error)));
   page.on('console', message => consoleMessages.push(message.text()));
+  // The stdlib is a separate asset (scripts/package_wasm.mjs) the first Python use downloads, not the startup.
+  const stdlibRequests = [];
+  page.context().on('request', request => {
+    if (request.url().endsWith(STDLIB_ASSET)) {
+      stdlibRequests.push(request.url());
+    }
+  });
   // The longest gap between 20 ms ticks of the main thread's event loop, once armed.
   await page.addInitScript(() => {
     window.pjMainGap = { armed: false, max: 0, last: performance.now() };
@@ -37,6 +45,7 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   });
   await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
   await waitForQtApp(page, consoleMessages);
+  expect(stdlibRequests, 'the app starts without the Python stdlib').toEqual([]);
 
   await page.evaluate(() => {
     window.pjMainGap.armed = true;
@@ -71,6 +80,12 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
 
   expect(line('PJ_WASM_PY_AVAILABLE')).toContain('PJ_WASM_PY_AVAILABLE 1');
   expect(line('PJ_WASM_PY_BOOT')).toContain(' ok');
+  // Not in the filesystem before the first use, there after it. Playwright sees a worker's requests in Chromium only.
+  expect(line('PJ_WASM_PY_STDLIB_BEFORE')).toContain('stat=-1');
+  expect(number('PJ_WASM_PY_STDLIB ', 'bytes')).toBeGreaterThan(1_000_000);
+  if (browserName === 'chromium') {
+    expect(stdlibRequests, 'the first Python use downloads the stdlib, once').toHaveLength(1);
+  }
   // The allowed modules' lazy dependencies work inside a strict run (heapq, decimal's _pydecimal fallback), and every
   // other one a strict script can reach is loaded before any run.
   expect(number('PJ_WASM_PY_LAZY', 'value')).toBe(7);
@@ -131,4 +146,93 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   expect(Number((consoleMessages.find(m => m.includes('PJ_WASM_PY_BUSY_RUN')).match(/value=([-0-9.]+)/) || [])[1]))
     .toBeCloseTo(Math.sqrt(10), 5);
   expect(busyGap).toBeLessThan(BUSY_COMPILE_GAP_BOUND_MS);
+});
+
+// The stdlib download fails, before any Python use succeeded: each failure is reported as a download failure (a
+// validate leaves a valid script unchecked, not invalid), none sticks to the recipe's handle, and the same handle runs
+// once the download works. A failure is not retried before its cooldown (shortened here), so a playback re-running a
+// script every frame does not re-download every frame; a 404 (the app was redeployed) is never retried. Playwright
+// routes a worker's requests in Chromium only.
+test('on-demand Python: a failed stdlib download is reported and retried, never kept', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', "Playwright routes a worker's requests in Chromium only");
+  test.setTimeout(300_000);
+  const COOLDOWN_MS = 5000;
+  const consoleMessages = [];
+  const errors = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('console', message => consoleMessages.push(message.text()));
+  let requests = 0;
+  let answer = { status: 503, body: 'unavailable' };
+  await page.context().route(`**${STDLIB_ASSET}`, route => {
+    requests += 1;
+    if (typeof answer === 'function') {
+      return answer(route);
+    }
+    return answer ? route.fulfill(answer) : route.continue();
+  });
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  const lines = marker => consoleMessages.filter(message => message.includes(marker));
+  const probe = (step, arg = 0) => page.evaluate(([s, a]) => window.pjWasmPythonStdlibProbe(s, a), [step, arg]);
+  const logged = async (marker, previous) => {
+    await expect.poll(() => lines(marker).length, { timeout: 120_000 }).toBeGreaterThan(previous);
+    return lines(marker).at(-1);
+  };
+  const handle = async () => {
+    const before = lines('PJ_WASM_PY_DL_HANDLE').length;
+    await probe(0);
+    await probe(3, COOLDOWN_MS);
+    const available = await expect.poll(() => lines('PJ_WASM_PY_DL_HANDLE').length, { timeout: 10_000 })
+      .toBeGreaterThan(before).then(() => true, () => false);
+    test.skip(!available && process.env.PJ_WASM_PYTHON !== '1', 'this build has no Python (PJ_WASM_WITH_PYTHON off)');
+    expect(lines('PJ_WASM_PY_DL_HANDLE').at(-1)).toContain(' ok');
+  };
+  let attempts = 0;
+  const run = async () => {
+    attempts += 1;
+    await probe(2, attempts);
+    return logged(`PJ_WASM_PY_DL_RUN ${attempts} `, 0);
+  };
+  const afterCooldown = () => page.waitForTimeout(COOLDOWN_MS + 500);
+
+  await handle();
+  // Soft: every step reports, so one run shows each failure.
+  await probe(1, 30_000);
+  const validate = await logged('PJ_WASM_PY_DL_VALIDATE', 0);
+  expect.soft(validate).toContain('unchecked');
+  expect.soft(validate).toContain('could not download its standard library');
+  expect.soft(await run()).toContain('could not download its standard library (HTTP 503)');
+  expect.soft(await run()).toContain('could not download its standard library (HTTP 503)');
+  expect.soft(requests, 'no new request within the cooldown').toBe(1);
+
+  await afterCooldown();
+  answer = { status: 200, contentType: 'text/html', body: '<html><body>a login page</body></html>' };
+  expect.soft(await run()).toContain('could not download its standard library (not a zip archive)');
+  expect.soft(requests).toBe(2);
+  await afterCooldown();
+  // A zip cut short (a dropped connection a proxy answered as 200): its first bytes are a zip's, its end is not.
+  answer = async route => {
+    const body = await (await route.fetch()).body();
+    return route.fulfill({ status: 200, contentType: 'application/zip', body: body.subarray(0, body.length >> 1) });
+  };
+  expect.soft(await run()).toContain('could not download its standard library (not a zip archive)');
+  expect.soft(requests).toBe(3);
+  await afterCooldown();
+  answer = null;
+  expect.soft(await run()).toMatch(/value=5\.14159/);
+  expect.soft(requests).toBe(4);
+
+  // A fresh page, the stdlib not downloaded yet: a 404 holds for the session, whatever the cooldown.
+  requests = 0;
+  answer = { status: 404, body: 'not found' };
+  const ready = lines('PJ_WASM_APP_READY').length;
+  await page.reload();
+  await waitForQtApp(page, consoleMessages, ready);
+  await handle();
+  expect.soft(await run()).toContain('the app was updated since this page was loaded; reload the page');
+  expect.soft(await run()).toContain('the app was updated since this page was loaded; reload the page');
+  await afterCooldown();
+  expect.soft(await run()).toContain('the app was updated since this page was loaded; reload the page');
+  expect.soft(requests, 'a 404 is requested once').toBe(1);
+  expect(errors).toEqual([]);
 });

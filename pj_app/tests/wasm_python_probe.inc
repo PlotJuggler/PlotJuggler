@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -151,6 +152,14 @@ void wasmPyWorkerChecks() {
   qInfo(
       "PJ_WASM_PY_BOOT worker_ms=%.1f %s", wasmPyMillisSince(boot_begin),
       booted ? "ok" : ("error=" + booted.error()).c_str());
+  struct stat zip_stat{};
+  qInfo(
+      "PJ_WASM_PY_STDLIB stat=%d bytes=%lld", ::stat("/lib/python314.zip", &zip_stat),
+      static_cast<long long>(zip_stat.st_size));
+  if (!booted) {  // no interpreter: the checks below would call into CPython unbooted (the stdlib walk does)
+    qInfo("PJ_WASM_PY_DONE");
+    return;
+  }
   // Then, before anything else imports: the allowed modules' lazy dependencies inside a strict, armed run (heapq
   // behind statistics.Counter, decimal's C fallback to _pydecimal behind statistics.Decimal), then the surface walk.
   if (auto lazy = compileOnDemandScriptPython(kWasmPyLazyScript)) {
@@ -287,10 +296,8 @@ void wasmPyWorkerChecks() {
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_smoke() {
   using namespace PJ::scripting;
   qInfo("PJ_WASM_PY_AVAILABLE %d", pythonAvailable() ? 1 : 0);
-  struct stat zip_stat{};
-  qInfo(
-      "PJ_WASM_PY_STDLIB stat=%d bytes=%lld", ::stat("/lib/python314.zip", &zip_stat),
-      static_cast<long long>(zip_stat.st_size));
+  struct stat zip_stat{};  // no stdlib before the first Python use downloads it (python_sandbox.cpp)
+  qInfo("PJ_WASM_PY_STDLIB_BEFORE stat=%d", ::stat("/lib/python314.zip", &zip_stat));
   const auto begin = std::chrono::steady_clock::now();
   auto compiled = compileOnDemand("python", kWasmPyFourLineScript);
   qInfo(
@@ -348,4 +355,31 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_compile_now() {
         wasmPyOutcome(runOnDemand(script, PJ::Span<const NamedValue>(x_input.data(), x_input.size()), "{}", {}, {}))
             .c_str());
   }).detach();
+}
+
+/// The stdlib download's failures, before the first successful Python use (tests/wasm/python.spec.js routes the
+/// download). Step 0, GUI thread: a recipe's handle, compiled as the GUI does (no interpreter). Step 1, GUI thread: a
+/// validate of a valid script, waiting up to `arg` ms. Step 2: that one handle run on a worker, numbered by `arg`.
+/// Step 3: a failed download's retry cooldown, `arg` ms.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_stdlib(int step, int arg) {
+  using namespace PJ::scripting;
+  static std::optional<CompiledOnDemandScript> handle;  // set by step 0 before any step 2 reads it
+  if (step == 0) {
+    auto compiled = compileOnDemand("python", kWasmPyValueScript);
+    qInfo("PJ_WASM_PY_DL_HANDLE %s", compiled ? "ok" : ("error=" + compiled.error()).c_str());
+    if (compiled) {
+      handle = std::move(*compiled);
+    }
+  } else if (step == 1) {
+    setPythonValidateWaitForTest(static_cast<std::uint64_t>(arg));
+    const auto checked = checkOnDemand("python", kWasmPyValueScript);
+    setPythonValidateWaitForTest(0);
+    qInfo("PJ_WASM_PY_DL_VALIDATE %s", wasmPyCheckOutcome(checked).c_str());
+  } else if (step == 3) {
+    setPythonStdlibRetryCooldownForTest(static_cast<std::uint64_t>(arg));
+  } else if (step == 2 && handle) {
+    std::thread([arg] {
+      qInfo("PJ_WASM_PY_DL_RUN %d %s", arg, wasmPyOutcome(runOnDemand(*handle, {}, "{}", {}, {})).c_str());
+    }).detach();
+  }
 }

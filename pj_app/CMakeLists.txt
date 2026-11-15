@@ -436,6 +436,12 @@ if(EMSCRIPTEN)
         # Three more pre-spawned workers: the Python helper, its watchdog and a script lane. A worker created while
         # the main thread waits on it never starts.
         set_target_properties(pj_app PROPERTIES QT_WASM_PTHREAD_POOL_SIZE 7)
+        # The stdlib, beside the module under the name the first Python use downloads (python_sandbox.cpp) and
+        # scripts/package_wasm.mjs packages: not in the startup download.
+        add_custom_command(TARGET pj_app POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PJ_WASM_PYTHON_STDLIB}"
+                "$<TARGET_FILE_DIR:pj_app>/python_stdlib.zip"
+            VERBATIM)
         target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_PYTHON)
         if(PJ_WASM_ENABLE_INGRESS_PROBE)
             # The stdlib probe runs Python outside the sandbox; the symbols come through pj_scripting's link.
