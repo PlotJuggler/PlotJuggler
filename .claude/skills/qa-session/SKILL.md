@@ -78,11 +78,16 @@ Before calling something a bug, reproduce it once more from a fresh `PJQA_HOME`.
 `scripts/qa/pjqa.py run <file>` replays one step per line and stops at the first failure:
 
 ```
-ui_click {"name":"buttonPlay"}          # a tool call; it must succeed
-refuse ui_click {"name":"noSuchWidget"} # this call must fail
+# a tool call; it must succeed
+ui_click {"name":"buttonPlay"}
+# this call must fail
+refuse ui_click {"name":"noSuchWidget"}
 get_status {}
-expect "playing":true                   # the previous result contains this text
+# the previous result contains this text
+expect "playing":true
 ```
+
+A `#` starts a comment only at the beginning of a line.
 
 Name widgets by objectName in scripts, never by ref (refs change between runs). `scripts/qa/smoke.pjqa` is the
 example, over the signals fixture.

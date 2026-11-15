@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: MPL-2.0
 """Drive an isolated PlotJuggler 4 for QA, through its MCP server's tools (the UI tools included).
 
-  pjqa.py start [--home DIR] [--xvfb] [--plugin-dir DIR] [-- APP_ARGS...]
+  pjqa.py [--home DIR] start [--xvfb] [--plugin-dir DIR] [-- APP_ARGS...]
   pjqa.py call TOOL ['{"json": "args"}']     prints the result text; exit 1 when the tool failed
   pjqa.py run SCRIPT                         replays a script (see below); exit 1 on the first failure
   pjqa.py stop
+
+--home (or $PJQA_HOME) selects the instance; give every command the same one.
 
 The app runs from this checkout's run.sh with --mcp-ui-tools, offscreen (or under xvfb-run), under a
 private HOME, so it never touches the user's settings, windows or running instances. Linux only.
@@ -21,6 +23,7 @@ import json
 import os
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -29,7 +32,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_HOME = Path(tempfile.gettempdir()) / "pjqa"
+DEFAULT_HOME = Path(tempfile.gettempdir()) / f"pjqa-{os.getuid()}"
 STATE = "pjqa.json"
 
 
@@ -37,11 +40,43 @@ def home_dir(args):
     return Path(args.home or os.environ.get("PJQA_HOME") or DEFAULT_HOME)
 
 
-def start(args):
+def private_home(args):
+    """The home, created owner-only: it holds the MCP bearer token."""
     home = home_dir(args)
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = home.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        sys.exit(f"pjqa: {home} is not a directory owned by you")
+    home.chmod(0o700)
+    return home
+
+
+def birth(pid):
+    """The process's start time (clock ticks since boot), or None when no such process: with the pid it names one
+    process, so a recorded pid that the kernel has reused is never signalled."""
+    try:
+        return int(Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def terminate(app):
+    """Ends a launched app that was never handed over to `stop`."""
+    try:
+        os.killpg(app.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        app.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        os.killpg(app.pid, signal.SIGKILL)
+        app.wait()
+
+
+def start(args):
+    home = private_home(args)
     if (home / STATE).exists():
         sys.exit(f"pjqa: an instance is recorded in {home}; run `pjqa.py stop` first")
-    home.mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "HOME": str(home),
@@ -56,26 +91,38 @@ def start(args):
     command += args.app_args
     if args.xvfb:
         command = ["xvfb-run", "-a", "-s", "-screen 0 1920x1080x24"] + command
+        env["QT_QPA_PLATFORM"] = "xcb"  # a Wayland session would otherwise put the app on the user's desktop
+        env.pop("WAYLAND_DISPLAY", None)
     else:
         env["QT_QPA_PLATFORM"] = "offscreen"
     instances = home / ".local/share/PlotJuggler/PlotJuggler4/mcp-instances"
     for stale in instances.glob("*.json") if instances.is_dir() else []:
         stale.unlink()  # left by an instance that was killed; the new one writes its own
-    log = open(home / "app.log", "wb")
-    app = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        if app.poll() is not None:
-            sys.exit(f"pjqa: the app exited ({app.returncode}); see {home / 'app.log'}")
-        for entry in instances.glob("*.json") if instances.is_dir() else []:
-            found = json.loads(entry.read_text())
-            state = {"group": app.pid, "pid": found["pid"], "port": found["port"], "token": found["token"]}
-            (home / STATE).write_text(json.dumps(state))
-            print(f"pjqa: ready (pid {found['pid']}, home {home})")
-            return
-        time.sleep(0.2)
-    os.killpg(app.pid, signal.SIGTERM)
-    sys.exit(f"pjqa: no MCP server within 60 s; see {home / 'app.log'}")
+    with open(home / "app.log", "wb") as log:
+        app = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if app.poll() is not None:
+                sys.exit(f"pjqa: the app exited ({app.returncode}); see {home / 'app.log'}")
+            for entry in instances.glob("*.json") if instances.is_dir() else []:
+                found = json.loads(entry.read_text())
+                state = {
+                    "group": [app.pid, birth(app.pid)],
+                    "pid": [found["pid"], birth(found["pid"])],
+                    "port": found["port"],
+                    "token": found["token"],
+                }
+                fd = os.open(home / STATE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as out:
+                    json.dump(state, out)
+                print(f"pjqa: ready (pid {found['pid']}, home {home})")
+                return
+            time.sleep(0.2)
+        sys.exit(f"pjqa: no MCP server within 60 s; see {home / 'app.log'}")
+    except BaseException:  # a timeout, an interrupt or an error: no state file names the app, so end it here
+        terminate(app)
+        raise
 
 
 def state_of(args):
@@ -154,7 +201,13 @@ def stop(args):
         print("pjqa: nothing to stop")
         return
     state = json.loads(path.read_text())
-    for pid, kill in ((state["pid"], os.kill), (state["group"], os.killpg)):
+    (app, app_birth), (group, group_birth) = state["pid"], state["group"]
+    app_alive = app_birth is not None and birth(app) == app_birth
+    # The group outlives its leader while the app is in it, so either one alive proves the group is still ours.
+    targets = [(app, os.kill)] if app_alive else []
+    if app_alive or (group_birth is not None and birth(group) == group_birth):
+        targets.append((group, os.killpg))
+    for pid, kill in targets:
         try:
             kill(pid, signal.SIGTERM)
         except ProcessLookupError:
