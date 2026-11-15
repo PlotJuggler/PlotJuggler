@@ -176,8 +176,8 @@ test('a preset that fails anywhere leaves the workspace as it was', async ({ pag
 });
 
 const APP_URL = process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html';
-// A sample load may stall the page's main thread no longer than this.
-const MAX_FRAME_GAP_MS = 2000;
+// A sample load may block the page's main thread in one task no longer than this.
+const MAX_MAIN_THREAD_TASK_MS = 2000;
 const INDEX_URL = new URL('presets/index.json', APP_URL).href;
 // A 1x1 PNG thumbnail.
 const PNG = Buffer.from(
@@ -974,7 +974,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
   }
 });
 
-// @serial: its frame-gap bound fails on a loaded runner (playwright.config.js).
+// @serial: its main-thread time bound fails on a loaded runner (playwright.config.js).
 test('anymal sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page }) => {
   test.setTimeout(300000);
   const errors = [];
@@ -983,33 +983,53 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
     const context = page.context();
     await page.close();
     const run = await bootSamples(context, errors, samples);
-    // The longest the page's main thread goes without painting a frame while `load` runs.
-    const longestFrameGap = async (load) => {
+    // While `load` runs: the longest main-thread task, and the longest gap between
+    // painted frames. Only the task is bounded. The gap also holds the frame after
+    // it, and headless Chromium has no GPU: compositing reads the WebGL canvas
+    // back and waits for SwiftShader to rasterise the first Scene3D frame (HDR,
+    // MSAA, SSAO, EDL, shadows), 450-630 ms on top of the 600-990 ms workspace
+    // restore task. That wait is the test machine's software GL, not the app.
+    // Firefox has no Long Tasks API, so there the frame gap stands in for the
+    // task, compositor time included.
+    const watchMainThread = async (load) => {
       await run.page.evaluate(() => {
-        const watch = { last: performance.now(), longest: 0, running: true };
+        const watch = { last: performance.now(), frameGap: 0, task: null, running: true, observer: null };
         const tick = (now) => {
-          watch.longest = Math.max(watch.longest, now - watch.last);
+          watch.frameGap = Math.max(watch.frameGap, now - watch.last);
           watch.last = now;
           if (watch.running) {
             requestAnimationFrame(tick);
           }
         };
         requestAnimationFrame(tick);
-        window.pjSampleFrameWatch = watch;
+        if (PerformanceObserver.supportedEntryTypes.includes('longtask')) {
+          watch.task = 0;
+          const record = entries => entries.forEach(entry => { watch.task = Math.max(watch.task, entry.duration); });
+          watch.observer = new PerformanceObserver(list => record(list.getEntries()));
+          watch.observer.observe({ type: 'longtask' });
+          watch.record = record;
+        }
+        window.pjSampleMainThreadWatch = watch;
       });
       await load();
       return run.page.evaluate(() => {
-        window.pjSampleFrameWatch.running = false;
-        return window.pjSampleFrameWatch.longest;
+        const watch = window.pjSampleMainThreadWatch;
+        watch.running = false;
+        if (watch.observer) {
+          watch.record(watch.observer.takeRecords());
+          watch.observer.disconnect();
+        }
+        return { frameGap: watch.frameGap, task: watch.task };
       });
     };
     const openAnymal = async (pass, staged) => {
-      const longest = await longestFrameGap(async () => {
+      const { frameGap, task } = await watchMainThread(async () => {
         expect(await pickSample(run, samples, 'anymal'), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
         await waitForScene3DModels(run.page, run.messages, anymalLoaded, 60000);
       });
-      console.log(`anymal ${pass}: longest frame gap ${Math.round(longest)} ms`);
-      expect(longest, pass).toBeLessThan(MAX_FRAME_GAP_MS);
+      console.log(`anymal ${pass}: longest task ${task === null ? 'n/a' : Math.round(task)} ms, `
+        + `longest frame gap ${Math.round(frameGap)} ms`);
+      expect(task ?? frameGap, pass).toBeLessThan(MAX_MAIN_THREAD_TASK_MS);
       // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a
       // replaced sample releases its own, so nothing else is left behind.
       expect(await stagedFiles(run.page, run.messages), pass).toBe(staged);
