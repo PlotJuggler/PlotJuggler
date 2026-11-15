@@ -2,9 +2,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The one entry point of the browser's Arrow side module (plugins/arrow.wasm, cmake/PjWasmArrow.cmake), shared by
-// the module (arrow_side_module.cpp) and the app that dlopen()s it (ArrowSideModule.cpp). Plain C: the two are
-// separate WebAssembly modules, each with its own copy of the plugin SDK, and meet only at these vtables.
+// The one entry point of the browser's Arrow side module (plugins/arrow.wasm, cmake/PjWasmOfficialPlugins.cmake),
+// shared by the module (arrow_side_module.cpp) and the app that dlopen()s it (ArrowSideModule.cpp). Plain C: the two
+// are separate WebAssembly modules, each with its own copy of the plugin SDK, and meet only at these vtables.
 
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/message_parser_protocol.h"

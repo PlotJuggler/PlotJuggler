@@ -64,8 +64,11 @@ here) under `presets/`; see [Presets](#presets).
 
 The browser cannot `dlopen` extensions, so a fixed set of official plugins is
 compiled from a pinned `pj-official-plugins` commit (`cmake/PjWasmDependencies.cmake`)
-and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
-`cmake/PjWasm<Name>.cmake` recipe (the CAN and Arrow families share `PjWasmCan` and `PjWasmArrow`; the last three build Apache Arrow C++ through `PjWasmArrowDependencies`) and an option, all `ON` by default:
+and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each plugin describes
+its own WebAssembly build in a `wasm.cmake` next to its sources (the contract with this
+build is in that repository's `cmake/PjWasmPlugin.cmake`); `cmake/PjWasmOfficialPlugins.cmake`
+lists the plugins, creates one option per entry, all `ON` by default, and generates
+their registration (the Arrow family builds Apache Arrow C++ through `PjWasmArrowDependencies`):
 
 | Option | Plugin |
 |---|---|
@@ -79,6 +82,7 @@ and registered statically by `pj_app/src/BuiltinPlugins.cpp`. Each has a
 | `PJ_WASM_WITH_3D_LOADER` | `data_load_3d` (PCD/PLY) |
 | `PJ_WASM_WITH_DUMMY_STREAM` | `data_stream_dummy` |
 | `PJ_WASM_WITH_PJ_BRIDGE` | `data_stream_pj_bridge` (over the browser's WebSocket) |
+| `PJ_WASM_WITH_FOXGLOVE_BRIDGE` | `data_stream_foxglove_bridge` (over the browser's WebSocket; a robot's `ws://` bridge needs TLS in front of it on an `https://` page) |
 | `PJ_WASM_WITH_ROS` | `parser_ros` |
 | `PJ_WASM_WITH_PROTOBUF` | `parser_protobuf` |
 | `PJ_WASM_WITH_JSON` | `parser_json` |
@@ -103,22 +107,22 @@ Bridge needs none of them: it connects with the browser's own WebSocket, so a pa
 served over HTTPS reaches only `wss://` bridges (mixed content), and the browser
 reports a failed connection without its cause. Its stream presets are described
 in [`WASM_PRESETS.md`](./WASM_PRESETS.md#streaming-sources). Adding another
-plugin needs a recipe, a link block in `pj_app/CMakeLists.txt` and a
-registration in `BuiltinPlugins.cpp`; its export macros must name an
-unqualified class (or use the `_NAMED` variants) so the static getter symbol is
-valid. Every new static archive also needs the symbol-collision audit described
-in the root `CLAUDE.md`.
+plugin is described in the "WebAssembly build" section of the
+[pj-official-plugins README](https://github.com/PlotJuggler/pj-official-plugins#webassembly-build):
+a `wasm.cmake` in its directory there, one line in `PJ_WASM_OFFICIAL_PLUGIN_DIRS`
+here, and a pin that contains it.
 
 ### The Arrow family as a side module (`PJ_WASM_ARROW_SIDE_MODULE`)
 
 On by default whenever the three Arrow plugins are built
 (`-DPJ_WASM_ARROW_SIDE_MODULE=OFF` links them into the app instead). The Parquet
 loader, the Arrow IPC parser, the Data Exporter and Arrow C++ leave
-`plotjuggler4.wasm`: they are linked (`cmake/PjWasmArrow.cmake`) into the
-Emscripten side module `plugins/arrow.wasm`, which `package_wasm.mjs` puts in the
-bundle directory (immutable, `.br`/`.gz` like the module) and
-`wasm_size_budget.mjs` reports apart from the startup download (an optional third
-argument budgets it). An `OFF` configure deletes a module an earlier build left,
+`plotjuggler4.wasm`: built from their `wasm.cmake` like every other plugin
+(`PJ_WASM_ARROW_SIDE_MODULE_DIRS` in `cmake/PjWasmOfficialPlugins.cmake` names
+them), they are linked into the Emscripten side module `plugins/arrow.wasm`
+instead of the app. `package_wasm.mjs` puts it in the bundle directory
+(immutable, `.br`/`.gz` like the module) and `wasm_size_budget.mjs` reports it
+apart from the startup download (an optional third argument budgets it). An `OFF` configure deletes a module an earlier build left,
 so it is never packaged. The module is larger than the family's share of the
 static build: it carries its own copies of the plugin SDK, zstd and lz4, and
 dead-code elimination cannot cross the module boundary.
@@ -170,20 +174,21 @@ Rules the mechanism depends on:
   failure, so such a wait never outlives the load; once the module is linked,
   a start reports a failure at once (a stale module lacking an encoding).
   A resolution on the main thread only starts the load and resolves without
-  the parser: no source the browser ships binds a parser there. The one that
-  advertises topics there (PJ Bridge, from `start()`, with the topics its dialog
-  found) would classify an `arrow-ipc` topic before the load without the Arrow
-  IPC parser's object routes (Mosaico ontologies, video frames). It forwards the
-  server's encoding, and no bridge backend sends `arrow-ipc`: ROS 2 sends
-  `ros2msg`, FastDDS and RTI `omgidl` (only the MCAP test player forwards a
-  file's own encoding). `FileLoader` resumes its `.parquet` load
+  the parser: no source the browser ships binds a parser there. Two advertise
+  topics there, from `start()`, and an `arrow-ipc` topic advertised before the
+  load would be classified without the Arrow IPC parser's object routes (Mosaico
+  ontologies, video frames). Neither carries one: the Foxglove Bridge advertises
+  and binds only the encodings it routes (`ros2msg`, `omgidl`, `protobuf`,
+  `json`), and the PJ Bridge forwards its server's encoding, which no bridge
+  backend makes `arrow-ipc` (ROS 2 sends `ros2msg`, FastDDS and RTI `omgidl`;
+  only the MCAP test player forwards a file's own). `FileLoader` resumes its `.parquet` load
   from the loader's callback instead of running it on its worker. The handle is never
   closed (Emscripten 5.0.5 deadlocks re-opening a module).
 - **What the side module must not link:** the sysroot's zlib is not position
   independent, so Arrow's zlib dependency resolves to the main module's.
 - **The side module exports nothing but its entry point** (`EMSCRIPTEN_KEEPALIVE`).
   Everything it links is built with hidden visibility, libc++'s own annotations
-  disabled (`cmake/PjWasmArrow.cmake`), and it comes last on the main link line
+  disabled (`pj_wasm_add_arrow_side_module`), and it comes last on the main link line
   (`CMAKE_CXX_STANDARD_LIBRARIES`). wasm-ld keeps a shared definition over a weak
   one it meets later, so any inline function or typeinfo the module exported
   would otherwise resolve to it, and be missing until the first `dlopen()`. The
@@ -396,16 +401,29 @@ cmake ... -DPJ_WASM_WITH_PYTHON=ON -DPJ_WASM_PYTHON_CACHE_DIR="$HOME/.cache/pj-w
 
 What to know before changing it:
 
-- **Size budget.** It adds about 1.9 MB to the Brotli download (2026-10-21,
-  the acceptance configuration with and without it), about 12 % of the
-  production package's 16.13 MB. CI fails the production package above
+- **Size budget.** At startup it adds the interpreter linked into the module,
+  about 1.2 MB of Brotli download: 1.9 MB measured with and without Python
+  (2026-10-21), less the 0.68 MB the stdlib zip took before it moved out of the
+  module (2026-11-15, production package 15.87 MB -> 15.19 MB). The stdlib is
+  downloaded on demand, below. CI fails the production package above
   16,932,000 B, 5 % over that measurement, raised to 17,090,000 B for the MCP
   server in the browser (+156 KB, 2026-11-11), and set to 20,000,000 B on
   2026-11-14 to leave room for built-in plugins (`scripts/wasm_size_budget.mjs`; the
   sample `presets/` are fetched on demand and not counted): an absolute budget,
   since both configurations now carry Python and a delta would need a third
-  build. About 0.67 MB of it is the stdlib zip, stored uncompressed
-  so the package's Brotli compresses it with the module.
+  build. The stdlib zip (0.67 MB Brotli, stored uncompressed so the
+  package's Brotli compresses it) is not part of it: it is a separate asset,
+  `python_stdlib.zip` in the content-addressed bundle beside the module, which
+  the first Python use downloads (a synchronous request on the Python worker,
+  `python_sandbox.cpp`) to `/lib/python314.zip` before the interpreter boots.
+  The budget leaves it out. A failed download (the network, an HTTP error,
+  a body that is not a zip; a 404 means the app was redeployed since the page
+  loaded, so it says to reload) fails that use with the reason and is not
+  kept by the script: uses within 10 s of the failure get the same error
+  without a new request (a playback re-runs scripts every frame), the first
+  use after downloads again, the same recipe included; a 404 is answered
+  without a request for the rest of the session. A validate meanwhile reports
+  the script unchecked, not invalid (`tests/wasm/python.spec.js`).
 - **The stdlib zip** holds only the modules that importing the roots in
   `stdlib_zip.py` loads (68 of them). A module the stdlib imports
   lazily is missed unless a root names it, and even one in the zip cannot be

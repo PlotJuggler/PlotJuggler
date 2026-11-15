@@ -14,7 +14,7 @@ extern const PJ_message_parser_vtable_t* pj_static_get_message_parser_vtable_Arr
 extern const PJ_toolbox_vtable_t* pj_static_get_toolbox_vtable_DataExporterToolbox() noexcept;
 extern const PJ_dialog_vtable_t* pj_static_get_dialog_vtable_DataExporterDialog() noexcept;
 
-// The module's one export: everything else it links is built with hidden visibility (cmake/PjWasmArrow.cmake).
+// The module's one export: everything else it links is built with hidden visibility (pj_wasm_add_arrow_side_module).
 extern "C" EMSCRIPTEN_KEEPALIVE PjArrowSidePlugins pj_arrow_side_plugins() {
   return {
       .parquet_source = pj_static_get_data_source_vtable_ParquetSource(),

@@ -22,6 +22,8 @@ void prestartPythonHelper() {}
 
 void setPythonValidateWaitForTest(std::uint64_t /*millis*/) {}
 
+void setPythonStdlibRetryCooldownForTest(std::uint64_t /*millis*/) {}
+
 Expected<sdk::ScriptCheck> checkOnDemandScriptPython(std::string_view /*source*/) {
   return unexpected(std::string(kUnavailableMessage));
 }

@@ -1,6 +1,6 @@
 # Copyright 2026 Davide Faconti
 # SPDX-License-Identifier: MPL-2.0
-"""stdlib_zip.py <Lib dir> <out.zip>: the pyc-only stdlib zip the browser build embeds.
+"""stdlib_zip.py <Lib dir> <out.zip>: the pyc-only stdlib zip the browser build serves beside its module.
 
 Run by the native build Python of the same CPython release (`python -I`), so the bytecode matches the interpreter
 that reads it. The zip holds the modules that importing ROOTS loads and nothing else (the full stdlib would add about

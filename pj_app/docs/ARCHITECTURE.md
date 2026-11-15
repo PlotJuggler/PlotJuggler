@@ -557,7 +557,7 @@ Scene3D counterpart, reading the view through `SceneViewTestAccess`. With
 `PJ_WASM_WITH_PYTHON` it also includes `tests/wasm_python_probe.inc` (the on-demand
 Python checks that the repo-root `tests/wasm/python.spec.js` asserts) and compiles
 `tests/wasm_python_stdlib_probe.cpp`, which walks what a strict script can reach and
-imports it from the embedded stdlib zip.
+imports it from the stdlib zip.
 
 ## MCP server
 

@@ -316,8 +316,8 @@ void ensureLoaded(PJ::ExtensionCatalogService& catalog, QObject* context, std::f
 void installDeferredParsers(PJ::ExtensionCatalogService& catalog) {
   // A poll thread only asks the main thread to start the load: it must never wait on it (setDeferredParsers). A
   // resolution on the main thread only starts it, and resolves without the parser: no source the browser ships binds
-  // there. The one that advertises there (PJ Bridge, from start()) would classify an arrow-ipc topic without the
-  // parser's object routes (Mosaico ontologies, video); no bridge backend sends arrow-ipc (WASM_DEPLOYMENT.md).
+  // there. The bridges advertise there (from start()), which would classify an arrow-ipc topic without the parser's
+  // object routes (Mosaico ontologies, video), but neither carries arrow-ipc (WASM_DEPLOYMENT.md).
   catalog.setDeferredParsers(parserEncodings(), [&catalog]() {
     if (QThread::isMainThread()) {
       startLoad(catalog);

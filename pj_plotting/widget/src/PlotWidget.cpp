@@ -57,6 +57,7 @@
 #include "pj_runtime/CurveDisplayName.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_widgets/AppSettings.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
@@ -657,7 +658,7 @@ void PlotWidget::showPointValues(QPoint paint_point) {
   };
 
   const QPointF mouse_in_plot = paint_to_plot(paint_point);
-  const int precision = QSettings().value(u"Preferences::precision"_s, 3).toInt();
+  const int precision = valuePrecision();
 
   QString text;
   int min_distance_sqr = kHoverHitRadiusPx * kHoverHitRadiusPx;

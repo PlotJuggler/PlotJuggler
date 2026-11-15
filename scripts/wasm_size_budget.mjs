@@ -5,10 +5,12 @@
 // Usage: node scripts/wasm_size_budget.mjs <manifest.json> <budget bytes> [<side-module budget bytes>]
 //
 // What a browser downloads to start the app from a package (a scripts/package_wasm.mjs manifest): every file's Brotli
-// representation, or its identity when it has none. The sample presets (presets/) and the side modules (the bundle's
-// plugins/) are fetched on demand and left out; each side module is reported, and checked against the optional
-// side-module budget. Fails when one exceeds its budget.
+// representation, or its identity when it has none. The sample presets (presets/), the Python stdlib and the side
+// modules (the bundle's plugins/) are fetched on demand and left out; each side module is reported, and checked against
+// the optional side-module budget. Fails when one exceeds its budget.
 import { readFile } from 'node:fs/promises';
+
+import { PYTHON_STDLIB } from './package_wasm.mjs';
 
 const [manifestPath, budgetText, sideModuleBudgetText] = process.argv.slice(2);
 const budget = Number(budgetText);
@@ -21,7 +23,7 @@ const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 const download = file => (file.representations.br ?? file.representations.identity).bytes;
 const sideModule = file => file.path.startsWith(`assets/${manifest.bundleId}/plugins/`);
 const bytes = manifest.files
-  .filter(file => !file.path.startsWith('presets/') && !sideModule(file))
+  .filter(file => !file.path.startsWith('presets/') && !file.path.endsWith(`/${PYTHON_STDLIB}`) && !sideModule(file))
   .reduce((sum, file) => sum + download(file), 0);
 process.stdout.write(`Brotli download: ${bytes} B (budget ${budget} B, ${(100 * bytes / budget).toFixed(1)} % of it)\n`);
 let failed = bytes > budget;

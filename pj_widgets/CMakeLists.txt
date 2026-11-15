@@ -98,6 +98,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/StateTransitionsView.h
     include/pj_widgets/Style.h
     include/pj_widgets/SvgButton.h
+    include/pj_widgets/AppSettings.h
     include/pj_widgets/SvgUtil.h
     include/pj_widgets/Scrollbar.h
     include/pj_widgets/TailFollowOverlay.h

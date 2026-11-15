@@ -1720,6 +1720,7 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmPythonSmokeProbe = () => Module._pj_wasm_test_python_smoke?.();
   globalThis.pjWasmPythonHoldGilProbe = () => Module._pj_wasm_test_python_hold_gil?.();
   globalThis.pjWasmPythonCompileNowProbe = () => Module._pj_wasm_test_python_compile_now?.();
+  globalThis.pjWasmPythonStdlibProbe = (step, arg) => Module._pj_wasm_test_python_stdlib?.(step, arg);
 });
 // clang-format on
 

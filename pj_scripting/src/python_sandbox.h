@@ -14,6 +14,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,10 +31,20 @@ namespace py = pybind11;
 /// fragile, and the watchdog thread outlives every caller), then leaves the GIL released: every entry point takes it
 /// with `py::gil_scoped_acquire`. The boot installs the audit hook and the allocation wrapper while only the booting
 /// thread runs Python, and imports the modules scripts may import while nothing is armed (a first import opens files,
-/// which an armed hook refuses). Idempotent; any thread. Boots once even when it fails: every call then throws
-/// `std::runtime_error` with the first failure, and the caller must not touch Python. The interpreter is unusable, and
-/// the GIL is free after a failure past the start but still held by the booting thread when CPython failed to start.
+/// which an armed hook refuses). Idempotent; any thread but the browser's main thread, where it always throws. Boots
+/// once even when it fails: every call then throws `std::runtime_error` with the first failure, and the caller must not
+/// touch Python. The interpreter is unusable, and the GIL is free after a failure past the start but still held by the
+/// booting thread when CPython failed to start. In the browser the first call first downloads the stdlib (blocking for
+/// up to 120 s). A failed download throws `StdlibDownloadError`; calls within 10 s of it rethrow it without a request,
+/// the next one after tries again, and a 404 (the app was redeployed) is rethrown for the whole session.
 void ensureInterpreter();
+
+/// The browser's stdlib download failed (the network, the server, or not a zip): unlike a failed boot, it is retried.
+struct StdlibDownloadError : std::runtime_error {
+  explicit StdlibDownloadError(const std::string& what, bool sticky_for_session = false)
+      : std::runtime_error(what), sticky(sticky_for_session) {}
+  bool sticky;  ///< only a page reload helps (HTTP 404)
+};
 
 /// What a script call runs under, beyond the limits and the hook every call gets. kCompatible: nothing more, the
 /// filters' profile, so filters written before the sandbox run unchanged (python_engine.h). kStrict: the on-demand

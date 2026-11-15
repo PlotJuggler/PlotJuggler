@@ -1388,17 +1388,28 @@ void Scene3DDockWidget::refreshFrameOverlayCombo() {
     return;
   }
   QSignalBlocker block(frame_overlay_combo_);
-  frame_overlay_combo_->clear();
-  for (const auto& row : available_frames_) {
-    const QString name = QString::fromStdString(row.name);
-    const QString display = QString(row.depth * 2, QChar(' ')) + name;
-    frame_overlay_combo_->addItem(display, name);
+  // Callers refresh on every frame-set and fixed-frame change, mostly with the
+  // same frame list. Rebuilding a robot's frame tree item by item is the costly
+  // part, so it only happens when the list differs.
+  const auto display_of = [](const auto& row) {
+    return QString(row.depth * 2, QChar(' ')) + QString::fromStdString(row.name);
+  };
+  bool unchanged = frame_overlay_combo_->count() == available_frames_.size();
+  for (int i = 0; unchanged && i < available_frames_.size(); ++i) {
+    const auto& row = available_frames_[i];
+    unchanged = frame_overlay_combo_->itemText(i) == display_of(row) &&
+                frame_overlay_combo_->itemData(i).toString() == QString::fromStdString(row.name);
+  }
+  if (!unchanged) {
+    frame_overlay_combo_->clear();
+    for (const auto& row : available_frames_) {
+      frame_overlay_combo_->addItem(display_of(row), QString::fromStdString(row.name));
+    }
   }
   const QString current = currentFixedFrame();
   const int idx = frame_overlay_combo_->findData(current);
-  if (idx >= 0) {
-    frame_overlay_combo_->setCurrentIndex(idx);
-  }
+  // An unknown frame shows the first row, as a freshly filled combo would.
+  frame_overlay_combo_->setCurrentIndex(std::max(idx, 0));
   layoutFrameOverlayCombo();
 }
 

@@ -238,8 +238,10 @@ endif()
 if(NOT EMSCRIPTEN)
   target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="${_pj_python_home_define}")
 elseif(PJ_WASM_WITH_PYTHON)
-  # The stdlib zip is embedded at /lib/python314.zip.
-  target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="/")
+  # The stdlib zip is downloaded to /lib/<its name> on first use (python_sandbox.cpp).
+  get_filename_component(_pj_python_stdlib_name "${PJ_WASM_PYTHON_STDLIB}" NAME)
+  target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="/"
+    PJ_WASM_PYTHON_STDLIB="/lib/${_pj_python_stdlib_name}")
 endif()
 
 # ---------------------------------------------------------------------------

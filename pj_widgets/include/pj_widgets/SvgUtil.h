@@ -9,11 +9,11 @@
 #include <QImage>
 #include <QPainter>
 #include <QPixmap>
-#include <QSettings>
 #include <QString>
 #include <QSvgRenderer>
 #include <map>
 
+#include "pj_widgets/AppSettings.h"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
@@ -21,7 +21,7 @@ namespace PJ {
 constexpr const char* kThemeSettingsKey = "StyleSheet::theme";
 
 inline QString currentTheme() {
-  return QSettings().value(kThemeSettingsKey, "light").toString();
+  return appSetting(QString::fromLatin1(kThemeSettingsKey), QStringLiteral("light")).toString();
 }
 
 // Asset-encoding contract for monochrome SVGs (the "find" side of recolorSvgInk).
