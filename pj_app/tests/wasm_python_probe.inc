@@ -172,9 +172,40 @@ void wasmPyWorkerChecks() {
   }
 
   const std::vector<NamedValue> x_input{NamedValue{.name = "x", .value = 3.0}};
-  if (auto four = compileOnDemandScriptPython(kWasmPyFourLineScript)) {
+  // The same 4-line script in Python and in Luau, timed in alternating rounds: measured one after the other, a change
+  // of clock speed or core between the two (a hybrid CPU, a busy runner) moved their ratio by half on its own.
+  // Each line reports the median round's per-call micros.
+  auto four = compileOnDemandScriptPython(kWasmPyFourLineScript);
+  auto luau4 = compileOnDemandScript("local inputs = ...\nlocal x = inputs.x\nreturn { y = math.sqrt(x * x + 1.0) }\n");
+  if (four && luau4) {
+    const PJ::Span<const NamedValue> luau_inputs(x_input.data(), x_input.size());
     const std::string outcome = wasmPyOutcome(wasmPyRun(*four, x_input));
-    qInfo("PJ_WASM_PY_PERCALL four_line_mean_us=%.2f %s", wasmPyMeanMicros(*four, x_input), outcome.c_str());
+    // Untimed, like Python's run above: Luau's first call on this thread builds its sandboxed state.
+    const std::string luau_outcome = wasmPyOutcome(runOnDemandScript(*luau4, luau_inputs, "{}", {}));
+    // The median round: a summed mean let one stall of a few ms (a migration, a GC) carry the ratio alone.
+    // A 100-call round lasts milliseconds, far above the browsers' coarsened clock step.
+    constexpr int kRounds = 21;
+    constexpr int kCallsPerRound = 100;
+    int failed = 0;
+    std::vector<double> python_rounds;
+    std::vector<double> luau_rounds;
+    const auto time_round = [&failed](auto&& run) {
+      const auto begin = std::chrono::steady_clock::now();
+      for (int i = 0; i < kCallsPerRound; ++i) {
+        failed += run() ? 0 : 1;
+      }
+      return wasmPyMillisSince(begin) * 1000.0 / kCallsPerRound;
+    };
+    for (int round = 0; round < kRounds; ++round) {
+      python_rounds.push_back(time_round([&] { return bool(wasmPyRun(*four, x_input)); }));
+      luau_rounds.push_back(time_round([&] { return bool(runOnDemandScript(*luau4, luau_inputs, "{}", {})); }));
+    }
+    const auto median = [](std::vector<double>& rounds) {
+      std::nth_element(rounds.begin(), rounds.begin() + kRounds / 2, rounds.end());
+      return rounds[kRounds / 2];
+    };
+    qInfo("PJ_WASM_PY_PERCALL four_line_mean_us=%.2f failed=%d %s", median(python_rounds), failed, outcome.c_str());
+    qInfo("PJ_WASM_PY_PERCALL luau_four_line_mean_us=%.2f %s", median(luau_rounds), luau_outcome.c_str());
   }
 
   if (auto forty_three = compileOnDemandScriptPython(kWasmPyFortyThreeLineScript)) {
@@ -213,14 +244,6 @@ void wasmPyWorkerChecks() {
     qInfo(
         "PJ_WASM_PY_LOOP luau_pure ns_per_iter=%.1f %s", wasmPyMillisSince(begin) * 1e6 / 200000.0,
         wasmPyOutcome(result).c_str());
-  }
-  if (auto luau4 =
-          compileOnDemandScript("local inputs = ...\nlocal x = inputs.x\nreturn { y = math.sqrt(x * x + 1.0) }\n")) {
-    const auto begin = std::chrono::steady_clock::now();
-    for (int i = 0; i < 2001; ++i) {
-      (void)runOnDemandScript(*luau4, PJ::Span<const NamedValue>(x_input.data(), x_input.size()), "{}", {});
-    }
-    qInfo("PJ_WASM_PY_PERCALL luau_four_line_mean_us=%.2f", wasmPyMillisSince(begin) * 1000.0 / 2001.0);
   }
 
   if (auto spin = compileOnDemandScriptPython("def evaluate(inputs, params):\n    while True:\n        pass\n")) {

@@ -5,7 +5,7 @@
 // Caddyfile (PJ_CADDY, else caddy on PATH), configured only through its environment, in front of
 // the acceptance package (PJ_WASM_ACCEPTANCE_PACKAGE_DIR) and the fake bridge, with a throwaway
 // CA. Chromium maps the robot's name to loopback and trusts exactly its certificate.
-const { execFileSync, spawn } = require('node:child_process');
+const { execFileSync, spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -28,6 +28,7 @@ const { datasetCount } = require('./support/preset_server');
 
 const REPOSITORY = path.join(__dirname, '..', '..');
 const CADDYFILE = path.join(REPOSITORY, 'docs', 'wasm', 'Caddyfile');
+const CADDY = process.env.PJ_CADDY || 'caddy';
 const PACKAGE = path.resolve(
   process.env.PJ_WASM_ACCEPTANCE_PACKAGE_DIR || path.join(REPOSITORY, 'build-wasm-probe', 'deploy'));
 const HOST = 'robot.test';
@@ -155,7 +156,7 @@ async function freePorts(count) {
 
 // Runs docs/wasm/Caddyfile with `env` (tracked from its spawn) and resolves once it serves.
 async function startCaddy(env) {
-  const caddy = spawn(process.env.PJ_CADDY || 'caddy', ['run', '--config', CADDYFILE, '--adapter', 'caddyfile'],
+  const caddy = spawn(CADDY, ['run', '--config', CADDYFILE, '--adapter', 'caddyfile'],
     { env: { ...process.env, ...env }, stdio: ['ignore', 'ignore', 'pipe'] });
   const exited = new Promise(resolve => caddy.once('close', resolve));
   track({
@@ -180,6 +181,10 @@ async function startCaddy(env) {
 
 // The robot: the fake bridge, and Caddy in front of it and of the site.
 async function startRobot() {
+  // A workstation may have no Caddy; CI installs it (wasm-ci.yml), so there a missing one fails.
+  // An explicit PJ_CADDY that does not run is a misconfiguration, so it fails rather than skips.
+  test.skip(!process.env.CI && !process.env.PJ_CADDY && Boolean(spawnSync(CADDY, ['version']).error),
+    'Caddy is not installed: set PJ_CADDY or put caddy on PATH (CI always runs these cases)');
   const bridge = track(await startBridgeServer());
   const [httpsPort, httpPort, adminPort] = await freePorts(3);
   const state = fs.mkdtempSync(path.join(work, 'caddy-'));
