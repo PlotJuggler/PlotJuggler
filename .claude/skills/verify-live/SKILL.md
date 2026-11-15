@@ -46,6 +46,7 @@ If the edit "had no effect", suspect this step before suspecting the code.
 
 **Behavioral (non-visual):**
 - Prefer an automated reproduction (gtest in the module) over eyeballing; the live run then confirms wiring, not logic.
+- To click through a UI flow without the user's display (dialogs, menus, focus, undo across widgets): the `qa-session` skill drives an isolated offscreen app and takes its screenshots.
 
 ## Step 4 — Calibrate the claim
 

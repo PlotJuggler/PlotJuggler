@@ -1,0 +1,21 @@
+# Smoke run over the signals fixture: playback, a toolbar toggle, a refusal. Leaves the app as it found it.
+#   scripts/qa/pjqa.py start --plugin-dir <built plugins> -- \
+#     -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+#   scripts/qa/pjqa.py run scripts/qa/smoke.pjqa
+get_status {}
+expect "name":"data.csv"
+ui_tree {}
+expect "Periodic"
+ui_click {"name":"buttonPlay","wait_ms":500}
+get_status {}
+expect "playing":true
+ui_key {"keys":"Space"}
+get_status {}
+expect "playing":false
+ui_click {"name":"buttonActivateGrid"}
+ui_tree {}
+expect #buttonActivateGrid "Show/Hide the grid" (checked)
+ui_click {"name":"buttonActivateGrid"}
+ui_tree {}
+expect #buttonActivateGrid "Show/Hide the grid" (unchecked)
+refuse ui_click {"name":"noSuchWidget"}

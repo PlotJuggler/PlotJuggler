@@ -427,7 +427,9 @@ menu and dialog wiring, focus, undo across widgets, odd click orders. They exist
 run turns them on with `--mcp-ui-tools` (which implies `--mcp`), never a setting, and they are not listed otherwise.
 Desktop only: the browser build has no command line to ask for them, so it does not compile them.
 
-- `ui_tree` prints the visible windows as one indented line per widget, `[ref] Class#objectName "text" (flags) WxH`,
+- `ui_tree` prints the visible windows as one indented line per widget, `[ref] Class#objectName "text" (flags) WxH`
+  (flags such as `disabled`, `checked`, `read-only`, `focus`, `modal`; button text without mnemonic markers, which
+  some platform themes add, so a script reads the same offscreen and on X11),
   the open popup and the modal dialog first; a window a modal dialog blocks (as Qt decides it) gets one line, and a
   target in it is refused, since the window system would drop its input. Unnamed, textless Qt
   containers are left out and their children listed in their place. Menu actions, tabs and the rows visible in item
@@ -435,7 +437,7 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   numbering goes on, so an older ref reads as stale rather than naming another widget. A row ref holds a
   `QPersistentModelIndex` until the next `ui_tree`; a tab ref holds its index and text, and reads as stale once
   another tab sits there. The other tools also take a widget's `objectName`, which is stable (root `CLAUDE.md`) and so
-  suits a repro script; a name several visible widgets share is refused rather than resolved to whichever a search
+  suits a repro script; a name several visible widgets share (outside the windows a modal dialog blocks) is refused rather than resolved to whichever a search
   finds first.
 - Input goes through `QWindowSystemInterface`, the path a real mouse and keyboard take, so popups, implicit grabs,
   focus on click, shortcuts and double-click synthesis behave as for a user. Points are scaled to native pixels, as a
@@ -448,13 +450,20 @@ Desktop only: the browser build has no command line to ask for them, so it does 
 - They act as the user, so they run under the user's modal dialogs (closing one is often the point):
   `mcp::runsUnderUsersDialog` says so, and `ui_tree` is one of `mcp::isReadOnlyTool`'s. Their list entries and
   that classification live in `McpProtocol`, with the others; `McpUiTools` holds only the driver.
-- Limits: drag-and-drop between widgets enters the platform drag loop, which synthetic input may not finish. Keys go
+- Limits: drag-and-drop (`QDrag`: the curve list onto a plot, dock moves) never completes. Offscreen's drag is a
+  stub that ignores every drop, and X11's drag loop follows the server's real pointer, which this input never
+  moves; gestures inside one widget (zoom box, pan, splitters, sliders) work. A QA session builds plots from a
+  layout or through menus instead. Keys go
   to the target's window after activating it, since window shortcuts need the active window: run QA sessions in a
   virtual display (`xvfb-run`, or `QT_QPA_PLATFORM=offscreen`), not on the user's desktop. On macOS the platform
   plugin, not `QWindowSystemInterface::handleKeyEvent`, delivers shortcuts, so `ui_key` shortcuts are not expected to
   fire there although the reply says the keys were pressed (not tried on a Mac). `ui_type` presses its keys into the
   window chosen when the call came in: text after a `\n` that closes that window goes nowhere, so split it into two
   calls.
+- Running a session: `scripts/qa/pjqa.py` starts an isolated offscreen instance (private HOME, `--mcp-ui-tools`),
+  sends it tool calls over HTTP with its discovery token, saves screenshots, and replays scripts of named-widget
+  steps (`scripts/qa/smoke.pjqa`). How an agent explores with it, and what it reports: the `qa-session` skill
+  (`.claude/skills/qa-session/`) and the `qa-engineer` agent (`.claude/agents/`).
 
 ## The user comes first
 
