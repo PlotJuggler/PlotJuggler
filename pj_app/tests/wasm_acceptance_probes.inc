@@ -366,6 +366,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_buttons() {
   auto* cancel = button_box != nullptr ? button_box->button(QDialogButtonBox::Cancel) : nullptr;
   if (main_window == nullptr || dialog == nullptr || button_box == nullptr || (ok == nullptr && cancel == nullptr)) {
     qWarning("PJ_WASM_DIALOG_BUTTONS_FAILED incomplete active dialog");
+    emscripten::val::global().set("pjWasmDialogButtons", std::string());
     return;
   }
   const auto center = [main_window](QWidget* button) {
@@ -374,10 +375,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_buttons() {
   };
   const QPoint ok_center = center(ok);
   const QPoint cancel_center = center(cancel);
-  qInfo(
-      "PJ_WASM_DIALOG_BUTTONS ok=%d,%d cancel=%d,%d ok_enabled=%d cancel_enabled=%d", ok_center.x(), ok_center.y(),
-      cancel_center.x(), cancel_center.y(), ok != nullptr && ok->isEnabled() ? 1 : 0,
-      cancel != nullptr && cancel->isEnabled() ? 1 : 0);
+  const QString report = QStringLiteral("ok=%1,%2 cancel=%3,%4 ok_enabled=%5 cancel_enabled=%6")
+                             .arg(ok_center.x())
+                             .arg(ok_center.y())
+                             .arg(cancel_center.x())
+                             .arg(cancel_center.y())
+                             .arg(ok != nullptr && ok->isEnabled() ? 1 : 0)
+                             .arg(cancel != nullptr && cancel->isEnabled() ? 1 : 0);
+  qInfo("PJ_WASM_DIALOG_BUTTONS %s", qPrintable(report));
+  // Also on the page: Firefox can drop the console line.
+  emscripten::val::global().set("pjWasmDialogButtons", report.toStdString());
 }
 
 // Every named, visible button of the active dialog (or, with none open, of the
