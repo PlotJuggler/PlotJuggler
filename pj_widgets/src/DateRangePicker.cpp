@@ -7,10 +7,10 @@
 // or the from/to hint colors) so they read big and match the rest of the chrome.
 // See DateRangePicker.h.
 
+#include <pj_widgets/AppSettings.h>
 #include <pj_widgets/ComboBox.h>
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/IntScrubber.h>
-#include <pj_widgets/SettingsCache.h>
 #include <pj_widgets/SvgButton.h>
 
 #include <QButtonGroup>
@@ -65,7 +65,7 @@ const QColor kToHintColor(0xe7, 0x4c, 0x3c);    // red
 // so palette() resolves to Fusion light-grey on both themes. Sourcing colors
 // from theme tokens chosen by this key is the fix.
 bool pickerThemeIsLight() {
-  return cachedSetting(u"StyleSheet::theme"_s, u"light"_s).toString().contains("light"_L1);
+  return appSetting(u"StyleSheet::theme"_s, u"light"_s).toString().contains("light"_L1);
 }
 
 // Theme-token color set for the calendar/overlay. Values mirror the app's QSS

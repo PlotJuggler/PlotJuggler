@@ -57,10 +57,10 @@
 #include "pj_runtime/CurveDisplayName.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_widgets/AppSettings.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
-#include "pj_widgets/SettingsCache.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 

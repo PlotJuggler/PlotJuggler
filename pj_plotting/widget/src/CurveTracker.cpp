@@ -19,8 +19,8 @@
 #include <map>
 using namespace Qt::StringLiterals;
 
+#include "pj_widgets/AppSettings.h"
 #include "pj_widgets/FrameworkTokens.h"
-#include "pj_widgets/SettingsCache.h"
 
 namespace PJ {
 

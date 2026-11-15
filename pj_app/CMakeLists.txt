@@ -478,9 +478,6 @@ if(PJ_BUILD_TESTS)
             src/LoadInput.h
             src/BrowserPersistence.cpp
             src/BrowserPersistence.h
-            # The one pj_widgets source BrowserPersistence needs (it invalidates the
-            # settings cache), so the runner stays off pj_widgets' closure.
-            ${CMAKE_SOURCE_DIR}/pj_widgets/src/SettingsCache.cpp
             src/FileSelectionService.cpp
             src/FileSelectionService.h
             # Pure config-parsing logic (no GUI), compiled standalone so it's
@@ -508,7 +505,6 @@ if(PJ_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/raster/ipc
         ${CMAKE_SOURCE_DIR}/pj_runtime/include
-        ${CMAKE_SOURCE_DIR}/pj_widgets/include
     )
 
     # The codecs on-demand scripts decode through, compiled standalone over Scene2D's core; turbojpeg and libpng

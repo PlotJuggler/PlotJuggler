@@ -46,7 +46,6 @@
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IntScrubber.h"
-#include "pj_widgets/SettingsCache.h"
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
@@ -605,7 +604,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       }
     }
     QSettings settings;
-    writeCachedSetting(QString::fromLatin1(kPrecisionSettingsKey), ui_->scrubberFloatPrecision->value());
+    settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
     settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());
     settings.setValue(MainWindow::kCustomTitleBarKey, ui_->customTitleBarToggle->isChecked());
     settings.setValue(MainWindow::kSystemFileDialogKey, ui_->systemFileDialogToggle->isChecked());

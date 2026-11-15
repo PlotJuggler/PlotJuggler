@@ -11,11 +11,10 @@
 #include <QGuiApplication>
 #include <QIODevice>
 #include <QPalette>
+#include <QSettings>
 #include <QStringList>
 #include <QStringView>
 #include <map>
-
-#include "pj_widgets/SettingsCache.h"
 using namespace Qt::StringLiterals;
 
 namespace pj_widgets_demos {
@@ -137,7 +136,9 @@ QString loadAndExpandQss(const QString& theme) {
 }
 
 void applyTheme(const QString& theme) {
-  PJ::writeCachedSetting(u"StyleSheet::theme"_s, theme);
+  QSettings settings;
+  settings.setValue(u"StyleSheet::theme"_s, theme);
+  settings.sync();
 
   std::map<QString, QString> tokens;
   qApp->setStyleSheet(loadAndExpandQss(theme, &tokens));

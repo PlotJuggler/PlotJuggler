@@ -13,7 +13,6 @@ target_compile_definitions(pj_widgets_demos_qss PRIVATE
     PJ_QSS_DIR="${CMAKE_SOURCE_DIR}/resources"
 )
 target_link_libraries(pj_widgets_demos_qss PUBLIC
-    pj_widgets
     Qt6::Core
     Qt6::Widgets
 )
