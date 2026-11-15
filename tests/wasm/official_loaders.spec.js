@@ -7,7 +7,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const { test, expect } = require('@playwright/test');
-const { bootApp, replaceRuntimeTarget, waitForQtApp } = require('./support/app');
+const { bootApp, replaceRuntimeTarget } = require('./support/app');
 const { firstLoadOutcome } = require('./support/load_outcomes');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
