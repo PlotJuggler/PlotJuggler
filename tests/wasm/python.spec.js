@@ -156,7 +156,7 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
 test('on-demand Python: a failed stdlib download is reported and retried, never kept', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', "Playwright routes a worker's requests in Chromium only");
   test.setTimeout(300_000);
-  const COOLDOWN_MS = 2000;
+  const COOLDOWN_MS = 5000;
   const consoleMessages = [];
   const errors = [];
   page.on('pageerror', error => errors.push(String(error)));
@@ -165,6 +165,9 @@ test('on-demand Python: a failed stdlib download is reported and retried, never 
   let answer = { status: 503, body: 'unavailable' };
   await page.context().route(`**${STDLIB_ASSET}`, route => {
     requests += 1;
+    if (typeof answer === 'function') {
+      return answer(route);
+    }
     return answer ? route.fulfill(answer) : route.continue();
   });
   await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
@@ -207,9 +210,17 @@ test('on-demand Python: a failed stdlib download is reported and retried, never 
   expect.soft(await run()).toContain('could not download its standard library (not a zip archive)');
   expect.soft(requests).toBe(2);
   await afterCooldown();
+  // A zip cut short (a dropped connection a proxy answered as 200): its first bytes are a zip's, its end is not.
+  answer = async route => {
+    const body = await (await route.fetch()).body();
+    return route.fulfill({ status: 200, contentType: 'application/zip', body: body.subarray(0, body.length >> 1) });
+  };
+  expect.soft(await run()).toContain('could not download its standard library (not a zip archive)');
+  expect.soft(requests).toBe(3);
+  await afterCooldown();
   answer = null;
   expect.soft(await run()).toMatch(/value=5\.14159/);
-  expect.soft(requests).toBe(3);
+  expect.soft(requests).toBe(4);
 
   // A fresh page, the stdlib not downloaded yet: a 404 holds for the session, whatever the cooldown.
   requests = 0;

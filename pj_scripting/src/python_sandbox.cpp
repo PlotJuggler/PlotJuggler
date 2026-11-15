@@ -541,7 +541,11 @@ void downloadStdlib() {
     }
     throw failed(size == -1 ? std::string("network error or timeout") : "HTTP " + std::to_string(-size));
   }
-  if (size < 4 || std::memcmp(body.get(), "PK\x03\x04", 4) != 0) {  // an error page served as 200, say
+  // A zip's first local header, and its end-of-central-directory record in its last 22 bytes (stdlib_zip.py writes no
+  // archive comment): an error page served as 200, or a body cut short, is neither.
+  constexpr int kEndRecordBytes = 22;
+  if (size < kEndRecordBytes || std::memcmp(body.get(), "PK\x03\x04", 4) != 0 ||
+      std::memcmp(body.get() + size - kEndRecordBytes, "PK\x05\x06", 4) != 0) {
     throw failed("not a zip archive");
   }
   ::mkdir("/lib", 0755);

@@ -373,17 +373,18 @@ Expected<PyObject*> compileNow(const std::string& source) {
   }
 }
 
-/// `script`'s code object, compiled by the first call; a compile error is kept and returned to every later call. An
-/// interpreter that cannot start is not the script's error and is not kept: a failed stdlib download is retried by the
-/// next call (a failed boot fails it again at once). Takes the GIL to compile, after `script.mutex`. Without the GIL.
+/// `script`'s code object, compiled by the first call; a compile error, or a failed boot, is kept and returned to every
+/// later call. A failed stdlib download in the browser is not the script's error and is not kept: a later call retries
+/// it (python_sandbox.h). Takes the GIL to compile, after `script.mutex`. Without the GIL.
 Expected<PyObject*> compiledCode(const PythonCode& script) {
   assert(Py_IsInitialized() == 0 || PyGILState_Check() == 0);  // the GIL after the mutex, never before
   const std::lock_guard lock(script.mutex);
   if (!script.compiled) {
     try {
       detail::ensureInterpreter();
-    } catch (const std::exception& error) {
+    } catch (const detail::StdlibDownloadError& error) {
       return unexpected("Python error: " + std::string(error.what()));
+    } catch (const std::exception&) {  // a failed boot: compileNow reports it and it is kept, as before
     }
     Expected<PyObject*> code = compileNow(script.source);
     std::string().swap(script.source);
