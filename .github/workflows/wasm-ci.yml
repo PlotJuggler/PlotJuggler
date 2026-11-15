@@ -13,8 +13,8 @@
 #      QRhi capability probe and functional browser suite (with python.spec.js
 #      and python_layout.spec.js) run against the same source graph used by the
 #      packaged application, in Chromium (wasm-chromium job, three Playwright
-#      workers) and Firefox (wasm-firefox, two shards of one worker), which run
-#      in parallel on this job's package.
+#      workers) and Firefox (wasm-firefox, two shards of one worker; nightly
+#      and manual runs only), which run in parallel on this job's package.
 #      It is packaged twice: without presets (deploy/, every spec) and with the
 #      samples (deploy-presets/, which presets.spec.js serves itself).
 #
@@ -324,7 +324,7 @@ jobs:
   wasm-chromium:
     # The acceptance package of the wasm job, in Chromium (SwiftShader WebGL),
     # including the robot hosting spec, which runs docs/wasm/Caddyfile in Caddy.
-    # Skipped, like wasm-firefox, on PRs into release-* while the repo variable
+    # Skipped on PRs into release-* while the repo variable
     # PJ_CI_RELEASE_PR_LITE is 'true'; the wasm build itself still runs.
     needs: wasm
     # Explicit result check: the implicit success() also fails on the skipped
@@ -434,16 +434,19 @@ jobs:
     # and headless Firefox gets no WebGL at all without a display (Xvfb).
     # One Playwright worker (playwright.config.js), so the suite is split
     # across two jobs instead.
+    # Nightly and manual runs only: its single llvmpipe worker makes it the
+    # costliest part of a PR run, and Chromium already gates the PR. A nightly failure
+    # emails whoever last edited the `schedule:` cron (GitHub's own scheduled-
+    # workflow notification); dispatch the workflow on a branch to run Firefox
+    # before merging a Firefox-sensitive change.
     needs: wasm
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2]
     # Explicit result check: the implicit success() also fails on the skipped
-    # `changed` gate two levels up, which would skip this job on every PR run.
-    if: >-
-      ${{ !cancelled() && needs.wasm.result == 'success' &&
-      !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
+    # `changed` gate two levels up, which would skip this job on every manual run.
+    if: ${{ !cancelled() && needs.wasm.result == 'success' && github.event_name != 'pull_request' }}
     runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 60
     env:
