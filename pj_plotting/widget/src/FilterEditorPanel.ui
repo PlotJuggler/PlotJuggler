@@ -17,7 +17,7 @@
     <layout class="QHBoxLayout" name="previewHeaderRow">
      <item>
       <widget class="QLabel" name="previewLabel">
-       <property name="text"><string>&lt;b&gt;Preview&lt;/b&gt;</string></property>
+       <property name="text"><string>&lt;span style=&quot;font-weight:600;&quot;&gt;Preview&lt;/span&gt;</string></property>
       </widget>
      </item>
      <item><spacer name="previewHeaderSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property></spacer></item>
@@ -68,7 +68,7 @@
         <property name="bottomMargin"><number>0</number></property>
         <item>
          <widget class="QLabel" name="sourceLabel">
-          <property name="text"><string>&lt;b&gt;Source curve:&lt;/b&gt;</string></property>
+          <property name="text"><string>&lt;span style=&quot;font-weight:600;&quot;&gt;Source curve:&lt;/span&gt;</string></property>
          </widget>
         </item>
         <item>
@@ -128,7 +128,7 @@
 
         <item>
          <widget class="QLabel" name="transformLabel">
-          <property name="text"><string>&lt;b&gt;Transform:&lt;/b&gt;</string></property>
+          <property name="text"><string>&lt;span style=&quot;font-weight:600;&quot;&gt;Transform:&lt;/span&gt;</string></property>
          </widget>
         </item>
         <item>

@@ -41,7 +41,7 @@
      <property name="font">
       <font>
        <pointsize>14</pointsize>
-       <bold>true</bold>
+       <fontweight>DemiBold</fontweight>
       </font>
      </property>
      <property name="text">

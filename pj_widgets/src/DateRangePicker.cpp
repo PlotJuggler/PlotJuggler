@@ -490,7 +490,7 @@ TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
                            IntScrubber*& minute) {
     auto* cap = new QLabel(caption);
     QFont cap_font = cap->font();
-    cap_font.setBold(true);
+    cap_font.setWeight(QFont::DemiBold);
     cap->setFont(cap_font);
     date_label = new QLabel("---");
     // App Blender-style scrubbers (drag / arrows / double-click edit) for the

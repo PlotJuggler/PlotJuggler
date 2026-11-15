@@ -577,7 +577,7 @@ void CurveEditor::appendMarkerScopeRow(DatasetId dataset_id, MarkerScope scope, 
   name_label->setFullText(label);
   name_label->setToolTip(label);
   QFont name_font = name_label->font();
-  name_font.setBold(true);
+  name_font.setWeight(QFont::DemiBold);
   name_label->setFont(name_font);
 
   auto* markers = makeToggleButton(

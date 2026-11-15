@@ -38,7 +38,7 @@ using pj_widgets_demos::applyTheme;
 // a clickable link the toast label opens in the browser (openExternalLinks).
 QString releaseMessage() {
   return QStringLiteral(
-      "New release available: <b>PlotJuggler 3.999.1</b><br>"
+      "New release available: <span style='font-weight:600;'>PlotJuggler 3.999.1</span><br>"
       "<a href=\"https://github.com/PlotJuggler/PJ4/releases/latest\">View on GitHub</a>");
 }
 
