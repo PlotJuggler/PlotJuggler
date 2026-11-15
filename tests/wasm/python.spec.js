@@ -15,7 +15,7 @@ const BUSY_COMPILE_GAP_BOUND_MS = 250;
 // @serial: its time bounds fail on a loaded runner (playwright.config.js).
 test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, no main-thread wait', {
   tag: '@serial',
-}, async ({ page }) => {
+}, async ({ page, browserName }) => {
   test.setTimeout(300_000);
   const consoleMessages = [];
   const errors = [];
@@ -73,14 +73,16 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   expect(number('PJ_WASM_PY_LAZY', 'value')).toBe(7);
   expect(line('PJ_WASM_PY_STDLIB_SURFACE').trim()).toBe('PJ_WASM_PY_STDLIB_SURFACE ok');
   expect(number('PJ_WASM_PY_VALUE', 'value')).toBeCloseTo(2 + Math.PI, 5);
-  // Per call, against the same 4-line script in Luau in the same browser: an absolute bound would not hold across
-  // browsers (Firefox runs this whole build 4-6x slower than Chromium, Luau included) or runners. Luau reuses its
-  // sandboxed state per thread, so its call is cheap: within 1.5x of it still catches a Python regression (Chromium
-  // measures 1.16x).
+  // Per call, against the same 4-line script in Luau in the same browser, timed in alternating rounds: an absolute
+  // bound would not hold across browsers (Firefox runs this whole build 4-6x slower than Chromium, Luau included) or
+  // runners. Luau reuses its sandboxed state per thread, so its call is cheap: within 1.5x of it still catches a
+  // Python regression (Chromium measures 1.0-1.26x on CI and on a hybrid laptop's fast and slow cores alike).
+  // Firefox's ratio depends on the core instead: 0.85x on CI, 1.2x on a 13th-gen Intel's efficiency cores and 1.55x
+  // on its performance cores, for the same build. It gets 2x.
   const pythonMicros = number('PJ_WASM_PY_PERCALL four_line', 'four_line_mean_us');
   const luauMicros = number('PJ_WASM_PY_PERCALL luau', 'luau_four_line_mean_us');
   expect(pythonMicros).toBeGreaterThan(0);
-  expect(pythonMicros).toBeLessThanOrEqual(1.5 * luauMicros);
+  expect(pythonMicros).toBeLessThanOrEqual((browserName === 'firefox' ? 2 : 1.5) * luauMicros);
   // Allocation-heavy code is measured, not bounded (ARCHITECTURE §14 quotes it per browser).
   expect(number('PJ_WASM_PY_ALLOC sum_range', 'value')).toBe(499999500000);
   expect(number('PJ_WASM_PY_ALLOC sum_range', 'ns_per_element')).toBeGreaterThan(0);

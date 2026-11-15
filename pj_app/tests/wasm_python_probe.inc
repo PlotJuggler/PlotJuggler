@@ -172,9 +172,31 @@ void wasmPyWorkerChecks() {
   }
 
   const std::vector<NamedValue> x_input{NamedValue{.name = "x", .value = 3.0}};
-  if (auto four = compileOnDemandScriptPython(kWasmPyFourLineScript)) {
+  // The same 4-line script in Python and in Luau, timed in alternating rounds: measured one after the other, a change
+  // of clock speed or core between the two (a hybrid CPU, a busy runner) moved their ratio by half on its own.
+  auto four = compileOnDemandScriptPython(kWasmPyFourLineScript);
+  auto luau4 = compileOnDemandScript("local inputs = ...\nlocal x = inputs.x\nreturn { y = math.sqrt(x * x + 1.0) }\n");
+  if (four && luau4) {
     const std::string outcome = wasmPyOutcome(wasmPyRun(*four, x_input));
-    qInfo("PJ_WASM_PY_PERCALL four_line_mean_us=%.2f %s", wasmPyMeanMicros(*four, x_input), outcome.c_str());
+    constexpr int kRounds = 21;
+    constexpr int kCallsPerRound = 100;
+    double python_millis = 0.0;
+    double luau_millis = 0.0;
+    for (int round = 0; round < kRounds; ++round) {
+      auto begin = std::chrono::steady_clock::now();
+      for (int i = 0; i < kCallsPerRound; ++i) {
+        (void)wasmPyRun(*four, x_input);
+      }
+      python_millis += wasmPyMillisSince(begin);
+      begin = std::chrono::steady_clock::now();
+      for (int i = 0; i < kCallsPerRound; ++i) {
+        (void)runOnDemandScript(*luau4, PJ::Span<const NamedValue>(x_input.data(), x_input.size()), "{}", {});
+      }
+      luau_millis += wasmPyMillisSince(begin);
+    }
+    constexpr double kCalls = kRounds * kCallsPerRound;
+    qInfo("PJ_WASM_PY_PERCALL four_line_mean_us=%.2f %s", python_millis * 1000.0 / kCalls, outcome.c_str());
+    qInfo("PJ_WASM_PY_PERCALL luau_four_line_mean_us=%.2f", luau_millis * 1000.0 / kCalls);
   }
 
   if (auto forty_three = compileOnDemandScriptPython(kWasmPyFortyThreeLineScript)) {
@@ -213,14 +235,6 @@ void wasmPyWorkerChecks() {
     qInfo(
         "PJ_WASM_PY_LOOP luau_pure ns_per_iter=%.1f %s", wasmPyMillisSince(begin) * 1e6 / 200000.0,
         wasmPyOutcome(result).c_str());
-  }
-  if (auto luau4 =
-          compileOnDemandScript("local inputs = ...\nlocal x = inputs.x\nreturn { y = math.sqrt(x * x + 1.0) }\n")) {
-    const auto begin = std::chrono::steady_clock::now();
-    for (int i = 0; i < 2001; ++i) {
-      (void)runOnDemandScript(*luau4, PJ::Span<const NamedValue>(x_input.data(), x_input.size()), "{}", {});
-    }
-    qInfo("PJ_WASM_PY_PERCALL luau_four_line_mean_us=%.2f", wasmPyMillisSince(begin) * 1000.0 / 2001.0);
   }
 
   if (auto spin = compileOnDemandScriptPython("def evaluate(inputs, params):\n    while True:\n        pass\n")) {
