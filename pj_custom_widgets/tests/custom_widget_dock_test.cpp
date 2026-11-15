@@ -316,7 +316,7 @@ TEST_F(CustomWidgetDockTest, AParserBackedObjectWireDeliversCanonicalBytesToUpda
   EXPECT_EQ(logMessage(g.last_values[0]), "booting");
 
   ASSERT_TRUE(g.history_ok);
-  EXPECT_EQ(g.history_total, 2U) << "an undecimated history does not count the entry it skipped";
+  EXPECT_EQ(g.history_total, 3U) << "the range's count, the entry it skipped included";
   ASSERT_EQ(g.history_values.size(), 2U) << "the entry that does not decode is skipped";
   EXPECT_EQ(logMessage(g.history_values[0]), "booting");
   EXPECT_EQ(logMessage(g.history_values[1]), "ready");
