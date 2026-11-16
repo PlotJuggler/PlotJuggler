@@ -1,6 +1,6 @@
 ---
 name: qa-session
-description: Use when exploring PlotJuggler 4 like a user to find bugs unit tests miss (exploratory QA, a test charter, a repro of a UI bug), or when replaying a saved QA script. Drives an isolated, offscreen app through its MCP UI tools (`--mcp-ui-tools`) with `scripts/qa/pjqa.py`.
+description: Use when the user says "do QA", "test with the QA agent" or "try the app", when exploring PlotJuggler 4 like a user to find bugs unit tests miss (exploratory QA, a test charter, a repro of a UI bug), or when replaying a saved QA script. Covers the desktop app (an isolated offscreen instance driven through its MCP UI tools) and the browser build (Playwright plus the MCP data tools through a local relay), both with `scripts/qa/pjqa.py`.
 ---
 
 # QA session
@@ -61,6 +61,42 @@ Pitfalls seen in practice:
   that need one use a single-plot layout.
 - Plots fall back to the raster canvas offscreen (no GPU): the GPU plot path is not exercised.
 
+## Browser build
+
+The browser (WebAssembly) build has the data tools but not the UI tools. Click, type and look with
+Playwright; check results with the same `pjqa.py call`, through a local stand-in for the agent relay.
+
+```bash
+# Package once. The pinned toolchains live in the primary checkout (.emsdk, .qt-wasm/<PJ_QT_VERSION>),
+# also from a worktree. Browser video needs meson on PATH (`uv tool install meson`).
+MAIN=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)"); source versions.env
+source "$MAIN/.emsdk/emsdk_env.sh"
+QT=$MAIN/.qt-wasm/$PJ_QT_VERSION
+cmake -S . -B build-wasm -G Ninja -DCMAKE_BUILD_TYPE=Release -DPJ_BUILD_TESTS=OFF -DPJ_BUILD_DEMOS=OFF \
+  -DCMAKE_TOOLCHAIN_FILE=$QT/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake -DQT_HOST_PATH=$QT/gcc_64 \
+  -DPJ_WASM_PYTHON_CACHE_DIR=$HOME/.cache/pj-wasm-cpython
+host-job wasm-build bash -c 'cmake --build build-wasm --target pj_app --parallel 8 && node scripts/package_wasm.mjs \
+  --source build-wasm/pj_app --output build-wasm/deploy --presets resources/wasm-presets'
+until [ -e ~/.cache/pj-data-platform/jobs/wasm-build.exit ]; do sleep 20; done   # host-job runs detached
+
+scripts/qa/pjqa.py start --browser build-wasm/deploy   # serves it, starts the relay, prints the URL
+```
+
+- Open the printed URL with the Playwright tools (`browser_navigate`). The app takes 10-20 s to boot; it then
+  answers `pjqa.py call get_status`.
+- `pjqa.py call open_file '{"path":"/abs/file.csv"}'` loads a local file: the relay serves it to the page. Then
+  `list_topics`, `read_series`, `screenshot`, `playback`... as on the desktop. `ui_*` tools answer
+  "unknown tool": that is the browser build, not a bug.
+- Input: the whole app is one canvas, so `browser_snapshot` shows nothing useful. Read positions from
+  `browser_take_screenshot`, then click with `browser_run_code_unsafe`:
+  `async (page) => { await page.mouse.click(715, 533); await page.waitForTimeout(500); }`. The same function
+  does `page.mouse.wheel`, `page.mouse.down/move/up` drags and `page.keyboard.press('Control+Z')`.
+- After anything visible, `browser_console_messages` (level `error`) catches aborts and failed fetches.
+- The first screen is the welcome dialog with sample presets: its Open buttons load a dataset and a layout in
+  one click, the quickest way to plots.
+- One browser session at a time: every agent in a Claude session shares the one Playwright browser.
+- `pjqa.py stop` ends the server and the relay; `browser_close` closes the page.
+
 ## What to report
 
 For each finding: what you did, what you expected, what happened, how sure you are. Attach the steps as a
@@ -104,3 +140,18 @@ Pick one per session, stay within it, stop after about 30 minutes or 150 tool ca
    clock time buttons.
 4. **Dialogs**: every menu entry; Escape and Cancel on each dialog; Preferences: change, cancel, reopen.
 5. **Layouts**: save the layout, start fresh, load it back; compare with screenshots.
+6. **Browser**: the welcome dialog's presets (each Open), a CSV through `open_file`, plots, zoom and undo,
+   playback, a layout reload; console errors after each step.
+
+## A full QA pass ("do QA")
+
+When asked to do QA or to test with the QA agent, without a narrower charter:
+
+1. Build the checkout under test: `./build.sh` (desktop) and, for the browser, the package above. Use a
+   plugin folder for the desktop (`--plugin-dir`, e.g. pj-official-plugins' `build/all/Release/bin`).
+2. Start `qa-engineer` agents in one message: one per desktop charter (1-5), each with its own `PJQA_HOME`
+   under the scratchpad, plus one with the browser charter (6). Give each the checkout path and, for the
+   browser one, the package path.
+3. Check every reported **Bug** yourself against the code and its replay before acting on it; drop artifacts.
+4. Report a table: charter, bugs, UX notes, tool limits. Fix each confirmed bug in its own PR, with a test that
+   fails before the fix (as #1534 and #1535 did after the first trial).
