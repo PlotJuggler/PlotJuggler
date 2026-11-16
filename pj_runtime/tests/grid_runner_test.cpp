@@ -1418,6 +1418,29 @@ TEST(GridRunnerTest, RetainedUpstreamObjectsCountAgainstTheJobsMemory) {
   EXPECT_EQ(window.parsed.evaluated, 2u);
 }
 
+// The same rule for a chain of three: when `first` runs again at the next instant, the memo of `second`, which reads
+// it, still holds `first`'s previous crop. It can never serve again (each run has a fresh identity), so it is dropped
+// with `first`'s: the two-instant window of `first -> second -> reader` fits the 8 MiB native share that two crops
+// would not.
+TEST(GridRunnerTest, ADownstreamMemoIsDroppedBeforeItsUpstreamRunsAgain) {
+  Fixture fx(4 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  constexpr size_t kPoints = 330'000;  // 16 bytes each
+  fx.pushCloud(10 * kSec, kPoints);
+  fx.pushCloud(20 * kSec, kPoints);
+  auto first = recipe("first", {"cloud"}, {cloudSpec()});
+  first.script = "local inputs = ...\nreturn inputs['cloud']:crop_box{min={-1e9, -1e9, -1e9}, max={1e9, 1e9, 1e9}}\n";
+  fx.install(first);
+  auto second = recipe("second", {"owner/first/cropped"}, {cloudSpec()});
+  second.script = "local inputs = ...\nreturn inputs['owner/first/cropped']\n";
+  fx.install(second);
+  auto reader = recipe("reader", {"owner/second/cropped"}, {numberSpec()});
+  reader.script = "local inputs = ...\nreturn inputs['owner/second/cropped']:count()\n";
+
+  const Evaluated window = fx.evaluate(fx.bind(reader), false, 10 * kSec, 20 * kSec, {.max_bytes = 16u << 20});
+  EXPECT_EQ(window.parsed.stopped, Stop::kComplete) << window.parsed.error;
+  EXPECT_EQ(window.parsed.evaluated, 2u);
+}
+
 // The Python twin, over builders: a Python builder's native charge lives in its output's keepalive, which a job's
 // upstream result keeps for its readers, so the chain stops on the job's memory as the Luau one does. Each step draws
 // 330k annotation points (5.3 MB): one fits the 12 MiB native share, three retained at once do not.
