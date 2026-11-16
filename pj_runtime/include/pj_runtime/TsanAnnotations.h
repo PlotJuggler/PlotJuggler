@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <QMetaObject>
+#include <QObject>
+#include <memory>
+#include <utility>
+
 #if defined(__SANITIZE_THREAD__)
 #define PJ_TSAN_ENABLED 1
 #elif defined(__has_feature)
@@ -68,5 +73,35 @@ class IgnoreAccesses {
   IgnoreAccesses(const IgnoreAccesses&) = delete;
   IgnoreAccesses& operator=(const IgnoreAccesses&) = delete;
 };
+
+/// QMetaObject::invokeMethod(receiver, call, Qt::QueuedConnection) from another thread, with the
+/// hand-off made visible to ThreadSanitizer. Qt orders the post before the call with a futex inside
+/// prebuilt Qt that TSan cannot see, so TSan would report the receiver's first touch of anything
+/// the posting thread wrote: the call's captures, the state it reads, and the functor Qt allocates
+/// on the poster and frees on the receiver. The poster releases a token before posting and the
+/// call acquires it before running; the post itself, where Qt allocates the functor after that
+/// release, is hidden from TSan.
+///
+/// Each call gets its own token, freed with the functor. One token shared by every post would
+/// over-synchronize: TSan accumulates releases on an address, so a call that acquires late would
+/// inherit what the poster wrote after posting it (up to its next post), and TSan would miss a
+/// real race between those writes and the call. Plain invokeMethod outside a TSan build.
+template <typename F>
+void invokeQueued(QObject* receiver, F&& call) {
+#ifdef PJ_TSAN_ENABLED
+  auto token = std::make_shared<char>();
+  release(token.get());
+  const IgnoreAccesses hand_off;
+  QMetaObject::invokeMethod(
+      receiver,
+      [token = std::move(token), call = std::forward<F>(call)]() mutable {
+        acquire(token.get());
+        call();
+      },
+      Qt::QueuedConnection);
+#else
+  QMetaObject::invokeMethod(receiver, std::forward<F>(call), Qt::QueuedConnection);
+#endif
+}
 
 }  // namespace PJ::tsan

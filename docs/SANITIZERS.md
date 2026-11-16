@@ -207,6 +207,12 @@ about it instead of suppressing: `FileLoader` and `EnginePool` use
 `PJ::tsan::release/acquire` (`pj_runtime/TsanAnnotations.h`) to pair the two sides
 (a worker's last access with the `QThread::wait()` return; a task's submission
 with its start on a `QThreadPool` thread), compiled only under TSan.
+`StreamingSourceManager`'s worker posts to the GUI thread through
+`PJ::tsan::invokeQueued`, which gives each queued call a token of its own: one
+token shared by every post would let a call that runs late inherit what the
+worker wrote after posting it, and hide a real race with those writes.
+`tsan_invoke_queued_selftest` (registered like `sanitizer_race_selftest` below,
+passing only on a report naming its racy read) pins that.
 
 Read `cmake/sanitizers/tsan.supp` before adding an entry. Each `called_from_lib`
 must resolve to exactly ONE loaded library, and a pattern that matches several

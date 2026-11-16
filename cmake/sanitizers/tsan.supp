@@ -142,7 +142,9 @@ race:QtPrivate::QCallableObject<PJ::*attachFinished
 # gdb). Both sides hold the reply's signalSlotLock, a QBasicMutex futex TSan cannot see,
 # so the free is reported against the GUI thread's allocation (2026-11-16). Only the
 # functor's destruction runs under this frame, never its body, so unlike a per-site
-# QCallableObject entry it hides no race in our slot code.
+# QCallableObject entry it hides no race in a slot's body. It does hide races in that
+# destruction: destroying a functor runs its captures' destructors, application code,
+# so a race in freeing a captured object (a shared_ptr's last owner, say) goes unseen.
 race:QObjectPrivate::ConnectionData::deleteOrphaned
 
 # Test plugin libraries are dlclosed between tests and reloaded at the same
