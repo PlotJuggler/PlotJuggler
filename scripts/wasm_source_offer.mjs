@@ -26,7 +26,7 @@ import { readVersion } from './wasm_manifest.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ADS_DIRECTORY = '3rdparty/Qt-Advanced-Docking';
-const ISSUES = 'https://github.com/PlotJuggler/PJ4/issues';
+const ISSUES = 'https://github.com/PlotJuggler/PlotJuggler/issues';
 // protobuf fetches it in its own build, at the abseil-cpp-version of its cmake/dependencies.cmake.
 const ABSEIL = 'https://github.com/abseil/abseil-cpp.git';
 // The Qt modules on pj_app's link line (the SBOMs read by cmake/PjWasmNotices.cmake), and the libraries each provides.
@@ -234,7 +234,7 @@ behind the About dialog's "Third-party licences" link.
 
   ${pj4.name}
     PlotJuggler 4: \`git archive\` of revision ${pj4.commit}, including the
-    build scripts and the libraries vendored under 3rdparty/; also at https://github.com/PlotJuggler/PJ4
+    build scripts and the libraries vendored under 3rdparty/; also at https://github.com/PlotJuggler/PlotJuggler
 
 ${listing}
 

@@ -287,7 +287,7 @@ if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
 else
   changelog_date="$(date -uR)"
 fi
-printf '%s (%s) stable; urgency=medium\n\n  * PlotJuggler %s.\n    Release notes: https://github.com/PlotJuggler/PJ4/releases\n\n -- PlotJuggler <noreply@plotjuggler.io>  %s\n' \
+printf '%s (%s) stable; urgency=medium\n\n  * PlotJuggler %s.\n    Release notes: https://github.com/PlotJuggler/PlotJuggler/releases\n\n -- PlotJuggler <noreply@plotjuggler.io>  %s\n' \
   "${PACKAGE}" "${DEB_VERSION}" "${VERSION}" "${changelog_date}" \
   | gzip -9n > "${STAGE}/usr/share/doc/${PACKAGE}/changelog.Debian.gz"
 

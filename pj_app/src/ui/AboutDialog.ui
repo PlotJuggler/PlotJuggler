@@ -75,7 +75,7 @@
    <item>
     <widget class="QLabel" name="linkLabel">
      <property name="text">
-      <string>&lt;a href="https://github.com/PlotJuggler/PJ4"&gt;github.com/PlotJuggler/PJ4&lt;/a&gt;</string>
+      <string>&lt;a href="https://github.com/PlotJuggler/PlotJuggler"&gt;github.com/PlotJuggler/PlotJuggler&lt;/a&gt;</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignmentFlag::AlignCenter</set>

@@ -17,10 +17,10 @@ Complete corresponding source
 The complete corresponding source code for the "pj-raster-helper" binary:
 
   - The IPC shim and build files (the helper itself) and the shared wire-protocol
-    header live in the PlotJuggler/PJ4 source repository, at the revision from
+    header live in the PlotJuggler/PlotJuggler source repository, at the revision from
     which the binary was built:
 
-        https://github.com/PlotJuggler/PJ4
+        https://github.com/PlotJuggler/PlotJuggler
         (raster/helper/ and raster/ipc/RasterIpcProtocol.h)
 
   - The rendering engine is the doomgeneric project, included as a git submodule
@@ -46,6 +46,6 @@ For a period of three (3) years from the date you received this binary, the
 distributor will, on request, provide a complete machine-readable copy of the
 corresponding source code on a physical medium, for no more than the cost of
 physically performing the distribution. To request it, open an issue at
-https://github.com/PlotJuggler/PJ4 or contact the PlotJuggler maintainers.
+https://github.com/PlotJuggler/PlotJuggler or contact the PlotJuggler maintainers.
 
 This offer is valid to anyone who receives this binary.
