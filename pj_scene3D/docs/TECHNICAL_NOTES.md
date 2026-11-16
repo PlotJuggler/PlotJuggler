@@ -354,8 +354,8 @@ Other measured tolerances:
 - `DepthResolveMatchesTheForcedReplay`: the depth-resolve and replay chains
   differ on under 1% of pixels with SSAO and EDL on.
 - `scene3d_rhi_model_cache_test`'s cached-vs-uncached A/B is pixel-identical on
-  Mesa and Metal; on Apple's software GL it differs on 10 pixels once shadows go
-  off, and the test allows 16 there (§10).
+  Mesa and Metal; on Apple's software GL it is not reproducible, and the test
+  skips the comparison there (§10).
 - The perf-HUD image differs between any two runs in one 7x9 px digit of its
   timing text.
 
@@ -779,15 +779,11 @@ shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages.
   per-backend allowances for exactly these cases (§7).
 - On Apple's software OpenGL ("Apple Software Renderer 4.1", the macOS CI
   runner's) `scene3d_rhi_model_cache_test`'s cached and uncached frames differ on
-  10 pixels from step 6 (shadows off) on; Mesa (OpenGL, Vulkan) and Metal match
-  exactly, and the test allows 16 pixels on that renderer only (§7). The two
-  paths differ only in GPU resource identity: the uncached one re-uploads the
-  colour instances every frame and rebuilt every mesh (buffers, material SRBs) at
-  the two earlier revision bumps; both rebuild their instances and rebind every
-  material's shadow slot to the white texture when shadows go off, and the pass
-  keeps no shadow state across that toggle (`clearShadowMap()`,
-  `releaseShadowResources()`). Unresolved without a Mac to capture the frames:
-  run the test there with `PJ_RHI_TEST_DUMP_DIR` and diff steps 6-8.
+  10 pixels from step 6 (shadows off) on, and once (run 43778744542) on 865
+  pixels at step 0, whose GPU state the cached run's matching step 1 reuses: the
+  renderer, not the caches, as with `ShadowToggleRebindsKeptMeshes`. The test
+  skips the A/B on that renderer only (§7); Mesa (OpenGL, Vulkan) and Metal run
+  it exactly.
 - On the same Apple software renderer, `FilledGridLinesFollowOddCellEdges`'s 1 px
   analytic grid line at an odd cell edge does not clear the pixel's neighbouring
   tones by the test's threshold (same coverage loss as the sub-pixel sprite
