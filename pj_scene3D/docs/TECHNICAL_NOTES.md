@@ -753,7 +753,7 @@ shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages.
   build's `gl_PointSize` sprites on Iris Xe (a 1M 0.1 m sphere cloud: 34.9 vs
   29.6 ms on OpenGL; the 9.9M-sphere tab-switch lattice: 400 vs 310 ms, 311 ms
   as a point list; QRHI_NEXT.md).
-- ADS hides floating docks on Wayland, on every backend (§5).
+- ADS can hide floating docks on Linux platforms other than xcb and Wayland (§5).
 - Mesh maps (`MeshMapRhiPass`) are capped per layer by `kMaxRenderableMeshMapFaces`
   but not counted in `kSceneLimits`' per-view budgets. Two QRhi render tests draw
   them (`MeshMapDrawsChannelColoursAndNoData`: colours, no data, half opacity;

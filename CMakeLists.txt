@@ -354,12 +354,12 @@ add_subdirectory(3rdparty/qwt)
 # (e.g. conda-forge's) instead of the vendored copies, as PJ_SYSTEM_QWT does for Qwt.
 option(PJ_SYSTEM_NANOCDR "Use an installed nanocdr (find_package) instead of 3rdparty/nanocdr" OFF)
 # PJ_SYSTEM_ADS needs a Qt-Advanced-Docking 5.x >= 5.1.1 (its package config
-# rejects 6.x) patched with the fork's d713b1f (inactive tabs keep their parent;
-# conda-forge's 5.1.1 from build 3 on). Upstream unparents a hidden tab, so a
+# rejects 6.x) patched with the fork's "keep inactive tabs parented" commit
+# (conda-forge's 5.1.1 from build 3 on). Upstream unparents a hidden tab, so a
 # QRhiWidget tab rebuilds its GPU resources on every switch; upstream #866 only
 # spares widgets with a native window. `plotjuggler4 --selftest-docking` checks
 # it. The default stays the fork, which also carries the WebAssembly guards.
-option(PJ_SYSTEM_ADS "Use an installed Qt-Advanced-Docking >= 5.1.1 carrying the fork's d713b1f tab-parenting patch, instead of the 3rdparty/Qt-Advanced-Docking fork" OFF)
+option(PJ_SYSTEM_ADS "Use an installed Qt-Advanced-Docking >= 5.1.1 carrying the fork's 'keep inactive tabs parented' patch, instead of the 3rdparty/Qt-Advanced-Docking fork" OFF)
 if(PJ_SYSTEM_NANOCDR)
   find_package(nanocdr CONFIG REQUIRED)
   add_library(nanocdr ALIAS nanocdr::nanocdr)

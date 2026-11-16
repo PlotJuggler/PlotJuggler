@@ -55,7 +55,7 @@ build against what RoboStack's ROS packages were built against:
 - **Qt 6.11** is also a run pin to that minor: PJ4 builds against Qt's private
   headers (QRhi and others), which change ABI every minor release.
 - **Qt-Advanced-Docking** is conda-forge's `qt6-advanced-docking-system` from
-  build 3 on, which carries the fork's d713b1f (`PJ_SYSTEM_ADS`, see the root `CMakeLists.txt`).
+  build 3 on, which carries the fork's "keep inactive tabs parented" patch (`PJ_SYSTEM_ADS`, see the root `CMakeLists.txt`).
 - **plotjuggler_sdk** and **pocketfft** are on neither channel yet, so the
   configure step downloads them (pinned by SHA-256) and the build cannot run
   with `FETCHCONTENT_FULLY_DISCONNECTED`.

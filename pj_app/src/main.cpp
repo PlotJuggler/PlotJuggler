@@ -174,7 +174,7 @@ class T:
 
 // Checks the docking library the binary links (the 3rdparty fork, or a system one
 // under PJ_SYSTEM_ADS) keeps a hidden tab parented to its dock area (the fork's
-// d713b1f). Upstream ADS unparents it, which makes a QRhiWidget tab rebuild its
+// "keep inactive tabs parented" patch). Upstream ADS unparents it, which makes a QRhiWidget tab rebuild its
 // GPU resources on every tab switch; nothing else would catch a system ADS
 // without the patch.
 int selftestDocking(int argc, char* argv[]) {
@@ -194,7 +194,10 @@ int selftestDocking(int argc, char* argv[]) {
   first->setAsCurrentTab();
   QApplication::processEvents();
   if (second->parentWidget() == nullptr || second->window() != &window) {
-    std::fprintf(stderr, "[selftest-docking] FAILED: the hidden dock tab lost its parent (ADS without d713b1f)\n");
+    std::fprintf(
+        stderr,
+        "[selftest-docking] FAILED: the hidden dock tab lost its parent (ADS without the fork's tab-parenting "
+        "patch)\n");
     return EXIT_FAILURE;
   }
   std::fprintf(stdout, "[selftest-docking] OK\n");
