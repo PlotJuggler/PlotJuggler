@@ -6,7 +6,6 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDir>
-#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
@@ -15,7 +14,10 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
+#include <atomic>
 #include <chrono>
+#include <future>
+#include <memory>
 #include <thread>
 
 #include "pj_widgets/FileDialog.h"
@@ -152,26 +154,31 @@ TEST_F(FileDialogStartFolderTest, ReachableFolderIsUsedAndNoticeHidden) {
   });
 }
 
+// The folder answers only once the test lets it, after the dialog closed (or
+// after 10 s): a dialog that waits for the folder opens after it answered, so
+// the check needs no wall-clock bound on how long a dialog takes to open.
 TEST_F(FileDialogStartFolderTest, SlowFolderFallsBackToHomeWithoutBlocking) {
   QTemporaryDir temp;
   ASSERT_TRUE(temp.isValid());
-  PJ::FileDialog::setStartFolderProbeForTest([](const QString&) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  std::promise<void> release;
+  auto answered = std::make_shared<std::atomic<bool>>(false);
+  PJ::FileDialog::setStartFolderProbeForTest([gate = release.get_future().share(), answered](const QString&) {
+    gate.wait_for(std::chrono::seconds(10));
+    answered->store(true);
     return true;
   });
   PJ::FileDialog::setStartFolderTimeoutForTest(100);
 
-  QElapsedTimer elapsed;
-  elapsed.start();
-  qint64 elapsed_at_open_ms = -1;
+  bool opened = false;
   openAndInspect(temp.path(), [&](QFileDialog* file_dialog, QLabel* notice) {
-    elapsed_at_open_ms = elapsed.elapsed();
+    opened = true;
+    EXPECT_FALSE(answered->load()) << "the dialog waited for the slow folder";
     EXPECT_EQ(file_dialog->directory().absolutePath(), QDir(QDir::homePath()).absolutePath());
     EXPECT_FALSE(notice->isHidden());
     EXPECT_TRUE(notice->text().contains(QDir::toNativeSeparators(temp.path())));
   });
-  EXPECT_GE(elapsed_at_open_ms, 0);
-  EXPECT_LT(elapsed_at_open_ms, 800);
+  release.set_value();
+  EXPECT_TRUE(opened);
 }
 
 TEST_F(FileDialogStartFolderTest, MissingFolderThatAnswersFastKeepsNoticeHidden) {

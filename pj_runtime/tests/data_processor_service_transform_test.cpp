@@ -27,6 +27,7 @@
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
+#include "pj_bench_stats.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/incremental_engine.hpp"
 #include "pj_datastore/query.hpp"
@@ -1208,6 +1209,9 @@ std::vector<std::pair<Timestamp, double>> synchronousAccumulator(
 
 struct SliceLog {
   int slices = 0;
+  /// The longest slice in this thread's CPU time. The budget is a wall-clock
+  /// deadline, so a slice preempted on a loaded machine overruns it in wall time
+  /// while doing less work; what the budget bounds is the work a slice does.
   std::chrono::nanoseconds longest{0};
 };
 
@@ -1215,8 +1219,13 @@ SliceLog stepUntilDone(DataProcessorService& service) {
   SliceLog log;
   for (int guard = 0; guard < 1'000'000; ++guard) {
     const auto start = std::chrono::steady_clock::now();
+    const double cpu_start_ms = pj_bench::threadCpuMs();
     const bool done = service.stepMaterialization();
-    log.longest = std::max<std::chrono::nanoseconds>(log.longest, std::chrono::steady_clock::now() - start);
+    const std::chrono::duration<double, std::milli> cpu(pj_bench::threadCpuMs() - cpu_start_ms);
+    // CPU time never exceeds wall time; the min undoes Windows' 15.6 ms CPU-clock ticks.
+    const auto slice = std::min<std::chrono::nanoseconds>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(cpu), std::chrono::steady_clock::now() - start);
+    log.longest = std::max(log.longest, slice);
     ++log.slices;
     if (done) {
       break;
