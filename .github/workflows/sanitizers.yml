@@ -189,10 +189,7 @@ jobs:
 
       - name: Test
         if: matrix.lane == 'asan'
-        # The three excluded tests are plotjuggler_sdk 1.0.0's own, built in this tree. UBSan aborts them on
-        # bugs in their test code (a 64-bit shift past the width; a vtable read through a too-small
-        # allocation), fixed on the SDK's fix/ubsan-test-ub branch. Drop the -E at the SDK bump that ships it.
-        run: ./test.sh --sanitize asan --timeout 120 -E '^(mcp_endpoint_host_test|parser_module_abi_test|parser_module_runtime_test)$'
+        run: ./test.sh --sanitize asan --timeout 120
 
       - name: Save ccache
         # Scheduled runs only: the SHA-keyed entry is never an exact hit, so
