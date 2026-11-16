@@ -412,7 +412,9 @@ jobs:
             {
               echo "### Slowest QRhi cases (${backend})"
               echo '```'
-              awk '/Test +#[0-9]+:/ && / sec$/ {print $(NF-1), $0}' "${log}" | sort -rn | head -n 15 | cut -d' ' -f2-
+              # sed reads all its input: head would exit early and macOS sort fails the pipefail step with
+              # "stdout: Broken pipe" (exit 2) whenever the log outgrows the pipe buffer.
+              awk '/Test +#[0-9]+:/ && / sec$/ {print $(NF-1), $0}' "${log}" | sort -rn | sed -n '1,15p' | cut -d' ' -f2-
               awk '/Test +#[0-9]+:/ && / sec$/ {t += $(NF-1)} END {printf "total %.0f s in tests\n", t}' "${log}"
               echo '```'
             } | tee -a "${GITHUB_STEP_SUMMARY}"
