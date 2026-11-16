@@ -320,19 +320,20 @@ they do not enable those sanitizers in a TSan binary. TSan uses its own
 `TSAN_OPTIONS` as described above.
 
 For all selectors, `test.sh` sets `QT_QPA_PLATFORM=offscreen` to avoid visible
-test windows, clears `QT_IM_MODULE` to avoid an incompatible system input
+test windows, clears `QT_IM_MODULE` and `QT_IM_MODULES` to avoid an incompatible system input
 plugin, and points `QT_PLUGIN_PATH` at the checkout's pinned Qt plugins.
 An explicit `--test-dir DIR` overrides the selected directory, with a warning
 if the paths differ; the runtime defaults still follow `--sanitize`.
 
 The authoritative policy is in
 [`cmake/sanitizers/README.md`](../cmake/sanitizers/README.md), with the shared
-file at [`lsan.supp`](../cmake/sanitizers/lsan.supp). Its two entries cover the
+file at [`lsan.supp`](../cmake/sanitizers/lsan.supp). Its three entries cover the
 deliberately retained CPython interpreter and released-GIL guards (a documented
-lifetime decision matched by function, not a blanket Python suppression), and
-the `QOpenGLContext` Qt's `QOpenGLWidget` drops when a context cannot be created
+lifetime decision matched by function, not a blanket Python suppression), the
+`QOpenGLContext` Qt's `QOpenGLWidget` drops when a context cannot be created
 on the offscreen platform (matched on the context's constructor, with no PJ4
-frame in the stack).
+frame in the stack), and the per-thread `QSettings` that `appSettings()` keeps
+for its thread's lifetime by design (matched on `appSettings`).
 
 Add a suppression only after an observed, symbolized leak report supports a
 narrow match. Every pattern must have an immediately preceding comment with

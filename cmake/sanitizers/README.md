@@ -36,7 +36,7 @@ coverage of the embedded interpreter.
 
 ## Leak suppressions
 
-`lsan.supp` suppresses two leaks:
+`lsan.supp` suppresses three leaks:
 
 - The deliberate interpreter lifetime in `pj_scripting/src/python_sandbox.cpp`.
   `ensureInterpreter()` leaks its `py::scoped_interpreter` and
@@ -50,11 +50,17 @@ coverage of the embedded interpreter.
   other, so only indirect leaks are reported, with no PJ4 frame. Matched on
   `QOpenGLContext::QOpenGLContext`, the private's allocating frame. A widget or
   context PJ4 itself leaks is still reported through its own direct-leak stack.
+- The per-thread `QSettings` that `appSettings()`
+  (`pj_widgets/include/pj_widgets/AppSettings.h`) keeps and never deletes, so thread
+  exit and static destruction order cannot race it. The product calls it from the GUI
+  thread only; `app_settings_test` runs each case on a fresh `std::thread`, which
+  leaves one instance (about 2 KB with its Qt thread data) per case. Matched on
+  `appSettings`.
 
 Stacks through prebuilt Qt are short under the default fast unwinder, because Qt
 is built without frame pointers. To find the frame an entry should match, rerun
 the test with `ASAN_OPTIONS=...:fast_unwind_on_malloc=0`; then match a frame that
-the default unwinder also records, as the two entries above do.
+the default unwinder also records, as the entries above do.
 
 Every suppression line must have a comment line **directly above it**, stating
 the reason and exactly one of these categories:

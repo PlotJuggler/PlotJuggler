@@ -83,6 +83,9 @@ else
   DISPLAY_LAUNCH=(xvfb-run -a)
 fi
 export QT_IM_MODULE=""
+# Qt 6 also reads the plural list (a Wayland session sets "wayland;ibus"): its ibus entry would load
+# a D-Bus input plugin into every test process, whose unsynchronized libdbus state floods TSan.
+unset QT_IM_MODULES
 export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64/plugins"
 
 # GCC's ThreadSanitizer aborts with "unexpected memory mapping" before running any
