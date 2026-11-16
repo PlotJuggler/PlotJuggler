@@ -644,23 +644,20 @@ TEST_F(Scene3dRhiModelCacheTest, CachedFramesMatchUncachedPixelForPixel) {
     PJ_SKIP_WITHOUT_GPU("no presented frame on this backend");
   }
   ASSERT_EQ(cached.size(), uncached.size());
-  // Apple's software OpenGL (the macOS fallback) differs on 10 pixels once
-  // shadows go off (step 6); Mesa and Metal match exactly (TECHNICAL_NOTES,
-  // "Known gaps").
-  const bool apple_opengl =
-      QSysInfo::productType() == QLatin1String("macos") && PJ::preferredGraphicsApi() == QRhiWidget::Api::OpenGL;
-  const int allowed = apple_opengl ? 16 : 0;
   for (std::size_t i = 0; i < cached.size(); ++i) {
     ASSERT_FALSE(cached[i].isNull() || uncached[i].isNull()) << "step " << i;
-    if (allowed == 0) {
-      EXPECT_EQ(cached[i], uncached[i]) << "step " << i << " differs with the caches on ("
-                                        << pj::scene3d::test::differingPixels(cached[i], uncached[i], 60) << " pixels)";
-    } else {
-      EXPECT_LE(pj::scene3d::test::differingPixels(cached[i], uncached[i], 60), allowed)
-          << "step " << i << " differs with the caches on";
-    }
   }
   EXPECT_GT(pj::scene3d::test::differingPixels(cached[1], cached[2], 60), 200) << "the TF step moved nothing";
+  // Apple's software OpenGL (the macOS CI fallback) does not reproduce a shadowed
+  // frame from one render to the next (TECHNICAL_NOTES, "Known gaps"): no A/B
+  // there. Metal gates the caches on the same machine, Mesa on Linux.
+  if (QSysInfo::productType() == QLatin1String("macos") && PJ::preferredGraphicsApi() == QRhiWidget::Api::OpenGL) {
+    GTEST_SKIP() << "Apple's software OpenGL is not frame-to-frame reproducible";
+  }
+  for (std::size_t i = 0; i < cached.size(); ++i) {
+    EXPECT_EQ(cached[i], uncached[i]) << "step " << i << " differs with the caches on ("
+                                      << pj::scene3d::test::differingPixels(cached[i], uncached[i], 60) << " pixels)";
+  }
 }
 
 }  // namespace
