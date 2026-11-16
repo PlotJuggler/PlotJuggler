@@ -689,7 +689,9 @@ void StateTransitionsView::rebuild() {
   viewport_.origin_ns = extent.min;
 
   const double vp_w = viewportWidthPx();
-  if (fit_pending_ && view_->isVisible() && vp_w > 0.0) {
+  // A chosen window (user gesture, restored zoom, linked range) wins over a fit
+  // still pending from construction: a layout restores before the first show.
+  if (fit_pending_ && !user_navigated_ && view_->isVisible() && vp_w > 0.0) {
     const qint64 span_ns = extent.max - extent.min;
     if (span_ns > 0) {
       viewport_.px_per_ns = std::clamp(vp_w / static_cast<double>(span_ns), 1e-12, 1e-1);

@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QApplication>
 #include <QDomDocument>
 #include <QSignalSpy>
 #include <memory>
@@ -277,6 +278,29 @@ TEST_F(StateTransitionsDockWidgetTest, TrackerTimeDrivesPlayhead) {
   auto dock = makeDock();
   dock->onTrackerTime(2.5);
   EXPECT_EQ(dock->view()->playheadNsForTest(), 2'500'000'000LL);
+}
+
+// A layout restores before its dock is shown; the first show/resize must not
+// fit-all over the saved zoom and pan.
+TEST_F(StateTransitionsDockWidgetTest, RestoredZoomAndPanSurviveTheFirstShow) {
+  auto source = makeDock();
+  ASSERT_TRUE(source->tryAcceptSeriesKeys({string_key_}));
+  QDomDocument doc;
+  QDomElement saved = source->xmlSaveState(doc);
+  // Data spans 0..3 s: at 1e-6 px/ns that is 3000 px, so a 1 s left edge is
+  // reachable in a 600 px wide view.
+  saved.setAttribute(u"zoom_px_per_ns"_s, u"1e-06"_s);
+  saved.setAttribute(u"viewport_left_ns"_s, u"1000000000"_s);
+
+  auto restored = makeDock();
+  ASSERT_TRUE(restored->xmlLoadState(saved));
+  restored->resize(600, 200);
+  restored->show();
+  QApplication::processEvents();
+
+  const QDomElement resaved = restored->xmlSaveState(doc);
+  EXPECT_DOUBLE_EQ(resaved.attribute(u"zoom_px_per_ns"_s).toDouble(), 1e-6);
+  EXPECT_EQ(resaved.attribute(u"viewport_left_ns"_s).toLongLong(), 1'000'000'000LL);
 }
 
 }  // namespace
