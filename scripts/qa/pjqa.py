@@ -3,6 +3,7 @@
 """Drive an isolated PlotJuggler 4 for QA, through its MCP server's tools (the UI tools included).
 
   pjqa.py [--home DIR] start [--xvfb] [--plugin-dir DIR] [-- APP_ARGS...]
+  pjqa.py [--home DIR] start --browser DEPLOY_DIR   the browser build: prints the page URL to open
   pjqa.py call TOOL ['{"json": "args"}']     prints the result text; exit 1 when the tool failed
   pjqa.py run SCRIPT                         replays a script (see below); exit 1 on the first failure
   pjqa.py stop
@@ -11,6 +12,11 @@
 
 The app runs from this checkout's run.sh with --mcp-ui-tools, offscreen (or under xvfb-run), under a
 private HOME, so it never touches the user's settings, windows or running instances. Linux only.
+
+--browser serves a packaged WebAssembly build (scripts/package_wasm.mjs output) and runs a stand-in for
+the agent relay (docs/MCP_SERVER.md, "Browser relay"); `call` and `run` then reach the page that opens the
+printed URL (with Playwright). The browser build has the data tools, not the UI tools: click there with
+the browser's own input. open_file takes a local path, which the relay serves to the page.
 
 A script has one step per line: `TOOL {json args}`, `expect TEXT` (the previous result must contain
 TEXT), `refuse TOOL {json}` (the call must fail), or a `#` comment. Name widgets by objectName there,
@@ -21,14 +27,20 @@ import argparse
 import base64
 import json
 import os
+import secrets
 import shlex
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +89,9 @@ def start(args):
     home = private_home(args)
     if (home / STATE).exists():
         sys.exit(f"pjqa: an instance is recorded in {home}; run `pjqa.py stop` first")
+    if args.browser:
+        start_browser(args, home)
+        return
     env = {
         **os.environ,
         "HOME": str(home),
@@ -125,6 +140,153 @@ def start(args):
         raise
 
 
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def start_browser(args, home):
+    """The package's server and the relay, each in its own process group; `stop` ends both."""
+    root = Path(args.browser).resolve()
+    if not (root / "manifest.json").is_file():
+        sys.exit(f"pjqa: {root} is not a packaged browser build (no manifest.json); see docs/WASM_DEPLOYMENT.md")
+    serve_port, relay_port, key = free_port(), free_port(), secrets.token_urlsafe(24)
+    commands = [
+        ("serve", ["node", str(ROOT / "scripts/serve_wasm.mjs"), "--root", str(root), "--port", str(serve_port)]),
+        ("relay", [sys.executable, str(Path(__file__).resolve()), "--home", str(home), "relay", str(relay_port)]),
+    ]
+    children = []
+    try:
+        for name, command in commands:
+            with open(home / f"{name}.log", "wb") as log:
+                children.append(
+                    subprocess.Popen(
+                        command,
+                        env={**os.environ, "PJQA_RELAY_KEY": key},
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                )
+        for port in (serve_port, relay_port):
+            deadline = time.time() + 20
+            while True:
+                if any(child.poll() is not None for child in children):
+                    sys.exit(f"pjqa: a helper exited; see {home / 'serve.log'} and {home / 'relay.log'}")
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=1).close()
+                    break
+                except OSError:
+                    if time.time() > deadline:
+                        sys.exit(f"pjqa: nothing answers on port {port} within 20 s")
+                    time.sleep(0.2)
+        relay = f"http://127.0.0.1:{relay_port}/?key={key}"
+        url = f"http://127.0.0.1:{serve_port}/?mcp={urllib.parse.quote(relay, safe='')}"
+        state = {"browser": True, "groups": [[c.pid, birth(c.pid)] for c in children], "port": relay_port,
+                 "token": key, "url": url}
+        fd = os.open(home / STATE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as out:
+            json.dump(state, out)
+    except BaseException:
+        for child in children:
+            terminate(child)
+        raise
+    print(f"pjqa: open {url}")
+
+
+def relay(args):
+    """A stand-in for the agent relay (plotjuggler-agent's pj_mcp_relay.py), speaking the page protocol of
+    McpBrowserLink, with POST /call for `pjqa.py call` instead of MCP over stdio."""
+    key = os.environ["PJQA_RELAY_KEY"]
+    lock = threading.Condition()
+    queue, answers, files = [], {}, {}
+    sequence = [0]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def send(self, status, body=None, kind="application/json"):
+            data = b"" if body is None else body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(status)
+            if self.headers.get("Origin"):
+                self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
+                self.send_header("Vary", "Origin")
+            if body is not None:
+                self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_OPTIONS(self):  # the CORS preflight the X-PJ-Link header causes
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin") or "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-PJ-Link")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            path = urllib.parse.urlsplit(self.path).path
+            if path.startswith("/file/"):  # the token in the path is the secret, as with the real relay
+                found = files.get(path.split("/")[2])
+                return self.send(200, found.read_bytes(), "application/octet-stream") if found else self.send(404)
+            if self.headers.get("X-PJ-Link") != key or path != "/link/next":
+                return self.send(403 if path == "/link/next" else 404)
+            with lock:
+                lock.wait_for(lambda: queue, timeout=20)
+                item = queue.pop(0) if queue else None
+            if item is None:
+                return self.send(204)
+            try:
+                self.send(200, item)
+            except OSError:  # the page dropped this poll: the next one takes the message
+                with lock:
+                    queue.insert(0, item)
+                    lock.notify_all()
+
+        def do_POST(self):
+            if self.headers.get("X-PJ-Link") != key:
+                return self.send(403)
+            path = urllib.parse.urlsplit(self.path).path
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"null")
+            if path == "/link/hello":
+                return self.send(200, {"id": "page"})
+            if path == "/link/reply":
+                with lock:
+                    if body.get("seq") in answers:
+                        answers[body["seq"]] = body.get("response")
+                        lock.notify_all()
+                return self.send(204)
+            if path != "/call":
+                return self.send(404)
+            params = body.get("params", {})
+            arguments = params.get("arguments", {})
+            if params.get("name") == "open_file" and isinstance(arguments.get("path"), str):
+                local = Path(arguments["path"]).expanduser().resolve()
+                token = secrets.token_urlsafe(16)
+                files[token] = local
+                arguments["url"] = f"http://127.0.0.1:{self.server.server_port}/file/{token}/" + urllib.parse.quote(
+                    local.name
+                )
+                arguments["name"] = local.name
+            with lock:
+                sequence[0] += 1
+                seq = sequence[0]
+                answers[seq] = None
+                queue.append({"seq": seq, "client": "qa", "message": {**body, "id": seq}})
+                lock.notify_all()
+                lock.wait_for(lambda: answers[seq] is not None, timeout=300)
+                response = answers.pop(seq)
+            if response is None:
+                return self.send(504, {"error": {"message": "no page answered in 300 s: is the printed URL open?"}})
+            self.send(200, response)
+
+    ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+
+
 def state_of(args):
     path = home_dir(args) / STATE
     if not path.exists():
@@ -137,13 +299,18 @@ def call_tool(state, tool, arguments):
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
     ).encode()
+    if state.get("browser"):
+        url, headers = f"http://127.0.0.1:{state['port']}/call", {"X-PJ-Link": state["token"]}
+    else:
+        url, headers = f"http://127.0.0.1:{state['port']}/mcp", {"Authorization": f"Bearer {state['token']}"}
     request = urllib.request.Request(
-        f"http://127.0.0.1:{state['port']}/mcp",
-        data=body,
-        headers={"Authorization": f"Bearer {state['token']}", "X-PJ-Client": "qa", "Content-Type": "application/json"},
+        url, data=body, headers={**headers, "X-PJ-Client": "qa", "Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(request, timeout=120) as reply:
-        answer = json.loads(reply.read())
+    try:
+        with urllib.request.urlopen(request, timeout=320) as reply:
+            answer = json.loads(reply.read())
+    except urllib.error.HTTPError as error:
+        answer = json.loads(error.read() or b"{}") or {"error": {"message": str(error)}}
     if "error" in answer:
         return answer["error"].get("message", json.dumps(answer["error"])), True
     result = answer.get("result", {})
@@ -201,6 +368,13 @@ def stop(args):
         print("pjqa: nothing to stop")
         return
     state = json.loads(path.read_text())
+    for group, group_birth in state.get("groups", []):  # --browser: the server and the relay
+        if group_birth is not None and birth(group) == group_birth:
+            os.killpg(group, signal.SIGTERM)
+    if state.get("browser"):
+        path.unlink()
+        print("pjqa: stopped")
+        return
     (app, app_birth), (group, group_birth) = state["pid"], state["group"]
     app_alive = app_birth is not None and birth(app) == app_birth
     # The group outlives its leader while the app is in it, so either one alive proves the group is still ours.
@@ -223,6 +397,7 @@ def main():
     p = commands.add_parser("start")
     p.add_argument("--xvfb", action="store_true", help="a virtual X display instead of offscreen")
     p.add_argument("--plugin-dir", help="a folder of built plugins (data loaders, parsers)")
+    p.add_argument("--browser", metavar="DEPLOY_DIR", help="serve this packaged browser build instead")
     p.add_argument("app_args", nargs="*", help="after --: more app arguments, e.g. a file to open")
     p.set_defaults(func=start)
     p = commands.add_parser("call")
@@ -233,6 +408,9 @@ def main():
     p.add_argument("script")
     p.set_defaults(func=run)
     commands.add_parser("stop").set_defaults(func=stop)
+    p = commands.add_parser("relay", help=argparse.SUPPRESS)  # started by `start --browser`
+    p.add_argument("port", type=int)
+    p.set_defaults(func=relay)
     args = parser.parse_args()
     args.func(args)
 
