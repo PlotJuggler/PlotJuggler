@@ -30,6 +30,7 @@
 
 #include <backward.hpp>
 #else
+#include <emscripten.h>
 #include <emscripten/val.h>
 #endif
 #include <algorithm>
@@ -350,6 +351,21 @@ int main(int argc, char* argv[]) {
   // strtod / printf and expect a decimal point, so a decimal-comma LC_NUMERIC would stop every script from compiling.
   // What the user sees is formatted through QLocale, which this leaves alone.
   std::setlocale(LC_NUMERIC, "C");
+#ifdef PJ_TARGET_WASM
+  // Qt 6.12 (QTBUG-144692) prevents a pointerdown's default only when a widget accepts the press. On any other press
+  // (a rectangle zoom on a plot, for one) the browser moves focus to <body>, and keys stop reaching Qt until the focus
+  // object changes. Upstream 3a3021f80f prevents every pointerdown on the window instead; remove with Qt >= 6.13.
+  // clang-format off
+  EM_ASM({
+    document.addEventListener('pointerdown', event => {
+      const target = event.composedPath()[0];
+      if (target instanceof Element && target.classList.contains('qt-window')) {
+        event.preventDefault();
+      }
+    }, true);
+  });
+  // clang-format on
+#endif
 #if defined(Q_OS_MACOS)
   // An app bundle carries the embedded CPython's stdlib at Contents/Resources/python
   // (packaging/macos); the prefix baked at build time is absent on the user's Mac.
