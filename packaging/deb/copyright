@@ -1,6 +1,6 @@
 PlotJuggler 4
-Upstream-Contact: https://github.com/PlotJuggler/PJ4
-Source: https://github.com/PlotJuggler/PJ4
+Upstream-Contact: https://github.com/PlotJuggler/PlotJuggler
+Source: https://github.com/PlotJuggler/PlotJuggler
 
 PlotJuggler 4
 -------------
@@ -37,7 +37,7 @@ Corresponding sources for the LGPL components: the exact versions and build
 configuration are pinned in the PlotJuggler 4 repository (versions.env,
 conanfile.txt, conan.lock, recipes/), from which each component's unmodified
 upstream source release can be retrieved; the sources are also available on
-written request via https://github.com/PlotJuggler/PJ4/issues. The bundled Qt
+written request via https://github.com/PlotJuggler/PlotJuggler/issues. The bundled Qt
 and FFmpeg shared libraries under /opt/plotjuggler4/lib can be replaced with
 user-built compatible versions, satisfying the LGPL relinking requirement.
 

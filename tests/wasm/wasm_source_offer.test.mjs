@@ -111,7 +111,7 @@ test('SOURCE-OFFER.txt names each archive with its hash, and what rebuilds the m
   for (const archive of plan.archives.filter(entry => entry.repository)) {
     assert.ok(text.includes(archive.commit), `${archive.name} names its commit`);
   }
-  for (const input of ['versions.env', 'wasm-ci.yml', 'package_wasm.mjs', 'github.com/PlotJuggler/PJ4/issues',
+  for (const input of ['versions.env', 'wasm-ci.yml', 'package_wasm.mjs', 'github.com/PlotJuggler/PlotJuggler/issues',
     'conveyed under the GNU General Public License version 3', 'the desktop application remains MPL-2.0']) {
     assert.ok(text.replace(/\s+/g, ' ').includes(input), `names ${input}`);
   }
