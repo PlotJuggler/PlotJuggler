@@ -183,3 +183,47 @@ TEST(ScrubberBase, ReturnCommitsAndClosesEditorWithoutReopening) {
     EXPECT_TRUE(editor->isVisible());
   }
 }
+
+// Closing the editor hides its focused QLineEdit, which makes Qt hand focus to the
+// next widget in the window's focus chain. Committing with Return/Enter or
+// reverting with Escape must put focus back on the scrubber (so Space/Return keep
+// reaching it, not a sibling text field); clicking or tabbing to another widget
+// closes the editor too but must leave focus where the user sent it.
+TEST(ScrubberBase, EditorExitFocusGoesBackToScrubberOnlyForKeyboardExits) {
+  QWidget window;
+  QLineEdit sibling(&window);  // created first: earlier in the focus chain than the scrubber
+  PJ::IntScrubber scrubber(&window);
+  configure(scrubber);
+  sibling.setGeometry(0, 30, kWidth, kHeight);
+  scrubber.move(0, 0);
+  window.resize(kWidth, 60);
+  window.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&window));
+  window.activateWindow();
+  ASSERT_TRUE(QTest::qWaitForWindowActive(&window));
+
+  const auto open_editor = [&]() {
+    scrubber.setFocus();
+    QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+    auto* editor = scrubber.findChild<QLineEdit*>();
+    EXPECT_NE(editor, nullptr);
+    EXPECT_TRUE(editor && editor->isVisible());
+    EXPECT_EQ(QApplication::focusWidget(), editor);
+    return editor;
+  };
+
+  for (const int key : {Qt::Key_Return, Qt::Key_Enter, Qt::Key_Escape}) {
+    QLineEdit* editor = open_editor();
+    QTest::keyClick(QApplication::focusWidget(), static_cast<Qt::Key>(key));
+    EXPECT_FALSE(editor->isVisible()) << "key " << key;
+    EXPECT_EQ(QApplication::focusWidget(), &scrubber) << "key " << key << " left focus off the scrubber";
+    QTest::keyClick(QApplication::focusWidget(), Qt::Key_X);  // a later key must not land in the sibling
+    EXPECT_TRUE(sibling.text().isEmpty()) << "key " << key;
+  }
+
+  // Focus-out revert: the user moved on, so the scrubber must not take focus back.
+  open_editor();
+  sibling.setFocus();
+  EXPECT_FALSE(scrubber.findChild<QLineEdit*>()->isVisible());
+  EXPECT_EQ(QApplication::focusWidget(), &sibling);
+}

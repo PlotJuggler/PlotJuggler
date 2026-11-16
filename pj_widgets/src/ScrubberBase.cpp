@@ -365,7 +365,7 @@ QLineEdit* ScrubberBase::ensureLineEdit() {
   // eventFilter — editingFinished is too coarse, it fires for both).
   connect(line_edit_, &QLineEdit::returnPressed, this, [this]() {
     if (state_ == State::kEditing) {
-      exitEditMode(/*commit=*/true);
+      exitEditMode(/*commit=*/true, /*refocus=*/true);
     }
   });
   line_edit_->installEventFilter(this);
@@ -401,7 +401,7 @@ bool ScrubberBase::eventFilter(QObject* obj, QEvent* event) {
       } else if (event->type() == QEvent::KeyPress) {
         auto* ke = static_cast<QKeyEvent*>(event);
         if (ke->key() == Qt::Key_Escape) {
-          exitEditMode(/*commit=*/false);
+          exitEditMode(/*commit=*/false, /*refocus=*/true);
           return true;
         }
         if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
@@ -443,7 +443,7 @@ void ScrubberBase::enterEditMode() {
   update();
 }
 
-void ScrubberBase::exitEditMode(bool commit) {
+void ScrubberBase::exitEditMode(bool commit, bool refocus) {
   if (state_ != State::kEditing) {
     return;
   }
@@ -458,6 +458,10 @@ void ScrubberBase::exitEditMode(bool commit) {
       if (commitText(t)) {
         emit editingFinished();
       }
+    }
+    // Only if the editor still holds focus: an editingFinished slot may have moved it.
+    if (refocus && line_edit_->hasFocus()) {
+      setFocus(Qt::OtherFocusReason);
     }
     line_edit_->hide();
   }
