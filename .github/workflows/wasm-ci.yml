@@ -67,22 +67,16 @@ jobs:
     if: >-
       ${{ !cancelled() && !github.event.pull_request.draft &&
       (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
-    runs-on: ubuntu-22.04
+    # Depot, unlike the other workflows' GitHub-hosted runners: WASM is the slowest
+    # workflow, which Depot runs in 27 minutes against GitHub's 39 (warm medians),
+    # and its browser time bounds need a steady runner (GitHub's took 925-2268 ms
+    # for the same sample restore).
+    runs-on: depot-ubuntu-22.04-4
     # Generous first-run ceiling (cold Qt+emsdk+ccache); warm runs are expected
     # in the 20-30 minute band. Tighten once real timings accumulate.
     timeout-minutes: 120
 
     steps:
-      - name: Free up runner disk space
-        # GitHub-hosted Ubuntu runners leave ~14 GB free, which the Conan
-        # closure, Qt and the build tree can exceed ("No space left on
-        # device"). Reclaim the preinstalled toolchains no job here uses.
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
-
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -164,7 +158,7 @@ jobs:
         # restore/save split rather than actions/cache: the implicit post-job
         # save fires on every run and the SHA-keyed entry is never an exact
         # hit, so each run persisted a new blob of up to max_size (4 G below)
-        # into the repo's shared 10 GB Actions cache. See linux-ci.yml's "Save ccache".
+        # into billed Depot Cache storage. See linux-ci.yml's "Save ccache".
         id: ccache_restore
         uses: actions/cache/restore@v5
         with:
@@ -277,8 +271,8 @@ jobs:
         # Re-seed only when the restore found nothing at all. This workflow has
         # no push trigger, so a push-only gate would let the cache decay to
         # permanently cold; conversely saving every run persisted a fresh blob
-        # of up to 4 G into the repo's shared 10 GB Actions cache. Cold-only
-        # bounds it to one blob until LRU eviction drops it, while staying
+        # of up to 4 G into billed Depot Cache storage. Cold-only bounds it to
+        # roughly one blob per Depot retention period while staying
         # self-healing: whichever run finds an empty cache repopulates it.
         # always(): the browser suites below are irrelevant to object validity.
         if: always() && steps.ccache_restore.outputs.cache-matched-key == ''
@@ -342,7 +336,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.wasm.result == 'success' &&
       !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 60
     env:
       PJ_WASM_URL: http://127.0.0.1:6931/
@@ -457,7 +451,7 @@ jobs:
     # Explicit result check: the implicit success() also fails on the skipped
     # `changed` gate two levels up, which would skip this job on every manual run.
     if: ${{ !cancelled() && needs.wasm.result == 'success' && github.event_name != 'pull_request' }}
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 60
     env:
       LIBGL_ALWAYS_SOFTWARE: '1'
