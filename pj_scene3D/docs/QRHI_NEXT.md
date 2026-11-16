@@ -213,6 +213,5 @@ Not scheduled; each item names what would bring it back.
   lane.
 - **macOS.** The dmg is built by `macos-release.yml`; the `macos-ci` lane is the
   only macOS test gate, and a real Mac's OpenGL fallback is unverified.
-- **ADS on Wayland.** Floating docks hide on every backend (TECHNICAL_NOTES §5);
-  the fix belongs in the ADS fork, and filing it upstream is the maintainer's
-  call.
+- **ADS stays-on-top emulation.** It can hide floating docks on Linux platforms
+  other than xcb and Wayland (TECHNICAL_NOTES §5); since ADS 5.1 Wayland skips it.

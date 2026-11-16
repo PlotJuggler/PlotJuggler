@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // A theme switch (Theme.cpp) changes the application palette. PlotDocker styles
-// itself and must keep ADS's built-in stylesheet off across that change. Only
-// ADS 5 (PJ_SYSTEM_ADS) can fail this: its FollowPalette re-applies the
-// stylesheet on ApplicationPaletteChange unless DisableStylesheet is set; the
-// 4.5 fork in 3rdparty/ never re-applies it.
+// itself and must keep ADS's built-in stylesheet off across that change: ADS 5's
+// FollowPalette re-applies the stylesheet on ApplicationPaletteChange unless
+// DisableStylesheet is set.
 
 #include <gtest/gtest.h>
 

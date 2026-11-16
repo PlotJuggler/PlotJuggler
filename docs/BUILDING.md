@@ -150,7 +150,7 @@ and local source overrides such as `FETCHCONTENT_SOURCE_DIR_QWT_UPSTREAM`,
   `PJ_SYSTEM_NANOCDR` and `PJ_SYSTEM_ADS` take Qwt, nanocdr and
   Qt-Advanced-Docking from the system (`PJ_SYSTEM_ADS` needs a 5.x from 5.1.1
   on, since its SameMajorVersion package config rejects 6.x, carrying the
-  fork's d713b1f patch; see the root `CMakeLists.txt`), and
+  fork's "keep inactive tabs parented" patch; see the root `CMakeLists.txt`), and
   `PJ_WARNINGS_AS_ERRORS` (ON) drops `-Werror` / `/WX` when turned off. An
   installed `plotjuggler_sdk` is used only when its version equals the pin in
   `conanfile.txt` (a pre-release pin accepts any installed version); otherwise
