@@ -575,6 +575,11 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/diagnostics_dialog_test.cpp)
 
+    # Preferences' segmented selectors keep their sizeHint width on every page, so
+    # a long label on a page cannot squeeze one until its option labels overlap.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/preferences_selector_size_test.cpp)
+
     # MR !261 depth guard: a source added while streaming is paused must write
     # into the secondary tail buffer, not the frozen primary. Exercises the
     # extracted pause-target seam (applyWriteTargetsForCurrentPauseState) headlessly.

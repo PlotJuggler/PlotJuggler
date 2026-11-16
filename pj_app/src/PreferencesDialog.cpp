@@ -29,6 +29,7 @@
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <algorithm>
 
 #include "DebugMode.h"
 #include "MainWindow.h"
@@ -114,7 +115,12 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   if (auto* root = layout()) {
     root->setSizeConstraint(QLayout::SetNoConstraint);
   }
-  setMinimumSize(420, 300);
+  // The width floor is what the pages need, not a literal: any narrower and the
+  // pages' QFormLayouts squeeze their Fixed-size segmented selectors below their
+  // sizeHint, which overlaps the option labels. The height floor stays a literal
+  // (see above).
+  const int min_width = std::max(420, minimumSizeHint().width());
+  setMinimumSize(min_width, 300);
   // Restore the user's last dialog size if they resized it before; otherwise a
   // sensible default (room for the 160 px nav column + a comfortable page body).
   // The dialog is resizable (edge-drag handled by the base class); geometry is
@@ -126,7 +132,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     // return false and apply nothing — fall back to the default size rather than
     // opening off-screen or at 0x0.
     if (geometry.isEmpty() || !restoreGeometry(geometry)) {
-      resize(560, 400);
+      resize(std::max(560, min_width), 400);
     }
   }
 
