@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <QLibraryInfo>
+#include <QTemporaryDir>
 #include <QVersionNumber>
 #include <algorithm>
 #include <chrono>
@@ -61,17 +62,9 @@ const PJ_widget_vtable_t* staticWidgetSharingDsoIdVtable() {
 
 class WidgetCatalogTest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    dir_ = std::filesystem::temp_directory_path() /
-           ("pj_widget_catalog_test_" +
-            std::to_string(static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())));
-    std::filesystem::create_directories(dir_);
-  }
-
-  void TearDown() override {
-    std::error_code ec;
-    std::filesystem::remove_all(dir_, ec);
-  }
+  // A folder no other test process shares: ctest runs every test as its own process, in parallel, and a name made
+  // from the clock let two of them meet (one's TearDown then deleted the other's files mid-test). Removed with it.
+  QTemporaryDir tmp_;
 
   std::filesystem::path install(const char* fixture_path, const char* stem) const {
     const std::filesystem::path target = dir_ / pluginFileName(stem);
@@ -90,7 +83,7 @@ class WidgetCatalogTest : public ::testing::Test {
         diagnostics_, [&](const Diagnostic& d) { return d.message.find(needle) != std::string::npos; }));
   }
 
-  std::filesystem::path dir_;
+  std::filesystem::path dir_{tmp_.path().toStdString()};
   std::vector<Diagnostic> diagnostics_;
 };
 

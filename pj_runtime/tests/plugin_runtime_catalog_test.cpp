@@ -3,8 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <QTemporaryDir>
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -77,19 +77,11 @@ const PJ_dialog_vtable_t kStaticDialogVtable = {
 
 class PluginCatalogTest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    dir_ = std::filesystem::temp_directory_path() /
-           ("pj_catalog_test_" +
-            std::to_string(static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())));
-    std::filesystem::create_directories(dir_);
-  }
+  // A folder no other test process shares: ctest runs every test as its own process, in parallel, and a name made
+  // from the clock let two of them meet (one's TearDown then deleted the other's files mid-test). Removed with it.
+  QTemporaryDir tmp_;
 
-  void TearDown() override {
-    std::error_code ec;
-    std::filesystem::remove_all(dir_, ec);
-  }
-
-  std::filesystem::path dir_;
+  std::filesystem::path dir_{tmp_.path().toStdString()};
 };
 
 TEST_F(PluginCatalogTest, RuntimeCatalogDedupsDuplicateIdFirstFolderWins) {
