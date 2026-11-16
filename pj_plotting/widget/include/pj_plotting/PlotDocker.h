@@ -8,9 +8,11 @@
 #include <QDomElement>
 #include <QList>
 #include <QPointer>
+#include <QSplitter>
 #include <QString>
 #include <QTimer>
 #include <functional>
+#include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/types.hpp"
@@ -41,6 +43,8 @@ class PlotDocker : public ads::CDockManager {
   // the plot path).
   using ObjectWidgetFactory =
       std::function<IDataWidget*(const QString& kind, const ObjectDropSeed* seed, QWidget* parent)>;
+  // Splitter -> its sizes() at some earlier moment (the fullscreen snapshot).
+  using SplitterSizes = QList<std::pair<QPointer<QSplitter>, QList<int>>>;
 
   explicit PlotDocker(
       QString name, SessionManager* session = nullptr, CatalogModel* catalog = nullptr, QWidget* parent = nullptr);
@@ -98,7 +102,16 @@ class PlotDocker : public ads::CDockManager {
   // branches so the survivor reflows to fill; a raw CDockAreaWidget::setVisible
   // (false) does not, stranding the survivor in nested layouts. Exiting restores
   // exactly the docks this hid, leaving any independently-closed docks untouched.
+  // The maximized dock's toolbar is switched with it (expand/collapse glyph, hidden
+  // close/split buttons), whichever dock the call came from.
   void toggleFullscreen(DockWidget* dock);
+  // Leaves fullscreen if a dock is maximized (no-op otherwise; also drops any
+  // bookkeeping left behind by a maximized dock that no longer exists). Call it
+  // before anything that changes the dock tree (a split, a layout load): the
+  // sibling docks are hidden while maximized, so the tree would otherwise change
+  // under a fold that exit can no longer undo, and a save would store the folded
+  // sizes. Safe to call from a slot that runs during an exit (re-entrant).
+  void exitFullscreen();
   // The dock currently maximized via toggleFullscreen, or nullptr if none.
   // Out-of-line so the header need not see a complete DockWidget for the
   // QPointer-to-pointer conversion (matches focusedDock()).
@@ -174,6 +187,10 @@ class PlotDocker : public ads::CDockManager {
   // user closed independently. QPointers guard against a dock dying mid-state.
   QPointer<DockWidget> fullscreen_dock_;
   QList<QPointer<ads::CDockWidget>> hidden_by_fullscreen_;
+  // Every splitter's sizes() captured on entering fullscreen. The maximize folds
+  // the hidden branches to 0 px; xmlSaveState writes these instead, so a layout
+  // saved while maximized stores the split the user returns to on exit.
+  SplitterSizes pre_fullscreen_sizes_;
 };
 
 }  // namespace PJ

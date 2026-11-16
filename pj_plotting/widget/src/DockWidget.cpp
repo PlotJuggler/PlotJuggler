@@ -116,7 +116,6 @@ DockWidget::DockWidget(
       return;
     }
     parent_docker->toggleFullscreen(this);
-    toolbar_->setFullscreen(parent_docker->fullscreenDock() == this);
   };
   connect(toolbar_->buttonFullscreen(), &QPushButton::clicked, this, fullscreen_action);
 
@@ -426,6 +425,10 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   if (!parent_docker) {
     return nullptr;
   }
+  // The context-menu splits stay reachable on the maximized dock (the toolbar's
+  // are hidden); inserting into the folded tree would defeat the fullscreen
+  // snapshot, so leave fullscreen first.
+  parent_docker->exitFullscreen();
   auto* new_widget = new DockWidget(plot, session_, catalog_, parent_docker, nullptr, false);
   new_widget->setObjectWidgetFactory(object_widget_factory_);
   new_widget->setConfigurationPanelVisibilityQuery(configuration_panel_visible_);
