@@ -33,6 +33,10 @@ set(ENV{QT_QPA_PLATFORM} offscreen)
 set(ENV{XDG_CONFIG_HOME} "${WORK_DIR}/config")
 set(ENV{XDG_DATA_HOME} "${WORK_DIR}/data")
 set(ENV{HOME} "${WORK_DIR}")
+# No startup release check or registry scan: they reach the network, and --exit-after-layout quits while
+# Qt's HTTP thread may still be mid-request, which TSan reports as a race inside libQt6Network.
+file(WRITE "${WORK_DIR}/config/PlotJuggler/PlotJuggler4.conf"
+     "[General]\nPreferences%3A%3Acheck_updates_on_startup=false\n")
 
 if(VARIANT STREQUAL "after_kill")
     # No --exit-after-layout: the run stays up with the widget live until the timeout kills it.
