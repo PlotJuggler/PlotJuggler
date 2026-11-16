@@ -133,6 +133,19 @@ race:QtPrivate::QCallableObject<PJ::wireSourceCapture
 race:QtPrivate::QCallableObject<PJ::*makePluginMessageBoxHandler
 # A finished-slot object the GUI thread ran, freed later by Qt's network thread.
 race:QtPrivate::QCallableObject<PJ::*attachFinished
+# Qt's own teardown of a disconnected slot functor, on whichever thread cleans the
+# sender's orphaned connections. Deleting a QNetworkReply on the GUI thread orphans
+# its connections (McpBrowserLink::poll's finished lambda among them); the
+# "QNetworkAccessManager" thread, destroying its QHttpThreadDelegate at the same time,
+# removes the delegate's connections from that reply and frees the reply's orphans
+# (QObject::~QObject -> cleanOrphanedConnections -> deleteOrphaned, seen there under
+# gdb). Both sides hold the reply's signalSlotLock, a QBasicMutex futex TSan cannot see,
+# so the free is reported against the GUI thread's allocation (2026-11-16). Only the
+# functor's destruction runs under this frame, never its body, so unlike a per-site
+# QCallableObject entry it hides no race in a slot's body. It does hide races in that
+# destruction: destroying a functor runs its captures' destructors, application code,
+# so a race in freeing a captured object (a shared_ptr's last owner, say) goes unseen.
+race:QObjectPrivate::ConnectionData::deleteOrphaned
 
 # Test plugin libraries are dlclosed between tests and reloaded at the same
 # address. TSan keeps the unloaded library's access history, so the next load's

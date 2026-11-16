@@ -437,6 +437,21 @@ if(PJ_BUILD_TESTS)
     # (which lists target names) picks it up under ./build.sh --tsan.
     add_test(NAME extension_catalog_service_thread_safety_test COMMAND extension_catalog_service_thread_safety_test)
 
+    if(PJ_ENABLE_TSAN)
+      # Deliberately racy, like pj_datastore's sanitizer_race_selftest: PASS only on a
+      # race report naming the read, which one token shared across queued calls would hide.
+      # A clean exit (lost instrumentation, or the over-synchronization back) fails.
+      add_executable(tsan_invoke_queued_selftest tests/tsan_invoke_queued_selftest.cpp)
+      target_compile_options(tsan_invoke_queued_selftest PRIVATE ${PJ_WARNING_FLAGS})
+      target_link_libraries(tsan_invoke_queued_selftest PRIVATE pj_runtime)
+      add_test(NAME tsan_invoke_queued_selftest COMMAND tsan_invoke_queued_selftest)
+      set_tests_properties(tsan_invoke_queued_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "ThreadSanitizer: data race.*readWhatTheCallWasNotHandedOff"
+        ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:exitcode=66:abort_on_error=0:suppressions=${CMAKE_CURRENT_SOURCE_DIR}/../cmake/sanitizers/tsan.supp"
+        TIMEOUT 30
+      )
+    endif()
+
     # SDK example/test plugins the host tests dlopen. The SDK packages the
     # sources and builds them through pj_add_sdk_test_fixture(); the aliases
     # keep the <name>_plugin spelling every consumer here and in
