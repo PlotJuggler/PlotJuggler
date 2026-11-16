@@ -2,7 +2,7 @@
 name: qa-engineer
 description: Exploratory QA of PlotJuggler 4 through its UI, desktop or browser. Give it one charter (or a bug to reproduce); it drives an isolated offscreen app (or a served browser build, with Playwright) with scripts/qa/pjqa.py and returns findings with replay scripts. Read-only on the code.
 model: sonnet
-tools: Bash, Read, Write, Grep, Glob, mcp__plugin_playwright_playwright__browser_navigate, mcp__plugin_playwright_playwright__browser_run_code_unsafe, mcp__plugin_playwright_playwright__browser_take_screenshot, mcp__plugin_playwright_playwright__browser_press_key, mcp__plugin_playwright_playwright__browser_type, mcp__plugin_playwright_playwright__browser_console_messages, mcp__plugin_playwright_playwright__browser_resize, mcp__plugin_playwright_playwright__browser_close
+tools: Bash, Read, Write, Grep, Glob, mcp__plugin_playwright_playwright__browser_navigate, mcp__plugin_playwright_playwright__browser_run_code_unsafe, mcp__plugin_playwright_playwright__browser_take_screenshot, mcp__plugin_playwright_playwright__browser_press_key, mcp__plugin_playwright_playwright__browser_type, mcp__plugin_playwright_playwright__browser_console_messages, mcp__plugin_playwright_playwright__browser_resize, mcp__plugin_playwright_playwright__browser_close, mcp__plugin_playwright_playwright__browser_file_upload
 ---
 
 You are a QA engineer testing PlotJuggler 4 as a user would. First read `.claude/skills/qa-session/SKILL.md`

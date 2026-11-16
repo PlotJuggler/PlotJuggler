@@ -53,7 +53,10 @@ Pitfalls seen in practice:
 - A `read-only` field ignores typing by design (e.g. `displayTime`, the playback readout).
 - Some settings persist instead of entering undo (the toolbar's grid toggle): not every change is undoable.
 - Menus: click the menu bar item, then `ui_tree` lists the popup's actions with refs. `screenshot` does not show
-  popups: read them from `ui_tree`.
+  popups or non-modal windows (Diagnostics, a floating toolbox): read them from `ui_tree`. Items made of widgets
+  (the Datasets options menu) list as `item ""`: click by ref, and the reply's "landed on" names them.
+- A plot area's split and fullscreen buttons show only on hover: `ui_click` the toolbar's `widgetButtons` once,
+  then `buttonSplitHorizontal`, `buttonSplitVertical` and `buttonFullscreen` appear in `ui_tree`.
 - Wheel zoom and pan reach the undo stack after a short debounce: give such a call `"wait_ms":400` before pressing
   undo, or the undo arrives first.
 - `ui_tree` lists dock areas in creation order, not screen order: check which plot is which by its title or a
@@ -91,9 +94,16 @@ scripts/qa/pjqa.py start --browser build-wasm/deploy   # serves it, starts the r
   `browser_take_screenshot`, then click with `browser_run_code_unsafe`:
   `async (page) => { await page.mouse.click(715, 533); await page.waitForTimeout(500); }`. The same function
   does `page.mouse.wheel`, `page.mouse.down/move/up` drags and `page.keyboard.press('Control+Z')`.
+  Keys reach the app only while Qt's hidden input holds focus. If a key does nothing, check
+  `document.activeElement` before reporting it: on Qt 6.12 a press the clicked widget does not accept moves
+  focus to `<body>` (QTBUG-144692).
+- `browser_take_screenshot` refuses an absolute `filename` outside the session folder: pass a relative name.
+  Inside `browser_run_code_unsafe`, `page.screenshot({path, clip})` saves a crop anywhere under `PJQA_HOME`.
+- File > Load Layout opens the browser's file chooser: click the item, then `browser_file_upload` with the
+  absolute path. Save Layout downloads: `page.waitForEvent('download')`, then `saveAs`.
 - After anything visible, `browser_console_messages` (level `error`) catches aborts and failed fetches.
-- The first screen is the welcome dialog with sample presets: its Open buttons load a dataset and a layout in
-  one click, the quickest way to plots.
+- A page opened with `?mcp=` (as `pjqa.py` prints it) skips the welcome dialog. The sample presets are under
+  File > Presets: each Open loads a dataset and a layout in one click, the quickest way to plots.
 - One browser session at a time: every agent in a Claude session shares the one Playwright browser.
 - `pjqa.py stop` ends the server and the relay; `browser_close` closes the page.
 
@@ -140,8 +150,8 @@ Pick one per session, stay within it, stop after about 30 minutes or 150 tool ca
    clock time buttons.
 4. **Dialogs**: every menu entry; Escape and Cancel on each dialog; Preferences: change, cancel, reopen.
 5. **Layouts**: save the layout, start fresh, load it back; compare with screenshots.
-6. **Browser**: the welcome dialog's presets (each Open), a CSV through `open_file`, plots, zoom and undo,
-   playback, a layout reload; console errors after each step.
+6. **Browser**: the sample presets under File > Presets (each Open), a CSV through `open_file`, plots, zoom
+   and undo, playback, a layout reload; console errors after each step.
 
 ## A full QA pass ("do QA")
 
