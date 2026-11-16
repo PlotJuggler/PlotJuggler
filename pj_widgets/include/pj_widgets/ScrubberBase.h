@@ -95,7 +95,10 @@ class ScrubberBase : public QWidget {
 
   // State transitions
   void enterEditMode();
-  void exitEditMode(bool commit);
+  // refocus: keyboard exits (Return/Escape) hand focus back to the scrubber; hiding the
+  // editor would otherwise move it down the focus chain to a sibling. Click/tab-away
+  // exits leave focus where the user sent it.
+  void exitEditMode(bool commit, bool refocus = false);
   void startDrag();
   void endDrag();
 
