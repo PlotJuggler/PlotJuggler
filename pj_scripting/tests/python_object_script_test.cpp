@@ -1924,24 +1924,39 @@ TEST(PythonObjectScript, AReturnedInputReleasesItsValueBeforeItsKeepalive) {
 
 // GAP-25 and the busy guard: `xyz_points()` scans a run of non-finite records without the GIL, so another thread runs
 // Python meanwhile, and the iterator refuses to advance from it while it scans. The scan hook holds the lane's scan
-// open until this thread has tried, through the iterator the script stashed.
+// open until this thread has tried, through the iterator the script stashed. No step races the clock: the waits are
+// bounded only to fail instead of hang, and the run's watchdog is far above any scheduling delay.
 TEST(PythonObjectScript, APointScanReleasesTheGilAndRefusesAConcurrentAdvance) {
-  std::latch scanning{1};
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool scan_entered = false;
+  bool lane_done = false;
   std::latch tried{1};
   std::atomic<int> scans{0};
   bool scan_held_gil = false;
+  struct ResetHook {  // after the lane is joined (declared before it), however the test ends
+    ~ResetHook() {
+      detail::setPointScanHook({});
+    }
+  } reset_hook;
   detail::setPointScanHook([&] {
     if (scans++ != 0) {  // a second scan, when the guard let this thread advance too: hold only the lane's
       return;
     }
     scan_held_gil = PyGILState_Check() != 0;
-    scanning.count_down();
+    {
+      const std::lock_guard lock(mutex);
+      scan_entered = true;
+    }
+    changed.notify_all();
     if (!scan_held_gil) {  // holding it, this thread could never try: let the scan go, and the test fail
       tried.wait();
     }
   });
   const std::vector<NamedValue> inputs{
       objectInput("cloud", makeCloud(std::vector<std::array<float, 4>>(1'000, {kNaN, kNaN, kNaN, 0})))};
+  RunOptions options;
+  options.limits.python_watchdog_millis = 60'000;  // the scan waits for this thread, however late it is scheduled
   std::string lane_saw;
   std::thread lane([&] {
     auto result = runSource(
@@ -1949,12 +1964,22 @@ TEST(PythonObjectScript, APointScanReleasesTheGilAndRefusesAConcurrentAdvance) {
         "    it = inputs['cloud'].xyz_points()\n    statistics.NormalDist.it = it\n"
         "    try:\n        next(it, None)\n    except RuntimeError as error:\n        return str(error)\n"
         "    return 'scanned'\n",
-        inputs);
+        inputs, {}, "{}", options);
     lane_saw = result ? std::get<std::string>(result->outputs.front().value) : result.error().message;
+    {
+      const std::lock_guard lock(mutex);
+      lane_done = true;
+    }
+    changed.notify_all();
   });
-  scanning.wait();
-  std::string this_saw;
+  bool reached = false;
   {
+    std::unique_lock lock(mutex);
+    changed.wait_for(lock, std::chrono::seconds(60), [&] { return scan_entered || lane_done; });
+    reached = scan_entered;
+  }
+  std::string this_saw;
+  if (reached) {
     py::gil_scoped_acquire gil;
     try {
       py::module_::import("builtins")
@@ -1966,7 +1991,7 @@ TEST(PythonObjectScript, APointScanReleasesTheGilAndRefusesAConcurrentAdvance) {
   }
   tried.count_down();
   lane.join();
-  detail::setPointScanHook({});
+  ASSERT_TRUE(reached) << "the lane never reached a scan without the GIL: " << lane_saw;
   EXPECT_FALSE(scan_held_gil) << "the scan runs without the GIL";
   EXPECT_EQ(lane_saw, "scanned");
   EXPECT_NE(this_saw.find("already advancing"), std::string::npos) << this_saw;

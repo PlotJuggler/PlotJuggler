@@ -81,7 +81,11 @@ class PluginCatalogTest : public ::testing::Test {
   // from the clock let two of them meet (one's TearDown then deleted the other's files mid-test). Removed with it.
   QTemporaryDir tmp_;
 
-  std::filesystem::path dir_{tmp_.path().toStdString()};
+  void SetUp() override {
+    ASSERT_TRUE(tmp_.isValid()) << tmp_.errorString().toStdString();
+  }
+
+  std::filesystem::path dir_{tmp_.path().toStdU16String()};
 };
 
 TEST_F(PluginCatalogTest, RuntimeCatalogDedupsDuplicateIdFirstFolderWins) {
