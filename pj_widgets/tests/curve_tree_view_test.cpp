@@ -726,6 +726,26 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesFillsScalarLeavesAndSkipsGroups) {
   EXPECT_EQ(group->child(1)->text(1), u"42 "_s);
 }
 
+// A value too wide for the Value column elides on the right: the tree's
+// left elide (which keeps a curve name's distinctive tail) would drop a
+// number's sign and leading digits, so -123456.789 and +123456.789 would both
+// paint "…6.789".
+TEST(CurveTreeViewTest, ValueTooWideForItsColumnKeepsItsSign) {
+  const auto render = [](const QString& value) {
+    PJ::CurveTreeView view;
+    view.addCurve(u"vehicle/speed"_s);
+    view.setValuesColumnHidden(false);
+    view.expandAll();
+    view.resize(400, 300);
+    view.show();
+    QApplication::processEvents();
+    view.refreshVisibleValues([&](const QString& key) { return key.isEmpty() ? QString() : value; });
+    QApplication::processEvents();
+    return view.viewport()->grab().toImage();
+  };
+  EXPECT_NE(render(u"-123456.789 "_s), render(u"+123456.789 "_s)) << "the sign was elided";
+}
+
 // When the value column is hidden the refresh is a no-op, so cells are not
 // recomputed (and the per-row data reads are skipped entirely).
 TEST(CurveTreeViewTest, RefreshVisibleValuesIsNoOpWhenValueColumnHidden) {
