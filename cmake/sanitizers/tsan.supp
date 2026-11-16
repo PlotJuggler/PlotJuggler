@@ -146,6 +146,13 @@ race:QtPrivate::QCallableObject<PJ::*attachFinished
 # destruction: destroying a functor runs its captures' destructors, application code,
 # so a race in freeing a captured object (a shared_ptr's last owner, say) goes unseen.
 race:QObjectPrivate::ConnectionData::deleteOrphaned
+# Queued from a worker, audited 2026-11-16: the scene 2D frame worker's repaint
+# request (captures a QPointer to the layer) and a diagnostic reported from an
+# ingest worker (captures a QPointer to the bridge and the Diagnostic by value).
+# Each report is the GUI thread reading a capture the worker copied into the
+# queued call; neither capture is touched by the worker after the post.
+race:QtPrivate::QCallableObject<PJ::Scene2DLayer::makeQueuedRepaintCallback
+race:QtPrivate::QCallableObject<PJ::QtDiagnosticBridge::sink
 
 # Test plugin libraries are dlclosed between tests and reloaded at the same
 # address. TSan keeps the unloaded library's access history, so the next load's
