@@ -14,7 +14,7 @@ in a single application.
 
 ![Robot model, camera feeds, depth images and joint torque plots in a shared PJ4 workspace](docs/images/anymal.png)
 
-## Analyze signals interactively
+# From data to insight
 
 - **Drag and drop your data.** Drag signals into time-series and XY plots, zoom into events, and inspect individual samples.
 - **Validate changes across runs.** Load several recordings, align their timelines, and overlay signals to compare behavior.
@@ -22,7 +22,7 @@ in a single application.
 - **Add your own functions.** Create derived series with custom transforms in Lua and Python, alongside the built-in filters.
 - **Reuse your analysis.** Arrange plots in tabs and dockable panels, then save your layout and transforms for the next investigation.
 
-## Multimodal data, synchronized in time
+## Multimodal visualization
 
 Efficient data storage, GPU-accelerated rendering and on-demand media decoding
 help keep large recordings responsive as you explore.
@@ -51,7 +51,7 @@ help keep large recordings responsive as you explore.
   </tr>
 </table>
 
-## Work with the data you already have
+## Whatever your data is, we.ve got you covered
 
 Open supported formats directly and connect to your existing sensor and messaging
 systems. Install ready-to-use loaders, streamers and tools through
@@ -68,6 +68,30 @@ Need a custom integration? Build a loader, streamer, parser or toolbox with the
 [plugin SDK](https://github.com/PlotJuggler/plotjuggler_sdk), or start from the
 [official plugins](https://github.com/PlotJuggler/pj-official-plugins).
 
+## Claude Code and Codex plugins
+
+The [PlotJuggler agent plugin](https://github.com/PlotJuggler/plotjuggler-agent)
+lets Claude Code and Codex open your logs, read and compute over signals, create
+derived series and markers, build plots and 3D scenes, and take screenshots.
+
+Claude Code:
+
+```bash
+claude plugin marketplace add PlotJuggler/plotjuggler-agent
+claude plugin install plotjuggler@plotjuggler
+```
+
+Codex:
+
+```bash
+codex plugin marketplace add PlotJuggler/plotjuggler-agent
+codex plugin add plotjuggler@plotjuggler
+```
+
+Then ask, for example: *"Open ~/logs/run3.mcap in PlotJuggler and plot the wheel speeds."*
+
+> Required version 4.2 or higher.
+
 ## How to get started
 
 Every build is attached to the
@@ -78,8 +102,11 @@ Pick the one that fits your system.
 
 Download `PlotJuggler-<version>-Windows-x64.exe` from the
 [latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest)
-and run it. It installs for the current user, so no administrator rights are
-needed.
+and run it.
+
+To run it without installing, download
+`PlotJuggler-<version>-Windows-x64-portable.zip` instead, extract it anywhere
+and start `bin\PlotJuggler4.exe`.
 
 ### Debian and Ubuntu (apt repository)
 
@@ -89,28 +116,6 @@ future releases arrive with `sudo apt upgrade`.
 ```bash
 curl -fsSL https://apt.plotjuggler.io/pj4_install.sh | sudo sh
 ```
-
-<details>
-<summary>Prefer to run the steps yourself?</summary>
-
-The script ([`packaging/deb/pj4_install.sh`](packaging/deb/pj4_install.sh)) does exactly this:
-
-```bash
-sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSL https://apt.plotjuggler.io/plotjuggler-archive-keyring.asc \
-  -o /etc/apt/keyrings/plotjuggler.asc
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/plotjuggler.asc] https://apt.plotjuggler.io stable main" \
-  | sudo tee /etc/apt/sources.list.d/plotjuggler.list
-sudo apt update && sudo apt install plotjuggler4
-```
-
-</details>
-
-To install a single release without adding the repository, download
-`plotjuggler4_<version>_amd64.deb` from the
-[latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest)
-and run `sudo apt install ./plotjuggler4_<version>_amd64.deb`. A package
-installed this way is not updated by `apt upgrade`.
 
 ### Any Linux distribution (AppImage)
 
@@ -124,6 +129,16 @@ chmod +x PlotJuggler-*-x86_64.AppImage
 ```
 
 It needs glibc 2.35 or newer (Ubuntu 22.04 and later, or equivalent).
+
+### Conda and pixi
+
+The `plotjuggler4` package on the
+[prefix.dev `plotjuggler` channel](https://prefix.dev/channels/plotjuggler)
+is built for Linux x86_64 and macOS arm64 (macOS 13+):
+
+```bash
+pixi global install -c conda-forge -c https://prefix.dev/plotjuggler plotjuggler4
+```
 
 ### Building from source
 
