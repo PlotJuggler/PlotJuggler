@@ -975,7 +975,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
 });
 
 // @serial: its main-thread time bound fails on a loaded runner (playwright.config.js).
-test('anymal sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page }) => {
+test('anymal sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page, browserName }) => {
   test.setTimeout(300000);
   const errors = [];
   const samples = await startSamples();
@@ -989,9 +989,10 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
     // back and waits for SwiftShader to rasterise the first Scene3D frame (HDR,
     // MSAA, SSAO, EDL, shadows), 450-630 ms on top of the 600-990 ms workspace
     // restore task. That wait is the test machine's software GL, not the app.
-    // Firefox has no Long Tasks API, and its frame gap carries that same software
-    // GL wait (2200 ms on a GitHub-hosted runner against a 1547 ms restore), so
-    // there the app's own timing of the restore is bounded instead.
+    // Firefox has no Long Tasks API, so nothing is bounded there. Its frame gap
+    // carries that same software GL wait, and the app's own restore timing follows
+    // the runner (925 to 2265 ms on GitHub-hosted runners, one commit giving 925
+    // and 1570; about 730 ms on Depot), so both are only logged.
     const watchMainThread = async (load) => {
       await run.page.evaluate(() => {
         const watch = { last: performance.now(), frameGap: 0, task: null, running: true, observer: null };
@@ -1029,14 +1030,16 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
         expect(await pickSample(run, samples, 'anymal'), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
         await waitForScene3DModels(run.page, run.messages, anymalLoaded, 60000);
       });
-      // The app's own timing of the restore inside that task: bounded where the
-      // browser cannot report the task (Firefox).
       const restore = run.messages.slice(from).map(text => /PJ_WASM_LAYOUT_RESTORE_MS ms=(\d+)/.exec(text))
         .filter(Boolean).map(match => Number(match[1]));
       expect(restore.length, pass).toBeGreaterThan(0);
       console.log(`anymal ${pass}: longest task ${task === null ? 'n/a' : Math.round(task)} ms, `
         + `restore ${Math.max(...restore)} ms, longest frame gap ${Math.round(frameGap)} ms`);
-      expect(task ?? Math.max(...restore), pass).toBeLessThan(MAX_MAIN_THREAD_TASK_MS);
+      // Keyed on the browser, not on the API: a Chromium without Long Tasks fails here.
+      expect(task === null, pass).toBe(browserName === 'firefox');
+      if (task !== null) {
+        expect(task, pass).toBeLessThan(MAX_MAIN_THREAD_TASK_MS);
+      }
       // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a
       // replaced sample releases its own, so nothing else is left behind.
       expect(await stagedFiles(run.page, run.messages), pass).toBe(staged);
