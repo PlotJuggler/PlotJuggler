@@ -667,7 +667,19 @@ void GridRunner::advance(const std::shared_ptr<Job>& job) {
       std::optional<Result> stored =
           step.installed && upstream ? fromHistory(history_, step, *staged, t, job->tf_revision) : std::nullopt;
       if (!stored) {
-        step.memo.reset();  // its previous result: its objects would count against this run
+        // Its previous result, and every later step's that reads it (transitively): their objects would count against
+        // this run, and a memo of a reader of a re-run step never serves again (the run has a fresh identity).
+        std::vector<std::string_view> stale{step.key};
+        for (std::size_t later = job->step + 1; later < job->chain.size(); ++later) {
+          Job::Step& reader = job->chain[later];
+          if (std::ranges::any_of(reader.node.bindings, [&stale](const RecipeGraph::Binding& binding) {
+                return std::ranges::find(stale, binding.upstream) != stale.end();
+              })) {
+            reader.memo.reset();
+            stale.push_back(reader.key);
+          }
+        }
+        step.memo.reset();
         submitRun(job, std::move(*staged));
         return;
       }
