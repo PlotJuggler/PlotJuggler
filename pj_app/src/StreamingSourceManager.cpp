@@ -36,6 +36,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
+#include "pj_runtime/TsanAnnotations.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -61,6 +62,25 @@ constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
 
 QString pluginConfigKey(const std::string& plugin_id) {
   return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
+}
+
+// Queues `call` on the manager's (GUI) thread from a streaming worker. Qt orders the post before
+// the call with a futex inside prebuilt Qt that ThreadSanitizer cannot see, so TSan reports the
+// GUI thread's first touch of anything the worker wrote: the call's captures, the session state it
+// filled, and the functor Qt allocates on the worker and frees on the GUI thread. The worker
+// releases a token on the manager before posting and the call acquires it before running; the post
+// itself, where Qt allocates the functor after that release, is hidden from TSan.
+template <typename F>
+void postFromWorker(QObject* manager, F&& call) {
+  tsan::release(manager);
+  const tsan::IgnoreAccesses hand_off;
+  QMetaObject::invokeMethod(
+      manager,
+      [manager, call = std::forward<F>(call)]() mutable {
+        tsan::acquire(manager);
+        call();
+      },
+      Qt::QueuedConnection);
 }
 
 }  // namespace
@@ -456,18 +476,17 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
   // samplesIngested marshal in workerLoop below. The lambda may run before start()
   // even returns (some plugins advertise everything up front) or repeatedly during
   // poll(), so applyAdvertisedTopics re-checks the session still exists.
-  session->runtime_host->on_available_topics = [this, dataset_id](
-                                                   std::vector<DataSourceRuntimeHost::AdvertisedTopicInfo> topics) {
-    std::vector<AdvertisedTopic> owned;
-    owned.reserve(topics.size());
-    for (auto& topic : topics) {
-      owned.push_back(AdvertisedTopic{QString::fromStdString(topic.topic_name), topic.classification});
-    }
-    QMetaObject::invokeMethod(
-        this,
-        [this, dataset_id, owned = std::move(owned)]() mutable { applyAdvertisedTopics(dataset_id, std::move(owned)); },
-        Qt::QueuedConnection);
-  };
+  session->runtime_host->on_available_topics =
+      [this, dataset_id](std::vector<DataSourceRuntimeHost::AdvertisedTopicInfo> topics) {
+        std::vector<AdvertisedTopic> owned;
+        owned.reserve(topics.size());
+        for (auto& topic : topics) {
+          owned.push_back(AdvertisedTopic{QString::fromStdString(topic.topic_name), topic.classification});
+        }
+        postFromWorker(this, [this, dataset_id, owned = std::move(owned)]() mutable {
+          applyAdvertisedTopics(dataset_id, std::move(owned));
+        });
+      };
 
   ServiceRegistryBuilder registry;
   if (auto status = session->runtime_host->registerServices(registry); !status) {
@@ -797,8 +816,7 @@ void StreamingSourceManager::workerLoop(StreamingSession& session) {
   while (!sess->runtime_host->stopRequested()) {
     if (auto status = sess->handle.poll(); !status) {
       const QString err = QString::fromStdString(status.error());
-      QMetaObject::invokeMethod(
-          this, [this, dataset_id, err]() { emit streamError(dataset_id, err); }, Qt::QueuedConnection);
+      postFromWorker(this, [this, dataset_id, err]() { emit streamError(dataset_id, err); });
       sess->runtime_host->requestStop(std::string("plugin poll error: ") + err.toStdString());
       break;
     }
@@ -815,14 +833,14 @@ void StreamingSourceManager::workerLoop(StreamingSession& session) {
     // Retention enforcement piggybacks on the same UI-thread hop so
     // `retention_seconds_` stays UI-thread-only (no atomic needed). Trim
     // runs before notifyIngest so consumers observe the post-trim engine.
-    QMetaObject::invokeMethod(this, [this, dataset_id]() { onIngestTick(dataset_id); }, Qt::QueuedConnection);
+    postFromWorker(this, [this, dataset_id]() { onIngestTick(dataset_id); });
     QThread::msleep(kPollPeriodMs);
   }
 
   sess->handle.stop();
   sess->runtime_host->flushAll();
 
-  QMetaObject::invokeMethod(this, [this, dataset_id]() { onWorkerFinished(dataset_id); }, Qt::QueuedConnection);
+  postFromWorker(this, [this, dataset_id]() { onWorkerFinished(dataset_id); });
 }
 
 void StreamingSourceManager::ingestTickForTests(DatasetId dataset_id) {
