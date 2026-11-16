@@ -404,6 +404,14 @@ bool ScrubberBase::eventFilter(QObject* obj, QEvent* event) {
           exitEditMode(/*commit=*/false);
           return true;
         }
+        if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+          // QLineEdit commits via returnPressed, then ignores the key. Left to
+          // bubble, it reaches keyPressEvent and reopens the editor just closed;
+          // QApplication::notify propagates an ignored event even when filtered.
+          line_edit_->event(event);
+          event->accept();
+          return true;
+        }
       }
     }
     // App-wide: any mouse press outside the line edit reverts and falls

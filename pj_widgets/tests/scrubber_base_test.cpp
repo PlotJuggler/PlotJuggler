@@ -153,3 +153,33 @@ TEST(ScrubberBase, EscapeRevertDoesNotFireEditingFinished) {
 
   EXPECT_EQ(finished_spy.count(), 0);
 }
+
+// Return (and keypad Enter) in the inline editor commits and closes it. QLineEdit
+// ignores the key after emitting returnPressed, so it must not bubble to the
+// scrubber, whose keyPressEvent would reopen the editor on it. Focus stays on the
+// scrubber, and a Return aimed at the scrubber itself still opens the editor.
+TEST(ScrubberBase, ReturnCommitsAndClosesEditorWithoutReopening) {
+  for (const int key : {Qt::Key_Return, Qt::Key_Enter}) {
+    PJ::IntScrubber scrubber;
+    configure(scrubber);
+    scrubber.show();
+    ASSERT_TRUE(QTest::qWaitForWindowExposed(&scrubber));
+    scrubber.activateWindow();
+    scrubber.setFocus();
+
+    QTest::keyClick(&scrubber, Qt::Key_Return);  // keyboard route into the editor
+    auto* editor = scrubber.findChild<QLineEdit*>();
+    ASSERT_NE(editor, nullptr);
+    ASSERT_TRUE(editor->isVisible());
+
+    editor->setText(u"57"_s);
+    QTest::keyClick(editor, static_cast<Qt::Key>(key));
+
+    EXPECT_EQ(scrubber.value(), 57);
+    EXPECT_FALSE(editor->isVisible()) << "key " << key << " reopened the editor";
+    EXPECT_TRUE(scrubber.hasFocus());
+
+    QTest::keyClick(&scrubber, static_cast<Qt::Key>(key));  // a second Return opens it again
+    EXPECT_TRUE(editor->isVisible());
+  }
+}
