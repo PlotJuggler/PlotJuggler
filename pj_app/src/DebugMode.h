@@ -8,7 +8,7 @@ namespace PJ {
 // CLI flag (in main.cpp) and read-only thereafter, so a plain global is
 // safe — there is no concurrent mutation after launch. Gates developer-only
 // UI that ships hidden in normal runs (currently the Appearance page's
-// chrome-metric scrubbers in PreferencesDialog).
+// chrome-metric scrubbers and their reset button in PreferencesDialog).
 void setDebugMode(bool enabled);
 [[nodiscard]] bool isDebugMode();
 
