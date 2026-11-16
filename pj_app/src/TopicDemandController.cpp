@@ -300,12 +300,12 @@ QSet<QString> TopicDemandController::displayedKeys(const QWidget* root) const {
     }
     // The dataset recorded when the layer was added is a fast first guess; a merge re-keys the topic under the
     // anchor without touching the layer, and a config topic (TF) has no layer, so a miss asks the catalog by id.
-    const std::optional<DatasetId> any_dataset =
-        topics.empty() ? std::nullopt : std::optional<DatasetId>(topics.begin()->second.first);
+    // A pointer, not a std::optional copy: GCC 11 at -O3 reports the optional's payload as maybe-uninitialized.
+    const DatasetId* any_dataset = topics.empty() ? nullptr : &topics.begin()->second.first;
     const auto add_scene_topic = [&](ObjectTopicId topic_id) {
       const auto recorded = topics.find(topic_id.id);
-      const std::optional<DatasetId> dataset = recorded != topics.end() ? recorded->second.first : any_dataset;
-      if (dataset.has_value()) {
+      const DatasetId* dataset = recorded != topics.end() ? &recorded->second.first : any_dataset;
+      if (dataset != nullptr) {
         if (const auto key = catalog_.objectTopicKey(*dataset, topic_id); key.has_value()) {
           keys.insert(*key);
           return;

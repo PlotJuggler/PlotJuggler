@@ -80,8 +80,11 @@ jobs:
           # Hash every conanfile.txt under the tree (today the top-level
           # one; future submodules under PJ4 may add their own) so the
           # key invalidates when any of them changes.
-          hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
-                  -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          # "luau-fpic": the conan install below builds luau with -fPIC under its own
+          # package_id; a new key lets the run save the closure that holds it (the
+          # prefix restore still brings back everything else).
+          hash=$( { find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
+                  -print0 | sort -z | xargs -0 sha256sum; echo luau-fpic; } | sha256sum | cut -c1-16)
           echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
 
       - name: Restore Conan cache
@@ -214,9 +217,13 @@ jobs:
           conan profile detect --force
           scripts/configure_conan_remote.sh
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
+          # luau: ConanCenter's Release binary is not PIC (no fPIC option); -fPIC in
+          # its package_id makes Conan build it instead. Same flags as build.sh.
           conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=Release -s compiler.cppstd=20 \
+            -c "luau/*:tools.build:cxxflags=['-fPIC']" \
+            -c "luau/*:tools.info.package_id:confs=['tools.build:cxxflags']" \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
             echo "::notice::Conan built missing Linux binaries; the cache saves below persist them."

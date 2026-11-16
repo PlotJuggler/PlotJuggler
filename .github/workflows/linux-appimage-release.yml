@@ -137,7 +137,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-appimage-release-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+          key: conan-appimage-release-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}-luau-fpic
           # Prefix fallbacks: an older appimage closure first, else seed from
           # linux-ci's saved closure — same ubuntu-22.04 / gcc-11 /
           # Release / cppstd=20 profile, so its packages are directly
@@ -217,9 +217,13 @@ jobs:
           set -euo pipefail
           conan profile detect --force
           scripts/configure_conan_remote.sh
+          # luau: ConanCenter's Release binary is not PIC (no fPIC option); -fPIC in
+          # its package_id makes Conan build it instead. Same flags as build.sh.
           conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
-            -s build_type=Release -s compiler.cppstd=20
+            -s build_type=Release -s compiler.cppstd=20 \
+            -c "luau/*:tools.build:cxxflags=['-fPIC']" \
+            -c "luau/*:tools.info.package_id:confs=['tools.build:cxxflags']"
 
       - name: Link pinned linuxdeploy/appimagetool into packaging/appimage/
         # build_appimage.sh uses a pre-existing packaging/appimage/<tool>.AppImage instead
@@ -332,7 +336,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-appimage-release-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+          key: conan-appimage-release-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}-luau-fpic
 
       - name: Save ccache
         # always(): keep the objects even when a late step fails.
