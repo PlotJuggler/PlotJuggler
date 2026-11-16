@@ -186,6 +186,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       appearance_form->setRowVisible(row, isDebugMode());
     }
   }
+  // The footer reset button only resets those scrubbers (see its handler below),
+  // so outside --debug-mode it would be a button that visibly does nothing.
+  ui_->buttonResetDefaults->setVisible(isDebugMode());
 
   // Scene 3D page is a placeholder for now — the asset-folder controls are
   // shown but disabled until the feature lands.
