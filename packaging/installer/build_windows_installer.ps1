@@ -118,7 +118,11 @@ param(
     "dummy-streamer", "foxglove-bridge", "plotjuggler-bridge", "webrtc-client",
     "ros-parser", "protobuf-parser", "json-parser", "data-tamer-parser",
     "toolbox-quaternion", "toolbox-transform-editor", "toolbox-mosaico",
-    "arrow-parser"
+    "arrow-parser",
+    # Also in the browser build (cmake/PjWasmOfficialPlugins.cmake).
+    "toolbox-fft", "toolbox-anomaly-detector", "toolbox-data-exporter",
+    "influx-parser", "navmap-parser", "candump-loader", "blf-loader", "mf4-loader",
+    "log-widget"
   ),
   [string]$PluginPlatform = "windows-x86_64",
   [string]$ConanHome  = "$env:USERPROFILE\.conan2",

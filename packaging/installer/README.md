@@ -151,12 +151,15 @@ source), `-PluginPlatform <key>` (defaults to `windows-x86_64`), and
 `-CleanReleaseName` (name the output `PlotJuggler-<Version>-Windows-x64.exe`
 instead of the commit-stamped default — used by release CI on tag builds).
 
-The default whitelist bundles these 18 published plugins:
+The default whitelist bundles these 27 published plugins:
 `mcap-loader`, `csv-loader`, `parquet-loader`, `ulog-loader`, `mp4-loader`,
 `pointcloud-3d-loader`, `dummy-streamer`, `foxglove-bridge`,
 `plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
 `json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
-`toolbox-transform-editor`, `toolbox-mosaico`, and `arrow-parser`.
+`toolbox-transform-editor`, `toolbox-mosaico`, `arrow-parser`, `toolbox-fft`,
+`toolbox-anomaly-detector`, `toolbox-data-exporter`, `influx-parser`,
+`navmap-parser`, `candump-loader`, `blf-loader`, `mf4-loader`, and `log-widget`
+(every plugin of the browser build, `cmake/PjWasmOfficialPlugins.cmake`).
 
 ## Portable ZIP
 
