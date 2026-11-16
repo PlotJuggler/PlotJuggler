@@ -119,10 +119,19 @@ TEST(HeaderResizePolicy, WideningCascadesPastANeighbourAlreadyAtItsFloor) {
   // Column 1's label is wider than the seed, so it has nothing to give. The
   // width has to come from column 2 instead of the drag simply doing nothing.
   Fixture f({"Name", kWideLabel, "Encoding"});
-  f.policy->setSectionWidth(2, kTableWidth / 2);
+  // Column 2 takes the room the other two leave, less a little for the fill
+  // column: fixed at half the table, it overflowed where the platform font
+  // renders the labels wider (offscreen on Windows), and an overflowing drag
+  // takes no width from anyone by design.
+  const int room =
+      f.header->width() - expectedFloor(f.header, QStringLiteral("Name")) - expectedFloor(f.header, kWideLabel);
+  constexpr int kDrag = 40;
+  ASSERT_GT(room - 20 - expectedFloor(f.header, QStringLiteral("Encoding")), kDrag) << "the table is too narrow";
+  f.policy->setSectionWidth(2, room - 20);
   const QList<int> before = f.widths();
+  ASSERT_LE(f.total(), f.header->width()) << "the columns must fit before the drag";
 
-  f.dragDivider(0, 40);
+  f.dragDivider(0, kDrag);
 
   EXPECT_GT(f.header->sectionSize(0), before[0]) << "the dragged column did not grow";
   EXPECT_EQ(f.header->sectionSize(1), before[1]) << "the floored column should not have moved";
