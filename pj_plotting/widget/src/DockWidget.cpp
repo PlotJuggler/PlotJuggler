@@ -106,6 +106,7 @@ DockWidget::DockWidget(
   toolbar_->label()->setText("...");
   qobject_cast<QBoxLayout*>(layout())->insertWidget(0, toolbar_);
 
+  connect(toolbar_, &DockToolbar::titleChanged, this, &DockWidget::undoableChange);
   connect(toolbar_->buttonSplitHorizontal(), &QPushButton::clicked, this, [this]() { splitHorizontal(); });
   connect(toolbar_->buttonSplitVertical(), &QPushButton::clicked, this, [this]() { splitVertical(); });
 
