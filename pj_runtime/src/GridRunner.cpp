@@ -806,8 +806,9 @@ void GridRunner::collect(const std::shared_ptr<Job>& job, const EnginePool::Outc
   }
   step.memo = std::move(result);
   ran = {};  // what the result did not take
-  const InputStager::Staged staged = std::move(job->staged);
-  if (proceed(job, staged)) {
+  // The run's inputs die with the condition, before `advance` sends the next run: a reader's upstream objects would
+  // count against it.
+  if (proceed(job, std::exchange(job->staged, {}))) {
     advance(job);
   }
 }
