@@ -105,10 +105,12 @@ class PlotDocker : public ads::CDockManager {
   // The maximized dock's toolbar is switched with it (expand/collapse glyph, hidden
   // close/split buttons), whichever dock the call came from.
   void toggleFullscreen(DockWidget* dock);
-  // Leaves fullscreen if a dock is maximized (no-op otherwise). Call it before
-  // anything that changes the dock tree (a split, a layout load): the sibling
-  // docks are hidden while maximized, so the tree would otherwise change under a
-  // fold that exit can no longer undo, and a save would store the folded sizes.
+  // Leaves fullscreen if a dock is maximized (no-op otherwise; also drops any
+  // bookkeeping left behind by a maximized dock that no longer exists). Call it
+  // before anything that changes the dock tree (a split, a layout load): the
+  // sibling docks are hidden while maximized, so the tree would otherwise change
+  // under a fold that exit can no longer undo, and a save would store the folded
+  // sizes. Safe to call from a slot that runs during an exit (re-entrant).
   void exitFullscreen();
   // The dock currently maximized via toggleFullscreen, or nullptr if none.
   // Out-of-line so the header need not see a complete DockWidget for the

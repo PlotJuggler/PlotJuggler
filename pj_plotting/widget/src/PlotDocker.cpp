@@ -462,6 +462,11 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
   connect(this, &ads::CDockManager::dockWidgetRemoved, this, [this](ads::CDockWidget* removed) {
     auto* removed_dock = qobject_cast<DockWidget*>(removed);
     const bool removed_was_focused = (removed_dock != nullptr && removed_dock == focused_dock_);
+    // The maximize dies with its dock: bring the hidden siblings back and drop the
+    // snapshot before anything else rebuilds the tree.
+    if (removed_dock != nullptr && removed_dock == fullscreen_dock_) {
+      exitFullscreen();
+    }
     ensureAtLeastOneWidget();
     // ADS doesn't move focus to a survivor when the focused dock is closed, so
     // do it here: the right panel mirrors the focused dock, and leaving focus
@@ -715,7 +720,8 @@ QDomElement PlotDocker::xmlSaveState(QDomDocument& doc) const {
   for (ads::CDockContainerWidget* container : dockContainers()) {
     QDomElement container_element = doc.createElement(u"Container"_s);
     QDomElement child = saveChildNodesState(
-        doc, container->findChild<QSplitter*>(QString(), Qt::FindDirectChildrenOnly), pre_fullscreen_sizes_);
+        doc, container->findChild<QSplitter*>(QString(), Qt::FindDirectChildrenOnly),
+        fullscreen_dock_ ? pre_fullscreen_sizes_ : SplitterSizes{});
     if (!child.isNull()) {
       container_element.appendChild(child);
     }
@@ -844,18 +850,7 @@ DockWidget* PlotDocker::fullscreenDock() const {
 
 void PlotDocker::toggleFullscreen(DockWidget* dock) {
   if (fullscreen_dock_) {
-    // Exit: re-show exactly the docks the maximize hid (those still alive).
-    // toggleView(true) re-shows each dock and its collapsed parent splitters,
-    // restoring the layout the maximize folded away.
-    for (const QPointer<ads::CDockWidget>& hidden : hidden_by_fullscreen_) {
-      if (hidden) {
-        hidden->toggleView(true);
-      }
-    }
-    hidden_by_fullscreen_.clear();
-    pre_fullscreen_sizes_.clear();
-    fullscreen_dock_->toolBar()->setFullscreen(false);
-    fullscreen_dock_ = nullptr;
+    exitFullscreen();
     return;
   }
   if (dock == nullptr) {
@@ -886,8 +881,23 @@ void PlotDocker::toggleFullscreen(DockWidget* dock) {
 }
 
 void PlotDocker::exitFullscreen() {
-  if (fullscreen_dock_) {
-    toggleFullscreen(fullscreen_dock_);
+  // Take the state out before any foreign code runs: re-showing a dock emits
+  // viewToggled, and a slot may exit again (the nested call then finds nothing
+  // left to undo) or delete the maximized dock (hence the guarded pointer).
+  // Runs even when the maximized dock is already gone, so no snapshot outlives it.
+  const QPointer<DockWidget> maximized = std::exchange(fullscreen_dock_, nullptr);
+  const QList<QPointer<ads::CDockWidget>> hidden = std::exchange(hidden_by_fullscreen_, {});
+  pre_fullscreen_sizes_.clear();
+  // Re-show exactly the docks the maximize hid (those still alive).
+  // toggleView(true) re-shows each dock and its collapsed parent splitters,
+  // restoring the layout the maximize folded away.
+  for (const QPointer<ads::CDockWidget>& dock : hidden) {
+    if (dock) {
+      dock->toggleView(true);
+    }
+  }
+  if (maximized) {
+    maximized->toolBar()->setFullscreen(false);
   }
 }
 
