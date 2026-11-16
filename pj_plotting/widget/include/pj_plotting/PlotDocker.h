@@ -8,9 +8,11 @@
 #include <QDomElement>
 #include <QList>
 #include <QPointer>
+#include <QSplitter>
 #include <QString>
 #include <QTimer>
 #include <functional>
+#include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/types.hpp"
@@ -41,6 +43,8 @@ class PlotDocker : public ads::CDockManager {
   // the plot path).
   using ObjectWidgetFactory =
       std::function<IDataWidget*(const QString& kind, const ObjectDropSeed* seed, QWidget* parent)>;
+  // Splitter -> its sizes() at some earlier moment (the fullscreen snapshot).
+  using SplitterSizes = QList<std::pair<QPointer<QSplitter>, QList<int>>>;
 
   explicit PlotDocker(
       QString name, SessionManager* session = nullptr, CatalogModel* catalog = nullptr, QWidget* parent = nullptr);
@@ -174,6 +178,10 @@ class PlotDocker : public ads::CDockManager {
   // user closed independently. QPointers guard against a dock dying mid-state.
   QPointer<DockWidget> fullscreen_dock_;
   QList<QPointer<ads::CDockWidget>> hidden_by_fullscreen_;
+  // Every splitter's sizes() captured on entering fullscreen. The maximize folds
+  // the hidden branches to 0 px; xmlSaveState writes these instead, so a layout
+  // saved while maximized stores the split the user returns to on exit.
+  SplitterSizes pre_fullscreen_sizes_;
 };
 
 }  // namespace PJ

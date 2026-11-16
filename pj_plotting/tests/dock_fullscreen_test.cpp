@@ -13,7 +13,10 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDomDocument>
 #include <QPushButton>
+#include <algorithm>
+#include <string>
 
 #include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/DockWidget.h"
@@ -82,4 +85,51 @@ TEST(DockFullscreenTest, MaximizingALeafCollapsesTheEmptiedSiblingBranch) {
   EXPECT_FALSE(dock1->isClosed());
   EXPECT_FALSE(dock2->isClosed());
   EXPECT_EQ(visibleEmptySplitters(docker), 0) << "exit fullscreen left the tree dirty";
+}
+
+namespace {
+
+// The `sizes` attribute of every <DockSplitter> in a saved tab, in document
+// order, joined by '|'.
+std::string savedSplitterSizes(const PJ::PlotDocker& docker) {
+  QDomDocument doc;
+  const QDomElement tab = docker.xmlSaveState(doc);
+  QStringList sizes;
+  const QDomNodeList splitters = tab.elementsByTagName(u"DockSplitter"_s);
+  for (int index = 0; index < splitters.count(); ++index) {
+    sizes.push_back(splitters.at(index).toElement().attribute(u"sizes"_s));
+  }
+  return sizes.join(u'|').toStdString();
+}
+
+}  // namespace
+
+// Saving while a dock is maximized must store the layout the user will get back
+// on exit, not the folded one ("1;0" turns the other areas into thin strips on
+// load) — and must not leave fullscreen as a side effect.
+TEST(DockFullscreenTest, SaveWhileFullscreenKeepsThePreFullscreenSplitSizes) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = dock0->splitVertical();  // V[dock0, dock1]
+  ASSERT_NE(dock1, nullptr);
+  auto* dock2 = dock1->splitHorizontal();  // V[dock0, H[dock1, dock2]]
+  ASSERT_NE(dock2, nullptr);
+
+  docker.resize(1000, 600);
+  docker.show();
+  QApplication::processEvents();
+  const std::string normal_sizes = savedSplitterSizes(docker);
+  ASSERT_EQ(std::count(normal_sizes.begin(), normal_sizes.end(), '|'), 1) << "two splitters expected";
+
+  clickFullscreen(dock0);
+  QApplication::processEvents();
+
+  EXPECT_EQ(savedSplitterSizes(docker), normal_sizes);
+  EXPECT_EQ(docker.fullscreenDock(), dock0) << "saving must not leave fullscreen";
+  EXPECT_TRUE(dock1->isClosed());
+  EXPECT_TRUE(dock2->isClosed());
 }

@@ -59,7 +59,10 @@ QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
-QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
+// `remembered_sizes` overrides a splitter's live sizes() (see
+// PlotDocker::pre_fullscreen_sizes_); entries whose count no longer matches the
+// splitter are ignored.
+QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget, const PlotDocker::SplitterSizes& remembered_sizes) {
   if (widget == nullptr) {
     return {};
   }
@@ -69,13 +72,16 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
     splitter_element.setAttribute(u"orientation"_s, splitter->orientation() == Qt::Horizontal ? u"|"_s : u"-"_s);
     splitter_element.setAttribute(u"count"_s, QString::number(splitter->count()));
 
-    QStringList normalized_sizes;
-    int total_size = 0;
-    for (int size : splitter->sizes()) {
-      total_size += size;
+    QList<int> sizes = splitter->sizes();
+    for (const auto& [remembered, remembered_list] : remembered_sizes) {
+      if (remembered == splitter && remembered_list.size() == splitter->count()) {
+        sizes = remembered_list;
+      }
     }
+    QStringList normalized_sizes;
+    const int total_size = std::accumulate(sizes.begin(), sizes.end(), 0);
     for (int index = 0; index < splitter->count(); ++index) {
-      const int size = splitter->sizes().value(index, 0);
+      const int size = sizes.value(index, 0);
       const double normalized = total_size > 0 ? static_cast<double>(size) / static_cast<double>(total_size)
                                                : 1.0 / static_cast<double>(std::max(1, splitter->count()));
       normalized_sizes.push_back(QString::number(normalized, 'f', 8));
@@ -83,7 +89,7 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
     splitter_element.setAttribute(u"sizes"_s, normalized_sizes.join(u";"_s));
 
     for (int index = 0; index < splitter->count(); ++index) {
-      QDomElement child = saveChildNodesState(doc, splitter->widget(index));
+      QDomElement child = saveChildNodesState(doc, splitter->widget(index), remembered_sizes);
       if (!child.isNull()) {
         splitter_element.appendChild(child);
       }
@@ -707,8 +713,8 @@ QDomElement PlotDocker::xmlSaveState(QDomDocument& doc) const {
 
   for (ads::CDockContainerWidget* container : dockContainers()) {
     QDomElement container_element = doc.createElement(u"Container"_s);
-    QDomElement child =
-        saveChildNodesState(doc, container->findChild<QSplitter*>(QString(), Qt::FindDirectChildrenOnly));
+    QDomElement child = saveChildNodesState(
+        doc, container->findChild<QSplitter*>(QString(), Qt::FindDirectChildrenOnly), pre_fullscreen_sizes_);
     if (!child.isNull()) {
       container_element.appendChild(child);
     }
@@ -842,6 +848,7 @@ void PlotDocker::toggleFullscreen(DockWidget* dock) {
       }
     }
     hidden_by_fullscreen_.clear();
+    pre_fullscreen_sizes_.clear();
     fullscreen_dock_ = nullptr;
     return;
   }
@@ -857,6 +864,10 @@ void PlotDocker::toggleFullscreen(DockWidget* dock) {
   // every PJ4 dock is named "Plot", so the map collapses to a single entry and
   // only one sibling would hide).
   hidden_by_fullscreen_.clear();
+  pre_fullscreen_sizes_.clear();
+  for (ads::CDockSplitter* splitter : findChildren<ads::CDockSplitter*>()) {
+    pre_fullscreen_sizes_.append({splitter, splitter->sizes()});
+  }
   for (ads::CDockWidget* other : openedDockWidgets()) {
     if (other == dock) {
       continue;
