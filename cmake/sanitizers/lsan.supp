@@ -21,3 +21,13 @@ leak:ensureInterpreter
 # PlotCanvasContextRecreationGlTest, RasterTextGlTest (all skip without GL).
 # third-party: Qt offscreen-platform context-failure path.
 leak:QOpenGLContext::QOpenGLContext
+
+# pj_widgets/include/pj_widgets/AppSettings.h appSettings() keeps one QSettings
+# per thread and never deletes it, so thread exit and static destruction order
+# cannot race it (its comment). The product calls it from the GUI thread only;
+# app_settings_test runs each case on a fresh std::thread, so every case leaves
+# the QSettings, its private and the QAdoptedThread data it keeps alive:
+# ~2 KB in ~20 allocations, all under appSettings.
+# Observed: pj_widgets_tests Formats/AppSettingsTest.* (12 cases).
+# ours-by-design: per-thread QSettings, never destroyed.
+leak:appSettings
