@@ -68,12 +68,16 @@ fi
 
 # Same curated set as the Windows installer ($PluginIds in
 # packaging/installer/build_windows_installer.ps1): ros2-topic-subscriber is
-# Linux-only, and toolbox-assistant-agent ships on Linux only for now.
+# Linux-only, and toolbox-assistant-agent ships on Linux only for now. log-widget is
+# absent: the registry has no macos-arm64 build of it (Widget plugins build on
+# Linux and Windows only).
 BUNDLE_IDS=(
   csv-loader mcap-loader parquet-loader ulog-loader mp4-loader pointcloud-3d-loader
   dummy-streamer foxglove-bridge plotjuggler-bridge webrtc-client
   ros-parser protobuf-parser json-parser data-tamer-parser
   toolbox-quaternion toolbox-transform-editor toolbox-mosaico arrow-parser
+  toolbox-fft toolbox-anomaly-detector toolbox-data-exporter
+  influx-parser navmap-parser candump-loader blf-loader mf4-loader
 )
 PLATFORM="macos-arm64"
 REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json"

@@ -71,10 +71,15 @@ backends are POSIX-only):
 `plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
 `json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
 `toolbox-transform-editor`, `toolbox-mosaico`, `arrow-parser`,
-`toolbox-assistant-agent`, `ros2-topic-subscriber`.
+`toolbox-fft`, `toolbox-anomaly-detector`, `toolbox-data-exporter`,
+`influx-parser`, `navmap-parser`, `candump-loader`, `blf-loader`, `mf4-loader`,
+`log-widget`, `toolbox-assistant-agent`, `ros2-topic-subscriber`.
+
+Every plugin of the browser build (`cmake/PjWasmOfficialPlugins.cmake`) is in
+this set.
 
 Not bundled: `toolbox-colormap`, `toolbox-reactive-scripts-editor` (excluded by
-request); `toolbox-fft`, `mqtt-subscriber`, `udp-server`, `zmq-subscriber`,
+request); `mqtt-subscriber`, `udp-server`, `zmq-subscriber`,
 `lerobot-loader` (published, but not curated — installable via the in-app
 marketplace).
 
