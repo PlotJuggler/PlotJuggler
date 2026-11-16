@@ -369,16 +369,6 @@ std::vector<ObjectTopicId> objectTopics(
   return topics;
 }
 
-/// The entry stamps of `topics`, each view holding its topic's read lock, empty ones included.
-std::vector<EntryTimestampsView> entryTimes(const ObjectStore& store, const std::vector<ObjectTopicId>& topics) {
-  std::vector<EntryTimestampsView> views;
-  views.reserve(topics.size());
-  for (const ObjectTopicId topic : topics) {
-    views.push_back(store.entryTimestamps(topic));
-  }
-  return views;
-}
-
 /// The real result stamps of the findings, sorted: in a chain, a finding is an input only from its stamp.
 std::vector<Timestamp> findingStamps(const ResultHistory& history, const std::vector<std::string>& findings) {
   std::vector<Timestamp> stamps;
@@ -450,7 +440,7 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
     scalar_instants.push_back(std::move(changes.instants));
   }
   std::vector<EntryTimestampsView> views =
-      entryTimes(store_, objectTopics(stager_, dataset, inputs.objects));  // locked until the grid is built
+      store_.entryTimestamps(objectTopics(stager_, dataset, inputs.objects));  // locked until the grid is built
   std::erase_if(views, [](const EntryTimestampsView& times) { return times.empty(); });
   for (const EntryTimestampsView& times : views) {
     from = std::max(from, times[0]);
@@ -524,7 +514,7 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submitRows(
   // The clock in (`from`, `until`], cut while every view holds its topic's read lock. `seen` is minted under those
   // locks, so an entry with a greater uid is in no view.
   const auto cut = [&](std::optional<Timestamp> from) {
-    const std::vector<EntryTimestampsView> views = entryTimes(store_, topics);
+    const std::vector<EntryTimestampsView> views = store_.entryTimestamps(topics);
     job->rows->seen = SequentialUID::getNext();
     std::vector<std::pair<const Timestamp*, const Timestamp*>> ranges;
     uint64_t left = 0;

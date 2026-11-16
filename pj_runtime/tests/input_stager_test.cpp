@@ -569,9 +569,13 @@ TEST(InputStagerTest, APinnedFindingIsAnInputOnlyFromItsRealStamp) {
   fx.pushLazy(fx.cloud, 15 * kSec, source);
   const auto& finding = fx.install(recipe("finding", {"cloud"}, 15 * kSec));
   fx.publish(finding, 15 * kSec, croppedBundle(cloudObject(3)));
-  const EntryTimestampsView stored = fx.store.entryTimestamps(fx.topic("owner/finding/cropped"));
-  ASSERT_EQ(stored.size(), 1u);
-  EXPECT_EQ(stored[0], kFindingTimestamp);
+  {
+    // Released before install(), which calls into the store: a view held across a store call inverts the store's lock
+    // order.
+    const EntryTimestampsView stored = fx.store.entryTimestamps(fx.topic("owner/finding/cropped"));
+    ASSERT_EQ(stored.size(), 1u);
+    EXPECT_EQ(stored[0], kFindingTimestamp);
+  }
 
   const auto& count = fx.install(recipe("count", {"owner/finding/cropped"}));
   EXPECT_EQ(fx.stageError(count, 10 * kSec), "on-demand: missing input 'owner/finding/cropped'");

@@ -278,7 +278,13 @@ nullopt if evicted in between. `hi <= lo` (and unknown/empty topics) yield an em
 window. O(log n + window).
 
 `entryTimestamps(id)` returns an `EntryTimestampsView` that holds the series read
-lock while the timestamp span is inspected.
+lock while the timestamp span is inspected. Every store method takes `store_mutex_`
+before a series lock, so a caller holding a view must not call back into the store:
+taking `store_mutex_` under a series lock inverts that order and deadlocks against a
+writer that holds `store_mutex_` exclusively and drains the series' readers.
+`entryTimestamps(ids)` takes several views in one store-lock pass, locking the series
+in ascending id order, for a caller that needs mutually consistent stamps of several
+topics.
 
 Resolved entries contain:
 

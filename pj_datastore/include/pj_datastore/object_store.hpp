@@ -123,7 +123,11 @@ struct RetentionBudget {
 };
 
 /// Read view over a topic's entry timestamps that holds the series read lock for
-/// its lifetime; keep it short-lived to avoid blocking writers.
+/// its lifetime; keep it short-lived to avoid blocking writers. Never call into the
+/// ObjectStore while holding one: every store method takes the store lock first and
+/// the series lock second, so a view held across a store call inverts that order and
+/// can deadlock against a writer. Take several views together with the overload of
+/// entryTimestamps that accepts a list of topics.
 class EntryTimestampsView {
  public:
   EntryTimestampsView() = default;
@@ -330,6 +334,11 @@ class ObjectStore {
   std::pair<Timestamp, Timestamp> timeRange(ObjectTopicId id) const;
 
   EntryTimestampsView entryTimestamps(ObjectTopicId id) const;
+
+  /// Views over several topics, all locked at once under one store-lock pass, so their
+  /// stamps are mutually consistent. One view per distinct known topic, in ascending id
+  /// order (the order every caller locks series in); unknown topics are left out.
+  std::vector<EntryTimestampsView> entryTimestamps(std::vector<ObjectTopicId> ids) const;
 
   // --- Retention ---
 
