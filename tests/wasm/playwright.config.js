@@ -9,6 +9,7 @@ module.exports = defineConfig({
     'official_loaders.spec.js',
     'persistence_layout.spec.js',
     'plotting.spec.js',
+    'keyboard_focus.spec.js',
     'scene2d.spec.js',
     'scene3d_foundation.spec.js',
     'scene3d_data.spec.js',
