@@ -7,8 +7,10 @@
 #include <QHelpEvent>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QProxyStyle>
 #include <QScrollBar>
 #include <QSignalSpy>
+#include <QStyleOptionViewItem>
 #include <QTimer>
 #include <QToolTip>
 #include <QTreeWidgetItem>
@@ -729,21 +731,36 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesFillsScalarLeavesAndSkipsGroups) {
 // A value too wide for the Value column elides on the right: the tree's
 // left elide (which keeps a curve name's distinctive tail) would drop a
 // number's sign and leading digits, so -123456.789 and +123456.789 would both
-// paint "…6.789".
+// paint "…6.789". Checked on the option the style paints with, not on pixels:
+// with Pixi's Qt on Windows (offscreen) both signs grabbed identical images
+// even with the fix, so pixels depend on the platform's fonts.
 TEST(CurveTreeViewTest, ValueTooWideForItsColumnKeepsItsSign) {
-  const auto render = [](const QString& value) {
-    PJ::CurveTreeView view;
-    view.addCurve(u"vehicle/speed"_s);
-    view.setValuesColumnHidden(false);
-    view.expandAll();
-    view.resize(400, 300);
-    view.show();
-    QApplication::processEvents();
-    view.refreshVisibleValues([&](const QString& key) { return key.isEmpty() ? QString() : value; });
-    QApplication::processEvents();
-    return view.viewport()->grab().toImage();
+  struct RecordingStyle : QProxyStyle {
+    mutable QString text;
+    mutable Qt::TextElideMode elide = Qt::ElideNone;
+    void drawControl(
+        ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget) const override {
+      if (const auto* item = qstyleoption_cast<const QStyleOptionViewItem*>(option);
+          element == CE_ItemViewItem && item != nullptr && item->index.column() == 1) {
+        text = item->text;
+        elide = item->textElideMode;
+      }
+      QProxyStyle::drawControl(element, option, painter, widget);
+    }
   };
-  EXPECT_NE(render(u"-123456.789 "_s), render(u"+123456.789 "_s)) << "the sign was elided";
+  RecordingStyle style;  // outlives the view, which does not own it
+  PJ::CurveTreeView view;
+  view.setStyle(&style);
+  view.addCurve(u"vehicle/speed"_s);
+  view.setValuesColumnHidden(false);
+  view.expandAll();
+  view.resize(400, 300);
+  view.show();
+  QApplication::processEvents();
+  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : u"-123456.789 "_s; });
+  view.viewport()->grab();
+  EXPECT_EQ(style.text, u"-123456.789 "_s);
+  EXPECT_EQ(style.elide, Qt::ElideRight) << "a left elide drops the sign";
 }
 
 // When the value column is hidden the refresh is a no-op, so cells are not
