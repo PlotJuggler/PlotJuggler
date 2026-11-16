@@ -69,7 +69,8 @@ QString pluginConfigKey(const std::string& plugin_id) {
 // GUI thread's first touch of anything the worker wrote: the call's captures, the session state it
 // filled, and the functor Qt allocates on the worker and frees on the GUI thread. The worker
 // releases a token on the manager before posting and the call acquires it before running; the post
-// itself, where Qt allocates the functor after that release, is hidden from TSan.
+// itself, where Qt allocates the functor after that release, is hidden from TSan. A join acquires
+// the same token once wait() returns: it frees the session before the worker's last post runs.
 template <typename F>
 void postFromWorker(QObject* manager, F&& call) {
   tsan::release(manager);
@@ -144,6 +145,7 @@ StreamingSourceManager::~StreamingSourceManager() {
   for (auto& [dataset_id, sess] : sessions_) {
     if (sess->worker != nullptr) {
       sess->worker->wait();
+      tsan::acquire(this);  // see postFromWorker
     }
   }
 }
@@ -178,6 +180,7 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
   requestStopDataset(dataset_id, reason);
   if (sess->worker != nullptr) {
     sess->worker->wait();
+    tsan::acquire(this);  // see postFromWorker
   }
 
   // streamStopped carries only the FAILURE that ended the stream, if the
