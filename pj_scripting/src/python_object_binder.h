@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -78,6 +79,10 @@ void releaseRecycledViews();
 
 /// How many freed struct-view blocks wait for reuse: 0 once a run has ended. For tests. GIL held.
 [[nodiscard]] std::size_t recycledViewCount();
+
+/// Runs as an `xyz_points` scan starts its stretch without the GIL (the iterator busy): a test's latch to hold the scan
+/// open. Set and cleared while no script runs. For tests.
+void setPointScanHook(std::function<void()> hook);
 
 /// Registers the binder's types on the first call, which must hold the GIL outside any ScriptCallScope (registering is
 /// host work the armed hook could refuse); later calls only read.

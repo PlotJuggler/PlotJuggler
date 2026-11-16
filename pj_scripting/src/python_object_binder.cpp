@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <mutex>
@@ -122,6 +123,7 @@ struct Boxed {
 constexpr std::size_t kMaxRecycledViews = 64;
 std::array<PyObject*, kMaxRecycledViews> g_recycled_views{};
 std::size_t g_recycled_count = 0;
+std::function<void()> g_point_scan_hook;  // setPointScanHook
 
 template <class Value>
 py::object newBoxed(PyTypeObject* type, Value value) {
@@ -615,7 +617,12 @@ PyObject* nextPoint(PyObject* self) {
   auto point = native::nextFinitePoint(cloud, iterator.access, iterator.next, kScanWithGil);
   if (!point && iterator.next < iterator.access.records) {
     iterator.busy = true;
-    point = withoutGil([&] { return native::nextFinitePoint(cloud, iterator.access, iterator.next); });
+    point = withoutGil([&] {
+      if (g_point_scan_hook) {
+        g_point_scan_hook();
+      }
+      return native::nextFinitePoint(cloud, iterator.access, iterator.next);
+    });
     iterator.busy = false;
   }
   if (!point) {
@@ -1379,6 +1386,10 @@ void releaseRecycledViews() {
 
 std::size_t recycledViewCount() {
   return g_recycled_count;
+}
+
+void setPointScanHook(std::function<void()> hook) {
+  g_point_scan_hook = std::move(hook);
 }
 
 py::object newObject(sdk::BuiltinObject object, std::shared_ptr<const void> keepalive) {
