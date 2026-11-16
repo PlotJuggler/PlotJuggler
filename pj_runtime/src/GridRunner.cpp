@@ -439,6 +439,9 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
     from = std::max(from, changes.first.value_or(start));
     scalar_instants.push_back(std::move(changes.instants));
   }
+  // Read through the history before any view is taken: it calls into the store, and a store call made while a view
+  // holds its series lock inverts the store's lock order.
+  std::vector<Timestamp> findings_at = findingStamps(history_, findings);
   std::vector<EntryTimestampsView> views =
       store_.entryTimestamps(objectTopics(stager_, dataset, inputs.objects));  // locked until the grid is built
   std::erase_if(views, [](const EntryTimestampsView& times) { return times.empty(); });
@@ -457,7 +460,6 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
     const Timestamp* first = std::lower_bound(times.begin(), times.end(), from);
     ranges.emplace_back(first, std::upper_bound(first, times.end(), end));
   }
-  std::vector<Timestamp> findings_at = findingStamps(history_, findings);
   std::erase_if(findings_at, [&](Timestamp stamp) { return stamp < from || stamp > end; });
   ranges.emplace_back(findings_at.data(), findings_at.data() + findings_at.size());
   std::size_t count = 0;
