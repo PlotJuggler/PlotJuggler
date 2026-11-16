@@ -731,9 +731,8 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesFillsScalarLeavesAndSkipsGroups) {
 // A value too wide for the Value column elides on the right: the tree's
 // left elide (which keeps a curve name's distinctive tail) would drop a
 // number's sign and leading digits, so -123456.789 and +123456.789 would both
-// paint "…6.789". Checked on the option the style paints with, not on pixels:
-// with Pixi's Qt on Windows (offscreen) both signs grabbed identical images
-// even with the fix, so pixels depend on the platform's fonts.
+// paint "…6.789". Checked on the option the style paints the cell with: pixels
+// depend on the platform's fonts.
 TEST(CurveTreeViewTest, ValueTooWideForItsColumnKeepsItsSign) {
   struct RecordingStyle : QProxyStyle {
     mutable QString text;
@@ -741,7 +740,8 @@ TEST(CurveTreeViewTest, ValueTooWideForItsColumnKeepsItsSign) {
     void drawControl(
         ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget) const override {
       if (const auto* item = qstyleoption_cast<const QStyleOptionViewItem*>(option);
-          element == CE_ItemViewItem && item != nullptr && item->index.column() == 1) {
+          element == CE_ItemViewItem && item != nullptr && item->index.column() == 1 &&
+          item->index.parent().isValid()) {  // the curve's row, not its group's
         text = item->text;
         elide = item->textElideMode;
       }
