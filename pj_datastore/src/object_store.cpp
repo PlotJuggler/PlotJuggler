@@ -585,6 +585,21 @@ EntryTimestampsView ObjectStore::entryTimestamps(ObjectTopicId id) const {
   return {std::move(lock), &series->ordered.timestamps()};
 }
 
+std::vector<EntryTimestampsView> ObjectStore::entryTimestamps(std::vector<ObjectTopicId> ids) const {
+  std::ranges::sort(ids, {}, &ObjectTopicId::id);
+  const auto [last, end] = std::ranges::unique(ids);
+  ids.erase(last, end);
+  std::vector<EntryTimestampsView> views;
+  views.reserve(ids.size());
+  std::shared_lock store_lock(store_mutex_);
+  for (const ObjectTopicId id : ids) {
+    if (const auto* series = findSeries(id)) {
+      views.emplace_back(std::shared_lock(series->mutex), &series->ordered.timestamps());
+    }
+  }
+  return views;
+}
+
 // --- Retention ---
 
 void ObjectStore::setRetentionBudget(ObjectTopicId id, RetentionBudget budget) {

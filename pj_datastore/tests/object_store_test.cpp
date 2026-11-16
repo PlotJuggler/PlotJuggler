@@ -963,6 +963,21 @@ TEST(ObjectStoreTest, EntryTimestampsViewEmpty) {
   EXPECT_EQ(view.size(), 0u);
 }
 
+TEST(ObjectStoreTest, EntryTimestampsOfSeveralTopicsComeOncePerKnownTopicInIdOrder) {
+  ObjectStore store;
+  auto first = registerTestTopic(store, "a");
+  auto second = registerTestTopic(store, "b");
+  store.pushOwned(first, 100, makePayload(4));
+  store.pushOwned(second, 200, makePayload(4));
+  store.pushOwned(second, 300, makePayload(4));
+
+  const auto views = store.entryTimestamps({second, ObjectTopicId{999}, first, second});
+  ASSERT_EQ(views.size(), 2u);
+  EXPECT_EQ(views[0].size(), 1u);
+  EXPECT_EQ(views[1].size(), 2u);
+  EXPECT_EQ(views[1][1], 300);
+}
+
 TEST(ObjectStoreTest, RemoveTopicWaitsForOutstandingTimestampsView) {
   ObjectStore store;
   auto id = registerTestTopic(store, "cam/video");
