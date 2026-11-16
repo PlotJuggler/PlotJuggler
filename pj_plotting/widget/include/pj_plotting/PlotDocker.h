@@ -102,7 +102,14 @@ class PlotDocker : public ads::CDockManager {
   // branches so the survivor reflows to fill; a raw CDockAreaWidget::setVisible
   // (false) does not, stranding the survivor in nested layouts. Exiting restores
   // exactly the docks this hid, leaving any independently-closed docks untouched.
+  // The maximized dock's toolbar is switched with it (expand/collapse glyph, hidden
+  // close/split buttons), whichever dock the call came from.
   void toggleFullscreen(DockWidget* dock);
+  // Leaves fullscreen if a dock is maximized (no-op otherwise). Call it before
+  // anything that changes the dock tree (a split, a layout load): the sibling
+  // docks are hidden while maximized, so the tree would otherwise change under a
+  // fold that exit can no longer undo, and a save would store the folded sizes.
+  void exitFullscreen();
   // The dock currently maximized via toggleFullscreen, or nullptr if none.
   // Out-of-line so the header need not see a complete DockWidget for the
   // QPointer-to-pointer conversion (matches focusedDock()).

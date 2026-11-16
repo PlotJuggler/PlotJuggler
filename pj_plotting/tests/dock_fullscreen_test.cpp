@@ -133,3 +133,103 @@ TEST(DockFullscreenTest, SaveWhileFullscreenKeepsThePreFullscreenSplitSizes) {
   EXPECT_TRUE(dock1->isClosed());
   EXPECT_TRUE(dock2->isClosed());
 }
+
+namespace {
+
+// The smallest fraction any <DockSplitter> of a saved tab gives one of its
+// children; 0 means a collapsed (hidden) branch got serialized.
+double smallestSavedSplitFraction(const QDomElement& tab) {
+  double smallest = 1.0;
+  const QDomNodeList splitters = tab.elementsByTagName(u"DockSplitter"_s);
+  for (int index = 0; index < splitters.count(); ++index) {
+    for (const QString& fraction : splitters.at(index).toElement().attribute(u"sizes"_s).split(u';')) {
+      smallest = std::min(smallest, fraction.toDouble());
+    }
+  }
+  return smallest;
+}
+
+}  // namespace
+
+// The context menu's "Split Vertically" (and the placeholder's / PlotWidget's)
+// stay reachable on the maximized dock and land in DockWidget::splitInto. The
+// new dock changes the outer splitter's child count, so the fullscreen snapshot
+// no longer matches it: the split must leave fullscreen first, or the save falls
+// back to the folded live sizes ("1;0") and loads back as thin strips.
+TEST(DockFullscreenTest, SplittingWhileFullscreenLeavesFullscreenAndSavesASaneLayout) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = dock0->splitVertical();  // V[dock0, dock1]
+  ASSERT_NE(dock1, nullptr);
+  auto* dock2 = dock1->splitHorizontal();  // V[dock0, H[dock1, dock2]]
+  ASSERT_NE(dock2, nullptr);
+
+  docker.resize(1000, 600);
+  docker.show();
+  QApplication::processEvents();
+
+  clickFullscreen(dock0);
+  QApplication::processEvents();
+  ASSERT_EQ(docker.fullscreenDock(), dock0);
+
+  auto* dock3 = dock0->splitVertical();  // the context menu's entry point
+  ASSERT_NE(dock3, nullptr);
+  QApplication::processEvents();
+
+  EXPECT_EQ(docker.fullscreenDock(), nullptr) << "a split leaves fullscreen first";
+  EXPECT_FALSE(dock0->toolBar()->isFullscreen()) << "the maximized dock's toolbar must drop its fullscreen state";
+  EXPECT_FALSE(dock1->isClosed());
+  EXPECT_FALSE(dock2->isClosed());
+  EXPECT_EQ(visibleEmptySplitters(docker), 0);
+
+  QDomDocument doc;
+  const QDomElement tab = docker.xmlSaveState(doc);
+  EXPECT_GT(smallestSavedSplitFraction(tab), 0.05) << "a collapsed branch was saved";
+
+  // Reloading the saved layout (what undo does) must bring every plot back visible.
+  ASSERT_TRUE(docker.xmlLoadState(tab));
+  QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  QApplication::processEvents();
+  ASSERT_EQ(docker.plotCount(), 4);
+  for (int index = 0; index < docker.plotCount(); ++index) {
+    EXPECT_TRUE(docker.plotAt(index)->isVisible()) << "plot " << index;
+  }
+}
+
+// A layout load (undo/redo, Load Layout) while a dock is maximized rebuilds the
+// tab; it must not inherit the old fullscreen bookkeeping.
+TEST(DockFullscreenTest, LoadingALayoutWhileFullscreenStartsFromANormalTab) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = dock0->splitVertical();  // V[dock0, dock1]
+  ASSERT_NE(dock1, nullptr);
+  auto* dock2 = dock1->splitHorizontal();  // V[dock0, H[dock1, dock2]]
+  ASSERT_NE(dock2, nullptr);
+
+  docker.resize(1000, 600);
+  docker.show();
+  QApplication::processEvents();
+  QDomDocument doc;
+  const QDomElement tab = docker.xmlSaveState(doc);
+
+  clickFullscreen(dock0);
+  QApplication::processEvents();
+  ASSERT_EQ(docker.fullscreenDock(), dock0);
+
+  ASSERT_TRUE(docker.xmlLoadState(tab));
+  QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  QApplication::processEvents();
+
+  EXPECT_EQ(docker.fullscreenDock(), nullptr);
+  EXPECT_EQ(docker.plotCount(), 3) << "the hidden docks of the old tab must not linger";
+  EXPECT_EQ(visibleEmptySplitters(docker), 0);
+  EXPECT_GT(smallestSavedSplitFraction(docker.xmlSaveState(doc)), 0.05);
+}

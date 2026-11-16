@@ -23,6 +23,7 @@
 #include <numeric>
 #include <utility>
 
+#include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotFocusOverlay.h"
 #include "pj_plotting/PlotWidget.h"
@@ -763,6 +764,10 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
     setName(tab_element.attribute(u"tab_name"_s));
   }
 
+  // The old tab's docks go away below and the restore splits new ones: do not let
+  // either meet a maximize that still refers to them.
+  exitFullscreen();
+
   const bool was_hidden = isHidden();
   if (!was_hidden) {
     hide();
@@ -849,6 +854,7 @@ void PlotDocker::toggleFullscreen(DockWidget* dock) {
     }
     hidden_by_fullscreen_.clear();
     pre_fullscreen_sizes_.clear();
+    fullscreen_dock_->toolBar()->setFullscreen(false);
     fullscreen_dock_ = nullptr;
     return;
   }
@@ -876,6 +882,13 @@ void PlotDocker::toggleFullscreen(DockWidget* dock) {
     hidden_by_fullscreen_.append(other);
   }
   fullscreen_dock_ = dock;
+  dock->toolBar()->setFullscreen(true);
+}
+
+void PlotDocker::exitFullscreen() {
+  if (fullscreen_dock_) {
+    toggleFullscreen(fullscreen_dock_);
+  }
 }
 
 void PlotDocker::onStylesheetChanged(QString theme) {
