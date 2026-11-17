@@ -109,6 +109,12 @@ class StreamingSourceManager : public QObject {
   // when no session does. GUI thread only.
   [[nodiscard]] QString layoutSourceId(DatasetId dataset_id) const;
 
+  // The live session `source` would start again: same plugin (manifest id when the record
+  // has one, else display name) and the same configuration template, byte for byte. A layout
+  // opened while its stream already runs binds to that session instead of opening a second
+  // connection. 0 when none matches. GUI thread only.
+  [[nodiscard]] DatasetId liveSessionFor(const layout_xml::StreamingSourceRef& source) const;
+
   // Requests cooperative stop for one session and joins its worker before
   // returning. Used before real-deleting a dataset so no writer can race the
   // engine/object-store erase. Returns false when the dataset is not streaming;

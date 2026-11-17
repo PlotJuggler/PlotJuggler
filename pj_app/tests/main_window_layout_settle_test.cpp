@@ -298,15 +298,16 @@ TEST_F(MainWindowLayoutSettleTest, InvalidSceneResourcesFailBeforeTheWorkspaceCh
 }
 #endif
 
-// The desktop loader does not start a layout's streaming sources: it says so
-// once, naming how many, and still applies the rest of the layout.
-TEST_F(MainWindowLayoutSettleTest, StreamRecordsWarnThatTheDesktopDoesNotStartThem) {
+// A source-bound layout whose stream plugins are not installed names every stream it
+// could not start, once, and still applies the rest of the layout.
+TEST_F(MainWindowLayoutSettleTest, StreamsThatCannotStartAreNamedAndTheLayoutStillApplies) {
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "streams.mcap", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), dataset, "/plain", 1'000, 2'000), 0u);
   appSession().catalogModel().rebuildFromDatastore();
 
   QDomDocument doc = fake::buildGenericCurveLayoutDoc(QStringLiteral("/plain"));
+  doc.documentElement().setAttribute(QStringLiteral("binding"), QStringLiteral("source"));
   QList<PJ::layout_xml::StreamingSourceRef> streams;
   for (const QString& id : {QStringLiteral("left"), QStringLiteral("right")}) {
     PJ::layout_xml::StreamingSourceRef stream;
@@ -340,7 +341,8 @@ TEST_F(MainWindowLayoutSettleTest, StreamRecordsWarnThatTheDesktopDoesNotStartTh
   EXPECT_EQ(Peer::totalCurveCount(window()), 1) << "the plot still restores";
   flushQueuedEvents();
   ASSERT_EQ(warnings.size(), 1) << warnings.join(u'\n').toStdString();
-  EXPECT_TRUE(warnings.front().contains(QStringLiteral("2"))) << warnings.front().toStdString();
+  EXPECT_TRUE(warnings.front().contains(QStringLiteral("'left'"))) << warnings.front().toStdString();
+  EXPECT_TRUE(warnings.front().contains(QStringLiteral("'right'"))) << warnings.front().toStdString();
 }
 
 // Text a load interpolates into its warning box (here the path) reaches the

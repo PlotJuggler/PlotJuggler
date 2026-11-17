@@ -1018,6 +1018,12 @@ class MainWindow : public QMainWindow {
 
   [[nodiscard]] QDomDocument browserGenericLayoutDocument() const;
   [[nodiscard]] std::optional<QDomDocument> browserSourceLayoutDocument(QString& error) const;
+  // The live streams as a source-bound save writes them: one record per session (its
+  // configuration template, display offset and Source Timeline slot), and in
+  // `identity_for_dataset` the pj-stream:// identity of each dataset a stream writes into,
+  // for layout_xml::stampDatasetIdentities. Shared by the desktop and browser saves.
+  [[nodiscard]] QList<layout_xml::StreamingSourceRef> liveStreamRecords(
+      QHash<std::uint32_t, QString>& identity_for_dataset) const;
   // `layout_url` is where the bytes came from (empty for an upload): relative
   // Scene3D resources and file sources resolve against it, and with it the
   // sources download instead of being reselected.
@@ -1069,16 +1075,31 @@ class MainWindow : public QMainWindow {
     kRetainAndDiagnose,
   };
 
+  // One resolved layout source track, shared by the early offset write and
+  // the later track-order restore so neither pass can bind a different dataset.
+  struct LayoutTimelineTrack {
+    DatasetId dataset_id;
+    qint64 display_offset_ns;
+    bool has_display_offset;
+    int timeline_order;
+  };
+  using LayoutTimelinePlan = std::vector<LayoutTimelineTrack>;
+
   // Applies a parsed layout to already-loaded data: curve rebind, plot/panel
   // restore, recent-files. `policy` governs unresolved curves (the sync leg
   // of the same policy the progressive drain captures). The progressive
   // reload path uses beginProgressiveLayoutRestore instead so the structure
   // can appear before the load queue drains.
-  void applyRestoredLayout(QDomDocument doc, const QString& path, MissingCurvePolicy policy);
+  // `stream_tracks` are the Source Timeline tracks of the streams this load started or
+  // bound to: they join the files' offsets and order, and a layout with some applies even
+  // though their datasets hold no data yet.
+  void applyRestoredLayout(
+      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks = {});
   // `policy` is the caller-derived unresolved-intent policy (the load's
   // interactivity) — captured into progressive_missing_curve_policy_ for the
   // drain; never inferred from batch presence.
-  void beginProgressiveLayoutRestore(QDomDocument doc, const QString& path, MissingCurvePolicy policy);
+  void beginProgressiveLayoutRestore(
+      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks = {});
   void cancelProgressiveLayoutRestore();
   [[nodiscard]] bool rollbackProgressiveWorkspace();
   [[nodiscard]] bool abortProgressiveRestore();
@@ -1163,15 +1184,6 @@ class MainWindow : public QMainWindow {
   // window converts with the settled offset. Returns whether any offset moved.
   // No-op when nothing was stashed.
   bool applyPendingTimelineState();
-  // One resolved layout source track, shared by the early offset write and
-  // the later track-order restore so neither pass can bind a different dataset.
-  struct LayoutTimelineTrack {
-    DatasetId dataset_id;
-    qint64 display_offset_ns;
-    bool has_display_offset;
-    int timeline_order;
-  };
-  using LayoutTimelinePlan = std::vector<LayoutTimelineTrack>;
   // Applies a byte-level layout with kExact, then its file sources' timeline
   // state plus `stream_tracks` (the replay's streams, which have no data yet,
   // so an empty catalog is not an error when there are some).
@@ -1922,6 +1934,9 @@ class MainWindow : public QMainWindow {
   // skipped. onProgressiveLayoutDrained re-applies these once the paths settle. Empty
   // outside a progressive restore.
   QList<layout_xml::DataSourceRef> pending_timeline_sources_;
+  // The stream tracks of the progressive restore in flight (see applyRestoredLayout): the
+  // drain orders them with the files'. Cleared with pending_timeline_sources_.
+  LayoutTimelinePlan progressive_stream_tracks_;
   // The saved target must outlive begin so processors can replay only at drain.
   QDomDocument progressive_layout_doc_;
   std::optional<CapturedWorkspace> progressive_previous_workspace_;

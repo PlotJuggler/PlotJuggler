@@ -792,6 +792,18 @@ QString StreamingSourceManager::layoutSourceId(DatasetId dataset_id) const {
   return {};
 }
 
+DatasetId StreamingSourceManager::liveSessionFor(const layout_xml::StreamingSourceRef& source) const {
+  for (const auto& [dataset_id, session] : sessions_) {
+    const bool same_plugin = !source.plugin_manifest_id.isEmpty()
+                                 ? QString::fromStdString(session->manifest_id) == source.plugin_manifest_id
+                                 : QString::fromStdString(session->plugin_id) == source.plugin_id;
+    if (same_plugin && session->config_template == source.plugin_config_json) {
+      return dataset_id;
+    }
+  }
+  return 0;
+}
+
 void StreamingSourceManager::workerLoop(StreamingSession& session) {
   const DatasetId dataset_id = session.dataset_id;
   StreamingSession* sess = &session;

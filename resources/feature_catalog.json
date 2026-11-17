@@ -44,7 +44,7 @@
     {
       "id": "layouts",
       "name": "Layouts",
-      "summary": "Save and reload the whole workspace: tabs, plots, custom topics and markers. When saving, the layout can be bound to the loaded data so that loading it opens the same files again.",
+      "summary": "Save and reload the whole workspace: tabs, plots, custom topics and markers. When saving, the layout can be bound to the loaded data so that loading it opens the same files again and restarts the same streaming sources, without their connection dialog.",
       "entry_point": "File → Save Layout... / Load Layout...; recent layouts: Sources panel → Recent layouts & files",
       "evidence": "pj_app/src/MainWindow.cpp#tr(\"Load Layout...\"); pj_app/src/MainWindow.cpp#tr(\"Save Layout with Sources...\"); pj_app/src/ui/LeftPanel.ui#buttonRecentFiles",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Save Layout... / Load Layout... and Recent layouts & files"
