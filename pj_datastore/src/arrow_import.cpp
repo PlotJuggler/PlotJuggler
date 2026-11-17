@@ -297,11 +297,10 @@ Expected<std::vector<Timestamp>> extractTimestampsNanoarrow(
       result[static_cast<std::size_t>(i)] = static_cast<Timestamp>(raw[i]);
     }
   } else {
-    // Unsupported storage: this batch's row indices, unscaled.
-    for (int64_t i = 0; i < length; ++i) {
-      result[static_cast<std::size_t>(i)] = i;
-    }
-    return result;
+    return unexpected(
+        fmt::format(
+            "timestamp column has Arrow type {}; expected int64, uint64, int32 or timestamp",
+            ArrowTypeString(view->storage_type)));
   }
 
   Status scale_status = rescaleToNanoseconds(result, unit);
