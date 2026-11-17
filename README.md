@@ -134,7 +134,7 @@ It needs glibc 2.35 or newer (Ubuntu 22.04 and later, or equivalent).
 
 The `plotjuggler4` package on the
 [prefix.dev `plotjuggler` channel](https://prefix.dev/channels/plotjuggler)
-is built for Linux x86_64 and macOS arm64 (macOS 13+):
+is built for Linux x86_64 and macOS arm64 (macOS 14+):
 
 ```bash
 pixi global install -c conda-forge -c https://prefix.dev/plotjuggler plotjuggler4

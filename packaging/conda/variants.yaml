@@ -2,6 +2,9 @@
 # so plotjuggler4 installs into the same environment as their ROS packages.
 fmt:
   - "12.1"
+# RoboStack's vtk-base (in every ros-<distro>-desktop) needs lz4-c <1.11.
+lz4_c:
+  - "1.10"
 # conda-forge's and RoboStack's Qt 6 pin. PJ4 uses Qt's private headers, which
 # carry no binary compatibility across minors, so the package runs only with
 # this Qt minor (recipe.yaml pins qt6-main to it).
