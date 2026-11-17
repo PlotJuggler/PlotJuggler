@@ -249,5 +249,37 @@ TEST_F(WidgetBindingsTest, PendingWireResolvesWhenTheDatasetAppearsAndRevalidate
   EXPECT_EQ(bindings_->wires()[0].identity.topic, u"/late"_s) << "the identity survives for a later retry";
 }
 
+// A layout applied to the current data is generic: its wires carry no dataset qualifier. An object wire
+// then binds to the one loaded dataset that has its topic, as a scene layer does, and waits while several do.
+TEST_F(WidgetBindingsTest, AnUnqualifiedObjectWireBindsToTheOnlyDatasetWithItsTopic) {
+  bindings_->setInputs({WidgetInput("logs", "", "", WidgetInputKind::kObject, true)});
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"CustomWidget"_s);
+  QDomElement e = doc.createElement(u"input"_s);
+  e.setAttribute(u"name"_s, u"logs"_s);
+  e.setAttribute(u"slot"_s, u"0"_s);
+  e.setAttribute(u"kind"_s, u"object"_s);
+  e.setAttribute(u"topic"_s, u"/rosout"_s);
+  root.appendChild(e);
+
+  ObjectStore& objects = app_->sessionManager().objectStore();
+  const auto first = objects.registerTopic(
+      ObjectTopicDescriptor{.dataset_id = dataset_, .topic_name = "/rosout", .metadata_json = {}});
+  ASSERT_TRUE(first.has_value());
+  bindings_->load(root);
+  ASSERT_EQ(bindings_->wires().size(), 1U);
+  ASSERT_TRUE(bindings_->wires()[0].resolved);
+  EXPECT_EQ(bindings_->wires()[0].target.object_topic, *first);
+  EXPECT_EQ(bindings_->wires()[0].dataset, dataset_);
+
+  const DatasetId other = pj_cw_test::createDataset(*app_, "other.mcap");
+  ASSERT_TRUE(
+      objects.registerTopic(ObjectTopicDescriptor{.dataset_id = other, .topic_name = "/rosout", .metadata_json = {}})
+          .has_value());
+  bindings_->load(root);
+  ASSERT_EQ(bindings_->wires().size(), 1U);
+  EXPECT_FALSE(bindings_->wires()[0].resolved) << "two datasets have /rosout: never guess by load order";
+}
+
 }  // namespace
 }  // namespace PJ

@@ -25,6 +25,23 @@ QString kindName(WidgetInputKind kind) {
   return u"number"_s;
 }
 
+/// The object topic named `name` when exactly one loaded dataset has it: how a generic layout's wire,
+/// which carries no dataset qualifier, binds (as a scene layer does). None when no dataset or several
+/// have it, so a second recording never makes the choice by load order.
+std::optional<ObjectTopicId> uniqueObjectTopic(const ObjectStore& objects, const std::string& name) {
+  std::optional<ObjectTopicId> found;
+  for (const ObjectTopicId candidate : objects.listTopics()) {
+    if (objects.descriptor(candidate).topic_name != name) {
+      continue;
+    }
+    if (found.has_value()) {
+      return std::nullopt;
+    }
+    found = candidate;
+  }
+  return found;
+}
+
 std::optional<WidgetInputKind> parseKind(const QString& name) {
   if (name == "number"_L1) {
     return WidgetInputKind::kNumber;
@@ -187,6 +204,10 @@ bool WidgetBindings::resolveFromIdentity(WidgetWire& wire) const {
   }
   const SavedSeriesPath& id = wire.identity;
   if (wire.kind == WidgetInputKind::kObject) {
+    if (id.dataset_id == 0 && id.dataset_source.isEmpty() && id.dataset_path.isEmpty()) {
+      const auto topic = uniqueObjectTopic(session_->objectStore(), id.topic.toStdString());
+      return topic.has_value() && fillObject(wire, *topic);
+    }
     const DatasetIdentityResolution dataset =
         session_->resolveObjectDatasetIdentity(id.dataset_id, id.dataset_source, id.dataset_path, id.topic);
     if (!dataset.id) {

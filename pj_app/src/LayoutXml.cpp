@@ -755,7 +755,7 @@ void forEachElement(QDomDocument& doc, Fn&& visit) {
 
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
   // Generic layouts bind structural identities to the unique matching dataset
-  // that is live when the layout is opened. Scene2D/Scene3D loaders and State Transitions rows
+  // that is live when the layout is opened. Scene2D/Scene3D loaders, Custom Widget wires and State Transitions rows
   // implement the same unique-only fallback as plots and processors; keeping their upload path
   // would both source-bind the layout and leak an ephemeral browser identity.
   forEachElement(doc, [](QDomElement& element) {
