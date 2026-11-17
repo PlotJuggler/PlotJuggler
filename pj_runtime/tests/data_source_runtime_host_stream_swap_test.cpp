@@ -183,6 +183,13 @@ TEST_F(StreamEngineSwapTest, CachedSourceHandlesResolveAcrossPauseAndResumeSwap)
   // ts 10 + ts 30 on the primary, ts 20 on the secondary.
   EXPECT_EQ(rowCount(primary_engine_, topic.id), 2U);
   EXPECT_EQ(rowCount(secondary_engine_, topic.id), 1U);
+
+  // Resume swaps the target before it flushes, so the live row at 30 reached the primary first; the flush still
+  // brings the paused row over.
+  const auto flushed = secondary_engine_.flushTo(primary_engine_);
+  ASSERT_TRUE(flushed.has_value()) << flushed.error();
+  EXPECT_EQ(rowCount(primary_engine_, topic.id), 3U);
+  EXPECT_EQ(rowCount(secondary_engine_, topic.id), 0U);
 }
 
 // A topic first ensured mid-pause on the source path lands its sample on the secondary and leaves the frozen primary
@@ -208,30 +215,6 @@ TEST_F(StreamEngineSwapTest, SourceTopicCreatedWhilePausedWritesToSecondaryEngin
   ASSERT_TRUE(secondary_engine_.flushTo(primary_engine_).has_value())
       << "resume flush failed — the mid-pause topic was not mirrored onto the primary";
   EXPECT_EQ(rowCount(primary_engine_, topic.id), 1U) << "the paused tail did not flush back on resume";
-}
-
-// Resume swaps the write target back to the primary BEFORE it flushes the paused rows,
-// so the worker's next write can reach the primary first. The flush must still bring
-// every paused row over.
-TEST_F(StreamEngineSwapTest, ResumeFlushKeepsPausedRowsWhenALiveRowLandsFirst) {
-  SourceWriteHostView writer = sourceWriter();
-  const auto topic = *writer.ensureTopic("imu");
-  const auto field = *writer.ensureField(topic, "ax", PrimitiveType::kFloat32);
-  ASSERT_TRUE(writer.appendBoundRecord(topic, 10, {{.field = field, .value = 1.0F}}).has_value());
-  host_->flushPending();
-
-  host_->setDataEngineTarget(&secondary_engine_);  // pause
-  ASSERT_TRUE(writer.appendBoundRecord(topic, 20, {{.field = field, .value = 2.0F}}).has_value());
-  host_->flushPending();
-
-  host_->setDataEngineTarget(&primary_engine_);  // resume: the swap, then a worker tick before the flush
-  ASSERT_TRUE(writer.appendBoundRecord(topic, 30, {{.field = field, .value = 3.0F}}).has_value());
-  host_->flushPending();
-
-  const auto flushed = secondary_engine_.flushTo(primary_engine_);
-  ASSERT_TRUE(flushed.has_value()) << flushed.error();
-  EXPECT_EQ(rowCount(primary_engine_, topic.id), 3U);
-  EXPECT_EQ(rowCount(secondary_engine_, topic.id), 0U);
 }
 
 // Two lockstep engines + a DataSourceRuntimeHost driving the parser write path: a real parser plugin

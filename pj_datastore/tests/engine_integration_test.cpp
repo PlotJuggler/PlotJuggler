@@ -1005,13 +1005,11 @@ std::vector<Timestamp> rowTimestamps(DataEngine& engine, TopicId topic) {
   return stamps;
 }
 
-// No chunk starts before its predecessor ends, and ids ascend: XY plots and
-// SeriesReader's index lookups walk the chunks in deque order, and the
-// IncrementalEngine reads chunk ids as commit order.
-bool chunksInOrder(const DataEngine& engine, TopicId topic) {
+// The IncrementalEngine reads a topic's chunk ids as its commit order.
+bool chunkIdsAscend(const DataEngine& engine, TopicId topic) {
   const auto& chunks = engine.getTopicStorage(topic)->sealedChunks();
   return std::adjacent_find(chunks.begin(), chunks.end(), [](const TopicChunk& a, const TopicChunk& b) {
-           return b.stats.t_min < a.stats.t_max || b.id <= a.id;
+           return b.id <= a.id;
          }) == chunks.end();
 }
 
@@ -1079,8 +1077,8 @@ TEST(DataEngineFlushTest, AppendsToExistingDstChunks) {
 
 // A paused stream can receive a row stamped before the newest live row (multi-publisher
 // topics interleave their stamps). The flush keeps it and the rest of the paused rows,
-// of that topic and of every other, and leaves each topic's chunks in order.
-TEST(DataEngineFlushTest, LateRowMergesIntoTimeOrderOnEveryTopic) {
+// of that topic and of every other.
+TEST(DataEngineFlushTest, KeepsALatePausedRowOnEveryTopic) {
   auto f = buildFlushFixture();
   DataWriter src_writer = f.src.createWriter();
   const auto src_other = *src_writer.registerScalarSeries(f.src_dataset, "other/topic", NumericType::kFloat64);
@@ -1105,14 +1103,14 @@ TEST(DataEngineFlushTest, LateRowMergesIntoTimeOrderOnEveryTopic) {
   const auto stamps = rowTimestamps(f.dst, f.dst_handle.topic_id);
   EXPECT_EQ(stamps.size(), 1024U + 2001U);
   EXPECT_NE(std::find(stamps.begin(), stamps.end(), kLate), stamps.end());
-  EXPECT_TRUE(chunksInOrder(f.dst, f.dst_handle.topic_id));
+  EXPECT_TRUE(chunkIdsAscend(f.dst, f.dst_handle.topic_id));
   EXPECT_EQ(rowTimestamps(f.dst, dst_other.topic_id).size(), 20U);
   EXPECT_TRUE(f.src.getTopicStorage(f.src_handle.topic_id)->empty());
   EXPECT_TRUE(f.src.getTopicStorage(src_other.topic_id)->empty());
 }
 
-// Resume swaps the write target back before it flushes, so a live row can reach dst
-// first. The paused rows still arrive, and the chunks stay in time order around it.
+// Resume swaps the write target back before it flushes, so a live row sealed after the
+// paused ones can reach dst first. The paused rows still arrive, and ids still ascend.
 TEST(DataEngineFlushTest, PausedRowsFlushBeforeANewerLiveRow) {
   auto f = buildFlushFixture();
   writeScalars(f.dst, f.dst_handle, /*start=*/0, /*count=*/1024);          // live before the pause
@@ -1125,7 +1123,7 @@ TEST(DataEngineFlushTest, PausedRowsFlushBeforeANewerLiveRow) {
   const auto stamps = rowTimestamps(f.dst, f.dst_handle.topic_id);
   EXPECT_EQ(stamps.size(), 2049U);
   EXPECT_EQ(stamps.back(), 2'048'000);
-  EXPECT_TRUE(chunksInOrder(f.dst, f.dst_handle.topic_id));
+  EXPECT_TRUE(chunkIdsAscend(f.dst, f.dst_handle.topic_id));
   EXPECT_TRUE(f.src.getTopicStorage(f.src_handle.topic_id)->empty());
 }
 

@@ -56,7 +56,8 @@ class TopicStorage {
  public:
   TopicStorage(TopicId topic_id, TopicDescriptor descriptor);
 
-  /// Never rejects a chunk, overlapping ones included: rejecting would drop late data.
+  /// Never rejects a chunk, overlapping ones included: rejecting would drop late data. Gives the chunk a fresh id when
+  /// its id is not above this topic's newest, so ids ascend in commit order.
   [[nodiscard]] PJ::Status appendSealedChunk(TopicChunk chunk);
 
   /// Drops the chunks that end before `t_keep_min` and raises the retention floor to it (rows of a chunk straddling
@@ -117,8 +118,8 @@ class TopicStorage {
   /// row below it, though a straddling chunk still holds such rows.
   [[nodiscard]] Timestamp retentionFloor() const noexcept;
 
-  /// Highest chunk id that eviction dropped or cut rows from; 0 if none. Chunk ids ascend in commit order, so a
-  /// consumer whose last chunk id is below this missed evicted rows.
+  /// Highest chunk id that eviction dropped or cut rows from; 0 if none. Chunk ids ascend in commit order (see
+  /// appendSealedChunk()), so a consumer whose last chunk id is below this missed evicted rows.
   [[nodiscard]] ChunkId evictedThroughChunkId() const noexcept;
 
   /// Bumped by every change a reader cannot follow incrementally: everything except a strictly in-order append and a

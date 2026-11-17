@@ -123,6 +123,16 @@ QByteArray streamLayout(const QList<Plot>& plots, const QList<Stream>& streams, 
              .toUtf8();
 }
 
+uint64_t datasetRowCount(PJ::DataEngine& engine, PJ::DatasetId dataset) {
+  PJ::DataReader reader(engine);
+  uint64_t rows = 0;
+  for (const PJ::TopicId topic : engine.listTopics(dataset)) {
+    const auto meta = reader.getMetadata(topic);
+    rows += meta.has_value() ? meta->total_row_count : 0;
+  }
+  return rows;
+}
+
 class StreamingPresetTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -529,15 +539,7 @@ TEST_F(StreamingPresetTest, RemovingADatasetDropsThePausedRowsOfItsEndedStream) 
 
   streams.onPauseToggled(true);
   PJ::DataEngine& paused = streams.secondaryEngineForTests();
-  const auto paused_rows = [&] {
-    PJ::DataReader reader(paused);
-    uint64_t rows = 0;
-    for (const PJ::TopicId topic : paused.listTopics(dataset)) {
-      const auto meta = reader.getMetadata(topic);
-      rows += meta.has_value() ? meta->total_row_count : 0;
-    }
-    return rows;
-  };
+  const auto paused_rows = [&] { return datasetRowCount(paused, dataset); };
   ASSERT_TRUE(pumpUntil([&] { return paused_rows() > 0; }));
   QSignalSpy stopped(&streams, &PJ::StreamingSourceManager::streamStopped);
   {
@@ -567,15 +569,7 @@ TEST_F(StreamingPresetTest, ResumeMergesPausedRowsThatArriveLate) {
   ASSERT_NE(dataset, 0U);
   PJ::DataEngine& live = sessionManager().dataEngine();
   PJ::DataEngine& paused = streams.secondaryEngineForTests();
-  const auto rows = [dataset](PJ::DataEngine& engine) {
-    PJ::DataReader reader(engine);
-    uint64_t count = 0;
-    for (const PJ::TopicId topic : engine.listTopics(dataset)) {
-      const auto meta = reader.getMetadata(topic);
-      count += meta.has_value() ? meta->total_row_count : 0;
-    }
-    return count;
-  };
+  const auto rows = [dataset](PJ::DataEngine& engine) { return datasetRowCount(engine, dataset); };
   const auto has_late_row = [dataset](PJ::DataEngine& engine) {
     constexpr PJ::Timestamp kLateStamp = 1'000'000'000;  // the mock stream's kStampBase
     PJ::DataReader reader(engine);

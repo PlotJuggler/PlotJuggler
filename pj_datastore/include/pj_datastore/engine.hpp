@@ -162,10 +162,8 @@ class DataEngine {
   void reattachDatasetChunks(PJ::DatasetId dataset_id, DatasetChunkSnapshot&& snapshot);
 
   /// Moves every chunk into `dst` (registrations stay), matching topics by (dataset, name); dst must have them, with
-  /// compatible schemas (the staging engine is kept in lockstep), and a failure changes neither engine. A source row
-  /// older than dst's newest is kept: each topic's chunks stay in time order with ascending ids (the IncrementalEngine
-  /// reads a topic's chunk ids as its commit order), so overlapping chunks are re-encoded together and a chunk placed
-  /// behind a newer one gets a fresh id. Everything else moves without copying. The source's retention floor and
+  /// compatible schemas (the staging engine is kept in lockstep), and a failure changes neither engine. Zero-copy; a
+  /// source row older than dst's newest is kept, as an overlapping chunk. The source's retention floor and
   /// evicted-through chunk id carry over, so trimmed rows stay hidden and a consumer that never saw them records the
   /// gap.
   PJ::Status flushTo(DataEngine& dst);
@@ -230,8 +228,7 @@ class DataEngine {
   }
 
  private:
-  // Appends src's chunks to dst under dst's topic id, merging src rows older than dst's newest into time order, and
-  // carries src's retention floor and evicted-through id over.
+  // Appends src's chunks to dst under dst's topic id and carries src's retention floor and evicted-through id over.
   static void adoptChunksFrom(TopicStorage& dst, TopicStorage& src);
 
   // For a caller that already holds the engine mutex; they skip the re-lock.
