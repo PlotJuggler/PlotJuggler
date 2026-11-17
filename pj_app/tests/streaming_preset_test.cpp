@@ -1,12 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A preset (a layout opened by URL) that records streaming sources starts them
-// from their saved configuration, with no dialog, inside the same all-or-nothing
-// transaction as its file sources; its views bind each stream's topics as they
-// arrive. Runs on the desktop: the replay is the browser's byte-level path, and
-// the test stream (mock_layout_stream_plugin.cpp) records the configuration it
-// was given.
+// A layout that records streaming sources starts them from their saved
+// configuration, with no dialog, and its views bind each stream's topics as they
+// arrive. StreamingPresetTest covers a preset (a layout opened by URL: the
+// browser's byte-level replay, all-or-nothing with its file sources);
+// DesktopStreamLayoutTest a layout file the desktop opens and saves. The test
+// stream (mock_layout_stream_plugin.cpp) records the configuration it was given.
 
 #include <gtest/gtest.h>
 
@@ -29,6 +29,7 @@
 #include <QUrl>
 #include <QWidget>
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -40,6 +41,7 @@
 #include "StreamingSourceManager.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
@@ -596,9 +598,15 @@ TEST_F(StreamingPresetTest, LateTopicsBindToCorrectSource) {
 // the command line.
 class DesktopStreamLayoutTest : public StreamingPresetTest {
  protected:
-  // Writes `layout` to a file and opens it as --layout does (no prompt); returns whether it applied.
+  // One plot drawing "robot/data" from the stream record "robot", started with `config`.
+  static QByteArray robotLayout(const QString& config = uR"({"topic":"robot/data"})"_s) {
+    return streamLayout({{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}}, {{u"robot"_s, config}});
+  }
+
+  // Writes `layout` to a file and opens it as --layout does (no prompt), or as File →
+  // Load Layout does when `interactive`; returns whether it applied.
   bool openLayoutFile(const QByteArray& layout, bool interactive = false) {
-    const QString path = probe_dir_.filePath(u"layout-%1.pj4.xml"_s.arg(++files_written_));
+    const QString path = probe_dir_.filePath(u"layout.pj4.xml"_s);
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(layout) != layout.size()) {
       return false;
@@ -611,32 +619,27 @@ class DesktopStreamLayoutTest : public StreamingPresetTest {
     std::optional<bool> settled;
     const auto connection =
         QObject::connect(window_.get(), &PJ::MainWindow::layoutRestoreSettled, [&settled](bool ok) { settled = ok; });
-    if (interactive) {
-      PresetTestPeer::loadLayoutFileInteractively(*window_, path);
-    } else {
-      PresetTestPeer::loadLayoutFile(*window_, path);
-    }
+    PresetTestPeer::loadLayoutFile(*window_, path, interactive);
     EXPECT_TRUE(pumpUntil([&settled] { return settled.has_value(); }));
     QObject::disconnect(connection);
     pj_app_test::flushQueuedEvents();
     return settled.value_or(false);
   }
 
-  // Answers the next modal question by clicking the button labelled `label`, and
-  // records the question's text in `asked`.
-  void answerNextQuestion(const QString& label, QString* asked = nullptr) {
+  // Answers the next modal message box that has a button labelled `label` by clicking
+  // it, once `ready` (when given) holds, and records the box's text in `asked`.
+  void answerNextQuestion(const QString& label, QString* asked = nullptr, std::function<bool()> ready = {}) {
     auto* timer = new QTimer(window_.get());
-    QObject::connect(timer, &QTimer::timeout, timer, [timer, label, asked] {
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, label, asked, ready = std::move(ready)] {
       QWidget* modal = QApplication::activeModalWidget();
-      if (modal == nullptr) {
+      if (modal == nullptr || (ready && !ready())) {
         return;
       }
-      for (QAbstractButton* button : modal->findChildren<QAbstractButton*>()) {
+      for (QAbstractButton* button : modal->findChildren<QAbstractButton*>(u"pjMessageBoxButton"_s)) {
         if (button->text() == label) {
-          if (asked != nullptr) {
-            for (const QLabel* text : modal->findChildren<QLabel*>()) {
-              *asked += text->text();
-            }
+          if (const auto* body = modal->findChild<QLabel*>(u"pjMessageBoxBody"_s);
+              asked != nullptr && body != nullptr) {
+            *asked = body->text();
           }
           timer->deleteLater();
           button->click();
@@ -646,8 +649,6 @@ class DesktopStreamLayoutTest : public StreamingPresetTest {
     });
     timer->start(10);
   }
-
-  int files_written_ = 0;
 };
 
 TEST_F(DesktopStreamLayoutTest, CommandLineLayoutStartsItsStreamsWithoutAsking) {
@@ -656,8 +657,7 @@ TEST_F(DesktopStreamLayoutTest, CommandLineLayoutStartsItsStreamsWithoutAsking) 
   QTimer dialog_watch;
   QObject::connect(&dialog_watch, &QTimer::timeout, [&dialogs_seen] { dialogs_seen += visibleDialogs(); });
   dialog_watch.start(10);
-  ASSERT_TRUE(
-      openLayoutFile(streamLayout({{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}}, {{u"robot"_s, config}})));
+  ASSERT_TRUE(openLayoutFile(robotLayout(config)));
   ASSERT_TRUE(pumpUntil([this] { return PresetTestPeer::curveKeys(*window_).size() == 1; }));
   dialog_watch.stop();
   EXPECT_EQ(dialogs_seen, 0);
@@ -675,8 +675,7 @@ TEST_F(DesktopStreamLayoutTest, CommandLineLayoutStartsItsStreamsWithoutAsking) 
 // second one, and opening it after the stream is gone starts it again.
 TEST_F(DesktopStreamLayoutTest, SavedStreamLayoutRoundTrips) {
   const QString config = uR"({"topic":"robot/data","value":3})"_s;
-  ASSERT_TRUE(
-      openLayoutFile(streamLayout({{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}}, {{u"robot"_s, config}})));
+  ASSERT_TRUE(openLayoutFile(robotLayout(config)));
   ASSERT_TRUE(pumpUntil([this] { return PresetTestPeer::curveKeys(*window_).size() == 1; }));
   const PJ::DatasetId first = streamSessions().value(u"robot"_s);
   ASSERT_NE(first, 0U);
@@ -717,8 +716,7 @@ TEST_F(DesktopStreamLayoutTest, SavedStreamLayoutRoundTrips) {
 
 // A generic save ("Bind to this data source" off) records no stream.
 TEST_F(DesktopStreamLayoutTest, GenericSaveRecordsNoStream) {
-  ASSERT_TRUE(openLayoutFile(streamLayout(
-      {{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}}, {{u"robot"_s, uR"({"topic":"robot/data"})"_s}})));
+  ASSERT_TRUE(openLayoutFile(robotLayout()));
   const QString saved_path = probe_dir_.filePath(u"generic.pj4.xml"_s);
   PresetTestPeer::saveLayoutFile(*window_, saved_path, /*include_data_source=*/false);
   QFile saved_file(saved_path);
@@ -728,10 +726,46 @@ TEST_F(DesktopStreamLayoutTest, GenericSaveRecordsNoStream) {
   EXPECT_FALSE(bytes.contains("pj-stream://")) << bytes.toStdString();
 }
 
+// A stream started without a configuration cannot be restarted from a file: the save
+// leaves it out and still writes the rest.
+TEST_F(DesktopStreamLayoutTest, SaveSkipsAStreamWithoutConfiguration) {
+  PJ::layout_xml::StreamingSourceRef bare;
+  bare.id = u"bare"_s;
+  bare.plugin_id = QString::fromLatin1(kPluginId);
+  bare.plugin_manifest_id = QString::fromLatin1(kManifestId);
+  QString error;
+  ASSERT_NE(PresetTestPeer::streams(*window_).startFromLayout(bare, QString{}, error), 0U) << error.toStdString();
+  answerNextQuestion(u"OK"_s);  // a refused save would report in a box; never block on it
+
+  const QString saved_path = probe_dir_.filePath(u"bare.pj4.xml"_s);
+  PresetTestPeer::saveLayoutFile(*window_, saved_path, /*include_data_source=*/true);
+  QFile saved_file(saved_path);
+  ASSERT_TRUE(saved_file.open(QIODevice::ReadOnly));
+  const QByteArray bytes = saved_file.readAll();
+  EXPECT_FALSE(bytes.contains("streamInfo")) << bytes.toStdString();
+}
+
+// Two records with one configuration run as two sessions; reopening the layout while both
+// run binds each record to its own session.
+TEST_F(DesktopStreamLayoutTest, IdenticalStreamsKeepTheirOwnSessionsOnReopen) {
+  const QString config = uR"({"topic":"robot/data"})"_s;
+  const QByteArray layout = streamLayout(
+      {{u"plot_a"_s, streamCurve(u"robot/data"_s, u"a"_s)}, {u"plot_b"_s, streamCurve(u"robot/data"_s, u"b"_s)}},
+      {{u"a"_s, config}, {u"b"_s, config}});
+  ASSERT_TRUE(openLayoutFile(layout));
+  ASSERT_TRUE(pumpUntil([this] { return PresetTestPeer::curveKeys(*window_).size() == 2; }));
+  const QHash<QString, PJ::DatasetId> sessions = streamSessions();
+  ASSERT_EQ(sessions.size(), 2);
+
+  ASSERT_TRUE(openLayoutFile(layout));
+  EXPECT_EQ(probeLines().count(u"start"_s), 2);
+  EXPECT_EQ(plotDatasets(u"plot_a"_s), std::vector<PJ::DatasetId>{sessions.value(u"a"_s)});
+  EXPECT_EQ(plotDatasets(u"plot_b"_s), std::vector<PJ::DatasetId>{sessions.value(u"b"_s)});
+}
+
 // Opened from the app, the layout names its stream and asks before starting it.
 TEST_F(DesktopStreamLayoutTest, AppLoadAsksBeforeStarting) {
-  const QByteArray layout = streamLayout(
-      {{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}}, {{u"robot"_s, uR"({"topic":"robot/data"})"_s}});
+  const QByteArray layout = robotLayout();
   QString asked;
   answerNextQuestion(u"Start streaming"_s, &asked);
   ASSERT_TRUE(openLayoutFile(layout, /*interactive=*/true));
@@ -741,12 +775,46 @@ TEST_F(DesktopStreamLayoutTest, AppLoadAsksBeforeStarting) {
 }
 
 TEST_F(DesktopStreamLayoutTest, CancellingThePromptStartsNothing) {
-  const QByteArray layout = streamLayout(
-      {{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}}, {{u"robot"_s, uR"({"topic":"robot/data"})"_s}});
+  const QByteArray layout = robotLayout();
   answerNextQuestion(u"Cancel"_s);
   EXPECT_FALSE(openLayoutFile(layout, /*interactive=*/true));
   EXPECT_TRUE(probeLines().isEmpty());
   EXPECT_TRUE(streamSessions().isEmpty());
+}
+
+// A layout with a file and a stream restores progressively: a stream curve whose topic
+// first arrives after the file finished loading still binds to its stream.
+TEST_F(DesktopStreamLayoutTest, StreamCurveBindsWhenItsTopicArrivesAfterTheFiles) {
+  QFile data(probe_dir_.filePath(u"data.mock"_s));
+  ASSERT_TRUE(data.open(QIODevice::WriteOnly) && data.write("data.mock") > 0);
+  data.close();
+  const QString gate = probe_dir_.filePath(u"gate"_s);
+  ASSERT_TRUE(openLayoutFile(streamLayout(
+      {{u"plot_file"_s, fileCurve(u"data.mock"_s)}, {u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}},
+      {{u"robot"_s, uR"({"topic":"robot/data","gate_file":"%1"})"_s.arg(gate)}}, {u"data.mock"_s})));
+  ASSERT_TRUE(pumpUntil([this] { return PresetTestPeer::curveKeys(*window_).size() == 1; }));
+
+  QFile gate_file(gate);
+  ASSERT_TRUE(gate_file.open(QIODevice::WriteOnly));
+  gate_file.close();
+  ASSERT_TRUE(pumpUntil([this] { return PresetTestPeer::curveKeys(*window_).size() == 2; }));
+  EXPECT_EQ(plotDatasets(u"plot1"_s), std::vector<PJ::DatasetId>{streamSessions().value(u"robot"_s)});
+}
+
+// The report of a stream that could not start is a modal box in the app; the file the
+// layout reloads may finish while it is open, and the restore must still settle.
+TEST_F(DesktopStreamLayoutTest, RestoreSettlesWhenTheFilesFinishUnderTheStreamReport) {
+  QFile data(probe_dir_.filePath(u"data.mock"_s));
+  ASSERT_TRUE(data.open(QIODevice::WriteOnly) && data.write("data.mock") > 0);
+  data.close();
+  answerNextQuestion(u"Reload and start streaming"_s);
+  answerNextQuestion(u"OK"_s, nullptr, [this] { return !PresetTestPeer::fileLoader(*window_).isBusy(); });
+  EXPECT_TRUE(openLayoutFile(
+      streamLayout(
+          {{u"plot_file"_s, fileCurve(u"data.mock"_s)}}, {{u"bad"_s, uR"({"topic":"bad/data","fail_start":true})"_s}},
+          {u"data.mock"_s}),
+      /*interactive=*/true));
+  EXPECT_EQ(PresetTestPeer::curveKeys(*window_).size(), 1);
 }
 
 // A stream that cannot start is named; the rest of the layout still applies.
@@ -754,7 +822,7 @@ TEST_F(DesktopStreamLayoutTest, AStreamThatFailsToStartIsReported) {
   // Unattended: reported as a diagnostic, never a dialog.
   QStringList warnings;
   QObject::connect(
-      PresetTestPeer::diagnosticBridge(*window_), &PJ::QtDiagnosticBridge::diagnosticReported, window_.get(),
+      window_->diagnosticBridge(), &PJ::QtDiagnosticBridge::diagnosticReported, window_.get(),
       [&warnings](int, const QString&, const QString& id, const QString& message) {
         if (id == u"layout-streams-not-started"_s) {
           warnings.push_back(message);

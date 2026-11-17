@@ -20,7 +20,6 @@
 #include "MainWindow.h"
 #include "SourceTimelineController.h"
 #include "StreamingSourceManager.h"
-#include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 
@@ -46,15 +45,12 @@ class PresetTestPeer {
   [[nodiscard]] static Workspace capture(const MainWindow& window) {
     return window.captureWorkspace();
   }
-  static void loadLayoutFile(MainWindow& window, const QString& path) {
-    window.loadLayoutFromPath(path, MainWindow::LayoutLoadInteractivity::kAutomated);
-  }
-  // File → Load Layout: prompts before reloading or starting the layout's sources.
-  static void loadLayoutFileInteractively(MainWindow& window, const QString& path) {
-    window.loadLayoutFromPath(path, MainWindow::LayoutLoadInteractivity::kInteractive);
-  }
-  [[nodiscard]] static QtDiagnosticBridge* diagnosticBridge(MainWindow& window) {
-    return window.diagnostic_bridge_;
+  // As --layout opens it, or as File → Load Layout does when `interactive` (which asks
+  // before reloading or starting the layout's sources).
+  static void loadLayoutFile(MainWindow& window, const QString& path, bool interactive = false) {
+    window.loadLayoutFromPath(
+        path, interactive ? MainWindow::LayoutLoadInteractivity::kInteractive
+                          : MainWindow::LayoutLoadInteractivity::kAutomated);
   }
   // File → Save Layout, "Bind to this data source" as given.
   static void saveLayoutFile(MainWindow& window, const QString& path, bool include_data_source) {

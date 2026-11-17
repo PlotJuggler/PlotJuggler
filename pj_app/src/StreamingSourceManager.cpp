@@ -792,16 +792,28 @@ QString StreamingSourceManager::layoutSourceId(DatasetId dataset_id) const {
   return {};
 }
 
-DatasetId StreamingSourceManager::liveSessionFor(const layout_xml::StreamingSourceRef& source) const {
-  for (const auto& [dataset_id, session] : sessions_) {
-    const bool same_plugin = !source.plugin_manifest_id.isEmpty()
-                                 ? QString::fromStdString(session->manifest_id) == source.plugin_manifest_id
-                                 : QString::fromStdString(session->plugin_id) == source.plugin_id;
-    if (same_plugin && session->config_template == source.plugin_config_json) {
+DatasetId StreamingSourceManager::liveSessionFor(
+    const layout_xml::StreamingSourceRef& source, const QSet<DatasetId>& taken) const {
+  const LoadedDataSource* plugin =
+      findDataSourceByIdentity(extensions_.streamSources(), source.plugin_manifest_id, source.plugin_id);
+  if (plugin == nullptr) {
+    return 0;
+  }
+  DatasetId first_match = 0;
+  for (const auto& [dataset_id, id] : layoutIds()) {
+    const StreamingSession& session = *sessions_.at(dataset_id);
+    if (taken.contains(dataset_id) || session.manifest_id != plugin->id ||
+        session.config_template != source.plugin_config_json) {
+      continue;
+    }
+    if (id == source.id) {
       return dataset_id;
     }
+    if (first_match == 0) {
+      first_match = dataset_id;
+    }
   }
-  return 0;
+  return first_match;
 }
 
 void StreamingSourceManager::workerLoop(StreamingSession& session) {

@@ -1021,9 +1021,13 @@ class MainWindow : public QMainWindow {
   // The live streams as a source-bound save writes them: one record per session (its
   // configuration template, display offset and Source Timeline slot), and in
   // `identity_for_dataset` the pj-stream:// identity of each dataset a stream writes into,
-  // for layout_xml::stampDatasetIdentities. Shared by the desktop and browser saves.
+  // for layout_xml::stampDatasetIdentities. A session with no configuration is left out
+  // (nothing could start it again). Shared by the desktop and browser saves.
   [[nodiscard]] QList<layout_xml::StreamingSourceRef> liveStreamRecords(
       QHash<std::uint32_t, QString>& identity_for_dataset) const;
+  // Each dataset's top-to-bottom slot on the Source Timeline (empty without one); a
+  // dataset that has no bar has no entry.
+  [[nodiscard]] QHash<DatasetId, int> timelineSlots() const;
   // `layout_url` is where the bytes came from (empty for an upload): relative
   // Scene3D resources and file sources resolve against it, and with it the
   // sources download instead of being reselected.
@@ -1084,6 +1088,20 @@ class MainWindow : public QMainWindow {
     int timeline_order;
   };
   using LayoutTimelinePlan = std::vector<LayoutTimelineTrack>;
+  // Where a layout's stream records landed: each record's pj-stream:// identity mapped
+  // to its session's dataset (for layout_xml::bindStreamQualifiers) and that dataset's
+  // Source Timeline track as the record saved it. add() fills both, so they never disagree.
+  struct LayoutStreamBinding {
+    QHash<QString, std::uint32_t> dataset_for_identity;
+    LayoutTimelinePlan tracks;
+    void add(const layout_xml::StreamingSourceRef& record, DatasetId dataset_id) {
+      dataset_for_identity.insert(layout_xml::streamSourceIdentity(record.id), dataset_id);
+      tracks.push_back(
+          LayoutTimelineTrack{
+              dataset_id, record.dataset.display_offset_ns, record.dataset.has_display_offset,
+              record.dataset.timeline_order});
+    }
+  };
 
   // Applies a parsed layout to already-loaded data: curve rebind, plot/panel
   // restore, recent-files. `policy` governs unresolved curves (the sync leg
@@ -1094,7 +1112,12 @@ class MainWindow : public QMainWindow {
   // bound to: they join the files' offsets and order, and a layout with some applies even
   // though their datasets hold no data yet.
   void applyRestoredLayout(
-      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks = {});
+      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks);
+  // Starts each of `streams` from its saved configuration, without its plugin's dialog,
+  // and adds each one that starts to `binding`. Returns one "Stream '<id>': why" line per
+  // stream that did not start; the others are unaffected.
+  [[nodiscard]] QStringList startLayoutStreams(
+      const QList<layout_xml::StreamingSourceRef>& streams, LayoutStreamBinding& binding);
   // `policy` is the caller-derived unresolved-intent policy (the load's
   // interactivity) — captured into progressive_missing_curve_policy_ for the
   // drain; never inferred from batch presence.
@@ -1307,7 +1330,11 @@ class MainWindow : public QMainWindow {
   // frame) and returns true iff one actually MOVED; `applyLayoutTimelineOrder`
   // rebuilds the timeline's vertical track order afterwards, when the chrome
   // is restored. `applyTimelineStateFromLayout` runs all three back to back.
-  [[nodiscard]] LayoutTimelinePlan resolveLayoutTimelineTracks(const QList<layout_xml::DataSourceRef>& sources) const;
+  // `streams` are tracks already bound to a dataset (a layout's streams); they go
+  // through the same first-wins dedupe as the files, so two records bound to one
+  // running session never shift it twice or draw it in two slots.
+  [[nodiscard]] LayoutTimelinePlan resolveLayoutTimelineTracks(
+      const QList<layout_xml::DataSourceRef>& sources, const LayoutTimelinePlan& streams = {}) const;
   bool applyLayoutTimelineOffsets(const LayoutTimelinePlan& plan);
   void applyLayoutTimelineOrder(const LayoutTimelinePlan& plan);
   bool applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources);
@@ -1934,8 +1961,9 @@ class MainWindow : public QMainWindow {
   // skipped. onProgressiveLayoutDrained re-applies these once the paths settle. Empty
   // outside a progressive restore.
   QList<layout_xml::DataSourceRef> pending_timeline_sources_;
-  // The stream tracks of the progressive restore in flight (see applyRestoredLayout): the
-  // drain orders them with the files'. Cleared with pending_timeline_sources_.
+  // The stream tracks of the latest progressive restore (see applyRestoredLayout): both
+  // timeline passes (at begin and at the drain) resolve them with the files'. Set by
+  // beginProgressiveLayoutRestore, cleared when that restore is cancelled or superseded.
   LayoutTimelinePlan progressive_stream_tracks_;
   // The saved target must outlive begin so processors can replay only at drain.
   QDomDocument progressive_layout_doc_;

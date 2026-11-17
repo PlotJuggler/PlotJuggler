@@ -10,8 +10,8 @@
 //   * a materialize-import layout settles true only at the progressive drain,
 //     strictly after the batch finished and every restore waiter cleared —
 //     never mid-import.
-// It also covers what the same entry tells the user: the warning for stream
-// records it does not start, and warning boxes that show their text as text.
+// It also covers what the same entry tells the user: the report naming stream
+// records that cannot start, and warning boxes that show their text as text.
 //
 // Each ctest case constructs its own MainWindow, so settlement observations
 // cannot inherit process-global widget state from another scenario.

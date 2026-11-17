@@ -2588,23 +2588,35 @@ QList<layout_xml::StreamingSourceRef> MainWindow::liveStreamRecords(
     return {};
   }
   QList<layout_xml::StreamingSourceRef> records = streaming_manager_->layoutSources();
-  for (const DatasetId dataset_id : session_->sessionManager().dataEngine().listDatasets()) {
-    if (const QString id = streaming_manager_->layoutSourceId(dataset_id); !id.isEmpty()) {
-      identity_for_dataset.insert(dataset_id, layout_xml::streamSourceIdentity(id));
-    }
+  // A stream started without a configuration (a plugin with no dialog, an agent's bare
+  // start) cannot start again from a file: it is left out, and what it draws saves unbound.
+  records.removeIf(
+      [](const layout_xml::StreamingSourceRef& record) { return record.plugin_config_json.trimmed().isEmpty(); });
+  if (records.isEmpty()) {
+    return records;
   }
-  if (source_timeline_controller_ != nullptr) {
-    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
-    for (layout_xml::StreamingSourceRef& record : records) {
-      const QString identity = layout_xml::streamSourceIdentity(record.id);
-      const auto slot = std::find_if(
-          order.cbegin(), order.cend(), [&](DatasetId id) { return identity_for_dataset.value(id) == identity; });
-      if (slot != order.cend()) {
-        record.dataset.timeline_order = static_cast<int>(slot - order.cbegin());
-      }
-    }
+  QHash<QString, DatasetId> dataset_for_id;
+  for (const auto& [dataset_id, id] : streaming_manager_->layoutIds()) {
+    dataset_for_id.insert(id, dataset_id);
+  }
+  const QHash<DatasetId, int> slot_of = timelineSlots();
+  for (layout_xml::StreamingSourceRef& record : records) {
+    const DatasetId dataset_id = dataset_for_id.value(record.id);
+    identity_for_dataset.insert(dataset_id, layout_xml::streamSourceIdentity(record.id));
+    record.dataset.timeline_order = slot_of.value(dataset_id, -1);
   }
   return records;
+}
+
+QHash<DatasetId, int> MainWindow::timelineSlots() const {
+  QHash<DatasetId, int> slot_of;
+  if (source_timeline_controller_ != nullptr) {
+    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
+    for (int slot = 0; slot < static_cast<int>(order.size()); ++slot) {
+      slot_of.insert(order[static_cast<std::size_t>(slot)], slot);
+    }
+  }
+  return slot_of;
 }
 
 std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& error) const {
@@ -2683,13 +2695,7 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
   root.setAttribute(u"binding"_s, u"source"_s);
 
   QDomElement wrapper = doc.createElement(u"previouslyLoaded_Datafiles"_s);
-  QHash<DatasetId, int> timeline_order;
-  if (source_timeline_controller_ != nullptr) {
-    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
-    for (int index = 0; index < static_cast<int>(order.size()); ++index) {
-      timeline_order.insert(order[static_cast<std::size_t>(index)], index);
-    }
-  }
+  const QHash<DatasetId, int> timeline_order = timelineSlots();
 
   QHash<DatasetId, QString> logical_path_for_dataset;
   QHash<QString, QString> logical_path_for_identity;
@@ -5634,19 +5640,16 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
   // Streams the layout records: one already running from the same plugin and
   // configuration is bound to as it is; the others start at the commit point below,
   // from their saved configuration and without their plugin's dialog.
-  QHash<QString, std::uint32_t> stream_datasets;
-  LayoutTimelinePlan stream_tracks;
+  const bool source_bound = binding != "generic"_L1;
+  LayoutStreamBinding streams;
   QList<layout_xml::StreamingSourceRef> pending_streams;
   QStringList stream_failures;
-  if (binding != "generic"_L1 && streaming_manager_ != nullptr) {
+  if (source_bound && streaming_manager_ != nullptr) {
     QString stream_error;
     for (const layout_xml::StreamingSourceRef& record : layout_xml::extractStreamingSources(doc, &stream_error)) {
-      if (const DatasetId live = streaming_manager_->liveSessionFor(record); live != 0) {
-        stream_datasets.insert(layout_xml::streamSourceIdentity(record.id), live);
-        stream_tracks.push_back(
-            LayoutTimelineTrack{
-                live, record.dataset.display_offset_ns, record.dataset.has_display_offset,
-                record.dataset.timeline_order});
+      const QSet<DatasetId> taken(streams.dataset_for_identity.cbegin(), streams.dataset_for_identity.cend());
+      if (const DatasetId live = streaming_manager_->liveSessionFor(record, taken); live != 0) {
+        streams.add(record, live);
       } else {
         pending_streams.push_back(record);
       }
@@ -5655,7 +5658,7 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
       stream_failures.push_back(tr("Streaming sources: %1").arg(stream_error));
     }
   }
-  if (binding != "generic"_L1 && (!replays.empty() || !pending_streams.empty())) {
+  if (source_bound && (!replays.empty() || !pending_streams.empty())) {
     // Fork the classification ONCE: materialize-bearing sources are
     // batch-owned (§6.2 — the batch rewrites `doc` and classifies them
     // against their provider's effective paths), plain sources keep today's
@@ -5717,36 +5720,36 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
       // fall-through).
       bool do_reload = !interactive;
       if (interactive) {
-        QStringList file_lines;
-        file_lines.reserve(pending.size());
+        QStringList source_lines;
+        source_lines.reserve(pending.size() + pending_streams.size());
         for (const auto& replay : pending) {
-          file_lines.push_back(u"  %1"_s.arg(replay.resolved_path));
+          source_lines.push_back(u"  %1"_s.arg(replay.resolved_path));
         }
         if (batch != nullptr) {
           for (const QString& line : batch->pendingSourceLines()) {
-            file_lines.push_back(u"  %1"_s.arg(line));
+            source_lines.push_back(u"  %1"_s.arg(line));
           }
         }
+        const bool reloads_files = !source_lines.isEmpty();
         for (const layout_xml::StreamingSourceRef& stream : pending_streams) {
           const QString& plugin = stream.plugin_id.isEmpty() ? stream.plugin_manifest_id : stream.plugin_id;
-          file_lines.push_back(
+          source_lines.push_back(
               stream.source_name.isEmpty() ? tr("  %1 (streaming)").arg(plugin)
                                            : tr("  %1 (streaming, %2)").arg(stream.source_name, plugin));
         }
-        const bool reloads_files = file_lines.size() > pending_streams.size();
         const QString reload_label = pending_streams.isEmpty() ? tr("Reload source file")
                                      : reloads_files           ? tr("Reload and start streaming")
                                                                : tr("Start streaming");
         // Themed prompt (frameless, vertical button column in the app chrome).
         // The button order below defines the index question() returns:
-        // 0 = reload, 1 = layout-only (fall-through), 2 = cancel. "Reload source
-        // file" is the primary/default action; Esc maps to the kCancelRole button.
+        // 0 = reload, 1 = layout-only (fall-through), 2 = cancel. The reload
+        // button is the primary/default action; Esc maps to the kCancelRole button.
         constexpr int kReloadOriginal = 0;
         constexpr int kCancel = 2;
         const int choice = MessageBox::question(
             this, tr("Load Layout"),
-            tr("This layout was saved with %n data source(s):\n\n%1", nullptr, static_cast<int>(file_lines.size()))
-                .arg(file_lines.join(QLatin1Char('\n'))),
+            tr("This layout was saved with %n data source(s):\n\n%1", nullptr, static_cast<int>(source_lines.size()))
+                .arg(source_lines.join(QLatin1Char('\n'))),
             {{reload_label, MessageBox::kPrimaryRole},
              {tr("Load Layout only"), MessageBox::kNeutralRole},
              {tr("Cancel"), MessageBox::kCancelRole}});
@@ -5801,29 +5804,18 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
           file_loader_->loadFile(
               replay.resolved_path, interactive ? this : nullptr, layoutReplayHints(replay, /*prefer_reuse=*/true));
         }
-        // Each stream starts on its own: one that cannot start is named below and
-        // the rest of the layout still applies.
-        for (const layout_xml::StreamingSourceRef& stream : pending_streams) {
-          QString error;
-          const QString config = expandSourceConfigVariables(stream.plugin_config_json, deployment_page_url_, &error);
-          const DatasetId dataset_id =
-              error.isEmpty() ? streaming_manager_->startFromLayout(stream, config, error) : DatasetId{0};
-          if (dataset_id == 0) {
-            stream_failures.push_back(tr("Stream '%1': %2").arg(stream.id, error));
-            continue;
-          }
-          stream_datasets.insert(layout_xml::streamSourceIdentity(stream.id), dataset_id);
-          stream_tracks.push_back(
-              LayoutTimelineTrack{
-                  dataset_id, stream.dataset.display_offset_ns, stream.dataset.has_display_offset,
-                  stream.dataset.timeline_order});
-        }
+        stream_failures.append(startLayoutStreams(pending_streams, streams));
       }
       // choice == 1 (Use current data) → fall through and apply the layout to
       // the currently loaded data. A prepared-but-unstarted batch dies here:
       // "Load Layout only" imports nothing.
     }
   }
+
+  // What the layout bound to a stream record binds to that record's session (fresh
+  // DatasetIds) and waits there for its topics, which arrive after the apply.
+  layout_xml::bindStreamQualifiers(doc, streams.dataset_for_identity);
+  source_failures.append(stream_failures);
 
   // The reloaded data may still be arriving on the worker thread — or a batch
   // import may be producing it with FileLoader entirely idle. In either case,
@@ -5837,13 +5829,7 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
   // non-interactively (§6.4 cross-machine degradation) and must not open
   // the catalog-empty warning or the missing-curve prompt. Interactive
   // loads keep kPrompt unchanged.
-  // What the layout bound to a stream record binds to that record's session (fresh
-  // DatasetIds) and waits there for its topics, which arrive after the apply.
-  if (!stream_datasets.isEmpty()) {
-    layout_xml::bindStreamQualifiers(doc, stream_datasets);
-  }
-  source_failures.append(stream_failures);
-  if (!source_failures.empty() && session_->catalogModel().datasets().empty() && stream_tracks.empty() &&
+  if (!source_failures.empty() && session_->catalogModel().datasets().empty() && streams.tracks.empty() &&
       !restoreHasPendingAsyncWork(reload_requested)) {
     // Nothing to apply to AND we know why: the dialog names every source.
     reportLayoutRestoreIssue(
@@ -5858,11 +5844,30 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
         restore_policy, "layout-streams-not-started",
         tr("Some of the layout's streaming sources could not be started:\n\n%1").arg(stream_failures.join(u"\n\n"_s)));
   }
+  // Asked only now: the report above can be a modal box, and a reload that finishes
+  // under it signals no waiter, so a restore begun after it would wait forever.
   if (restoreHasPendingAsyncWork(reload_requested)) {
-    beginProgressiveLayoutRestore(doc, path, restore_policy, stream_tracks);
+    beginProgressiveLayoutRestore(doc, path, restore_policy, streams.tracks);
     return;
   }
-  applyRestoredLayout(doc, path, restore_policy, stream_tracks);
+  applyRestoredLayout(doc, path, restore_policy, streams.tracks);
+}
+
+QStringList MainWindow::startLayoutStreams(
+    const QList<layout_xml::StreamingSourceRef>& streams, LayoutStreamBinding& binding) {
+  QStringList failures;
+  for (const layout_xml::StreamingSourceRef& stream : streams) {
+    QString error;
+    const QString config = expandSourceConfigVariables(stream.plugin_config_json, deployment_page_url_, &error);
+    const DatasetId dataset_id =
+        error.isEmpty() ? streaming_manager_->startFromLayout(stream, config, error) : DatasetId{0};
+    if (dataset_id == 0) {
+      failures.push_back(tr("Stream '%1': %2").arg(stream.id, error));
+      continue;
+    }
+    binding.add(stream, dataset_id);
+  }
+  return failures;
 }
 
 void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& browser_name, const QUrl& layout_url) {
@@ -6743,8 +6748,7 @@ QString MainWindow::startReplayStreamsAndApply(QDomDocument apply_doc, const QSt
         .current_time = engine.currentTime(),
     };
   }
-  QHash<QString, std::uint32_t> stream_datasets;
-  LayoutTimelinePlan stream_tracks;
+  LayoutStreamBinding streams;
   for (const BrowserLayoutRuntime::ReplayStream& stream : replay.streams) {
     QString error;
     const DatasetId dataset_id = streaming_manager_->startFromLayout(stream.record, stream.expanded_config, error);
@@ -6754,16 +6758,13 @@ QString MainWindow::startReplayStreamsAndApply(QDomDocument apply_doc, const QSt
       return u"stream"_s;
     }
     replay.stream_datasets.push_back(dataset_id);
-    stream_datasets.insert(layout_xml::streamSourceIdentity(stream.record.id), dataset_id);
-    const layout_xml::DataSourceDatasetRef& saved = stream.record.dataset;
-    stream_tracks.push_back(
-        LayoutTimelineTrack{dataset_id, saved.display_offset_ns, saved.has_display_offset, saved.timeline_order});
+    streams.add(stream.record, dataset_id);
   }
   // Fresh sessions mint fresh DatasetIds: what the layout bound to a stream
   // record binds to that record's new session, and waits there for its topics.
-  layout_xml::bindStreamQualifiers(apply_doc, stream_datasets);
-  return applyBrowserRestoredLayout(std::move(apply_doc), replay.layout_name, stream_tracks) ? QString{}
-                                                                                             : apply_failure;
+  layout_xml::bindStreamQualifiers(apply_doc, streams.dataset_for_identity);
+  return applyBrowserRestoredLayout(std::move(apply_doc), replay.layout_name, streams.tracks) ? QString{}
+                                                                                              : apply_failure;
 }
 
 void MainWindow::replacePreviousPresetData() {
@@ -7141,8 +7142,8 @@ bool MainWindow::applyBrowserRestoredLayout(
   // Source replay validation has already proven an exact dataset/fan-out
   // shape. Apply per-source offsets and vertical order only after the workspace
   // succeeds, so a curve/scene failure cannot leave a partially moved timeline.
-  LayoutTimelinePlan timeline = resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, QDir()));
-  timeline.insert(timeline.end(), stream_tracks.cbegin(), stream_tracks.cend());
+  const LayoutTimelinePlan timeline =
+      resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, QDir()), stream_tracks);
   static_cast<void>(applyLayoutTimelineOffsets(timeline));
   applyLayoutTimelineOrder(timeline);
   restoreBrowserChromeAndPanels(doc, browser_name);
@@ -7191,8 +7192,8 @@ void MainWindow::applyRestoredLayout(
   // before moving them, then reuse one source resolution for the later track order.
   const CapturedWorkspace rollback = captureWorkspace();
   const QDir layout_dir(QFileInfo(path).absoluteDir());
-  LayoutTimelinePlan timeline_plan = resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, layout_dir));
-  timeline_plan.insert(timeline_plan.end(), stream_tracks.cbegin(), stream_tracks.cend());
+  const LayoutTimelinePlan timeline_plan =
+      resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, layout_dir), stream_tracks);
   static_cast<void>(applyLayoutTimelineOffsets(timeline_plan));
   // 4. Recreate filters, rebind curves, and apply plots/toggles through the ONE restore
   // path shared with undo/redo (kPrompt: a curve no loaded dataset can provide raises the
@@ -8466,13 +8467,7 @@ MainWindow::TimelineState MainWindow::captureTimelineState() const {
   state.name_column_width = chrome.name_column_width;
   state.snap = chrome.snap;
 
-  QHash<DatasetId, int> order_slots;
-  if (source_timeline_controller_ != nullptr) {
-    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
-    for (int slot = 0; slot < static_cast<int>(order.size()); ++slot) {
-      order_slots.insert(order[static_cast<std::size_t>(slot)], slot);
-    }
-  }
+  const QHash<DatasetId, int> order_slots = timelineSlots();
   const auto datasets = session_->catalogModel().datasets();
   QHash<QString, int> source_ordinals;
   for (const auto& [dataset_id, label] : datasets) {
@@ -8910,13 +8905,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   // Source Timeline arrangement: the bar's top-to-bottom slot, persisted per
   // file so the vertical order round-trips (re-bound by path on reload). Build
   // dataset -> slot once; absent => fall back to load order on restore.
-  QHash<DatasetId, int> timeline_order;
-  if (source_timeline_controller_ != nullptr) {
-    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
-    for (int i = 0; i < static_cast<int>(order.size()); ++i) {
-      timeline_order.insert(order[static_cast<std::size_t>(i)], i);
-    }
-  }
+  const QHash<DatasetId, int> timeline_order = timelineSlots();
 
   QDomElement wrapper = doc.createElement(u"previouslyLoaded_Datafiles"_s);
 
@@ -9029,7 +9018,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
 }
 
 MainWindow::LayoutTimelinePlan MainWindow::resolveLayoutTimelineTracks(
-    const QList<layout_xml::DataSourceRef>& sources) const {
+    const QList<layout_xml::DataSourceRef>& sources, const LayoutTimelinePlan& streams) const {
   LayoutTimelinePlan plan;
   const SessionManager& mgr = session_->sessionManager();
   // Re-bind each saved <fileInfo> to every loaded dataset produced from that
@@ -9113,6 +9102,11 @@ MainWindow::LayoutTimelinePlan MainWindow::resolveLayoutTimelineTracks(
     }
   }
 
+  for (const LayoutTimelineTrack& stream : streams) {
+    add_track(
+        stream.dataset_id, stream.display_offset_ns, stream.has_display_offset,
+        /*includes_global_reference=*/false, stream.timeline_order);
+  }
   return plan;
 }
 
@@ -9153,8 +9147,7 @@ void MainWindow::applyLayoutTimelineOrder(const LayoutTimelinePlan& plan) {
 }
 
 bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
-  LayoutTimelinePlan plan = resolveLayoutTimelineTracks(sources);
-  plan.insert(plan.end(), progressive_stream_tracks_.cbegin(), progressive_stream_tracks_.cend());
+  const LayoutTimelinePlan plan = resolveLayoutTimelineTracks(sources, progressive_stream_tracks_);
   const bool offset_changed = applyLayoutTimelineOffsets(plan);
   applyLayoutTimelineOrder(plan);
   return offset_changed;
